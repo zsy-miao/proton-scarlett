@@ -19,6 +19,9 @@ stage=$(mktemp -d "$(dirname "$dest")/.scarlett.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 cp -a --reflink=auto "$base/." "$stage/"
 install -m755 "$src/proton" "$stage/proton"
+if [[ -f "$runtime/xaudio2_9.dll" ]]; then
+    install -m644 "$runtime/xaudio2_9.dll" "$stage/files/lib/wine/x86_64-windows/xaudio2_9.dll"
+fi
 mkdir "$stage/scarlett"
 for file in xcl.exe dxcompiler.dll dxil.dll LICENSE THIRD_PARTY.md LICENCE-MIT.txt LICENSE-LLVM.txt LICENSE-MS.txt; do
     install -m644 "$runtime/$file" "$stage/scarlett/$file"

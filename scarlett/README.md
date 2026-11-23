@@ -36,6 +36,11 @@ independent copy; updates to stock Proton do not change the fork. For a full SDK
 build `scarlett/runtime` as above, initialize Valve's submodules and follow the upstream
 [Proton build instructions](../README.md). The x86-64 distribution target includes the staged runtime.
 
+For the XAudio2 fixes, apply `git -C wine apply ../scarlett/proton11-faudio.patch` to the
+pinned Wine submodule **before** the SDK build. For depot installs, put the resulting
+x64 Wine builtin `xaudio2_9.dll` in `scarlett/runtime/` before running `install.sh`.
+Without that file, the depot installer retains Valve's original audio module.
+
 The build pins Proton at `1f089f5610a882c8bfcb4b58a3c86ee88bb4b9f1`, XCL at
 `66e8e974601791dee66bb60adfbeb4852ba88a25`, and includes the [XCL Wine crash-report fix](https://github.com/ivall/xcl/pull/147).
 DXC comes from Microsoft's checksum-verified `v1.9.2609` release. XCL, DXC and Proton retain
@@ -73,4 +78,7 @@ shader fixtures. The descriptor-heap test verifies that the console sampler hand
 allocation and that it remains valid while the driver holds the heap. The resource test
 verifies native COM identity, title and host mappings, and cleanup after final release.
 The broader test renders a triangle on the RTX 3070, verifies the pixels by readback, and
-presents one 640×360 frame. It subsequently stops in the audio test in `xaudio2_9.dll`.
+presents one 640×360 frame. With the patched XAudio2 builtin and a private PulseAudio sink,
+the fixture also decodes XMA2 to PCM and receives buffer-end callbacks. It finishes with
+47 checks passed and 3 failed (fixture executable name, physical-memory accounting and
+window cloaking). Opus callbacks used the silence fallback; Opus decoding remains unverified.

@@ -1,0 +1,102 @@
+--- a/libs/faudio/src/FAudio_platform_win32.c
++++ b/libs/faudio/src/FAudio_platform_win32.c
+@@ -355,12 +355,18 @@
+ 	BOOL has_neon = FALSE;
+ #endif
+ 	FAudio_INTERNAL_InitSIMDFunctions(has_sse2, has_neon);
+-	FAudio_resolve_SetThreadDescription();
+-
+ 	FAudio_PlatformAddRef();
+ 
+ 	*platformDevice = NULL;
+ 
++	hr = FAudio_OpenDevice(deviceIndex, &device);
++	if (FAILED(hr))
++	{
++		FAudio_PlatformRelease();
++		return;
++	}
++	FAudio_resolve_SetThreadDescription();
++
+ 	args = FAudio_malloc(sizeof(*args));
+ 	FAudio_assert(!!args && "Failed to allocate FAudio thread args!");
+ 
+@@ -393,9 +399,6 @@
+ 	data->stopEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+ 	FAudio_assert(!!data->stopEvent && "Failed to create FAudio thread stop event!");
+ 
+-	hr = FAudio_OpenDevice(deviceIndex, &device);
+-	FAudio_assert(!FAILED(hr) && "Failed to get audio device!");
+-
+ 	hr = IMMDevice_Activate(
+ 		device,
+ 		&IID_IAudioClient,
+--- a/dlls/xaudio2_7/xaudio_dll.c
++++ b/dlls/xaudio2_7/xaudio_dll.c
+@@ -1748,6 +1748,7 @@
+ {
+     IXAudio2Impl *This = impl_from_IXAudio2(iface);
+     FAudioEffectChain *chain;
++    HRESULT hr;
+ 
+     TRACE("(%p)->(%p, %u, %u, 0x%x, %p)\n", This,
+             ppMasteringVoice, inputChannels, inputSampleRate, flags, pEffectChain);
+@@ -1760,13 +1761,14 @@
+ 
+     EnterCriticalSection(&This->lock);
+ 
+-    *ppMasteringVoice = &This->mst.IXAudio2MasteringVoice_iface;
++    *ppMasteringVoice = NULL;
+ 
+     EnterCriticalSection(&This->mst.lock);
+ 
+     if(This->mst.in_use){
+         LeaveCriticalSection(&This->mst.lock);
+         LeaveCriticalSection(&This->lock);
++        free_effect_chain(chain);
+         return COMPAT_E_INVALID_CALL;
+     }
+ 
+@@ -1777,17 +1779,25 @@
+ #if XAUDIO2_VER >= 8
+     TRACE("device id %s, category %#x\n", debugstr_w(deviceId), streamCategory);
+ 
+-    FAudio_CreateMasteringVoice8(This->faudio, &This->mst.faudio_voice, inputChannels,
++    hr = FAudio_CreateMasteringVoice8(This->faudio, &This->mst.faudio_voice, inputChannels,
+             inputSampleRate, flags, NULL /* TODO: (uint16_t*)deviceId */,
+             This->mst.effect_chain, (FAudioStreamCategory)streamCategory);
+ #else
+     TRACE("device index %u\n", index);
+ 
+-    FAudio_CreateMasteringVoice(This->faudio, &This->mst.faudio_voice, inputChannels,
++    hr = FAudio_CreateMasteringVoice(This->faudio, &This->mst.faudio_voice, inputChannels,
+             inputSampleRate, flags, index, This->mst.effect_chain);
+ #endif
+ 
++    if (FAILED(hr))
++    {
++        This->mst.effect_chain = NULL;
++        LeaveCriticalSection(&This->mst.lock);
++        free_effect_chain(chain);
++        return hr;
++    }
+     This->mst.in_use = TRUE;
++    *ppMasteringVoice = &This->mst.IXAudio2MasteringVoice_iface;
+ 
+     LeaveCriticalSection(&This->mst.lock);
+ 
+--- a/libs/faudio/src/FAudio.c
++++ b/libs/faudio/src/FAudio.c
+@@ -2928,10 +2928,8 @@
+ 	if (voice->src.bufferList != NULL)
+ 	{
+ 		entry = voice->src.bufferList;
+-		if (!voice->src.newBuffer)
+-		{
+-			pVoiceState->pCurrentBufferContext = entry->buffer.pContext;
+-		}
++		/* A stopped voice reports the next buffer due to be processed. */
++		pVoiceState->pCurrentBufferContext = entry->buffer.pContext;
+ 		do
+ 		{
+ 			pVoiceState->BuffersQueued += 1;
