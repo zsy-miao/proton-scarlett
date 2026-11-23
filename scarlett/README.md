@@ -70,5 +70,7 @@ status, or 124 if the 90-second test window expires.
 On the RTX 3070, the console title's CPU signal, GPU queue wait/signal, and completion event
 passed. The broader XCL test title also creates fallback graphics pipelines for two console
 shader fixtures. The descriptor-heap test verifies that the console sampler handles share their
-allocation and that it remains valid while the driver holds the heap. The broader test next
-stops at a vkd3d-proton resource assertion, before presentation.
+allocation and that it remains valid while the driver holds the heap. The resource test
+verifies native COM identity, title and host mappings, and cleanup after final release.
+The broader test next reports an invalid command allocator and stops at a query-heap
+assertion before presentation.
