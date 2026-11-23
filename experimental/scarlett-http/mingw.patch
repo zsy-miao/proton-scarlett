@@ -1,0 +1,226 @@
+diff --git a/Build/libHttpClient.Win32.CMake/CMakeLists.txt b/Build/libHttpClient.Win32.CMake/CMakeLists.txt
+index f528b20..d3d013d 100644
+--- a/Build/libHttpClient.Win32.CMake/CMakeLists.txt
++++ b/Build/libHttpClient.Win32.CMake/CMakeLists.txt
+@@ -173,7 +173,8 @@ add_library(libHttpClient::libHttpClient ALIAS libHttpClient)
+ 
+ set_target_properties(libHttpClient PROPERTIES
+     EXPORT_NAME libHttpClient
+-    OUTPUT_NAME libHttpClient
++    PREFIX ""
++    OUTPUT_NAME libHttpClient.GDK
+     CXX_STANDARD 17
+     CXX_STANDARD_REQUIRED ON
+     CXX_EXTENSIONS OFF
+diff --git a/Source/Common/Win/utils_win.cpp b/Source/Common/Win/utils_win.cpp
+index 563b636..6053462 100644
+--- a/Source/Common/Win/utils_win.cpp
++++ b/Source/Common/Win/utils_win.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "pch.h"
+ #include "utils_win.h"
++#include <stdexcept>
+ #include "uri.h"
+ 
+ #include <httpClient/trace.h>
+@@ -40,7 +41,7 @@ http_internal_string utf8_from_utf16(_In_reads_(size) PCWSTR utf16, size_t size)
+ 
+     if (size > INT_MAX)
+     {
+-        throw std::exception("utf8_from_utf16 failed: input too large");
++        throw std::runtime_error("utf8_from_utf16 failed: input too large");
+     }
+ 
+     // query for the buffer size
+@@ -56,7 +57,7 @@ http_internal_string utf8_from_utf16(_In_reads_(size) PCWSTR utf16, size_t size)
+         auto err = GetLastError();
+         HC_TRACE_ERROR(HTTPCLIENT, "utf8_from_utf16 failed during buffer size query with error: %u", err);
+ #endif
+-        throw std::exception("utf8_from_utf16 failed");
++        throw std::runtime_error("utf8_from_utf16 failed");
+     }
+ 
+     // allocate the output buffer, queryResult is the required size
+@@ -73,7 +74,7 @@ http_internal_string utf8_from_utf16(_In_reads_(size) PCWSTR utf16, size_t size)
+         auto err = GetLastError();
+         HC_TRACE_ERROR(HTTPCLIENT, "utf8_from_utf16 failed during conversion: %u", err);
+ #endif
+-        throw std::exception("utf8_from_utf16 failed");
++        throw std::runtime_error("utf8_from_utf16 failed");
+     }
+ 
+     return utf8;
+@@ -89,7 +90,7 @@ http_internal_wstring utf16_from_utf8(_In_reads_(size) const char* utf8, size_t
+ 
+     if (size > INT_MAX)
+     {
+-        throw std::exception("utf16_from_utf8 failed: input too large");
++        throw std::runtime_error("utf16_from_utf8 failed: input too large");
+     }
+ 
+     // query for the buffer size
+@@ -104,7 +105,7 @@ http_internal_wstring utf16_from_utf8(_In_reads_(size) const char* utf8, size_t
+         auto err = GetLastError();
+         HC_TRACE_ERROR(HTTPCLIENT, "utf16_from_utf8 failed during buffer size query with error: %u", err);
+ #endif
+-        throw std::exception("utf16_from_utf8 failed");
++        throw std::runtime_error("utf16_from_utf8 failed");
+     }
+ 
+     // allocate the output buffer, queryResult is the required size
+@@ -120,7 +121,7 @@ http_internal_wstring utf16_from_utf8(_In_reads_(size) const char* utf8, size_t
+         auto err = GetLastError();
+         HC_TRACE_ERROR(HTTPCLIENT, "utf16_from_utf8 failed during conversion: %u", err);
+ #endif
+-        throw std::exception("utf16_from_utf8 failed");
++        throw std::runtime_error("utf16_from_utf8 failed");
+     }
+ 
+     return utf16;
+diff --git a/Source/Common/pch_common.h b/Source/Common/pch_common.h
+index 62ebed6..7c77d79 100644
+--- a/Source/Common/pch_common.h
++++ b/Source/Common/pch_common.h
+@@ -21,7 +21,7 @@
+ 
+ // If you wish to build your application for a previous Windows platform, include WinSDKVer.h and
+ // set the _WIN32_WINNT macro to the platform you wish to support before including SDKDDKVer.h.
+-#include <SDKDDKVer.h>
++#include <sdkddkver.h>
+ 
+ // Windows
+ #ifndef WIN32_LEAN_AND_MEAN
+@@ -32,7 +32,7 @@
+ #define NOMINMAX
+ #endif
+ 
+-#include <WinSock2.h>
++#include <winsock2.h>
+ #include <windows.h>
+ #include <objbase.h>
+ 
+diff --git a/Source/HTTP/WinHttp/winhttp_connection.cpp b/Source/HTTP/WinHttp/winhttp_connection.cpp
+index 622cfb3..c3c3453 100644
+--- a/Source/HTTP/WinHttp/winhttp_connection.cpp
++++ b/Source/HTTP/WinHttp/winhttp_connection.cpp
+@@ -477,7 +477,7 @@ HRESULT WinHttpConnection::WebSocketConnectAsync(XAsyncBlock* async)
+     m_asyncBlock = async;
+ 
+     // Unlike HTTP, WebSocket providers need to implement the XAsyncProvider for each operation
+-    RETURN_IF_FAILED(XAsyncBegin(async, this, HCWebSocketConnectAsync, "HCWebSocketConnectAsync", WinHttpConnection::WebSocketConnectProvider));
++    RETURN_IF_FAILED(XAsyncBegin(async, this, reinterpret_cast<const void*>(HCWebSocketConnectAsync), "HCWebSocketConnectAsync", WinHttpConnection::WebSocketConnectProvider));
+ 
+     return S_OK;
+ }
+@@ -496,7 +496,7 @@ HRESULT WinHttpConnection::WebSocketSendMessageAsync(XAsyncBlock* async, const u
+     sendContext->payload = http_internal_vector<uint8_t>(payloadBytes, payloadBytes + payloadSize);
+     sendContext->payloadType = payloadType;
+ 
+-    RETURN_IF_FAILED(XAsyncBegin(async, sendContext.get(), HCWebSocketSendMessageAsync, "HCWebSocketSendMessageAsync", WinHttpConnection::WebSocketSendProvider));
++    RETURN_IF_FAILED(XAsyncBegin(async, sendContext.get(), reinterpret_cast<const void*>(HCWebSocketSendMessageAsync), "HCWebSocketSendMessageAsync", WinHttpConnection::WebSocketSendProvider));
+ 
+     // At this point WebSocketSendProvider is responsible for lifetime of sendContext
+     sendContext.release();
+diff --git a/Source/HTTP/WinHttp/winhttp_provider.cpp b/Source/HTTP/WinHttp/winhttp_provider.cpp
+index 0666c77..e6c9d48 100644
+--- a/Source/HTTP/WinHttp/winhttp_provider.cpp
++++ b/Source/HTTP/WinHttp/winhttp_provider.cpp
+@@ -7,6 +7,10 @@
+ #include "uri.h"
+ #include <optional>
+ 
++#ifndef WINHTTP_FLAG_SECURE_DEFAULTS
++#define WINHTTP_FLAG_SECURE_DEFAULTS 0x30000000
++#endif
++
+ #if HC_PLATFORM == HC_PLATFORM_GDK
+ #include <XGameRuntimeFeature.h>
+ #endif
+diff --git a/Source/Logger/trace.cpp b/Source/Logger/trace.cpp
+index e09bb07..8f13ba6 100644
+--- a/Source/Logger/trace.cpp
++++ b/Source/Logger/trace.cpp
+@@ -15,7 +15,7 @@
+ #include "Platform/PlatformTrace.h"
+ 
+ #if HC_PLATFORM_IS_MICROSOFT
+-#include <TraceLoggingProvider.h>
++#include <evntprov.h>
+ #endif
+ 
+ namespace
+@@ -73,36 +73,30 @@ int vstprintf_s(char(&buffer)[SIZE], _Printf_format_string_ char const* format,
+ #endif
+ 
+ #if HC_PLATFORM_IS_MICROSOFT
+-// TRACELOGGING_DEFINE_PROVIDER_STORAGE and the const decl below are used instead of
+-// TRACELOGGING_DEFINE_PROVIDER to keep `g_hTraceLoggingProvider` linkage internal.
+-// This avoids link-time collisions in any static consumers (`g_hTraceLoggingProvider` is very common).
+-TRACELOGGING_DEFINE_PROVIDER_STORAGE(
+-    g_lhcTraceLoggingProviderStorage,
+-    "libHttpClient",
+-    (0x2b6274b2, 0x159f, 0x4e6f, 0xb8, 0x0, 0xd, 0x17, 0x0, 0x9e, 0x14, 0x7a) // {2B6274B2-159F-4E6F-B800-0D17009E147A}
+-);
+-
+-const TraceLoggingHProvider g_hTraceLoggingProvider = &g_lhcTraceLoggingProviderStorage;
++// MinGW has the manifest-free ETW string API but not the TraceLogging SDK header.
++constexpr GUID providerId{0x2b6274b2, 0x159f, 0x4e6f, {0xb8, 0, 0x0d, 0x17, 0, 0x9e, 0x14, 0x7a}};
+ 
+ 
+ // Helper method to ensure our ETW Provider never gets registered twice. Registering an ETW provider twice may result
+ // in a crash or undefined behavior.  See https://learn.microsoft.com/en-us/windows/win32/api/traceloggingprovider/nf-traceloggingprovider-traceloggingregister
+ // for more details.
+-void RegisterProvider()
++REGHANDLE RegisterProvider()
+ {
+     struct ProviderRegistrar
+     {
++        REGHANDLE handle{};
+         ProviderRegistrar()
+         {
+-            TraceLoggingRegister(g_hTraceLoggingProvider);
++            EventRegister(&providerId, nullptr, nullptr, &handle);
+         }
+         ~ProviderRegistrar()
+         {
+-            TraceLoggingUnregister(g_hTraceLoggingProvider);
++            if (handle) EventUnregister(handle);
+         }
+     };
+ 
+     static ProviderRegistrar s_registrar{};
++    return s_registrar.handle;
+ }
+ #endif
+ 
+@@ -220,11 +214,9 @@ void TraceMessageToETW(
+     char outputBuffer[BUFFER_SIZE] = {};
+     FormatTrace(areaName, level, threadId, timestamp, message, outputBuffer);
+ 
+-    TraceLoggingWrite(
+-        g_hTraceLoggingProvider,
+-        "libHttpClient_TraceMessage",
+-        TraceLoggingString(outputBuffer, "Message")
+-    );
++    wchar_t wide[BUFFER_SIZE];
++    if (MultiByteToWideChar(CP_UTF8, 0, outputBuffer, -1, wide, BUFFER_SIZE))
++        EventWriteString(RegisterProvider(), 0, 0, wide);
+ }
+ #endif
+ 
+diff --git a/Source/Task/AsyncLib.cpp b/Source/Task/AsyncLib.cpp
+index c698665..9180ffc 100644
+--- a/Source/Task/AsyncLib.cpp
++++ b/Source/Task/AsyncLib.cpp
+@@ -5,6 +5,10 @@
+ #include "XTaskQueuePriv.h"
+ #include "SpinLock.h"
+ 
++#ifndef E_ILLEGAL_METHOD_CALL
++#define E_ILLEGAL_METHOD_CALL _HRESULT_TYPEDEF_(0x8000000EL)
++#endif
++
+ #define ASYNC_BLOCK_SIG         0x41535942 // ASYB
+ #define ASYNC_BLOCK_RESULT_SIG  0x41535242 // ASRB
+ #define ASYNC_STATE_SIG         0x41535445 // ASTE
