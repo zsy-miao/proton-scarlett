@@ -12,7 +12,7 @@ compatibility layer; no game source or game recompilation is required.
 | --- | --- |
 | Load the game | Title DLLs and thread-local storage initialize; the executable reaches its entry point. |
 | Initialize graphics and input | A hardware D3D12 device is created through vkd3d-proton. XGameRuntime initializes and the game registers an input callback. |
-| Read game data | The game opens `G:\appdata0.rpf`. |
+| Read game data | The game reads `appdata0.rpf`, `common.rpf` and `movies.rpf`. The next root archive requested, `shaders.rpf`, was absent in this test. |
 | Present a frame | The game stops at `game_scarlett_master.exe+0x1ce6e13` during System Init. The runtime recorded zero presents. |
 
 **Disclaimer:** scarlett-proton is an independent compatibility project, unaffiliated with Valve, Microsoft,
