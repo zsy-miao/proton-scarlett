@@ -44,7 +44,7 @@ that DLL, run `./scarlett/rebuild-xaudio.sh /path/to/new-build-directory` and co
 `build/dlls/xaudio2_9/x86_64-windows/xaudio2_9.dll` from that directory into `scarlett/runtime/`.
 
 The build pins Proton at `1f089f5610a882c8bfcb4b58a3c86ee88bb4b9f1`, XCL at
-`66e8e974601791dee66bb60adfbeb4852ba88a25`, and includes the [XCL Wine crash-report fix](https://github.com/ivall/xcl/pull/147).
+`956a476bf738a098f39df4f4c8acef682e43030f`, and includes the [XCL Wine crash-report fix](https://github.com/ivall/xcl/pull/147).
 DXC comes from Microsoft's checksum-verified `v1.9.2609` release. XCL, DXC and Proton retain
 their separate upstream licenses. No game files are distributed.
 
