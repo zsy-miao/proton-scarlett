@@ -1,3 +1,6 @@
+**Proton Scarlett:** See [Steam setup, runtime build, and tested launch status](scarlett/README.md)
+for the experimental Xbox Series X|S title support in this fork.
+
 Introduction
 ------------
 

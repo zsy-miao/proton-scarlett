@@ -1426,6 +1426,15 @@ $(DIST_COPY_TARGETS): | $(DST_DIR)
 
 all-dist: $(DIST_COPY_TARGETS)
 
+# Build the PE host once outside the SDK container (see scarlett/README.md).
+ifeq ($(TARGET_ARCH),x86_64)
+SCARLETT_FILES := xcl.exe dxcompiler.dll dxil.dll LICENSE THIRD_PARTY.md LICENSE-LLVM.txt LICENSE-MS.txt LICENCE-MIT.txt
+$(DST_BASE)/scarlett/%: $(SRCDIR)/scarlett/runtime/% | $(DST_DIR)
+	mkdir -p $(@D)
+	cp -p $< $@
+all-dist: $(addprefix $(DST_BASE)/scarlett/,$(SCARLETT_FILES))
+endif
+
 all-dist:
 	echo `date '+%s'` `GIT_DIR=$(abspath $(SRCDIR)/.git) git describe --tags` > $(DIST_VERSION)
 

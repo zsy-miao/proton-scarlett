@@ -1,0 +1,66 @@
+# Proton Scarlett (experimental)
+
+This x86-64 Steam tool starts `game_scarlett_master.exe` through [XCL](https://github.com/ivall/xcl)
+inside Proton 11. XCL maps the console PE, initializes title DLLs and TLS, and translates Scarlett
+graphics calls to desktop D3D12. Proton supplies Wine and vkd3d-proton. The game is not playable
+in the tested configuration.
+
+## Use in Steam
+
+1. Restart Steam after installing the tool.
+2. Add the **package directory's** `game_scarlett_master.exe` as a non-Steam game. Set **Start In**
+   to its directory, alongside `MicrosoftGame.Config`, the DLLs and the game data.
+3. In **Properties → Compatibility**, force **Proton Scarlett (experimental)** and launch.
+
+No launch options are required. For a Proton log set `PROTON_LOG=1 %command%`. XCL writes
+`xcl.log` and `report.json` under the shortcut's
+`steamapps/compatdata/<id>/pfx/drive_c/users/steamuser/AppData/Local/XCL/<title>/logs/`.
+Network calls through XCL are disabled for this title because its crash reporter uploads minidumps.
+That setting is not an OS sandbox.
+
+## Reproduce the build
+
+From the fork root on x86-64 Linux, with rustup, an x86-64 MinGW GCC toolchain, git, curl,
+Python 3 and GNU build utilities:
+
+```bash
+rustup toolchain install 1.91.1 --profile minimal --target x86_64-pc-windows-gnu
+./scarlett/build-runtime.sh "$PWD/scarlett/runtime"
+steam="$HOME/.local/share/Steam"
+./scarlett/install.sh "$steam/steamapps/common/Proton 11.0" "$PWD/scarlett/runtime" \
+    "$steam/compatibilitytools.d/Proton-Scarlett"
+```
+
+The installer expects the matching Valve 11.0-2e depot and a **new** destination. It makes an
+independent copy; updates to stock Proton do not change the fork. For a full SDK build instead,
+build `scarlett/runtime` as above, initialize Valve's submodules and follow the upstream
+[Proton build instructions](../README.md). The x86-64 distribution target includes the staged runtime.
+
+The build pins Proton at `1f089f5610a882c8bfcb4b58a3c86ee88bb4b9f1`, XCL at
+`66e8e974601791dee66bb60adfbeb4852ba88a25`, and includes the [XCL Wine crash-report fix](https://github.com/ivall/xcl/pull/147).
+DXC comes from Microsoft's checksum-verified `v1.9.2609` release. XCL, DXC and Proton retain
+their separate upstream licenses. No game files are distributed.
+
+## Local verification
+
+The title executable has SHA-256 `e95020b2fa4a721db3df59fdecf75621730ac559d8835252f6c3b658d5a08993`
+(build 1.0.2.1). Stock Proton stopped before entry with `0xc0000135`. This fork, using
+`waitforexitandrun`, loaded the title DLLs and TLS, created a real D3D12 backend on an RTX 3070
+and executed the game's entry point (`+0x56a1ec8`) on an isolated, read-only mount of the
+in-progress download. The first run stopped with exit 3 when vkd3d-proton detected a modified
+heap vtable. Preserving the native heap vtable got past that assertion, XGameRuntime startup
+and GameInput registration. The game's own crash log then reported **System Init, frame 0**,
+with a breakpoint at `+0x2237178`. A Wine file trace showed `G:\appdata0.rpf` missing from
+both the package and XCL's overlay just before the breakpoint. The [1.0.2.1 package inventory](https://github.com/ItsNotRexed/Leonida/blob/8575d36edc479218972497a7bded8651a42856c0/game/xbox-1.0.2.1.json)
+lists that archive as 8,880 bytes. Retry with the complete package. No local first frame has
+been verified. `python3 scarlett/test_route.py` checks path and argument handling.
+
+To repeat the actual test on this NixOS/NVIDIA host without restarting Steam:
+
+```bash
+./scarlett/test-launch-nixos.sh "/path/to/package"
+```
+
+This uses `steam-run`'s filesystem, Xvfb, a fresh prefix and no network. It prints the private
+test directory containing `logs/steam-999001.log` and the XCL report. It returns the process
+status, or 124 if the 90-second test window expires.
