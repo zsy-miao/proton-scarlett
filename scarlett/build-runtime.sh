@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the separate Windows host and stage the x64 shader compiler beside it.
 set -euo pipefail
+here=$(realpath "$(dirname "$0")")
 out=$(realpath -m "${1:?usage: build-runtime.sh NEW-OUTPUT-DIRECTORY}")
 mkdir -p "$(dirname "$out")"
 [[ ! -e $out && ! -L $out ]] || { echo "Output already exists: $out" >&2; exit 1; }
@@ -12,6 +13,7 @@ git -C xcl fetch -q origin 52015d5019b6c7f9353a75abf812b034fcf9c752
 git -C xcl checkout -q --detach 66e8e974601791dee66bb60adfbeb4852ba88a25
 git -C xcl cherry-pick --no-commit 52015d5019b6c7f9353a75abf812b034fcf9c752
 test "$(git -C xcl write-tree)" = 55dd0c7ca88c142b0e1a9a9af002377146713653
+git -C xcl apply "$here/native-heap.patch"
 
 # Some MinGW toolchains (including the Nix host used for testing) lack static winpthreads.
 deb=mingw-w64-x86-64-dev_12.0.0-5_all.deb

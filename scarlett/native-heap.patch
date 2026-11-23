@@ -1,0 +1,294 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 9fcde4604a42456ae6a184959b41fa5b0e8e5c2c..2293b42486a394a83ad72ac753ab22bc8ed393ea 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -553,6 +553,7 @@ dependencies = [
+  "serde_json",
+  "toml",
+  "windows",
++ "windows-core",
+  "windows-sys 0.61.2",
+ ]
+ 
+diff --git a/crates/xcl/Cargo.toml b/crates/xcl/Cargo.toml
+index f3f6d604de34667bc9a7b91ab8555e7dd5dd7563..fe63c5c8acde3a15aca0d593382007c19e907bb4 100644
+--- a/crates/xcl/Cargo.toml
++++ b/crates/xcl/Cargo.toml
+@@ -14,6 +14,7 @@ name = "xcl"
+ path = "src/main.rs"
+ 
+ [dependencies]
++windows-core = "0.62"
+ miniz_oxide = "0.9"
+ retour = "0.3"
+ serde = { version = "1", features = ["derive"] }
+diff --git a/crates/xcl/src/hle/d3d12x/real.rs b/crates/xcl/src/hle/d3d12x/real.rs
+index 3f8e1a47253984be8fe8f02e14ca112617b0e072..2a703a6cf61241c40644766bfe50b880d6bb5d96 100644
+--- a/crates/xcl/src/hle/d3d12x/real.rs
++++ b/crates/xcl/src/hle/d3d12x/real.rs
+@@ -1,6 +1,6 @@
+ //! Real D3D12.X backend: the title gets genuine D3D12 objects from the PC driver.
+ //!
+-//! Every object handed to the title is "adopted": its vtable pointer is replaced with
++//! Except for native heaps under Wine, objects handed to the title are "adopted": their vtable is replaced with
+ //! an extended copy:
+ //!
+ //! ```text
+@@ -21,7 +21,7 @@
+ use std::collections::{BTreeSet, HashMap, HashSet};
+ use std::ffi::c_void;
+ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+-use std::sync::{Mutex, OnceLock};
++use std::sync::{Arc, Mutex, OnceLock, Weak};
+ 
+ use serde::Serialize;
+ use windows::core::{Interface, PCSTR};
+@@ -539,6 +539,13 @@ pub unsafe fn adopt(obj: *mut c_void, kind: Kind) {
+     if obj.is_null() {
+         return;
+     }
++    if kind == Kind::Heap && on_wine() {
++        // vkd3d's placed-resource and release paths both require its original heap vtable.
++        if let Some(heap) = windows_core::IUnknown::from_raw_borrowed(&obj).and_then(|p| p.cast::<ID3D12Heap>().ok()) {
++            NATIVE_HEAP_VTABLES.lock().unwrap().insert(vt(heap.as_raw()) as usize);
++        }
++        return;
++    }
+     let v = vt(obj) as usize;
+     if is_ext(v) {
+         return;
+@@ -547,6 +554,14 @@ pub unsafe fn adopt(obj: *mut c_void, kind: Kind) {
+     *(obj as *mut usize) = ext;
+ }
+ 
++fn on_wine() -> bool {
++    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
++    static WINE: OnceLock<bool> = OnceLock::new();
++    *WINE.get_or_init(|| unsafe { GetProcAddress(GetModuleHandleA(c"ntdll.dll".as_ptr().cast()), c"wine_get_version".as_ptr().cast()).is_some() })
++}
++
++static NATIVE_HEAP_VTABLES: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
++
+ unsafe fn class_for(obj: *mut c_void, orig: usize, kind: Kind) -> usize {
+     if let Some(c) = CLASSES.lock().unwrap().iter().find(|c| c.orig == orig && c.kind == kind) {
+         return c.ext;
+@@ -2021,7 +2036,6 @@ fn overrides(kind: Kind) -> Vec<(&'static str, usize)> {
+         ]),
+         Kind::PipelineState => v.push(("Release", pso_release as usize)),
+         Kind::DescriptorHeap => v.push(("Release", heap_release as usize)),
+-        Kind::Heap => v.push(("Release", mem_heap_release as usize)),
+         Kind::Fence => v.push(("Signal", fence_signal as usize)),
+         _ => {}
+     }
+@@ -2327,10 +2341,13 @@ fn debug_pso_switch(var: &str, ps: u64) -> bool {
+     ps != 0 && std::env::var(var).is_ok_and(|v| v.split(',').filter_map(|h| u64::from_str_radix(h.trim(), 16).ok()).any(|h| h == ps))
+ }
+ 
+-/// The PC description of a heap XCL adopted (ID3D12Heap::GetDesc, slot 8).
++/// The PC description of a known heap (ID3D12Heap::GetDesc, slot 8).
+ unsafe fn pc_heap_desc(heap: usize) -> Option<D3D12_HEAP_DESC> {
+     if !is_adopted(heap as *mut c_void) {
+-        return None;
++        if !crate::gpu::shader::readable(heap, 8) || !NATIVE_HEAP_VTABLES.lock().unwrap().contains(&(vt(heap as *mut c_void) as usize)) {
++            return None;
++        }
++        return ID3D12Heap::from_raw_borrowed(&(heap as *mut c_void)).map(|h| h.GetDesc());
+     }
+     type F = unsafe extern "system" fn(*mut c_void, *mut D3D12_HEAP_DESC) -> *mut D3D12_HEAP_DESC;
+     let f: F = std::mem::transmute(orig_fn(heap as *mut c_void, 8));
+@@ -2409,12 +2426,44 @@ struct HeapUma {
+     /// `READBACK` or `CUSTOM + WRITE_BACK`: if backed by sparse VRAM, `COPY_DEST` buffers placed
+     /// in it read back on `Map(0, NULL, ...)`.
+     cpu_readback: bool,
+-    block: Option<usize>,
++    block: Mutex<Option<usize>>,
+ }
+ 
+ /// heap → its backing block (allocated lazily on the first placed buffer; sparse VRAM for
+ /// DEFAULT/UPLOAD/CUSTOM heaps, coherent committed window for small explicit READBACK heaps)
+-static HEAP_UMA: Mutex<Option<HashMap<usize, HeapUma>>> = Mutex::new(None);
++static HEAP_UMA: Mutex<Option<HashMap<usize, Weak<HeapUma>>>> = Mutex::new(None);
++
++// The heap owns this interface; it never points back to the heap as a COM reference.
++#[windows_core::implement()]
++struct HeapLifetime {
++    key: usize,
++    backing: Arc<HeapUma>,
++}
++
++impl Drop for HeapLifetime {
++    fn drop(&mut self) {
++        if let Some(m) = HEAP_UMA.lock().unwrap().as_mut() {
++            // A retained private-data reference may outlive its heap and address reuse.
++            if m.get(&self.key).is_some_and(|v| v.as_ptr() == Arc::as_ptr(&self.backing)) {
++                m.remove(&self.key);
++            }
++        }
++        // backing drops after the registry lock is released.
++    }
++}
++
++impl HeapUma {
++    unsafe fn attach(self, heap: &ID3D12Heap) -> windows_core::Result<()> {
++        const KEY: windows_core::GUID = windows_core::GUID::from_u128(0x47933206_03b4_4075_ac20_61aca32a763f);
++        let key = heap.as_raw() as usize;
++        let backing = Arc::new(self);
++        let weak = Arc::downgrade(&backing);
++        let owner: windows_core::IUnknown = HeapLifetime { key, backing }.into();
++        heap.SetPrivateDataInterface(&KEY, &owner)?;
++        HEAP_UMA.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, weak);
++        Ok(())
++    }
++}
+ 
+ /// A heap the title made that may hold buffers: a block of unified memory as large stands for
+ /// it. On the console every heap is memory the CPU and the GPU address alike, and console code
+@@ -2437,29 +2486,28 @@ unsafe fn note_heap_uma(desc: usize, ppv: *mut *mut c_void) {
+     let size = d.SizeInBytes as usize;
+     let is_rb = d.Properties.Type == D3D12_HEAP_TYPE_READBACK;
+     let is_custom_wb = d.Properties.Type == D3D12_HEAP_TYPE_CUSTOM && d.Properties.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
+-    HEAP_UMA.lock().unwrap().get_or_insert_with(HashMap::new).insert(
+-        *ppv as usize,
+-        HeapUma {
+-            size,
+-            align: (d.Alignment as usize).max(0x1_0000),
+-            prefer_coherent: is_rb && size <= COHERENT_READBACK_MAX,
+-            cpu_readback: is_rb || is_custom_wb,
+-            block: None,
+-        },
+-    );
++    // CreateHeap may have returned another requested interface. Key placements by ID3D12Heap.
++    let Some(heap) = windows_core::IUnknown::from_raw_borrowed(&*ppv).and_then(|p| p.cast::<ID3D12Heap>().ok()) else { return };
++    let backing = HeapUma {
++        size,
++        align: (d.Alignment as usize).max(0x1_0000),
++        prefer_coherent: is_rb && size <= COHERENT_READBACK_MAX,
++        cpu_readback: is_rb || is_custom_wb,
++        block: Mutex::new(None),
++    };
++    if let Err(e) = backing.attach(&heap) {
++        crate::xlog_warn!("D3D12.X: cannot track heap lifetime ({e}); its buffers stay PC-only");
++    }
+ }
+ 
+ /// The block of unified memory standing for `heap` and whether it may hold CPU-readback buffers
+ /// (taken now if it has none yet; None: not a heap that takes one, or unified memory is full).
+ fn heap_block(heap: usize) -> Option<(usize, bool)> {
+-    let (size, align, prefer_coherent, cpu_readback) = {
+-        let g = HEAP_UMA.lock().unwrap();
+-        let e = g.as_ref()?.get(&heap)?;
+-        if let Some(p) = e.block {
+-            return Some((p, e.cpu_readback));
+-        }
+-        (e.size, e.align, e.prefer_coherent, e.cpu_readback)
+-    };
++    let e = HEAP_UMA.lock().unwrap().as_ref()?.get(&heap)?.upgrade()?;
++    let (size, align, prefer_coherent, cpu_readback) = (e.size, e.align, e.prefer_coherent, e.cpu_readback);
++    if let Some(p) = *e.block.lock().unwrap() {
++        return Some((p, cpu_readback));
++    }
+     let u = crate::gpu::uma::get()?;
+     let rounded = size.div_ceil(0x1_0000) * 0x1_0000;
+     let use_coherent = prefer_coherent && has_coherent_headroom(u, rounded);
+@@ -2483,27 +2531,17 @@ fn heap_block(heap: usize) -> Option<(usize, bool)> {
+         }
+         return None;
+     };
+-    let mut g = HEAP_UMA.lock().unwrap();
+-    let Some(e) = g.as_mut().and_then(|m| m.get_mut(&heap)) else {
++    let mut g = e.block.lock().unwrap();
++    if let Some(existing) = *g {
+         drop(g);
+         if u.is_sparse(p) {
+             unsafe { super::sparse::free(p) };
+         } else {
+             u.free(p);
+         }
+-        return None;
+-    };
+-    if let Some(existing) = e.block {
+-        let cr = e.cpu_readback;
+-        drop(g);
+-        if u.is_sparse(p) {
+-            unsafe { super::sparse::free(p) };
+-        } else {
+-            u.free(p);
+-        }
+-        return Some((existing, cr));
++        return Some((existing, cpu_readback));
+     }
+-    e.block = Some(p);
++    *g = Some(p);
+     drop(g);
+     static N: AtomicU64 = AtomicU64::new(0);
+     if N.fetch_add(1, Ordering::Relaxed) < 4 {
+@@ -2513,24 +2551,60 @@ fn heap_block(heap: usize) -> Option<(usize, bool)> {
+     Some((p, cpu_readback))
+ }
+ 
+-/// ID3D12Heap::Release: its block of unified memory goes with it.
+-unsafe extern "system" fn mem_heap_release(this: *mut c_void) -> u32 {
+-    let f: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(orig_fn(this, 2));
+-    let n = f(this);
+-    if n == 0 {
+-        let gone = HEAP_UMA.lock().unwrap().as_mut().and_then(|m| m.remove(&(this as usize))).and_then(|e| e.block);
+-        if let (Some(p), Some(u)) = (gone, crate::gpu::uma::get()) {
++impl Drop for HeapUma {
++    fn drop(&mut self) {
++        if let Some(p) = self.block.get_mut().unwrap().take() {
++            let Some(u) = crate::gpu::uma::get() else { return };
+             if u.is_sparse(p) {
+-                super::sparse::free(p);
++                unsafe { super::sparse::free(p) };
+             } else {
+                 u.free(p);
+             }
+         }
+     }
+-    n
+ }
+ creator!(dev_create_fence_pc, "CreateFence", Kind::Fence, [a1, a2]);
+ 
++#[cfg(test)]
++#[test]
++#[ignore = "requires a real D3D12 device; run alone to check global UMA accounting"]
++fn native_heap_lifetime() {
++    unsafe {
++        let mut device: Option<ID3D12Device> = None;
++        D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device).unwrap();
++        let device = device.unwrap();
++        let u = crate::gpu::uma::get().unwrap();
++        for coherent in [true, false] {
++            let before = (u.used(), u.sparse_used());
++            let mut heap: Option<ID3D12Heap> = None;
++            let bytes = 0x10000;
++            let desc = D3D12_HEAP_DESC {
++                SizeInBytes: bytes, Properties: D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_DEFAULT, ..Default::default() },
++                Flags: D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS, ..Default::default()
++            };
++            device.CreateHeap(&desc, &mut heap).unwrap();
++            let heap = heap.unwrap();
++            let key = heap.as_raw() as usize;
++            let vtable = vt(heap.as_raw());
++            adopt(heap.as_raw(), Kind::Heap);
++            if on_wine() { assert_eq!(vt(heap.as_raw()), vtable); }
++            assert_eq!(pc_heap_desc(key).unwrap().SizeInBytes, bytes);
++            HeapUma { size: bytes as usize, align: 0x10000, prefer_coherent: coherent, cpu_readback: coherent, block: Mutex::new(None) }
++                .attach(&heap).unwrap();
++            let (addr, _) = heap_block(key).unwrap();
++            assert_eq!(u.is_sparse(addr), !coherent && u.has_sparse());
++            let after = (u.used(), u.sparse_used());
++            assert_eq!(after.0 + after.1 - before.0 - before.1, bytes as usize);
++            let held = heap.clone();
++            drop(heap);
++            assert_eq!(heap_block(key), Some((addr, coherent)));
++            drop(held);
++            assert_eq!(heap_block(key), None);
++            assert_eq!((u.used(), u.sparse_used()), before);
++        }
++    }
++}
++
+ /// fences created through the device (AddRef'd: they are released at the end only)
+ /// (a read-write lock: `is_fence` reads it on every queue call, and `end_title` reads it with
+ /// the title's threads suspended – a reader that holds it then blocks no other reader)
