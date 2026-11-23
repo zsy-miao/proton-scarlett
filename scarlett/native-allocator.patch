@@ -1,0 +1,157 @@
+diff --git a/crates/xcl/src/hle/d3d12x/allocator_view.rs b/crates/xcl/src/hle/d3d12x/allocator_view.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..84f247635ad06d6fb8ca0ff25d62e509b84b1552
+--- /dev/null
++++ b/crates/xcl/src/hle/d3d12x/allocator_view.rs
+@@ -0,0 +1,60 @@
++//! The title can use allocator extensions. vkd3d's list Create/Reset accepts only its own allocator.
++use std::ffi::c_void;
++use std::sync::{OnceLock, atomic::{AtomicU32, Ordering}};
++use windows_core::{GUID, Interface, IUnknown};
++use windows::Win32::Graphics::Direct3D12::*;
++
++#[repr(C)]
++struct View {
++    table: *const usize,
++    pc: ID3D12CommandAllocator,
++    refs: AtomicU32,
++}
++static TABLE: OnceLock<[usize; 9 + 64]> = OnceLock::new();
++
++pub(super) unsafe fn wrap(pc: ID3D12CommandAllocator) -> *mut c_void {
++    let table = TABLE.get_or_init(|| std::array::from_fn(|i| match i {
++        0 => qi as usize, 1 => add as usize, 2 => release as usize,
++        3..=7 => super::title_list::forward(i, std::mem::offset_of!(View, pc)),
++        8 => reset as usize,
++        _ => crate::stubs::make_stub_info("d3d12_xs.dll", &format!("ID3D12CommandAllocator::#{i} (not on PC)"), 0).0,
++    }));
++    Box::into_raw(Box::new(View { table: table.as_ptr(), pc, refs: 1.into() })).cast()
++}
++
++pub(super) unsafe fn native(p: usize) -> usize {
++    if TABLE.get().is_some_and(|t| crate::gpu::shader::readable(p, 8) && *(p as *const *const usize) == t.as_ptr()) {
++        (*(p as *const View)).pc.as_raw() as usize
++    } else { p }
++}
++
++unsafe extern "system" fn qi(p: *mut View, iid: *const GUID, out: *mut *mut c_void) -> i32 {
++    if out.is_null() { return 0x80004003u32 as i32; }
++    *out = std::ptr::null_mut();
++    let Some(iid) = iid.as_ref() else { return 0x80004003u32 as i32 };
++    if [IUnknown::IID, ID3D12Object::IID, ID3D12DeviceChild::IID, ID3D12Pageable::IID, ID3D12CommandAllocator::IID].contains(iid) {
++        add(p);
++        *out = p.cast();
++        0
++    } else { crate::util::E_NOINTERFACE }
++}
++unsafe extern "system" fn add(p: *mut View) -> u32 {
++    (*p).refs.fetch_add(1, Ordering::Relaxed) + 1
++}
++unsafe extern "system" fn release(p: *mut View) -> u32 {
++    let n = (*p).refs.fetch_sub(1, Ordering::AcqRel) - 1;
++    if n == 0 { drop(Box::from_raw(p)); }
++    n
++}
++unsafe extern "system" fn reset(p: *mut View) -> i32 {
++    let pc = &(*p).pc;
++    match pc.Reset() {
++        Ok(()) => { super::console_list::allocator_reset(pc.as_raw()); 0 }
++        Err(e) => e.code().0,
++    }
++}
++
++pub(super) unsafe extern "system" fn destroyed(p: *mut c_void) {
++    super::list_x::on_allocator_release(p as usize);
++    super::console_list::allocator_reset(p);
++}
+diff --git a/crates/xcl/src/hle/d3d12x/console_list.rs b/crates/xcl/src/hle/d3d12x/console_list.rs
+index 5614eb8d4b99746479965f8c2d4f4eeb9b6c4e16..6746d6b4651e864543d8fbff3de9184eb52c6df5 100644
+--- a/crates/xcl/src/hle/d3d12x/console_list.rs
++++ b/crates/xcl/src/hle/d3d12x/console_list.rs
+@@ -388,6 +388,7 @@ unsafe extern "system" fn cl_close(this: *mut c_void) -> HRESULT {
+ }
+ 
+ unsafe extern "system" fn cl_reset(this: *mut c_void, allocator: *mut c_void, pso: *mut c_void) -> HRESULT {
++    let allocator = super::allocator_view::native(allocator as usize) as *mut c_void;
+     let obj = this as usize;
+     let Some((pc, old_alloc, blocks)) = with_list(obj, |st| {
+         st.chunks.clear();
+diff --git a/crates/xcl/src/hle/d3d12x/device_x.rs b/crates/xcl/src/hle/d3d12x/device_x.rs
+index 403b7af2999157ef89d983cbe3a8a302f400c2b7..03d8e83479c47c0f02caa23b7465cbdb47083e15 100644
+--- a/crates/xcl/src/hle/d3d12x/device_x.rs
++++ b/crates/xcl/src/hle/d3d12x/device_x.rs
+@@ -85,10 +85,19 @@ pub(super) unsafe extern "system" fn create_command_queue_x(this: *mut c_void, d
+ 
+ /// device #9 CreateCommandAllocator(type, riid, allocator)
+ pub(super) unsafe extern "system" fn create_command_allocator_x(this: *mut c_void, ty: u32, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+-    real::dev_create_command_allocator(this, pc_list_type(ty) as usize, riid, ppv)
++    let hr = real::dev_create_command_allocator(this, pc_list_type(ty) as usize, riid, ppv);
++    if hr >= 0 && !ppv.is_null() && !(*ppv).is_null() && real::on_wine() {
++        let obj = windows_core::IUnknown::from_raw(*ppv);
++        match obj.cast::<ID3D12CommandAllocator>() {
++            Ok(a) => *ppv = super::allocator_view::wrap(a),
++            Err(e) => { *ppv = std::ptr::null_mut(); return e.code().0; }
++        }
++    }
++    hr
+ }
+ 
+ unsafe fn create_list(this: *mut c_void, node: u32, ty: u32, alloc: usize, pso: usize, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
++    let alloc = super::allocator_view::native(alloc);
+     let dma = !riid.is_null() && guid_bytes(&*riid) == guid_bytes(&IID_XBOX_DMA_COMMAND_LIST);
+     let riid = if dma { &IID_GRAPHICS_COMMAND_LIST as *const GUID } else { riid };
+     let (node, ty) = (if node == 0 { 0 } else { 1 }, pc_list_type(ty) as usize);
+diff --git a/crates/xcl/src/hle/d3d12x/list_x.rs b/crates/xcl/src/hle/d3d12x/list_x.rs
+index 4fde8822b55ce62d8da97714df0e7fd1bbf1b2c4..b13184472b71758e7caf7364b7ee843c98e9974d 100644
+--- a/crates/xcl/src/hle/d3d12x/list_x.rs
++++ b/crates/xcl/src/hle/d3d12x/list_x.rs
+@@ -1650,6 +1650,7 @@ type QueryFn = unsafe extern "system" fn(*mut c_void, usize, D3D12_QUERY_TYPE, u
+ /// command list #10 Reset(allocator, initial pipeline): updates allocator/pipeline and clears
+ /// per-recording state (queries, index buffer, depth bias, pending waits, written ranges)
+ pub(super) unsafe extern "system" fn reset_x(this: *mut c_void, alloc: usize, pso: usize) -> i32 {
++    let alloc = super::allocator_view::native(alloc);
+     // A failed native Reset leaves the old recording alive. Do not discard its tracked state or
+     // transfer its allocations until the driver accepts the new recording.
+     let ext = *(this as *const usize);
+diff --git a/crates/xcl/src/hle/d3d12x/mod.rs b/crates/xcl/src/hle/d3d12x/mod.rs
+index e97fae6981c135b5879f0a0d371cea0d8e568778..62886c36f46702d80378ce5b917129ed6ac9853f 100644
+--- a/crates/xcl/src/hle/d3d12x/mod.rs
++++ b/crates/xcl/src/hle/d3d12x/mod.rs
+@@ -10,6 +10,7 @@
+ #![allow(non_snake_case)]
+ 
+ pub mod bind;
++mod allocator_view;
+ pub mod console_heap;
+ pub mod console_list;
+ mod descriptor_view;
+diff --git a/crates/xcl/src/hle/d3d12x/real.rs b/crates/xcl/src/hle/d3d12x/real.rs
+index 1037bedaf54a4abfa0079043962d0ef6b4308c3a..fc8a740d9ff2877ed6714d11448d20b34c670d45 100644
+--- a/crates/xcl/src/hle/d3d12x/real.rs
++++ b/crates/xcl/src/hle/d3d12x/real.rs
+@@ -556,7 +556,7 @@ pub unsafe fn adopt(obj: *mut c_void, kind: Kind) {
+     *(obj as *mut usize) = ext;
+ }
+ 
+-fn on_wine() -> bool {
++pub(super) fn on_wine() -> bool {
+     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+     static WINE: OnceLock<bool> = OnceLock::new();
+     *WINE.get_or_init(|| unsafe { GetProcAddress(GetModuleHandleA(c"ntdll.dll".as_ptr().cast()), c"wine_get_version".as_ptr().cast()).is_some() })
+@@ -2350,6 +2350,16 @@ macro_rules! creator {
+                         return e.code().0;
+                     }
+                     *ppv = obj.into_raw();
++                } else if $kind == Kind::CommandAllocator && on_wine() {
++                    let obj = windows_core::IUnknown::from_raw(*ppv);
++                    let result = obj.cast::<ID3D12CommandAllocator>().and_then(|a| {
++                        a.cast::<ID3DDestructionNotifier>()?.RegisterDestructionCallback(Some(super::allocator_view::destroyed), a.as_raw())
++                    });
++                    if let Err(e) = result {
++                        *ppv = std::ptr::null_mut();
++                        return e.code().0;
++                    }
++                    *ppv = obj.into_raw();
+                 } else {
+                     adopt(*ppv, $kind);
+                 }
