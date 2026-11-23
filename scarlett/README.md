@@ -52,7 +52,8 @@ heap vtable. Preserving the native heap vtable got past that assertion, XGameRun
 and GameInput registration. The game's own crash log then reported **System Init, frame 0**,
 with a breakpoint at `+0x2237178`. A Wine file trace showed `G:\appdata0.rpf` missing from
 both the package and XCL's overlay just before the breakpoint. The [1.0.2.1 package inventory](https://github.com/ItsNotRexed/Leonida/blob/8575d36edc479218972497a7bded8651a42856c0/game/xbox-1.0.2.1.json)
-lists that archive as 8,880 bytes. Retry with the complete package. No local first frame has
+lists that archive as 8,880 bytes. With its SHA-256 verified, the next run opened the archive
+and reached a later breakpoint (`+0x1ce6e13`), still in System Init with zero presents. No local first frame has
 been verified. `python3 scarlett/test_route.py` checks path and argument handling.
 
 To repeat the actual test on this NixOS/NVIDIA host without restarting Steam:
