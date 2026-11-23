@@ -72,5 +72,5 @@ passed. The broader XCL test title also creates fallback graphics pipelines for 
 shader fixtures. The descriptor-heap test verifies that the console sampler handles share their
 allocation and that it remains valid while the driver holds the heap. The resource test
 verifies native COM identity, title and host mappings, and cleanup after final release.
-The broader test creates a graphics command list and reaches nested occlusion queries.
-It then reports an access violation in `d3d12core.dll` before presentation.
+The broader test renders a triangle on the RTX 3070, verifies the pixels by readback, and
+presents one 640×360 frame. It subsequently stops in the audio test in `xaudio2_9.dll`.

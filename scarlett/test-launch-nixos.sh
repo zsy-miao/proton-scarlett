@@ -9,6 +9,7 @@ closure=$(nix-store -qR "$(realpath "$(command -v steam-run)")")
 fhs=$(grep -E '/[^/]+-steam-run-[^/]+-fhsenv-rootfs$' <<<"$closure")
 bwrap=$(grep -E '/[^/]+-bubblewrap-[0-9.]+$' <<<"$closure")/bin/bwrap
 xvfb=$(realpath "$(command -v Xvfb)")
+xrandr=$(realpath "$(command -v xrandr)")
 work=$(mktemp -d "${TMPDIR:-/tmp}/scarlett-run.XXXXXXXX")
 echo "Test output (including prefix): $work"
 mkdir -p "$work"/{home,compat,steam,logs,runtime}
@@ -32,8 +33,12 @@ exec timeout -k 5s 90s "$bwrap" --unshare-all --die-with-parent --new-session --
     --setenv SteamGameId 999001 --setenv SteamAppId 999001 \
     --setenv PROTON_LOG 1 --setenv PROTON_LOG_DIR /work/logs \
     --setenv PYTHONDONTWRITEBYTECODE 1 --chdir /game -- /bin/bash -ec '
-        "$1" :93 -screen 0 800x600x24 -nolisten tcp >/work/logs/xvfb.log 2>&1 &
+        "$1" :93 -noreset -screen 0 800x600x24 -nolisten tcp >/work/logs/xvfb.log 2>&1 &
         for i in {1..50}; do [[ -S /tmp/.X11-unix/X93 ]] && break; sleep 0.1; done
         [[ -S /tmp/.X11-unix/X93 ]]
+        # The default Xvfb mode advertises 0 Hz, which breaks DXGI frame timing.
+        "$2" --newmode 800x600_60 40 800 840 968 1056 600 601 605 628 +hsync +vsync
+        "$2" --addmode screen 800x600_60
+        "$2" --output screen --mode 800x600_60
         exec /proton/proton waitforexitandrun /game/game_scarlett_master.exe
-    ' _ "$xvfb" </dev/null >"$work/launcher.log" 2>&1
+    ' _ "$xvfb" "$xrandr" </dev/null >"$work/launcher.log" 2>&1
