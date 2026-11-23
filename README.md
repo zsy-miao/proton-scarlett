@@ -12,8 +12,8 @@ compatibility layer; no game source or game recompilation is required.
 | --- | --- |
 | Load the game | Title DLLs and thread-local storage initialize; the executable reaches its entry point. |
 | Initialize graphics and input | A hardware D3D12 device is created through vkd3d-proton. XGameRuntime initializes and the game registers an input callback. |
-| Read game data | With `shaders.rpf` checksum-verified, the game opens nine root archives, from `appdata0.rpf` through `packs.rpf`. |
-| Present a frame | The game stops at `game_scarlett_master.exe+0x1ce6e13` during System Init. The runtime recorded zero presents. |
+| Read game data | With `shaders.rpf` and `packs.rpf` checksum-verified, the game passes the previous archive breakpoint and requests `textures.rpf` and `audio.rpf`. |
+| Present a frame | The next observed breakpoint is `game_scarlett_master.exe+0x1330a44`. The runtime recorded zero presents and no calls to import stubs. |
 
 **Disclaimer:** scarlett-proton is an independent compatibility project, unaffiliated with Valve, Microsoft,
 Rockstar Games, or Take-Two Interactive. It includes no game files or console firmware. Use your
