@@ -22,6 +22,8 @@ git -C xcl apply "$here/native-resource.patch"
 git -C xcl apply "$here/native-query-heap.patch"
 git -C xcl apply "$here/native-allocator.patch"
 git -C xcl apply "$here/native-command-list.patch"
+git -C xcl apply "$here/xcl-memory.patch"
+git -C xcl apply "$here/xcl-window.patch"
 
 # Some MinGW toolchains (including the Nix host used for testing) lack static winpthreads.
 deb=mingw-w64-x86-64-dev_12.0.0-5_all.deb

@@ -39,7 +39,9 @@ build `scarlett/runtime` as above, initialize Valve's submodules and follow the 
 For the XAudio2 fixes, apply `git -C wine apply ../scarlett/proton11-faudio.patch` to the
 pinned Wine submodule **before** the SDK build. For depot installs, put the resulting
 x64 Wine builtin `xaudio2_9.dll` in `scarlett/runtime/` before running `install.sh`.
-Without that file, the depot installer retains Valve's original audio module.
+Without that file, the depot installer retains Valve's original audio module. To build just
+that DLL, run `./scarlett/rebuild-xaudio.sh /path/to/new-build-directory` and copy
+`build/dlls/xaudio2_9/x86_64-windows/xaudio2_9.dll` from that directory into `scarlett/runtime/`.
 
 The build pins Proton at `1f089f5610a882c8bfcb4b58a3c86ee88bb4b9f1`, XCL at
 `66e8e974601791dee66bb60adfbeb4852ba88a25`, and includes the [XCL Wine crash-report fix](https://github.com/ivall/xcl/pull/147).
@@ -80,5 +82,5 @@ verifies native COM identity, title and host mappings, and cleanup after final r
 The broader test renders a triangle on the RTX 3070, verifies the pixels by readback, and
 presents one 640×360 frame. With the patched XAudio2 builtin and a private PulseAudio sink,
 the fixture also decodes XMA2 to PCM and receives buffer-end callbacks. It finishes with
-47 checks passed and 3 failed (fixture executable name, physical-memory accounting and
-window cloaking). Opus callbacks used the silence fallback; Opus decoding remains unverified.
+50 checks passed and exit code 0 when launched under its upstream fixture name,
+`xcl_testtitle.exe`. Opus callbacks used the silence fallback; Opus decoding remains unverified.
