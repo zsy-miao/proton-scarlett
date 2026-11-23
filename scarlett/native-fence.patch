@@ -1,0 +1,250 @@
+diff --git a/crates/xcl/src/hle/d3d12x/fence_x.rs b/crates/xcl/src/hle/d3d12x/fence_x.rs
+index 1a9cc140e3b3cde23128eb68c3b63168d8ec935d..ec2b2239a33b2ef60db1a37e699890ddefeece29 100644
+--- a/crates/xcl/src/hle/d3d12x/fence_x.rs
++++ b/crates/xcl/src/hle/d3d12x/fence_x.rs
+@@ -12,6 +12,64 @@ use windows::Win32::Foundation::HANDLE;
+ use windows::Win32::Graphics::Direct3D12::ID3D12Fence;
+ use windows_sys::Win32::System::Threading as th;
+ 
++/// Only the title sees this view. The native fence's vtable is part of vkd3d's identity check.
++#[repr(C)]
++struct View {
++    vtable: *const usize,
++    pc: ID3D12Fence,
++    refs: std::sync::atomic::AtomicU32,
++    fence1: Option<windows::Win32::Graphics::Direct3D12::ID3D12Fence1>,
++}
++
++pub(super) fn view(pc: ID3D12Fence) -> *mut c_void {
++    static V: OnceLock<[usize; 13]> = OnceLock::new();
++    let v = V.get_or_init(|| {
++        let mut v = [0; 13];
++        for slot in 3..=9 {
++            v[slot] = super::title_list::forward(slot, std::mem::offset_of!(View, pc));
++        }
++        v[..3].copy_from_slice(&[qi as usize, add as usize, release as usize]);
++        v[10..].copy_from_slice(&[signal as usize, flags as usize, cell as usize]);
++        v
++    });
++    let fence1 = pc.cast().ok();
++    Box::into_raw(Box::new(View { vtable: v.as_ptr(), pc, refs: 1.into(), fence1 })).cast()
++}
++
++unsafe extern "system" fn qi(p: *mut View, iid: *const windows_core::GUID, out: *mut *mut c_void) -> i32 {
++    use windows::Win32::Graphics::Direct3D12::*;
++    if out.is_null() { return 0x80004003u32 as i32; }
++    *out = std::ptr::null_mut();
++    let Some(iid) = iid.as_ref() else { return 0x80004003u32 as i32 };
++    if [windows_core::IUnknown::IID, ID3D12Object::IID, ID3D12DeviceChild::IID, ID3D12Pageable::IID, ID3D12Fence::IID].contains(iid)
++        || (*iid == ID3D12Fence1::IID && (*p).fence1.is_some()) {
++        add(p);
++        *out = p.cast();
++        return 0;
++    }
++    crate::util::E_NOINTERFACE
++}
++unsafe extern "system" fn add(p: *mut View) -> u32 {
++    (*p).refs.fetch_add(1, Ordering::Relaxed) + 1
++}
++unsafe extern "system" fn release(p: *mut View) -> u32 {
++    let n = (*p).refs.fetch_sub(1, Ordering::AcqRel) - 1;
++    if n == 0 { drop(Box::from_raw(p)); }
++    n
++}
++unsafe extern "system" fn signal(p: *mut View, value: u64) -> i32 {
++    match (*p).pc.Signal(value) {
++        Ok(()) => { note_cpu_signal((*p).pc.as_raw() as usize); 0 }
++        Err(e) => e.code().0,
++    }
++}
++unsafe extern "system" fn flags(p: *mut View) -> i32 {
++    (*p).fence1.as_ref().map_or(0, |f| f.GetCreationFlags().0)
++}
++unsafe extern "system" fn cell(p: *mut View) -> *const u64 {
++    completed_value_address((*p).pc.as_raw())
++}
++
+ /// a cache line of its own: the title's monitors wake on writes to the line
+ #[repr(C, align(64))]
+ struct Cell(AtomicU64);
+diff --git a/crates/xcl/src/hle/d3d12x/real.rs b/crates/xcl/src/hle/d3d12x/real.rs
+index 2a703a6cf61241c40644766bfe50b880d6bb5d96..70a51a816788143a88bd89c50fdbeca2ec42ba46 100644
+--- a/crates/xcl/src/hle/d3d12x/real.rs
++++ b/crates/xcl/src/hle/d3d12x/real.rs
+@@ -539,6 +539,7 @@ pub unsafe fn adopt(obj: *mut c_void, kind: Kind) {
+     if obj.is_null() {
+         return;
+     }
++    if kind == Kind::Fence && on_wine() { return; }
+     if kind == Kind::Heap && on_wine() {
+         // vkd3d's placed-resource and release paths both require its original heap vtable.
+         if let Some(heap) = windows_core::IUnknown::from_raw_borrowed(&obj).and_then(|p| p.cast::<ID3D12Heap>().ok()) {
+@@ -753,6 +754,7 @@ fn console_slots(kind: Kind) -> Vec<(usize, usize)> {
+                 (25, x::get_resource_allocation_info_x as usize),
+                 (26, x::get_custom_heap_properties_x as usize),
+                 (29, dev_create_placed_resource_x as usize),
++                (36, dev_create_title_fence as usize),
+                 // CreateCommittedResource at its PC index too (XDefiant): console code uses the
+                 // buffer's GPU address as a CPU pointer – it goes into unified memory
+                 (27, dev_create_committed_resource_x as usize),
+@@ -2608,17 +2610,36 @@ fn native_heap_lifetime() {
+ /// fences created through the device (AddRef'd: they are released at the end only)
+ /// (a read-write lock: `is_fence` reads it on every queue call, and `end_title` reads it with
+ /// the title's threads suspended – a reader that holds it then blocks no other reader)
+-static FENCES: std::sync::RwLock<Vec<usize>> = std::sync::RwLock::new(Vec::new());
++static FENCES: std::sync::RwLock<std::collections::BTreeMap<usize, usize>> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+ 
+ /// CreateFence: as on the PC; the fence is remembered for `end_title`
+ unsafe extern "system" fn dev_create_fence(this: *mut c_void, value: usize, flags: usize, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
++    create_fence(this, value, flags, riid, ppv, false)
++}
++
++unsafe extern "system" fn dev_create_title_fence(this: *mut c_void, value: usize, flags: usize, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
++    create_fence(this, value, flags, riid, ppv, on_wine())
++}
++
++unsafe fn create_fence(this: *mut c_void, value: usize, flags: usize, riid: *const GUID, ppv: *mut *mut c_void, view: bool) -> HRESULT {
+     let hr = dev_create_fence_pc(this, value, flags, riid, ppv);
+     if hr >= 0 && !ppv.is_null() && !(*ppv).is_null() {
++        let mut pc = *ppv;
++        if view {
++            let unk = windows_core::IUnknown::from_raw(pc);
++            match unk.cast::<ID3D12Fence>() {
++                Ok(f) => {
++                    pc = f.as_raw();
++                    *ppv = super::fence_x::view(f);
++                }
++                Err(e) => { *ppv = std::ptr::null_mut(); return e.code().0; }
++            }
++        }
+         let add: RefFn = std::mem::transmute(*vt(*ppv).add(1));
+         add(*ppv);
+         let n = {
+             let mut g = FENCES.write().unwrap();
+-            g.push(*ppv as usize);
++            g.insert(*ppv as usize, pc as usize);
+             g.len()
+         };
+         // `XCL_WATCH_FENCE=n`: writes over the n-th fence's first 8 bytes (its vtable) are logged
+@@ -2649,7 +2670,7 @@ pub fn end_title(code: u32) -> ! {
+         // the GPU is done and resets command allocators the GPU still runs (Fortnite: a device
+         // hang at the end of a run)
+         suspend_other_threads(watchdog);
+-        for &f in FENCES.read().unwrap_or_else(|e| e.into_inner()).iter() {
++        for &f in FENCES.read().unwrap_or_else(|e| e.into_inner()).values() {
+             let fr = f as *mut c_void;
+             if let Some(f) = ID3D12Fence::from_raw_borrowed(&fr) {
+                 let _ = f.Signal(u64::MAX);
+@@ -4064,7 +4085,11 @@ pub(super) fn note_newer_device_method(slot: usize) {
+ 
+ /// Whether `p` is a fence the title created.
+ fn is_fence(p: usize) -> bool {
+-    p != 0 && FENCES.read().unwrap_or_else(|e| e.into_inner()).contains(&p)
++    p != 0 && FENCES.read().unwrap_or_else(|e| e.into_inner()).contains_key(&p)
++}
++
++fn native_fence(p: usize) -> usize {
++    FENCES.read().unwrap_or_else(|e| e.into_inner()).get(&p).copied().unwrap_or(p)
+ }
+ 
+ /// first queue slot `queue_dispatch` handles
+@@ -4092,9 +4117,10 @@ unsafe fn queue_dispatch(slot: usize, this: *mut c_void, a1: usize, a2: usize, a
+         // Signal / Wait take a fence: anything else is not one of them
+         14 | 15 if is_fence(a1) => {
+             let f: unsafe extern "system" fn(*mut c_void, usize, usize) -> i32 = std::mem::transmute(pc(if older == 14 { PC_SIGNAL } else { PC_WAIT }));
+-            let hr = f(this, a1, a2);
++            let native = native_fence(a1);
++            let hr = f(this, native, a2);
+             if older == 14 && hr >= 0 {
+-                super::fence_x::note_queue_signal(a1, a2 as u64);
++                super::fence_x::note_queue_signal(native, a2 as u64);
+             }
+             hr as u32 as usize
+         }
+@@ -4170,6 +4196,7 @@ queue_slots!(14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+ unsafe extern "system" fn q_signal_x(this: *mut c_void, fence: *mut c_void, value: u64, _flags: u32) -> HRESULT {
+     const PC_SIGNAL: usize = 14;
+     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, u64) -> HRESULT = std::mem::transmute(orig_fn(this, PC_SIGNAL));
++    let fence = native_fence(fence as usize) as *mut c_void;
+     let hr = f(this, fence, value);
+     if hr >= 0 {
+         super::fence_x::note_queue_signal(fence as usize, value);
+@@ -4559,6 +4586,41 @@ mod readback_routing_tests {
+ mod queue_tests {
+     use super::*;
+ 
++    #[test]
++    #[ignore = "requires Proton/vkd3d and a GPU"]
++    fn native_console_fence() {
++        unsafe {
++            assert!(on_wine());
++            let mut dev: Option<ID3D12Device> = None;
++            D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut dev).unwrap();
++            let dev = dev.unwrap();
++            let q: ID3D12CommandQueue = dev.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default()).unwrap();
++            adopt(dev.as_raw(), Kind::Device);
++            adopt(q.as_raw(), Kind::CommandQueue);
++            let mut p = std::ptr::null_mut();
++            assert_eq!(dev_create_title_fence(dev.as_raw(), 1, 0, &pc_iid(Kind::Fence), &mut p), S_OK);
++            let view = ID3D12Fence::from_raw(p);
++            assert_eq!(view.cast::<ID3D12Fence1>().unwrap().as_raw(), p);
++            assert_eq!(view.cast::<windows_core::IUnknown>().unwrap().as_raw(), p);
++            assert_ne!(native_fence(p as usize), p as usize);
++            let get: unsafe extern "system" fn(*mut c_void) -> *const AtomicU64 = std::mem::transmute(*vt(p).add(12));
++            let cell = &*get(p);
++            assert_eq!(cell.load(Ordering::Acquire), 1);
++            let queue = q.as_raw();
++            assert_eq!(queue_dispatch(15, queue, p as usize, 2, 0, 0), 0);
++            view.Signal(2).unwrap();
++            assert_eq!(cell.load(Ordering::Acquire), 2);
++            assert_eq!(queue_dispatch(14, queue, p as usize, 3, 0, 0), 0);
++            assert_eq!(q_signal_x(queue, p, 4, 0), S_OK);
++            let start = std::time::Instant::now();
++            while cell.load(Ordering::Acquire) != 4 {
++                assert!(start.elapsed().as_secs() < 5);
++                std::thread::yield_now();
++            }
++            assert_eq!(view.GetCompletedValue(), 4);
++        }
++    }
++
+     // a fake adopted queue: the extension vtable's word before slot 0 points at the PC table
+     unsafe extern "system" fn get_desc(_: *mut c_void, out: usize) -> usize {
+         let d = [1u32, 2, 3, 4];
+@@ -4588,9 +4650,9 @@ mod queue_tests {
+             let r = queue_dispatch(18, this, out.as_mut_ptr() as usize, 0, 0, 0);
+             assert_eq!(r, out.as_ptr() as usize);
+             assert_eq!(out, [1, 2, 0xAAAA_AAAA, 0xAAAA_AAAA], "only the first 8 bytes");
+-            FENCES.write().unwrap().push(fence);
++            FENCES.write().unwrap().insert(fence, fence);
+             queue_dispatch(14, this, fence, 1, 0, 0);
+-            FENCES.write().unwrap().retain(|&f| f != fence);
++            FENCES.write().unwrap().remove(&fence);
+             assert!(QUEUE_OLDER.load(Ordering::Acquire) && !QUEUE_SHIFTED.load(Ordering::Acquire));
+             let mut out = [0xAAAA_AAAAu32; 4];
+             queue_dispatch(18, this, out.as_mut_ptr() as usize, 0, 0, 0);
+diff --git a/crates/xcl/src/hle/d3d12x/title_list.rs b/crates/xcl/src/hle/d3d12x/title_list.rs
+index de3dc75262dffd9027a95187c242eeec1bc957b9..1b8dfc818191c9f1733a35333d7e1e3b2f7a8740 100644
+--- a/crates/xcl/src/hle/d3d12x/title_list.rs
++++ b/crates/xcl/src/hle/d3d12x/title_list.rs
+@@ -45,7 +45,7 @@ fn vtable() -> usize {
+         let mut v = vec![0usize; LIST_SLOTS];
+         let trace = std::env::var_os("XCL_LIST_TRACE").is_some();
+         for (slot, e) in v.iter_mut().enumerate() {
+-            *e = if trace { forward_traced(slot) } else { forward(slot) };
++            *e = if trace { forward_traced(slot) } else { forward(slot, F_BACKING) };
+         }
+         v[0] = qi as usize;
+         v[2] = release as usize;
+@@ -56,9 +56,9 @@ fn vtable() -> usize {
+ }
+ 
+ /// `mov rcx, [rcx + F_BACKING]; mov rax, [rcx]; jmp [rax + slot * 8]`
+-fn forward(slot: usize) -> usize {
++pub(super) fn forward(slot: usize, backing_offset: usize) -> usize {
+     let mut c = vec![0x48, 0x8B, 0x89];
+-    c.extend_from_slice(&(F_BACKING as u32).to_le_bytes());
++    c.extend_from_slice(&(backing_offset as u32).to_le_bytes());
+     c.extend_from_slice(&[0x48, 0x8B, 0x01, 0xFF, 0xA0]);
+     c.extend_from_slice(&((slot * 8) as u32).to_le_bytes());
+     let p = crate::stubs::alloc_code(c.len());

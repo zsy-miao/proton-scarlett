@@ -65,3 +65,7 @@ To repeat the actual test on this NixOS/NVIDIA host without restarting Steam:
 This uses `steam-run`'s filesystem, Xvfb, a fresh prefix and no network. It prints the private
 test directory containing `logs/steam-999001.log` and the XCL report. It returns the process
 status, or 124 if the 90-second test window expires.
+
+`./scarlett/tests/queue-fence.sh` runs the hardware synchronization test without retail files.
+On the RTX 3070, the console title's CPU signal, GPU queue wait/signal, and completion event
+passed. The broader XCL test title next stops at a vkd3d-proton root-signature assertion.
