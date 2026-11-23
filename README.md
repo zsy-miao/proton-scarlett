@@ -3,6 +3,9 @@
 scarlett-proton is an experimental Proton fork that runs the Xbox Series X|S build of *Grand Theft Auto VI*
 through [XCL](https://github.com/ivall/xcl) on Linux. [Steam setup and build instructions →](scarlett/README.md)
 
+The original executable runs directly on an x86-64 CPU. The build instructions compile the
+compatibility layer; no game source or game recompilation is required.
+
 **Status: reaches System Init; no first frame.** Tested with build `1.0.2.1` on NixOS and an NVIDIA RTX 3070.
 
 | Milestone | Local result |
