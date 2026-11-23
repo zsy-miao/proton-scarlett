@@ -68,4 +68,5 @@ status, or 124 if the 90-second test window expires.
 
 `./scarlett/tests/queue-fence.sh` runs the hardware synchronization test without retail files.
 On the RTX 3070, the console title's CPU signal, GPU queue wait/signal, and completion event
-passed. The broader XCL test title next stops at a vkd3d-proton root-signature assertion.
+passed. The broader XCL test title also creates fallback graphics pipelines for two console
+shader fixtures. It next stops at a vkd3d-proton descriptor-heap assertion, before presentation.

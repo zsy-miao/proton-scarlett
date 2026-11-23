@@ -15,6 +15,8 @@ git -C xcl cherry-pick --no-commit 52015d5019b6c7f9353a75abf812b034fcf9c752
 test "$(git -C xcl write-tree)" = 55dd0c7ca88c142b0e1a9a9af002377146713653
 git -C xcl apply "$here/native-heap.patch"
 git -C xcl apply "$here/native-fence.patch"
+git -C xcl apply "$here/native-rootsig.patch"
+git -C xcl apply "$here/native-pso.patch"
 
 # Some MinGW toolchains (including the Nix host used for testing) lack static winpthreads.
 deb=mingw-w64-x86-64-dev_12.0.0-5_all.deb

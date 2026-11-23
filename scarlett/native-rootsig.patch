@@ -1,0 +1,14 @@
+diff --git a/crates/xcl/src/hle/d3d12x/real.rs b/crates/xcl/src/hle/d3d12x/real.rs
+index 70a51a816788143a88bd89c50fdbeca2ec42ba46..3fc2c3c1b85909114d939edb025021b598e782ab 100644
+--- a/crates/xcl/src/hle/d3d12x/real.rs
++++ b/crates/xcl/src/hle/d3d12x/real.rs
+@@ -539,7 +539,8 @@ pub unsafe fn adopt(obj: *mut c_void, kind: Kind) {
+     if obj.is_null() {
+         return;
+     }
+-    if kind == Kind::Fence && on_wine() { return; }
++    // vkd3d validates root signatures by native vtable identity when creating a PSO.
++    if matches!(kind, Kind::Fence | Kind::RootSignature) && on_wine() { return; }
+     if kind == Kind::Heap && on_wine() {
+         // vkd3d's placed-resource and release paths both require its original heap vtable.
+         if let Some(heap) = windows_core::IUnknown::from_raw_borrowed(&obj).and_then(|p| p.cast::<ID3D12Heap>().ok()) {
