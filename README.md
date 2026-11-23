@@ -6,14 +6,14 @@ through [XCL](https://github.com/ivall/xcl) on Linux. [Steam setup and build ins
 The original executable runs directly on an x86-64 CPU. The build instructions compile the
 compatibility layer; no game source or game recompilation is required.
 
-**Status: reaches System Init; no first frame.** Tested with build `1.0.2.1` on NixOS and an NVIDIA RTX 3070.
+**Status: the retail build reaches Game Init and presents frames.** Tested with build `1.0.2.1` on NixOS and an NVIDIA RTX 3070. No menu or interactive gameplay has been verified.
 
 | Milestone | Local result |
 | --- | --- |
 | Load the game | Title DLLs and thread-local storage initialize; the executable reaches its entry point. |
 | Initialize graphics and input | A hardware D3D12 device is created through vkd3d-proton. XGameRuntime initializes and the game registers an input callback. |
 | Read game data | With `shaders.rpf` and `packs.rpf` checksum-verified, the game passes the previous archive breakpoint and requests `textures.rpf` and `audio.rpf`. |
-| Present a frame | The next observed breakpoint is `game_scarlett_master.exe+0x1330a44`. The runtime recorded zero presents and no calls to import stubs. |
+| Present frames | With `data.rpf` verified, XCL recorded 93 presents before breakpoint `game_scarlett_master.exe+0x1dac734`. The game's crash log reported `Game Init`, simulation frame 0. |
 
 **Disclaimer:** scarlett-proton is an independent compatibility project, unaffiliated with Valve, Microsoft,
 Rockstar Games, or Take-Two Interactive. It includes no game files or console firmware. Use your
