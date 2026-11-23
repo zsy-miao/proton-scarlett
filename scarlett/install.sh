@@ -2,7 +2,7 @@
 # Install an independent Steam compatibility tool using the matching Valve runtime.
 set -euo pipefail
 if (( $# != 3 )); then
-    echo "usage: $0 'path/to/Proton 11.0' built-runtime-directory path/to/compatibilitytools.d/Proton-Scarlett" >&2
+    echo "usage: $0 'path/to/Proton 11.0' built-runtime-directory path/to/compatibilitytools.d/scarlett-proton" >&2
     exit 2
 fi
 src=$(realpath "$(dirname "$0")/..")
@@ -24,7 +24,7 @@ for file in xcl.exe dxcompiler.dll dxil.dll LICENSE THIRD_PARTY.md LICENCE-MIT.t
     install -m644 "$runtime/$file" "$stage/scarlett/$file"
 done
 chmod +x "$stage/scarlett/xcl.exe"
-sed -e 's/##INTERNAL_TOOL_NAME##/proton-scarlett/g' -e 's/##BUILD_NAME##/Proton Scarlett (experimental)/g' \
+sed -e 's/##INTERNAL_TOOL_NAME##/scarlett-proton/g' -e 's/##BUILD_NAME##/scarlett-proton/g' \
     "$src/compatibilitytool.vdf.template" >"$stage/compatibilitytool.vdf"
 mv -Tn -- "$stage" "$dest"
 [[ ! -d $stage ]] || { echo "Destination appeared during installation." >&2; exit 1; }

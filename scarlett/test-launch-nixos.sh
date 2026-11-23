@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Repeat the RTX/NixOS launch test without exposing the streaming folder for writing.
+# Repeat the RTX/NixOS launch test with a read-only game directory.
 set -euo pipefail
 umask 077
 game=$(realpath "${1:?usage: test-launch-nixos.sh GAME-FOLDER [INSTALLED-TOOL]}")
-tool=$(realpath "${2:-$HOME/.local/share/Steam/compatibilitytools.d/Proton-Scarlett}")
+tool=$(realpath "${2:-$HOME/.local/share/Steam/compatibilitytools.d/scarlett-proton}")
 test -r "$game/game_scarlett_master.exe" && test -x "$tool/scarlett/xcl.exe" || exit 1
 closure=$(nix-store -qR "$(realpath "$(command -v steam-run)")")
 fhs=$(grep -E '/[^/]+-steam-run-[^/]+-fhsenv-rootfs$' <<<"$closure")

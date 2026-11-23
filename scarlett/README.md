@@ -1,4 +1,4 @@
-# Proton Scarlett (experimental)
+# scarlett-proton: Steam setup and testing
 
 This x86-64 Steam tool starts `game_scarlett_master.exe` through [XCL](https://github.com/ivall/xcl)
 inside Proton 11. XCL maps the console PE, initializes title DLLs and TLS, and translates Scarlett
@@ -10,7 +10,7 @@ in the tested configuration.
 1. Restart Steam after installing the tool.
 2. Add the **package directory's** `game_scarlett_master.exe` as a non-Steam game. Set **Start In**
    to its directory, alongside `MicrosoftGame.Config`, the DLLs and the game data.
-3. In **Properties → Compatibility**, force **Proton Scarlett (experimental)** and launch.
+3. In **Properties → Compatibility**, force **scarlett-proton** and launch.
 
 No launch options are required. For a Proton log set `PROTON_LOG=1 %command%`. XCL writes
 `xcl.log` and `report.json` under the shortcut's
@@ -28,7 +28,7 @@ rustup toolchain install 1.91.1 --profile minimal --target x86_64-pc-windows-gnu
 ./scarlett/build-runtime.sh "$PWD/scarlett/runtime"
 steam="$HOME/.local/share/Steam"
 ./scarlett/install.sh "$steam/steamapps/common/Proton 11.0" "$PWD/scarlett/runtime" \
-    "$steam/compatibilitytools.d/Proton-Scarlett"
+    "$steam/compatibilitytools.d/scarlett-proton"
 ```
 
 The installer expects the matching Valve 11.0-2e depot and a **new** destination. It makes an
@@ -46,8 +46,8 @@ their separate upstream licenses. No game files are distributed.
 The title executable has SHA-256 `e95020b2fa4a721db3df59fdecf75621730ac559d8835252f6c3b658d5a08993`
 (build 1.0.2.1). Stock Proton stopped before entry with `0xc0000135`. This fork, using
 `waitforexitandrun`, loaded the title DLLs and TLS, created a real D3D12 backend on an RTX 3070
-and executed the game's entry point (`+0x56a1ec8`) on an isolated, read-only mount of the
-in-progress download. The first run stopped with exit 3 when vkd3d-proton detected a modified
+and executed the game's entry point (`+0x56a1ec8`) with the package mounted read-only.
+The first run stopped with exit 3 when vkd3d-proton detected a modified
 heap vtable. Preserving the native heap vtable got past that assertion, XGameRuntime startup
 and GameInput registration. The game's own crash log then reported **System Init, frame 0**,
 with a breakpoint at `+0x2237178`. A Wine file trace showed `G:\appdata0.rpf` missing from
