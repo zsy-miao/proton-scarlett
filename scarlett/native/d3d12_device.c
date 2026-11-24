@@ -858,7 +858,16 @@ HRESULT xs_write_sampler(IUnknown *iface,const void *desc,SIZE_T dest)
         .AddressV=D3D12_TEXTURE_ADDRESS_MODE_WRAP,.AddressW=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .MaxAnisotropy=1,.ComparisonFunc=D3D12_COMPARISON_FUNC_NEVER,.MaxLOD=12.0f};
     /* +1dc6d3b..+1dc6de6 pair each filter with wrap, clamp or mirror UV and clamped W. */
-    if (w[8]==D3D12_TEXTURE_ADDRESS_MODE_CLAMP) {
+    if (w[6]==w[7] && w[7]==w[8] && (w[8]==D3D12_TEXTURE_ADDRESS_MODE_MIRROR || w[8]==D3D12_TEXTURE_ADDRESS_MODE_BORDER)) {
+        s.AddressU=s.AddressV=s.AddressW=(D3D12_TEXTURE_ADDRESS_MODE)w[8];
+        if (w[8]==D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
+            const DWORD one=0x3f800000;
+            if (w[17]!=w[18] || w[18]!=w[19] || (w[17] && w[17]!=one) || w[20]!=one) return E_NOTIMPL;
+            memcpy(s.BorderColor,w+17,sizeof s.BorderColor);memset(w+17,0,sizeof s.BorderColor);
+        }
+        w[6]=w[7]=w[8]=D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        if (memcmp(w,linear,sizeof w)) return E_NOTIMPL;
+    } else if (w[8]==D3D12_TEXTURE_ADDRESS_MODE_CLAMP) {
         if (w[6]==w[7] && (w[6]==D3D12_TEXTURE_ADDRESS_MODE_CLAMP || w[6]==D3D12_TEXTURE_ADDRESS_MODE_MIRROR)) {
             s.AddressU=s.AddressV=(D3D12_TEXTURE_ADDRESS_MODE)w[6];
             w[6]=w[7]=D3D12_TEXTURE_ADDRESS_MODE_WRAP;

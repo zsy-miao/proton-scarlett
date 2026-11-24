@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | The same experimental build presented the game's first startup image on AMD and an NVIDIA RTX 3070. Neither run displayed a second frame. |
-| What's blocking it? | Both GPUs now create the 4K depth/stencil texture. Startup stops when the game sets up a texture sampler. |
+| What's blocking it? | Both GPUs now pass sampler setup. The game stops when a startup routine receives a null pointer; its source is still under investigation. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -50,7 +50,7 @@ Retail creates both `R16_UINT` views in the write-combined pool: 3,072 elements 
 
 Retail creates its first trilinear wrap sampler and copies it to the shader-visible heap. The [sampler test](scarlett/native/color-allocation.md#primary-texture-srv-0x90) verified the filtered color at the wrap boundary after the CPU sampler heap was released.
 
-Both GPUs passed the [3D sampler test](scarlett/tests/w-clamp.sh) for all eight startup slots, including point and linear filtering with clamped or mirrored texture coordinates. All 32 shader readbacks matched, and 121 unsupported address combinations left the descriptor unchanged. The AMD retail initializer then reached a resource size and alignment query (device `+0xc8`, return `+0x344188`).
+Both GPUs passed the [3D sampler test](scarlett/tests/w-clamp.sh) for slots 0–10, including linear filtering with mirror addressing on all three axes and opaque black and white borders. Invalid records left the destination unchanged. In four retail launches (two diagnostic and two ordinary), each run presented token 1 and stopped at `+6eb888` after sampler setup. Neither ordinary run presented a second token.
 
 Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarlett/native/xmem/README.md#retail-write-back-page-pool) with the graphics device. A [GPU test](scarlett/native/test-page-pool.c) verified all six backing heaps after the title address was reused. Retail creates its COPY queue; the [queue test](scarlett/native/test-d3d12-bootstrap.c) verified all 1,024 copied words after a Direct-queue fence released the transfer.
 
