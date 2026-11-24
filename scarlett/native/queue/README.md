@@ -985,3 +985,24 @@ The ring key and RTV slot matched the predecessor, but the successor
 held neither the primary registration nor its RTV serial. The release
 was rejected before a rendering batch was observed. Closing one list
 does not establish GPU execution order between it and the next.
+
+### First token-2 rendering batch request
+
+The recorder now saves the successor's release request against the closed
+producer's original primary registration and RTV serial. Both GPUs passed
+the release fixture after fixing its setup to use separate allocators for
+two simultaneously open lists. In the ordinary pair, RADV first stopped at
+list `+240` (timestamp, return `+2482b37`); RTX first stopped at queue
+`+118` (submission, return `+24821e3`). Each issued tokens 1 and 2;
+only token 1 presented (display count 0→1).
+
+The RTX diagnostic saw the actual flags-3 array for token 2. Member 0 was
+the closed, split composite recording (generation 627); member 1 was the
+closed successor (628). Both named the same release receipt, queue, clock
+epoch and registered primary, with RTV serial 17. No third member was
+present. The retail queue rejected the count of two before host execution.
+
+A separate fixture on each GPU checked the same order against the primary
+writer and descriptor generation. The valid pair executed once, advancing
+WSI 0→1→2 with a visible red/blue to green/magenta change. Reversed,
+duplicate and stale pairs were rejected before execution.

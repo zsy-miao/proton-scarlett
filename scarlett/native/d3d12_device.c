@@ -1158,6 +1158,38 @@ ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
 {
     return xs_acquire_primary(owner,identity,NULL);
 }
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+ID3D12CommandQueue *xs_release_clock(IUnknown *owner,UINT64 *token,UINT *epoch)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;
+    struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;
+    ID3D12CommandQueue *q=NULL;
+    AcquireSRWLockShared(&f->lock);
+    struct frame_record *r=frame_find(f,2);
+    if(r && r==&f->history[(f->cursor-1)%ARRAYSIZE(f->history)] && r->status==S_FALSE &&
+       !r->presenting && !r->batch_end && r->sync_end && r->queue){
+        q=r->queue;ID3D12CommandQueue_AddRef(q);*token=r->token;*epoch=f->epoch;
+    }
+    ReleaseSRWLockShared(&f->lock);return q;
+}
+BOOL xs_live_output(IUnknown *owner,IUnknown *key,ID3D12Resource *host,SIZE_T slot,UINT64 serial)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !key || !host || !slot || !serial)return FALSE;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    BOOL valid=FALSE;UINT claims=0;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct color_resource *r=d->colors;while(r && &r->iface!=key)r=r->next;
+    if(r && r->owner==d && r->host==host && r->slice && !r->msaa)
+        for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){
+            D3D12_CPU_DESCRIPTOR_HANDLE at;if(FAILED(descriptor_slot(&h->iface,slot,&at,NULL)))continue;
+            ++claims;
+            if(attachment_locked(h,slot,RTV,&at)!=host)continue;
+            const struct descriptor_record *rec=h->records+(slot-h->start)/h->stride;
+            valid=rec->rtv_key==(UINT_PTR)key && rec->serial==serial;
+        }
+    ReleaseSRWLockShared(&d->descriptor_lock);return valid && claims==1;
+}
+#endif
 HRESULT xs_freeze_primary_output(IUnknown *owner,IUnknown *key,ID3D12Resource *primary,SIZE_T slot,UINT64 expected,
         ID3D12DescriptorHeap **heap,D3D12_CPU_DESCRIPTOR_HANDLE *at,UINT64 *serial)
 {

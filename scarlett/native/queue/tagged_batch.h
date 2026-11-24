@@ -41,6 +41,7 @@ static HRESULT checked_tagged_submit(IUnknown *iface,UINT count,IUnknown *const 
         vt!=(flags?&pool_vtbl.prefix:&sl_vtbl.prefix)) return E_INVALIDARG;
     struct adapter *queue=CONTAINING_RECORD(iface,struct adapter,iface);
     struct startup_list *s=sl(list);
+    if(s->deferred)return E_ACCESSDENIED;
 #ifdef XS_TEST_ORDERED_QUEUE
     if (s->single_use) return E_ACCESSDENIED;
 #endif

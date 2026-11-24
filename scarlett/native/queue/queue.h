@@ -40,6 +40,8 @@ ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity);
 ID3D12Resource *xs_acquire_primary(IUnknown *,const void *,IUnknown **);
 HRESULT xs_freeze_primary_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,
         ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *,UINT64 *);
+BOOL xs_live_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64);
+ID3D12CommandQueue *xs_release_clock(IUnknown *,UINT64 *,UINT *);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
 HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);
 IUnknown *xs_claim_view(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,SIZE_T,UINT64,BOOL);

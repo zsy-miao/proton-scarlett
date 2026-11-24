@@ -32,12 +32,15 @@ struct startup_list {
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     enum batch_phase phase;
     IUnknown *sync_owner;
+    struct release_receipt *offered,*deferred;
+    D3D12_TEXTURE_BARRIER deferred_wire; /* Guest layout/key; no host command emitted. */
 #endif
     SIZE_T clear_slot;
     UINT64 clear_serial;
     ID3D12DescriptorHeap *output_heap;
     D3D12_CPU_DESCRIPTOR_HANDLE output_cpu;
     UINT64 output_serial;
+    SIZE_T output_slot;
     IUnknown *primary_pin;
     void *reservation;
     LONG refs;
@@ -79,6 +82,12 @@ static void sl_free(struct startup_list *s)
     else HeapFree(GetProcessHeap(), 0, s);
 }
 static struct startup_list *sl(IUnknown *i) { return CONTAINING_RECORD(i, struct list_face, iface)->state; }
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+#include "deferred-release.h"
+#else
+#define forget_receipt(s) ((void)0)
+#define offer_release(s,i) ((void)0)
+#endif
 static ULONG WINAPI sl_addref(IUnknown *i) { return InterlockedIncrement(&sl(i)->refs); }
 static void drop_heaps(IUnknown *pair[2])
 {
@@ -134,6 +143,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
 #endif
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
+        forget_receipt(s);
         IUnknown_Release(s->allocator);
         drop_source(&s->previous_vb);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
         drop_split(s); drop_timestamp(s->stamp);
@@ -202,6 +212,7 @@ static HRESULT WINAPI sl_close(IUnknown *i)
     s->closed = TRUE;
     batch_step(s,B_CLOSED);
     if (FAILED(hr)) s->error = hr;
+    if(SUCCEEDED(s->error))offer_release(s,i);
     return s->error;
 }
 
@@ -225,6 +236,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     if (!allocator_matches(a, s->device)) return E_INVALIDARG;
     HRESULT hr = ID3D12GraphicsCommandList7_Reset(s->host, a, NULL);
     if (FAILED(hr)) return hr;
+    forget_receipt(s);s->output_slot=0;
     IUnknown_AddRef(alloc);
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
@@ -580,6 +592,10 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
     if (!ReadProcessMemory(GetCurrentProcess(),g.pTextureBarriers,&b,bytes,&n) || n!=bytes) return E_POINTER;
     const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
     if (b.Flags || memcmp(&b.Subresources,&all,sizeof all)) return E_NOTIMPL;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if(s->deferred)return E_ACCESSDENIED;
+    if(!s->primary && b.LayoutAfter==(D3D12_BARRIER_LAYOUT)0x1f)return defer_release(s,&b);
+#endif
     if (s->previous_vb.buffer) {
         /* The earlier pair pinned this exact guest identity under the recording owner's lock. */
         const struct xs_attachment_pin *rt=&s->attachments[0];
@@ -828,6 +844,7 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
                 s->primary_cleared && slots[0]==s->clear_slot?s->clear_serial:0,
                 &s->output_heap,&s->output_cpu,&s->output_serial);
         if(SUCCEEDED(hr)){
+            s->output_slot=slots[0];
             ID3D12GraphicsCommandList7_OMSetRenderTargets(s->host,1,&s->output_cpu,FALSE,NULL);
             recorded_direct_state(s);
         }
@@ -1110,6 +1127,9 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
     ID3D12GraphicsCommandList7 *host=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
     if (!s->prior_pso && !s->primary_released && !s->depth_zero_pending && !s->pending_470 && !s->bound
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+        && !s->deferred
+#endif
 #ifdef XS_TEST_ORDERED_QUEUE
         && !(s->single_use && s->closed)
 #endif
@@ -1227,6 +1247,9 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
     if (s->single_use) return E_ACCESSDENIED;
 #endif
     if (!s->closed || FAILED(s->error)) return E_INVALIDARG;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if(s->deferred)return E_ACCESSDENIED;
+#endif
     if (s->table0.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;
     q->lpVtbl->GetDesc(q, &desc);

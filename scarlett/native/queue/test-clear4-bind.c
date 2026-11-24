@@ -89,6 +89,9 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
 #include "test-quad-read.h"
 #include "test-rt-roundtrip.h"
+#ifdef TEST_DEFER_RELEASE
+#include "test-deferred-release.h"
+#endif
 /* Takes the caller's last PSO reference. The submission waits behind a CPU gate. */
 BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown *root,IUnknown *other_root,IUnknown *p,IUnknown *linear)
 {
@@ -335,7 +338,9 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     pool_vtbl.b27(l,0,composite);
     REQUIRE(s->table_epoch==epoch+3 && s->table0.cells==3 && s->table0.slot==368373 &&
             s->table0.root==colour && s->table0.heap==inline_pair[0] && !s->bound && !s->pipeline && !tables);
+#ifndef TEST_DEFER_RELEASE
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,other_slot)==S_OK && *(UINT64*)other_slot!=output_gen);
+#endif
     REQUIRE(IUnknown_Release(pk)==1 && FAILED(record_om(s,1,&other_slot,FALSE,NULL)) && om_calls==pre_om+1);
 #endif
     REQUIRE(barrier_total==before_single+1 && barrier_host==s->host && s->offscreen_sr && seen[0].pResource==images[0]);
@@ -457,7 +462,15 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     pool_vtbl.topology(l,17);
 #endif
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
+#ifdef TEST_DEFER_RELEASE
+    IUnknown *syncq;REQUIRE(release_fixture_clock(hd,owner,&syncq));
+#endif
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
+#ifdef TEST_DEFER_RELEASE
+    REQUIRE(test_successor(hd,owner,s,syncq,ids[0],inline_pair));
+    IUnknown_Release(syncq);
+    REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,other_slot)==S_OK && *(UINT64*)other_slot!=output_gen);
+#endif
     REQUIRE(execute_quad_fixture(hd,s,quad_rb));
 #ifdef TEST_DISTINCT_PRIMARY
     REQUIRE(SUCCEEDED(ID3D12Resource_Map(quad_rb,0,NULL,(void**)&qp)));
