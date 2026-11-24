@@ -356,4 +356,12 @@ Run [`tail-timestamp.sh`](../../tests/tail-timestamp.sh) with `radv` or
 `nvidia` and the staged tool directory to reproduce the replay and VA-reuse test.
 On each adapter a staged retail run reached queue `+0x118`, flags `3`
 (return `+0x24821e3`). Another thread requested device `+0x1e8`
-(return `+0x12b981e`). The batch did not execute.
+(return `+0x12b981e`). The batch did not execute in those runs.
+
+A subsequent RADV experiment admitted one closed pooled Direct list on the
+same queue and live token as the previous flags-zero sync list. It submitted
+the head and tail around the counter wait and signaled a separate fence after
+the tail. In retail, that fence reached `1`; the title returned to `+0x24821e3`
+and issued two signals on its own fence. This establishes GPU completion for
+the observed singleton, not the meaning of the individual bits in flags `3`
+or a presentation. Unsupported calls remained stopped during observation.

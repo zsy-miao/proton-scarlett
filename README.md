@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Experimental builds on both GPUs record commands to clear and release the first image. They reach the request to send that work to the GPU, but stop before submitting it. A sampler request on another thread is also unsupported. |
+| What's blocking it? | An experimental AMD build completes the first image clear on the GPU. The game also requests a graphics allocation the project doesn't handle yet. RTX reaches the clear submission; completion is still under test. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -21,7 +21,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md) and [depth/stencil buffer](scarlett/native/msaa-depth.md): 4 MiB for each. RTX retail places both in its original pool and creates their shader, render-target and depth/stencil views. A GPU test drew through the color view: exactly 16 bytes changed in the original allocation. The [depth test](scarlett/native/rtx-depth.md) verified which samples passed or failed depth and stencil comparisons.
 
-**Experimental retail builds:** On AMD and RTX, the game records a full transparent-black clear and a release of its first primary texture, then requests another timestamp before submitting the list. In a [separate pixel test](scarlett/native/test-primary-barrier.hpp), both GPUs verified all 8,294,400 cleared pixels. A second queue also read back a test stripe across the release without changing the sibling image or padding. The host layout used for the release still needs checking against the game’s eventual use of the image. The installed build stops earlier at the [counter wait](scarlett/native/queue/README.md#experimental-whole-queue-wait).
+**Experimental retail builds:** On RADV the GPU finished the list containing the transparent-black clear, texture release and second timestamp. The batch's own fence reached `1`, separately from the earlier sync-list fence. The title then issued queue signals for values `1` and `2`. On RTX the same list reaches submission. In a [separate pixel test](scarlett/native/test-primary-barrier.hpp), both GPUs verified all 8,294,400 cleared pixels. The installed build stops earlier at the [counter wait](scarlett/native/queue/README.md#experimental-whole-queue-wait).
 
 Both adapters handle the six- and [twelve-layer textures](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070). The twelve-layer image takes 4 KiB on AMD and 8 KiB on RTX; its guest layout takes 48 KiB on both. Both also passed two-layer array shader tests and the [256-pixel sRGB row](scarlett/native/xg/README.md#256-texel-srgb-texture1d).
 
@@ -41,7 +41,7 @@ Retail creates both `R16_UINT` views in the write-combined pool: 3,072 elements 
 
 Retail creates its first trilinear wrap sampler and copies it to the shader-visible heap. The [sampler test](scarlett/native/color-allocation.md#primary-texture-srv-0x90) verified the filtered color at the wrap boundary after the CPU sampler heap was released.
 
-Both GPUs also passed the [3D sampler test](scarlett/tests/w-clamp.sh) for slots 2 and 3. These samplers wrap across the width and height of a texture but clamp at its depth boundary. An off-center sample returned `3.0` with point filtering and `3.75` with linear filtering. Retail next requests a sampler that clamps all three axes.
+Both GPUs passed the [3D sampler test](scarlett/tests/w-clamp.sh) for all eight startup slots, including point and linear filtering with clamped or mirrored texture coordinates. All 32 shader readbacks matched, and 121 unsupported address combinations left the descriptor unchanged. The AMD retail initializer then reached a resource size and alignment query (device `+0xc8`, return `+0x344188`).
 
 Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarlett/native/xmem/README.md#retail-write-back-page-pool) with the graphics device. A [GPU test](scarlett/native/test-page-pool.c) verified all six backing heaps after the title address was reused. Retail creates its COPY queue; the [queue test](scarlett/native/test-d3d12-bootstrap.c) verified all 1,024 copied words after a Direct-queue fence released the transfer.
 

@@ -23,10 +23,11 @@ int main() {
     HR(heap(guest.Get(),shape,IID_ID3D12DescriptorHeap,(void**)cpu.GetAddressOf()));shape[2]=1;
     HR(heap(guest.Get(),shape,IID_ID3D12DescriptorHeap,(void**)visible.GetAddressOf()));
     SIZE_T src=SLOT(cpu.Get(),0x48,Start)(cpu.Get()),dst=SLOT(visible.Get(),0x48,Start)(visible.Get());
-    // Captured slot order: linear wrap, point wrap, point clamp-W, linear clamp-W.
+    // Slot 0/1 are linear/point; each initializer pair thereafter is point/linear.
     DWORD words[23]={0,1,1,2,2,0,1,1,1,0,0x41400000,0,0,1,0,0,1};
-    for(UINT i=0;i<4;i++) {
-        bool point=i==1 || i==2;
+    for(UINT i=0;i<8;i++) {
+        bool point=i<2 ? i==1 : !(i&1);
+        words[6]=words[7]=i<4?1:i<6?3:2;
         words[1]=words[2]=point?2:1;words[3]=words[4]=point?1:2;words[8]=i<2?1:3;
         SLOT(guest.Get(),0x1e8,Write)(guest.Get(),words,src+i*16);
         UINT64 tag[2];memcpy(tag,(void*)(src+i*16),sizeof tag);
@@ -34,7 +35,14 @@ int main() {
         CK(!memcmp(tag,(void*)(src+i*16),sizeof tag));
         SLOT(guest.Get(),0xc0,Copy)(guest.Get(),1,dst+i*16,src+i*16,1);
     }
-    cpu.Reset();
+    // The observed tuples are not independently configurable U/V/W fields.
+    UINT64 saved[2];memcpy(saved,(void*)src,sizeof saved);
+    for(DWORD u=1;u<=5;u++)for(DWORD v=1;v<=5;v++)for(DWORD w=1;w<=5;w++) {
+        if(u==v && ((u==1 && w==1) || (u<=3 && w==3))) continue;
+        words[6]=u;words[7]=v;words[8]=w;
+        CK(xs_write_sampler(guest.Get(),words,src)==E_NOTIMPL);
+    }
+    CK(!memcmp(saved,(void*)src,sizeof saved));cpu.Reset();
     ID3D12DescriptorHeap *sam;D3D12_GPU_DESCRIPTOR_HANDLE h;
     HR(xs_resolve_sampler(visible.Get(),dst,&sam,&h));
     ComPtr<ID3D12Device> d;HR(sam->GetDevice(IID_PPV_ARGS(&d)));
@@ -59,7 +67,7 @@ int main() {
         D3D12_RESOURCE_BARRIER b={};b.Transition={p,0,before,after};l->ResourceBarrier(1,&b);
     };
     transition(tex.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    r.Width=48;auto read=resource(D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
+    r.Width=128;auto read=resource(D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
     r.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;auto out=resource(D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     ComPtr<ID3D12DescriptorHeap> srv;D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
     HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&srv)));d->CreateShaderResourceView(tex.Get(),nullptr,srv->GetCPUDescriptorHandleForHeapStart());
@@ -75,7 +83,10 @@ int main() {
     ComPtr<ID3D12Fence> fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));HR(q->Signal(fence.Get(),1));
     HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(event);HR(fence->SetEventOnCompletion(1,event));CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0);CloseHandle(event);
     HR(read->Map(0,nullptr,(void**)&v));
-    for(UINT i=0;i<3;i++)printf("probe %u: point wrap/clampW %.2f/%.2f, linear wrap/clampW %.2f/%.2f\n",i,v[i*4],v[i*4+1],v[i*4+2],v[i*4+3]);
-    const float expected[]={1,5,2,5, 8,4,8,4, 3,3,3.75f,3.75f};CK(!memcmp(v,expected,sizeof expected));read->Unmap(0,nullptr);
-    puts("PASS +1e8/+c0 slots 2/3: point and linear W-clamp, wrap controls, rejected record mutations");
+    for(UINT i=0;i<4;i++)printf("probe %u clamp UVW point/linear %.2f/%.2f mirror UV clamp W point/linear %.2f/%.2f\n",
+            i,v[i*8+4],v[i*8+5],v[i*8+6],v[i*8+7]);
+    const float expected[]={1,5,2,5,5,5,5,5, 8,4,8,4,4,4,4,4,
+            3,3,3.75f,3.75f,2,3,2,3.25f, 3,7,3,7,6,6,7,7};
+    CK(!memcmp(v,expected,sizeof expected));read->Unmap(0,nullptr);
+    puts("PASS +1e8/+c0 slots 0-7: wrap, clamp and mirror UV; exact records and address tuple controls");
 }

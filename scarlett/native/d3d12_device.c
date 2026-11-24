@@ -602,8 +602,12 @@ HRESULT xs_write_sampler(IUnknown *iface,const void *desc,SIZE_T dest)
     D3D12_SAMPLER_DESC s={.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR,.AddressU=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .AddressV=D3D12_TEXTURE_ADDRESS_MODE_WRAP,.AddressW=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .MaxAnisotropy=1,.ComparisonFunc=D3D12_COMPARISON_FUNC_NEVER,.MaxLOD=12.0f};
-    /* +1dc6d3b/+1dc6d60 use these same records with only W changed to CLAMP. */
+    /* +1dc6d3b..+1dc6de6 pair each filter with wrap, clamp or mirror UV and clamped W. */
     if (w[8]==D3D12_TEXTURE_ADDRESS_MODE_CLAMP) {
+        if (w[6]==w[7] && (w[6]==D3D12_TEXTURE_ADDRESS_MODE_CLAMP || w[6]==D3D12_TEXTURE_ADDRESS_MODE_MIRROR)) {
+            s.AddressU=s.AddressV=(D3D12_TEXTURE_ADDRESS_MODE)w[6];
+            w[6]=w[7]=D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        }
         s.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         w[8]=D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     }

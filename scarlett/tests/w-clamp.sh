@@ -13,4 +13,4 @@ x86_64-w64-mingw32-g++ -std=c++17 -Os -static -Wall -Wextra -Werror "$s/test-w-c
 "${DXC:-dxc}" -WX -T cs_6_0 -E main "$s/test-w-clamp.hlsl" -Fo "$w/game/test-w-clamp.dxil"
 "$s/../test-launch-nixos.sh" "$w/game" "$@" | tee "$w/result"
 run=$(sed -n 's/^Test output (including prefix): //p' "$w/result")
-grep '^PASS +1e8/+c0 slots 2/3:' "$run/logs/steam-999001.log"
+grep '^PASS +1e8/+c0 slots 0-7:' "$run/logs/steam-999001.log"
