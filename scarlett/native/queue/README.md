@@ -472,3 +472,15 @@ Four retail launches (two diagnostic and two ordinary). The ordinary
 workers stopped at `+258`, return `+32820`. The first RTX fault was again
 `+b5a5f8`, this time from the second technique lookup (`+5e50ffd`).
 Both runs issued tokens 1 and 2; neither presented token 2.
+
+The second lookup selects `rage_bink:bink_alpha`, slot 0. Its 332-byte
+root adds `t8,space1` at table offset 3, before `t7`. On both GPUs the
+shared fixture read back 1203, 1273, 1343, 1343 for alpha and 761, 805,
+849, 849 for opaque. In the RTX diagnostic all four video requests
+pointed to their selected groups. The groups shared a cached root;
+that snapshot does not demonstrate a retail video draw or HDR rendering.
+
+Five retail launches (three RTX diagnostics and two ordinary runs on the
+same stage). AMD stopped at list `+258`, return `+32820`. RTX first
+rejected a seven-mip 128×72 `R32_FLOAT` size query at `+344145`.
+Both issued tokens 1 and 2; the final present count was 1 on each.

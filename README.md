@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | AMD and RTX both display the startup image and issue a second frame token. Neither has displayed a second frame. |
-| What's blocking it? | The game now creates its first video shader group. On RTX the main thread stops at the second video technique. The graphics worker on both GPUs still stops at an unsupported command. |
+| What's blocking it? | The game now creates the opaque and alpha video shader groups. AMD stops at a graphics command; RTX stops when sizing a 128×72 texture with seven mip levels. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

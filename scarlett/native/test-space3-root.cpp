@@ -18,7 +18,11 @@ extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
 #ifdef TEST_BINK
 #include "test-bink-bindings.hpp"
 #endif
+#ifdef TEST_BINK
+static int draw(bool alpha) {
+#else
 int main() {
+#endif
     DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> dev,root;
@@ -27,11 +31,12 @@ int main() {
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC rs={};rs.Version=D3D_ROOT_SIGNATURE_VERSION_1_1;
     rs.Desc_1_1={1,&p,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_NONE};
 #ifdef TEST_BINK
-    const UINT regs[]={2,6,5,7,10,0,3};D3D12_DESCRIPTOR_RANGE1 ranges[7]={};
-    for(UINT i=0;i<7;i++)ranges[i]={i<5?D3D12_DESCRIPTOR_RANGE_TYPE_SRV:D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,regs[i],1,D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
-    p.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p.DescriptorTable={7,ranges};
+    const UINT opaque[]={2,6,5,7,10,0,3},with_alpha[]={2,6,5,8,7,10,0,3};
+    UINT count=alpha?8:7;const UINT *regs=alpha?with_alpha:opaque;D3D12_DESCRIPTOR_RANGE1 ranges[8]={};
+    for(UINT i=0;i<count;i++)ranges[i]={i<count-2?D3D12_DESCRIPTOR_RANGE_TYPE_SRV:D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,regs[i],1,D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
+    p.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p.DescriptorTable={count,ranges};
     D3D12_STATIC_SAMPLER_DESC samp={D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,0,1,D3D12_COMPARISON_FUNC_NEVER,D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,0,12,3,1,D3D12_SHADER_VISIBILITY_ALL};
-    rs.Desc_1_1={1,&p,1,&samp,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};constexpr SIZE_T bytes=308;
+    rs.Desc_1_1={1,&p,1,&samp,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};const SIZE_T bytes=alpha?332:308;
 #else
     constexpr SIZE_T bytes=92;
 #endif
@@ -59,7 +64,11 @@ int main() {
 #endif
     BYTE shaders[2][8192];D3D12_SHADER_BYTECODE code[2];
     for (int i=0;i<2;i++) {
-        FILE *f=fopen(i?"ps.dxil":"vs.dxil","rb");CK(f);auto n=fread(shaders[i],1,sizeof shaders[i],f);CK(n&&feof(f));fclose(f);
+        const char *file=i?"ps.dxil":"vs.dxil";
+#ifdef TEST_BINK
+        if(i && alpha)file="alpha-ps.dxil";
+#endif
+        FILE *f=fopen(file,"rb");CK(f);auto n=fread(shaders[i],1,sizeof shaders[i],f);CK(n&&feof(f));fclose(f);
         code[i]={shaders[i],n};
     }
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pd={};pd.pRootSignature=host;pd.VS=code[0];pd.PS=code[1];pd.SampleMask=~0u;
@@ -105,7 +114,7 @@ int main() {
     l->SetGraphicsRootSignature(host);
 #endif
 #ifdef TEST_BINK
-    BinkInputs inputs;CK(!inputs.bind(d.Get(),l.Get()));
+    BinkInputs inputs;CK(!inputs.bind(d.Get(),l.Get(),alpha));
 #else
     l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress());
 #endif
@@ -132,10 +141,14 @@ int main() {
     CK(WaitForSingleObject(evt,10000)==WAIT_OBJECT_0);CloseHandle(evt);
     HR(rb->Map(0,nullptr,&m));
 #ifdef TEST_BINK
-    for(UINT i=0;i<4;i++){UINT dx=i==0?0:i==1?2:4;UINT want=11+3*13+12*19+17+(2+dx)+3*(10+dx)+7*(18+dx)+11*(28+dx);printf("RG pixel %u = %u want %u\n",i,((UINT*)m)[i],want);CK(((UINT*)m)[i]==want);}
-    rb->Unmap(0,nullptr);puts("PASS Bink slot 1 root: IA, all seven heap offsets/VS+PS, static s3 linear/clamp, 2D/3D readback and reject controls");return 0;
+    for(UINT i=0;i<4;i++){UINT dx=i==0?0:i==1?2:4;UINT want=11+3*13+12*19+17+(2+dx)+3*(10+dx)+7*(18+dx)+11*(28+dx)+(alpha?13*(34+dx):0);printf("RG pixel %u = %u want %u\n",i,((UINT*)m)[i],want);CK(((UINT*)m)[i]==want);}
+    rb->Unmap(0,nullptr);printf("PASS Bink slot %u: IA, all %u table entries, static s3 linear/clamp, 2D/3D fenced readback and reject controls\n",alpha?0:1,count);return 0;
 #else
     CK(!memcmp(m,vals,sizeof vals));rb->Unmap(0,nullptr);
     puts("PASS node/size/space negatives; t0 space3 fenced draw returned four exact R32_UINT pixels");return 0;
 #endif
 }
+
+#ifdef TEST_BINK
+int main(){return draw(false) || draw(true);}
+#endif
