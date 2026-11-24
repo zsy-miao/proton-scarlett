@@ -301,9 +301,11 @@ static const struct {
     __typeof__(&sl_timestamp) timestamp;
     xs_stop_fn gap248[66];
     __typeof__(&sl_reset) reset;
+    xs_stop_fn through490[7];
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, {[0 ... 65]=xs_stop}, sl_reset
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, {[0 ... 65]=xs_stop}, sl_reset, {[0 ... 6]=xs_stop}
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),through490[6])==0x490, "pooled list guard");
 _Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
 

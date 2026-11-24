@@ -261,3 +261,15 @@ On both experimental builds retail next called list `+0x490` (return
 guard** to observe the recording thread; it did not execute the tagged list.
 These traces show recording, not retail execution. A producer scheduled
 behind the stronger wait could deadlock even if it could run on the console.
+
+Combined runs on RADV and RTX associated token `1` with a fence signaled
+immediately after the submitted sync list. The tagged thread returned from
+submission on both, and the recording thread reached `+0x490` without parking
+the submitter for tracing. In gated tests on both adapters the associated fence
+retired before a later queue fence, while the frame wait stayed pending until
+`PresentX`. Retail has not been observed querying that association.
+
+On RTX `+0x490` received one texture barrier for the first primary's guest
+resource. The barrier covers all subresources and switches sync, access and
+layout from shader writes (`ALL_SHADING`, `UNORDERED_ACCESS`) to rendering
+(`RENDER_TARGET`). The traced call requested a transition; it did not draw.
