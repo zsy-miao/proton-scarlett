@@ -1428,7 +1428,7 @@ all-dist: $(DIST_COPY_TARGETS)
 
 # Build the Scarlett DLLs once outside the SDK container (see scarlett/README.md).
 ifeq ($(TARGET_ARCH),x86_64)
-SCARLETT_FILES := d3d12_xs.dll xmem.dll chad.dll xapu.dll AcpHal.dll xg_xs.dll XCRDAPI.dll GameInput.dll
+SCARLETT_FILES := d3d12_xs.dll xmem.dll chad.dll xapu.dll AcpHal.dll xg_xs.dll XCRDAPI.dll GameInput.dll xgameruntime.dll
 $(DST_BASE)/scarlett/%: $(SRCDIR)/scarlett/runtime/% | $(DST_DIR)
 	mkdir -p $(@D)
 	cp -p $< $@
