@@ -31,10 +31,15 @@ using Copy=HRESULT(WINAPI*)(void*,void*,UINT,UINT,const void*,UINT,UINT);
 static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UINT;
 #elif defined(TEST_R32_FLOAT)
 static constexpr DWORD format=DXGI_FORMAT_R32_FLOAT;
-#elif defined(TEST_RGBA1)
+#elif defined(TEST_RGBA1) || defined(TEST_VOLUME1)
 static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UNORM;
 #else
 static constexpr DWORD format=DXGI_FORMAT_R8_UNORM;
+#endif
+#ifdef TEST_VOLUME1
+static constexpr bool volume=true;
+#else
+static constexpr bool volume=false;
 #endif
 static constexpr bool rgba1=format!=DXGI_FORMAT_R8_UNORM;
 static constexpr bool integer=format==DXGI_FORMAT_R8G8B8A8_UINT, scalar=format==DXGI_FORMAT_R32_FLOAT;
@@ -47,7 +52,7 @@ int main(){
     auto alloc=(Alloc)(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc"); CK(alloc);
     BYTE *s=(BYTE*)alloc(nullptr,0x49400000,0x20003000,0x183,0x22004);
     BYTE *b=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404);CK(s&&b);
-    DWORD desc[]={3,0,0,0,256,0,128,0x10001,61,1,0,0,0x300000};
+    DWORD desc[]={volume?4u:3u,0,0,0,256,0,128,0x10001,61,1,0,0,0x300000};
     if (rgba1) {
         desc[4]=desc[6]=1; desc[8]=format;
         CK(XGSuggestSwizzleMode(desc,1,&desc[11])==E_NOTIMPL && !desc[11]);
@@ -72,6 +77,10 @@ int main(){
         auto query=SLOT(guest.Get(),0xc8,Query);
         for (UINT layout:{0u,0x105u}) {
             D3D12_RESOURCE_ALLOCATION_INFO result={}; desc[11]=layout;
+            if (volume && !layout) {
+                CK(xs_color_allocation_info(guest.Get(),1,1,desc,&result)==E_NOTIMPL && !result.SizeInBytes && !result.Alignment);
+                continue;
+            }
             CK(query(&result,guest.Get(),1,1,desc)==&result && result.SizeInBytes==4096 && result.Alignment==4096);
         }
         for (UINT j:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
@@ -82,12 +91,13 @@ int main(){
             desc[j]^=1;
         }
     }
-    desc[2]=0; DWORD w[16]={format,4,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};
+    desc[2]=0; DWORD w[16]={format,volume?8u:4u,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};
     auto address=[&](BYTE *p){memcpy(w+10,&p,sizeof p);};
     address(b+span-tile); HR(xs_write_address_srv(guest.Get(),desc,w,from));
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
     UINT64 serial=*(UINT64*)from;
     if (rgba1) {
+        w[1]=volume?4:8; CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)) && *(UINT64*)from==serial); w[1]=volume?8:4;
         w[0]=integer?28:30; // supported formats still cannot reinterpret each other's views
         CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)) && *(UINT64*)from==serial); w[0]=format;
     }
@@ -120,7 +130,7 @@ int main(){
     D3D12_ROOT_SIGNATURE_DESC rs={2,p,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
     ComPtr<ID3DBlob> blob;HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
     ComPtr<ID3D12RootSignature> root;HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
-    FILE *f=fopen(integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
+    FILE *f=fopen(volume?"volume1.dxil":integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd={};pd.pRootSignature=root.Get();pd.CS={dxil,n};
     ComPtr<ID3D12PipelineState> ps;HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&ps)));
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;

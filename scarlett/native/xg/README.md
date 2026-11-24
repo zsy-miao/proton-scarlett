@@ -206,3 +206,25 @@ positive and a negative input, exact multiplication by two and missing
 component defaults. Both release the descriptor heap and reuse the title VA
 before opening the queue gate. These loads are fixture evidence, not a retail
 shader invocation.
+
+### Explicit 1×1×1 RGBA8_UNORM volume
+
+For this Texture3D, `+c8` accepts the explicit `0x105` tile with alignment
+4096, one mip, one sample and flags `0x300000`; it returns 4096/4096. The
+option-zero recommendation for this same shape is `0x105`. Plane and
+subresource are zero; both pitches are four. The shared producer copies the
+single stack DWORD to the tile origin, preserving the other 4092 bytes.
+`+230` requires a Texture3D view (dimension 8, base mip zero, one level).
+Copied slots retain the volume type and original section. Immediately before
+use, the refresh recorder copies its 1×1×1 footprint to a native Texture3D.
+
+On both RADV and RTX 3070 retail wrote `ffffffff`, `ff000000`, `00000000`
+and made volume views of their successive tiles at offsets `e5cf000`,
+`e5d0000`, `e5d1000`. The next stop was device `+c8`, title return `+344188`:
+a 1×1 RGBA8_UNORM Texture2D, sample count 4, quality 0, unknown layout,
+default alignment, render-target flag 1. Retail sampling was not observed.
+
+Build the same fixture with `-DTEST_VOLUME1` and compile `test-volume1.hlsl`
+(from `scarlett/native`) with `dxc -T cs_6_0 -E main -Fo volume1.dxil`.
+It checks native Texture3D dimensions and loads, 2D/3D view mismatch refusal,
+padding, source-slot overwrite, heap release and exact title VA reuse.

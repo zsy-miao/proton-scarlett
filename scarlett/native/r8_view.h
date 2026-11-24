@@ -33,6 +33,10 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     /* A texture requires refresh; its bank slot must never expose a stale texture. */
     D3D12_SHADER_RESOURCE_VIEW_DESC null_view={.Format=refresh_format(kind),.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D,
         .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Texture2D.MipLevels=1};
+    if (kind==VOLUME1_VIEW) {
+        null_view.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D;
+        null_view.Texture3D.MipLevels=1;
+    }
     if (kind==RAW38_VIEW) {
         D3D12_SHADER_RESOURCE_VIEW_DESC raw={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
             .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Buffer={offset/4,38,0,D3D12_BUFFER_SRV_FLAG_RAW}};
@@ -47,7 +51,8 @@ static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,S
 {
     static const DWORD texture[]={61,4,0x1688,0,0,1,0,0,0,0},raw[]={39,1,0x1688,0,0,0,38,0,1,0};
     BOOL tex=refresh_required(kind);
-    if (w[0]!=(tex?(DWORD)refresh_format(kind):raw[0]) || memcmp(w+1,(tex?texture:raw)+1,9*sizeof(DWORD)) ||
+    if (w[0]!=(tex?(DWORD)refresh_format(kind):raw[0]) || w[1]!=(kind==VOLUME1_VIEW?8u:tex?texture[1]:raw[1]) ||
+            memcmp(w+2,(tex?texture:raw)+2,8*sizeof(DWORD)) ||
             w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
     UINT alignment=tex ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
@@ -120,13 +125,14 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     if (!same) return E_INVALIDARG;
     struct xs_texture_use *u=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *u);
     if (!u) return E_OUTOFMEMORY;
-    UINT offset=0; DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
+    UINT offset=0; BOOL volume=FALSE; DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     AcquireSRWLockShared(&d->descriptor_lock);
     if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         struct descriptor_record *r=&h->records[(slot-h->start)/h->stride];
         if (refresh_required(r->kind) && valid_address_record(r,slot,r->kind)) {
             u->source=r->resource; ID3D12Resource_AddRef(u->source); offset=r->offset; format=refresh_format(r->kind);
+            volume=r->kind==VOLUME1_VIEW;
         }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
@@ -139,7 +145,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->rows);
         if (FAILED(hr)) goto fail;
     }
-    rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
+    rd.Dimension=volume?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
     rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
     if (FAILED(hr)) goto fail;

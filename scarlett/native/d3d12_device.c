@@ -226,6 +226,7 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
 static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
+    if (is_volume1(out) && (UINT)out->Layout==R8_LAYOUT && out->Alignment==R8_ALIGNMENT) return S_OK;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
         out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
     return S_OK;

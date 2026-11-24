@@ -397,7 +397,7 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
         !copy_in(w,view,sizeof w)) return E_POINTER;
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
         if (is_r8(&rd)) return write_wc_address_view(device,R8_VIEW,w,dest);
-        if (is_texel32(&rd)) return write_wc_address_view(device,TEXEL32_BASE+rd.Format,w,dest);
+        if (is_texel32(&rd)) return write_wc_address_view(device,is_volume1(&rd)?VOLUME1_VIEW:TEXEL32_BASE+rd.Format,w,dest);
     }
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment ||
         rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
