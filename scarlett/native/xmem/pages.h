@@ -45,11 +45,8 @@ static PageView *views;
 static Arena *arenas;
 static ULONG_PTR next_page = 1;
 
-static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
+static void discard_released_arenas(void)
 {
-    Arena *a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *a);
-    if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
-    AcquireSRWLockExclusive(&page_lock);
     /* VirtualFree releases the VA directly; discard its bookkeeping on next reservation. */
     for (Arena **p = &arenas; *p;) {
         Arena *old = *p;
@@ -60,6 +57,14 @@ static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
             HeapFree(GetProcessHeap(), 0, old);
         } else p = &old->next;
     }
+}
+
+static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
+{
+    Arena *a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *a);
+    if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    AcquireSRWLockExclusive(&page_lock);
+    discard_released_arenas();
     a->base = reserve2(NULL, base, size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
                        PAGE_NOACCESS, NULL, 0);
     PVOID result = a->base;
@@ -70,6 +75,39 @@ static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
         a->next = arenas;
         arenas = a;
     } else HeapFree(GetProcessHeap(), 0, a);
+    ReleaseSRWLockExclusive(&page_lock);
+    if (!result) SetLastError(err);
+    return result;
+}
+
+/* VA only. Never enroll a descriptor span in the physical-page mapper. */
+static PVOID descriptor_va(PVOID base, SIZE_T size, BOOL replace)
+{
+    if (!!base != replace || !size || ((size | (UINT_PTR)base) % XMEM_PAGE) ||
+        size > UINTPTR_MAX - (UINT_PTR)base) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    if (!reserve2) { SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
+    AcquireSRWLockExclusive(&page_lock);
+    PVOID result = NULL;
+    DWORD err = ERROR_INVALID_ADDRESS;
+    if (!replace) {
+        discard_released_arenas();
+        base = reserve2(NULL, NULL, size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
+        if (!base) { err = GetLastError(); goto done; }
+    }
+    /* A live XMem page arena also looks like a vacant Win32 placeholder. */
+    for (Arena *a = arenas; a; a = a->next) {
+        if ((UINT_PTR)base < (UINT_PTR)a->base + a->size && (UINT_PTR)a->base < (UINT_PTR)base + size) {
+            if (!replace) VirtualFree(base, 0, MEM_RELEASE);
+            goto done;
+        }
+    }
+    result = replace ? reserve2(NULL, base, size, MEM_RESERVE | MEM_REPLACE_PLACEHOLDER,
+                                PAGE_NOACCESS, NULL, 0) : base;
+    if (!result) err = GetLastError();
+done:
     ReleaseSRWLockExclusive(&page_lock);
     if (!result) SetLastError(err);
     return result;

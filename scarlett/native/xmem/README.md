@@ -22,6 +22,20 @@ budget accounting.
 
 ### Reservation and mapping milestone
 
+The descriptor arena (`0x1e8649a`) requests `XMemVirtualAlloc(NULL, total,
+0x42000, 7, PAGE_NOACCESS)`. For a positive 64 KiB multiple the shim returns a
+native `VirtualAlloc2` placeholder. Four ordinary `VirtualFree` calls with
+`MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER` split five extents. The fixed-base
+requests at `0x1e8659e`–`0x1e8666c` (`0x20406000`, flags `0x27`, protection
+`0x1004/0x1404/0x8404/0x2404/0x2004`) replace exact vacant placeholders with
+inaccessible reservations. Wine checks base and size atomically; there is no
+free-and-reallocate window. A replacement can be released directly or restored
+as a placeholder and coalesced. Registered page arenas are excluded.
+
+These calls provide CPU VA only. No protection modifier is applied to backing,
+no GPU address is promised and no CPU/WC page maps into these spans. Supplying
+the later physical views and their cache/GPU protections is separate work.
+
 The separate 20 MiB CPU allocation at RVA `+0x5ba6c30` saves its result at
 `+0x78cb800` and branches to `+0x5ba6c65` on null. On success, `+0x28b7b09`
 passes the pointer and `0x1400000` size to heap initialization; `+0x1f67809`
