@@ -34,7 +34,9 @@ where `run` is the printed output directory. `space` maps to A; `w a s d` and `U
 `BackSpace` maps to B and `Return` to Menu.
 Holds are serialized and limited to 1–2000 ms. The owner-only FIFO accepts data, not shell commands.
 A separate helper uses Wine `SendInput` in that run's prefix, checking the foreground title and executable;
-the target does not need hooks or changes. See `logs/input.log` for accepted/refused commands.
+the target does not need hooks or changes. `logs/input.log` records the window handle and PID
+at press and release for confirmed holds. If focus changed at release, the helper still sends
+key-up and marks the hold unconfirmed. These observations establish delivery, not a game response.
 Run `SCARLETT_GAMEINPUT_HEADER=/path/to/10.0.26100/um/GameInput.h ./scarlett/tests/radv-gameinput.sh`
 to exercise the installed DLL and verify neutral/held/released in a **synthetic** GPU recording.
 This test defaults to RADV/Sway. Set `SCARLETT_TEST_GPU=nvidia` to check RTX/Xvfb instead.

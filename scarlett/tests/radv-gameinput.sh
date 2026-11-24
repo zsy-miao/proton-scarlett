@@ -43,6 +43,8 @@ wait "$launcher"
 trap - EXIT
 grep -F 'refused input' "${run[0]}/logs/input.log"
 for key in space w Left; do grep -F ": $key held 700 ms" "${run[0]}/logs/input.log"; done
+awk '/^input window hwnd=/{sub(/\r$/,""); if (!n++) window=$0; if ($0!=window) bad=1}
+     END {exit (n!=3 || bad)}' "${run[0]}/logs/input.log"
 test "$(readlink "${run[0]}/compat/scarlett-title/pfx/drive_c/windows/system32/gameinput.dll")" = /proton/scarlett/GameInput.dll
 grep -ai 'system32.*gameinput\.dll".*: native' "$log"
 grep -aF 'PASS synthetic GameInput DXGI: A, forward, camera left; all returned to neutral' "$log"

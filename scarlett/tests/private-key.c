@@ -36,8 +36,16 @@ int wmain(int argc, wchar_t **argv)
     INPUT input = {.type=INPUT_KEYBOARD, .ki={.wVk=vk}};
     if (SendInput(1,&input,sizeof(input))!=1) return 1;
     Sleep(ms);
+    HWND release_window = GetForegroundWindow();
     input.ki.dwFlags = KEYEVENTF_KEYUP;
     if (SendInput(1,&input,sizeof(input))!=1) return 1;
+    DWORD release_pid = 0;
+    if (release_window!=w || GetForegroundWindow()!=w ||
+            !GetWindowThreadProcessId(w,&release_pid) || release_pid!=pid) {
+        wprintf(L"hold unconfirmed: focus changed; key-up sent for %ls\n",argv[2]);
+        return 0;
+    }
+    wprintf(L"input window hwnd=%p pid=%lu at press and release\n",(void*)w,pid);
     wprintf(L"private Wine pid=%lu: %ls held %ld ms\n",pid,argv[2],ms);
     return 0;
 }
