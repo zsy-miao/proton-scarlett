@@ -12,3 +12,9 @@ ID3D12Resource *test_r11_backing(IUnknown *object)
     if (object->lpVtbl!=&color_vtbl.unknown || !r->tiled_r11) return NULL;
     ID3D12Resource_AddRef(r->host);return r->host;
 }
+ID3D12Resource *test_row_backing(IUnknown *object)
+{
+    if (object->lpVtbl!=&row_vtbl.unknown) return NULL;
+    struct row_buffer *r=CONTAINING_RECORD(object,struct row_buffer,iface);
+    ID3D12Resource_AddRef(r->host);return r->host;
+}

@@ -119,3 +119,7 @@ uses the same cross-format lease and final-resource retirement as `0034`.
 `0036` binds the 2560×1440 D32S8 image at its observed offset in either
 original WC backing. The reservation lasts through final host-resource
 retirement and includes the full guest allocation on both adapters.
+
+`0037` reuses the WC buffer slice and cross-format reservation for the
+460,800-byte row-major buffer at `+0xe650000`. A row buffer does not count
+as a tiled R32 predecessor. Run `wc-float1440.sh GPU TOOL row` on each GPU.

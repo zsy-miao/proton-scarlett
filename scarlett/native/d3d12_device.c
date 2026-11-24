@@ -69,6 +69,7 @@ struct xbox_device {
     struct desc_heap *rtv_heaps,*dsv_heaps;
     struct desc_heap *sampler_heaps;
     struct xs_buffer_binding *buffers;
+    struct row_buffer *rows;
     struct bvh_root *bvh_roots; /* live identities under descriptor_lock */
     struct color_resource *colors; /* weak registry under descriptor_lock */
 #ifdef SCARLETT_STAGED_PLACED
@@ -294,7 +295,15 @@ static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
         {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x80300006,{480,304},2,FALSE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,0x80300002,{1020,655},2,FALSE},
         {DXGI_FORMAT_R16G16_FLOAT,1280,720,0x300001,{60,61},1,FALSE},
-        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x4800002,{480,304},2,TRUE}
+        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x4800002,{480,304},2,TRUE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,2,{480,304},2,FALSE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,1280,720,0x80300002,{120,77},2,FALSE},
+        {DXGI_FORMAT_R10G10B10A2_UNORM,2560,1440,0xc00005,{240,241},5,FALSE},
+        {DXGI_FORMAT_R10G10B10A2_UNORM,2560,1440,0x300005,{240,241},5,FALSE},
+        {DXGI_FORMAT_R11G11B10_FLOAT,3840,2160,0x300001,{510,513},1,FALSE},
+        {DXGI_FORMAT_R8G8B8A8_UNORM,3840,2160,0xc00001,{510,513},1,FALSE},
+        {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,2560,1440,0xc00001,{240,241},1,FALSE},
+        {DXGI_FORMAT_R8G8B8A8_UNORM,2560,1440,0xc00001,{240,241},1,FALSE}
     };
     for (UINT i=0;i<ARRAYSIZE(groups);i++)
         if (rd->Format==groups[i].fmt && rd->Width==groups[i].width && rd->Height==groups[i].height &&
@@ -442,9 +451,9 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
         rd.Format==DXGI_FORMAT_R32_FLOAT && rd.SampleDesc.Count==1 && !rd.SampleDesc.Quality &&
         (UINT)rd.Layout==0x102 && (UINT)rd.Flags==0x300004 &&
         ((rd.Width==2560 && rd.Height==1440 && rd.MipLevels==1) ||
-         (rd.Width==1280 && rd.Height==720 && rd.MipLevels==2))) {
+         (rd.Width==1280 && rd.Height==720 && (rd.MipLevels==1 || rd.MipLevels==2)))) {
         /* Complete 256-byte tiles at every measured mip; these deferred owners request only +c8. */
-        *out=(D3D12_RESOURCE_ALLOCATION_INFO){rd.MipLevels==1?0xe10000:0x465000,256};
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){rd.Width==2560?0xe10000:rd.MipLevels==1?0x384000:0x465000,256};
         return S_OK;
     }
     if (tiled_r11_chain(&rd)) {
@@ -680,6 +689,7 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
 #endif
 #ifdef SCARLETT_STAGED_PLACED
 #include "tiled_r32.h"
+#include "row_buffer.h"
 #endif
 static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const void *desc, UINT state,
         const void *clear, REFIID iid, void **out)
@@ -688,6 +698,10 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_RESOURCE_DESC rd={0};
     BOOL read=copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags);
+    if (read && rd.Dimension==D3D12_RESOURCE_DIMENSION_BUFFER && !rd.Alignment && rd.Width==0x70800 && rd.Height==1 &&
+        rd.DepthOrArraySize==1 && rd.MipLevels==1 && !rd.Format && rd.SampleDesc.Count==1 && !rd.SampleDesc.Quality &&
+        rd.Layout==D3D12_TEXTURE_LAYOUT_ROW_MAJOR && rd.Flags==D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+        return create_row_buffer(d,address,state,clear,iid,out);
     if (read && rd.MipLevels==5 && tiled_r11_chain(&rd)) return create_tiled_buffer(d,TRUE,address,state,clear,iid,out);
     if (read && tiled_r32_desc(&rd)) return create_tiled_buffer(d,FALSE,address,state,clear,iid,out);
     if (read && (msaa_desc(&rd) || single_desc(&rd)))

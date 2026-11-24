@@ -75,6 +75,7 @@ static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
 }
 
 #ifdef SCARLETT_STAGED_PLACED
+static ID3D12Resource *row_host_locked(struct xbox_device*,IUnknown*);
 static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T,UINT,UINT);
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
 static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,const DWORD *w,SIZE_T dest)
@@ -151,9 +152,22 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     }
 #endif
     BOOL fp=words[0]==DXGI_FORMAT_R16G16B16A16_FLOAT;
-    BOOL ds2d=object && ((kind==SRV && words[0]==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS && words[1]==D3D12_SRV_DIMENSION_TEXTURE2D) ||
+    BOOL stencil=object && kind==SRV && words[0]==DXGI_FORMAT_X32_TYPELESS_G8X24_UINT && words[1]==D3D12_SRV_DIMENSION_TEXTURE2D;
+    BOOL ds2d=object && ((kind==SRV && (stencil || words[0]==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && words[1]==D3D12_SRV_DIMENSION_TEXTURE2D) ||
             (kind==DSV && words[0]==DXGI_FORMAT_D32_FLOAT_S8X24_UINT && words[1]==D3D12_DSV_DIMENSION_TEXTURE2D));
     BOOL single_color=fp || words[0]==DXGI_FORMAT_R8_UINT || words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
+#ifdef SCARLETT_STAGED_PLACED
+    const DWORD row_srv[]={0,1,0x1688,0,0,0,0x1c200,4,0,0};
+    const DWORD row_uav[]={0,1,0,0,0x1c200,4,0,0,0,1};
+    BOOL row=object && ((kind==SRV && !memcmp(words,row_srv,sizeof row_srv)) ||
+            (kind==UAV && !memcmp(words,row_uav,sizeof row_uav)));
+    if (row && kind==UAV) {
+        uav.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;uav.Buffer.NumElements=words[4];uav.Buffer.StructureByteStride=words[5];
+    } else if (row) {
+        srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;srv.Shader4ComponentMapping=words[2];
+        srv.Buffer.NumElements=words[6];srv.Buffer.StructureByteStride=words[7];
+    } else
+#endif
     if (wc) {
         srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
@@ -202,11 +216,11 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         srv.Shader4ComponentMapping=words[2];
     } else if (kind==SRV && (words[0]==DXGI_FORMAT_R8G8B8A8_UNORM || ((single_color || ds2d) && !words[3])) &&
                words[1]==D3D12_SRV_DIMENSION_TEXTURE2D && words[2]==0x1688 &&
-               !words[4] && words[5]==1 && !words[6] && !words[7]) {
+               !words[4] && words[5]==1 && words[6]==(UINT)stencil && !words[7]) {
         srv.Format=words[0];
         srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
         srv.Shader4ComponentMapping=words[2];
-        srv.Texture2D.MipLevels=1;
+        srv.Texture2D.MipLevels=1; srv.Texture2D.PlaneSlice=stencil;
     } else {
         if (kind!=SRV || words[0]!=DXGI_FORMAT_R32_TYPELESS || words[1]!=1 || words[2]!=0x1688 ||
             !words[6] || words[7] || words[8]!=D3D12_BUFFER_SRV_FLAG_RAW) return E_NOTIMPL;
@@ -217,10 +231,13 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     HRESULT hr=E_INVALIDARG;
     ID3D12Resource *resource=wc,*old=NULL;
     AcquireSRWLockExclusive(&d->descriptor_lock);
+#ifdef SCARLETT_STAGED_PLACED
+    if (row) {if (!(resource=row_host_locked(d,object))) goto done;} else
+#endif
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
             if (&c->iface==object && !c->tiled_r32 && !c->tiled_r11 && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
-                c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(ds2d?DXGI_FORMAT_R32G8X24_TYPELESS:single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
+                c->depth==(kind==DSV || stencil || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(ds2d?DXGI_FORMAT_R32G8X24_TYPELESS:single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }
         if (!resource) goto done;

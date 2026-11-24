@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | The same experimental build presented the game's first startup image on AMD and an NVIDIA RTX 3070. Neither run displayed a second frame. |
-| What's blocking it? | Both GPUs now size the tiled 1440p and 720p textures. Startup stops at the size request for a second 1440p depth/stencil texture. |
+| What's blocking it? | Both GPUs now create the next graphics buffer and read the stencil plane. Startup stops when the game asks to use the depth and stencil planes together in read-only mode. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

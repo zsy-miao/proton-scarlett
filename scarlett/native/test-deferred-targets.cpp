@@ -21,11 +21,12 @@ int main(){
     ComPtr<ID3D12Device> d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page && VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
     DWORD *wire=(DWORD*)(page+4096)-13;
-    for(UINT m=1;m<=2;m++){
-        DWORD v[]={3,0,0,0,2560u/m,0,1440u/m,(m<<16)|1u,41,1,0,0x102,0x300004};memcpy(wire,v,sizeof v);
+    for(UINT n=0;n<3;n++){
+        UINT m=n==1?2:1;
+        DWORD v[]={3,0,0,0,n?1280u:2560u,0,n?720u:1440u,(m<<16)|1u,41,1,0,0x102,0x300004};memcpy(wire,v,sizeof v);
         struct {UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO info;UINT64 post;} g={13,{},17};
         CK(query(&g.info,guest.Get(),1,1,wire)==&g.info && g.pre==13 && g.post==17 &&
-            g.info.SizeInBytes==(m==1?0xe10000:0x465000) && g.info.Alignment==256);
+            g.info.SizeInBytes==(n==0?0xe10000:n==1?0x465000:0x384000) && g.info.Alignment==256);
         D3D12_RESOURCE_ALLOCATION_INFO1 detail={};
         CK(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.info,&detail)==E_NOTIMPL);
         auto deny=[&](UINT node,UINT n,const void *p){D3D12_RESOURCE_ALLOCATION_INFO z={1,2};
@@ -122,7 +123,10 @@ int main(){
            {2560,1440,16,0xc00005,480,462},{2560,1440,61,0xc00005,60,61},{2560,1440,17,0xc00005,480,460},
            {1280,720,42,0xc00005,60,60},{640,360,62,0xc00005,4,4},
            {2560,1440,61,0x300005,60,61},{2560,1440,42,0xc00005,240,240},{2560,1440,19,0x80300006,480,304},
-           {3840,2160,19,0x80300002,1020,655},{1280,720,34,0x300001,60,61},{2560,1440,19,0x4800002,480,304}};
+           {3840,2160,19,0x80300002,1020,655},{1280,720,34,0x300001,60,61},{2560,1440,19,0x4800002,480,304},
+           {2560,1440,19,2,480,304},{1280,720,19,0x80300002,120,77},
+           {2560,1440,24,0xc00005,240,241},{2560,1440,24,0x300005,240,241},{3840,2160,26,0x300001,510,513},
+           {3840,2160,28,0xc00001,510,513},{2560,1440,29,0xc00001,240,241},{2560,1440,28,0xc00001,240,241}};
        using Query1=D3D12_RESOURCE_ALLOCATION_INFO*(WINAPI*)(D3D12_RESOURCE_ALLOCATION_INFO*,IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO1*);
        auto query1=(Query1)((*(void***)guest.Get())[0x360/8]);
        ComPtr<ID3D12Device4> d4;HR(d.As(&d4));
@@ -154,7 +158,7 @@ int main(){
            wire[12]^=0x1000000;CK(deny(1,1,wire));
        }
        printf("PASS measured page groups: %s; bad fields, node/count and short record denied\n",
-           measured?"eleven +c8, exact R8_UINT and deferred depth +360":"unmeasured adapter denied both slots");
+           measured?"nineteen +c8, exact R8_UINT and deferred depth +360":"unmeasured adapter denied both slots");
     }
     CK(VirtualFree(page,0,MEM_RELEASE));
     // Place adjacent desktop images, then verify that clearing each leaves its neighbors intact.

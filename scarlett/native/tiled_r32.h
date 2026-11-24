@@ -1,8 +1,9 @@
 /* Private 0032 ABI. Resolve the allocation by guest VA each time; callers own the returned buffer. */
-static HRESULT open_tiled_buffer(struct xbox_device *d,UINT64 va,struct color_resource *r)
+static HRESULT open_wc_buffer(struct xbox_device *d,UINT64 va,UINT span,const char *name,ID3D12Resource **out,
+        ID3D12Heap **ret_heap,HANDLE *ret_section,UINT_PTR *ret_off)
 {
-    const UINT span=r->tiled_r11?0x4b1400:0x384000;ID3D12Heap *heap=NULL;UINT off=0;HANDLE section=NULL;
-    HRESULT (WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),r->tiled_r11?"ScarlettTiledR11FiveV1":"ScarlettTiledR32BufferV1");
+    ID3D12Heap *heap=NULL;UINT off=0;HANDLE section=NULL;
+    HRESULT (WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),name);
     if(!place)return DXGI_ERROR_UNSUPPORTED;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&heap,NULL,&off);
     if(hr==S_FALSE){
@@ -12,8 +13,8 @@ static HRESULT open_tiled_buffer(struct xbox_device *d,UINT64 va,struct color_re
         if(!i.section || i.view_size!=WC_POOL_BYTES || i.offset>i.view_size-span || va!=(UINT_PTR)i.base+i.offset){if(i.section)CloseHandle(i.section);return E_INVALIDARG;}
         section=i.section;off=i.offset;
     }else if(hr!=S_OK)return hr;
-    hr=place(d->host,heap,section,WC_POOL_BYTES,off,&r->host);
-    if(SUCCEEDED(hr)){r->tile_heap=heap;r->tile_section=section;r->tile_va=va;r->tile_offset=off;}
+    hr=place(d->host,heap,section,WC_POOL_BYTES,off,out);
+    if(SUCCEEDED(hr) && ret_off){*ret_heap=heap;*ret_section=section;*ret_off=off;}
     else if(heap) ID3D12Heap_Release(heap);
     else CloseHandle(section);
     return hr;
@@ -29,7 +30,9 @@ static HRESULT create_tiled_buffer(struct xbox_device *d,BOOL r11,UINT64 va,UINT
     struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r)return E_OUTOFMEMORY;
     r->tiled_r11=r11;
-    HRESULT hr=open_tiled_buffer(d,va,r);
+    r->tile_va=va;
+    HRESULT hr=open_wc_buffer(d,va,r11?0x4b1400:0x384000,r11?"ScarlettTiledR11FiveV1":"ScarlettTiledR32BufferV1",
+            &r->host,&r->tile_heap,&r->tile_section,&r->tile_offset);
     if (FAILED(hr)) {HeapFree(GetProcessHeap(),0,r);return hr;}
     r->iface.lpVtbl=&color_vtbl.unknown;r->refs=1;r->owner=d;r->tiled_r32=!r11;IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);r->next=d->colors;d->colors=r;ReleaseSRWLockExclusive(&d->descriptor_lock);

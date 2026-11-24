@@ -56,13 +56,13 @@ int main(){
     CK(!memcmp(stamp,(void*)rt,16));
     ID3D12DescriptorHeap *bank;D3D12_GPU_DESCRIPTOR_HANDLE gpu;HR(xs_resolve_view(srvHeap.Get(),ss,0x90,&bank,&gpu));
     ComPtr<ID3D12Resource> image;D3D12_CPU_DESCRIPTOR_HANDLE h;HR(xs_resolve_depth_dsv(dsvHeap.Get(),rt,&h,image.GetAddressOf()));
-    sw[0]=DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;sw[6]=1;CK(FAILED(xs_write_view(dev.Get(),0x90,obj.Get(),sw,ss)));
+    sw[0]=DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;sw[6]=0;CK(FAILED(xs_write_view(dev.Get(),0x90,obj.Get(),sw,ss)));
+    sw[6]=1;((Writer)vt[0x90/8])(dev.Get(),obj.Get(),sw,ss+32);
+    ID3D12DescriptorHeap *sbank;D3D12_GPU_DESCRIPTOR_HANDLE sg;HR(xs_resolve_view(srvHeap.Get(),ss+32,0x90,&sbank,&sg));
+    CK(sbank==bank && sg.ptr==gpu.ptr+d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
     obj.Reset();CK(create(off)==DXGI_ERROR_INVALID_CALL && !guest);CK(overlap()==DXGI_ERROR_INVALID_CALL && !msaa);
     auto rd=image->GetDesc();CK(rd.Format==DXGI_FORMAT_R32G8X24_TYPELESS && rd.Width==width && rd.Height==height && rd.Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[2];UINT64 bytes;d->GetCopyableFootprints(&rd,0,2,0,fp,nullptr,nullptr,&bytes);
-    // Fixture-only neighboring stencil SRV; the guest published the depth SRV only.
-    D3D12_SHADER_RESOURCE_VIEW_DESC sv={};sv.Format=DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;sv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;sv.Shader4ComponentMapping=0x1688;sv.Texture2D.MipLevels=1;sv.Texture2D.PlaneSlice=1;
-    auto stencilHandle=bank->GetCPUDescriptorHandleForHeapStart();stencilHandle.ptr+=2*d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);d->CreateShaderResourceView(image.Get(),&sv,stencilHandle);
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC buf={};buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;const UINT64 shaderOff=bytes+span+2*guard;buf.Width=shaderOff+64;buf.Height=buf.DepthOrArraySize=buf.MipLevels=buf.SampleDesc.Count=1;buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ComPtr<ID3D12Resource> rb;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));

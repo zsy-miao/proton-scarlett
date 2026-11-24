@@ -202,3 +202,38 @@ Factories returned to `+1edbc4a` and `+1edbd15`. On both adapters both
 resource pointers at owner `+0x20` were null at the next `+c8`: 2560×1440
 R32G8X24_TYPELESS, one mip, flags `2`, alignment/layout zero, from
 `+1edbe1c`. No detail query, placement or view was observed on that thread.
+
+### Plain 1440p depth through the row buffer (`0037`)
+
+The next two +c8 calls requested D32S8 sizing, flags `2` at 2560×1440
+(480 RTX / 304 RADV pages), and `0x80300002` at 1280×720 (120 / 77).
+XG independently measured the subsequent 1280×720, **one**-mip R32_FLOAT
+`0x102` layout at `0x384000` bytes / 256 alignment. All 921,600 32-bit
+words matched the 8×8 coordinate permutation and the reference copy.
+No +360 or texture placement intervened on the constructing thread.
+
+Instead +428 (return `+6dd8b`) requested a 460,800-byte row-major UAV
+buffer, flags 4, state `UINT_MAX`, clear null, resource IID. At offset
+`+0xe650000` in the `0x89700000` WC pool it landed immediately after
+the earlier R8_UINT image. The marked section at `0xd4b200000` (RTX)
+and native heap at `0xd94600000` (RADV) resolved the complete span.
+The public wrapper published SRV then null-counter UAV on that same
+object: 115,200 structured elements of stride four. The store/load shader
+in `wc-float1440.sh GPU TOOL row` proves original bytes after VA reuse,
+range guards, duplicate reservation, bad descriptors and slot preservation.
+
+Next came seven single-image +c8 queries (64 KiB pages):
+
+| Extent | Format | Flags | RTX / RADV |
+|---|---|---|---|
+| 2560×1440 | R10G10B10A2_UNORM | 0xc00005 then 0x300005 | 240 / 241 |
+| 3840×2160 | R11G11B10_FLOAT | 0x300001 | 510 / 513 |
+| 3840×2160 | R8G8B8A8_UNORM | 0xc00001 | 510 / 513 |
+| 2560×1440 | R8G8B8A8_UNORM_SRGB | 0xc00001 | 240 / 241 |
+| 2560×1440 | R8G8B8A8_UNORM | 0xc00001, twice | 240 / 241 |
+
+Both adapters then wrote `+90` plane-1 stencil SRV `16 4 1688 0 0 1 1 0`
+(hex) on the previously placed depth1440 object. The depth1440 fixture now
+uses this guest SRV, alongside its depth SRV, for shader reads. Next came
+`+a8` DSV `14 3 3 0 0 0` on the same object (read-only depth and stencil),
+unsupported at title return `+14a69e8`.

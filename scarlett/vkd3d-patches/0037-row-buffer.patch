@@ -1,0 +1,56 @@
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -434,9 +434,9 @@
+ }
+ 
+ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**);
+-static HRESULT scarlett_tiled_buffer(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,bool r11,ID3D12Resource **out)
++static HRESULT scarlett_wc_buffer(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,SIZE_T span,ID3D12Resource **out)
+ {
+-    const SIZE_T span=r11?0x4b1400:0x384000;
++    const bool r11=span==0x4b1400;
+     const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_BUFFER,0,span,1,1,1,DXGI_FORMAT_UNKNOWN,{1,0},D3D12_TEXTURE_LAYOUT_ROW_MAJOR,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+     struct d3d12_device *d;
+     struct d3d12_heap *heap;
+@@ -475,7 +475,7 @@
+     if(FAILED(hr)){scarlett_remove_slice(s);goto done;}
+     /* Final internal resource destruction, not last title Release, drops the lease. */
+     r->flags|=SCARLETT_PRIMARY | VKD3D_RESOURCE_RETAINED_GPU_REFERENCE;
+-    pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;s->r32_device=r11?NULL:d;pthread_mutex_unlock(&scarlett_slice_lock);
++    pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;s->r32_device=span==0x384000?d:NULL;pthread_mutex_unlock(&scarlett_slice_lock);
+     *out=(ID3D12Resource*)&r->ID3D12Resource_iface;
+ done:
+     if(imported)ID3D12Heap_Release(imported);
+@@ -487,12 +487,20 @@
+     if(!out)return E_POINTER;
+     *out=NULL;
+     if(!scarlett_r32_offset(off,!!native))return E_INVALIDARG;
+-    return scarlett_tiled_buffer(iface,native,section,size,off,false,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0x384000,out);
+ }
+ HRESULT WINAPI ScarlettTiledR11FiveV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+ {
+     if(!out)return E_POINTER;
+     *out=NULL;
+     if(native ? off!=0x13c88000 : off%0x4000)return E_INVALIDARG;
+-    return scarlett_tiled_buffer(iface,native,section,size,off,true,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0x4b1400,out);
++}
++
++HRESULT WINAPI ScarlettRowBufferV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (off!=0xe650000) return E_INVALIDARG;
++    return scarlett_wc_buffer(iface,native,section,size,off,0x70800,out);
+ }
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettRowBufferV1 @42
+     ScarlettDepth1440ImageV1 @41
+     ScarlettR8UintImageV1 @40
+     ScarlettTiledR11FiveV1 @39
