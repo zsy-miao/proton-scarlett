@@ -649,3 +649,11 @@ The only observed token-2 queue submission was a flags-0 sync singleton
 on a different list. The diagnostic builds were not promoted. The
 ordinary first stop remains `+bff06` on both GPUs, with one startup
 presentation each.
+
+One further RADV diagnostic traced the missing group to device `+80`.
+The game requested a root signature with one descriptor table: a volatile
+constant-buffer view at `b27,space1`. The provider returned `E_NOTIMPL`
+and a null root. The factory discarded the group and stored null in
+slot 42. When `im:CS_BLIT_COLOUR` selected that slot on the same asset,
+it replaced the previous group with null; lookup then faulted at `+b5a5f8`.
+The run issued tokens 1 and 2; only token 1 presented (WSI count 0→1).
