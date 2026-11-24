@@ -3,6 +3,7 @@ import mmap
 import os
 import struct
 import zlib
+from typing import NamedTuple
 
 from native_ps import need
 
@@ -26,7 +27,14 @@ def inflate(data, size, mode, trailer):
     return result
 
 
-def dxbc(data):
+class Record(NamedTuple):
+    code: bytes
+    inputs: bytes
+    outputs: bytes
+    psv: bytes
+
+
+def dxbc(data, kind):
     size, count = fields(data, 24, "2I")
     need(data[:4] == b"DXBC" and len(data) == size and 0 < count <= 32, "DXBC header")
     parts = {}
@@ -36,19 +44,15 @@ def dxbc(data):
         need(off >= end and not off % 4 and tag not in parts, "ordered unique chunks")
         parts[tag] = span(data, off+8, n)
         end = off+8+n
-    need(end == size and {b"DXIL", b"OSG1", b"PSV0"} <= parts.keys(), "required chunks")
-    sig = parts[b"OSG1"]
-    count, header, stream, name, index, semantic, component, reg, mask, prec = fields(sig, 0, "10I")
-    need((count,header,stream,index,semantic,component,reg,mask,prec) ==
-         (1,8,0,0,64,3,0,15,0) and name >= 40 and span(sig, name, 10) == b"SV_Target\0",
-         "expected float4 SV_Target0")
+    need(end == size and {b"DXIL", b"ISG1", b"OSG1", b"PSV0"} <= parts.keys(), "required chunks")
+    need(kind in (0, 1), "expected PS or VS")
     psv = parts[b"PSV0"]
     need(fields(psv, 0, "I") == (52,) and fields(psv, 56, "I") == (0,), "resource-free PSV")
 
     x = parts[b"DXIL"]
     stage, words, magic, version, bc, n = fields(x, 0, "II4sIII")
-    need(stage == 0x66 and words*4 == len(x) and magic == b"DXIL" and version == 0x106 and
-         span(x, 8+bc, n) == b"NOBC", "native-only ps_6_6")
+    need(stage == kind<<16 | 0x66 and words*4 == len(x) and magic == b"DXIL" and version == 0x106 and
+         span(x, 8+bc, n) == b"NOBC", "native-only SM6.6 stage")
     magic, count, table = fields(x, 24, "4sII")
     need(magic == b"XDAT" and count == 3 and table == 36, "XDAT header")
     entries = {}
@@ -69,23 +73,36 @@ def dxbc(data):
     need((magic, version, compressed) == (b"XBCH", 3, len(e)-24), "XBCH header")
     f = inflate(e[24:], raw, 15, 0)
     need(fields(f, 0, "4sIQ") == (b"FSSM", 0x101, len(f)-16), "FSSM header")
-    desc = 16 + fields(f, 64, "Q")[0]
-    need(fields(f, desc+64, "Q") == (0xc000020105,), "native PS descriptor")
+    desc = 16 + fields(f, 56 if kind else 64, "Q")[0]
+    need(fields(f, desc+64, "Q")[0] == (0xc000020004 if kind else 0xc000020105),
+         "native stage descriptor")
     off, n = fields(f, desc, "QQ")
     need(off % 4 == 0 and 16+off >= desc+72 and 0 < n <= 4096, "ISA extent")
-    return span(f, 16+off, n)
+    return Record(span(f, 16+off, n), parts[b"ISG1"], parts[b"OSG1"], psv)
 
 
-def read_native(path, name):
+def read_record(path, name, kind):
     label = name.encode("ascii") + b"\0"
     need(0 < len(label) < 256, "record name")
-    needle = bytes([len(label)]) + label + b"@"
+    needle = bytes([len(label)]) + label
     with open(path, "rb") as fh:
         need(0 < os.fstat(fh.fileno()).st_size <= 1 << 30, "pack extent")
         with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as m:
             pos = m.find(needle)
             need(pos >= 0 and m.find(needle, pos+1) == -1, "expected unique named record")
             pos += len(needle)
+            need(span(m,pos,1) in (b"@", b"2"), "record header type")
+            pos += 1
             n, _, duplicate, raw = fields(m, pos, "4I")
             need(0 < n == duplicate <= 4 << 20, "record extent")
-            return dxbc(inflate(span(m, pos+16, n), raw, -15, 12))
+            return dxbc(inflate(span(m, pos+16, n), raw, -15, 12), kind)
+
+
+def read_native(path, name):
+    ps = read_record(path, name, 0)
+    sig = ps.outputs
+    count, header, stream, name, index, semantic, component, reg, mask, prec = fields(sig, 0, "10I")
+    need((count,header,stream,index,semantic,component,reg,mask,prec) ==
+         (1,8,0,0,64,3,0,15,0) and name >= 40 and span(sig, name, 10) == b"SV_Target\0",
+         "expected float4 SV_Target0")
+    return ps.code

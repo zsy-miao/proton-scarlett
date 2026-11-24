@@ -33,9 +33,9 @@ In GPU tests, [`BeginPass`](scarlett/native/bvh-beginpass.md) initialized two bo
 
 Both retail display textures were created on the thread that owns the game window. A [separate presentation test](scarlett/native/queue/present.md) opened DXGI on a window captured by the same Wine hook and verified two displayed frames.
 
-A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
+A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused.
 
-An [offscreen pixel test](scarlett/tests/native-ps/) translated the title's native `PS_clearRipple` shader and ran it on RADV and RTX 3070. All 24 drawn pixels matched `(0.5, 0.5, 1, 0)` and all 24 border pixels stayed unchanged. The test supplies its own vertex shader; the retail draw path is still unfinished.
+An [offscreen draw test](scarlett/tests/native-ps/) translated the title's native `VS_Passthrough` and `PS_LUT3DIdentity` shaders and linked them through their texture coordinates. On RADV and RTX 3070, all 3,556 drawn pixels matched the expected identity lookup table and all 540 border pixels stayed unchanged. This pair uses no textures or samplers. The retail draw path is still unfinished.
 
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
 

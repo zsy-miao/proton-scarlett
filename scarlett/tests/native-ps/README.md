@@ -1,4 +1,4 @@
-# Native PS offline pixel fixture
+# Native graphics offline pixel fixtures
 
 Run `python3 test.py` here with a C11 compiler, Vulkan headers/loader/graphics
 device, `glslangValidator` and `spirv-val`. Set `VK_DRIVER_FILES` to select an
@@ -24,5 +24,25 @@ in the test, not generated from the translator. The project-owned input exercise
 overwrite, different VGPR numbers and reversed export order, yielding
 `(-1, 4, 0.5, -2)`. Both go through SPIR-V validation and a Vulkan graphics
 pipeline; readback checks all 48 RGBA16F pixels after a queue fence, including
-the undrawn magenta border. No title vertex shader, resources, game pipeline
-state, Wine/D3D device or present path is involved.
+the undrawn magenta border.
+
+## Linked stages
+
+The same command also runs a project-owned VS/PS UV-swap case. With the local
+pack it additionally runs `VS_Passthrough_071514dd_Wrapped` (256 bytes) and
+`PS_LUT3DIdentity_071514dd_Wrapped` (320 bytes) as one pipeline. Each module
+is generated from that stage's native instructions. The VS uses vertex ID,
+integer masks and shifts, byte conversion and FMA, and exports clip position
+and PARAM0. Clip Y is inverted for the fixture's positive Vulkan viewport.
+The PS's matched two-step interpolation reads the exported XY as a smooth
+float2. It then calculates LUT channels and exports two RTZ-half pairs.
+The linker checks semantic name/index, component type/mask, registers and
+PSV interpolation mode. Both stage resource counts must be zero.
+
+The oracle for texel `(x,y)` of a 256×16 identity LUT is
+`((x % 16)/15, y/15, (x // 16)/15, 1)`, independently quantized toward zero.
+The fenced readback checks all 3,556 unique interior colors and the 540
+untouched border pixels. Names and hashes identify inputs only in tests.
+The supported ABI is a non-indexed three-vertex draw starting at vertex ID
+zero, one position, one perspective-linear float2 varying and one RGBA16F
+target. This does not reconstruct retail PSO, binding, or presentation state.

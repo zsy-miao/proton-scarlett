@@ -10,6 +10,7 @@ import tempfile
 
 from local_record import read_native
 from native_ps import lower, need
+import test_pair
 
 
 def encode(*words):
@@ -82,4 +83,11 @@ void main() {
             want = rgba if 1 <= i%8 <= 6 and 1 <= i//8 <= 4 else (1.,0.,1.,1.)
             need(pixel == want, f"{label} pixel {i}: {pixel} != {want}")
         print(f"PASS {label}: {len(code)} native bytes; fenced 24 x {rgba}, 24 magenta guards",
+              flush=True)
+    for label, (vertex, pixel), oracle in test_pair.cases(sys.argv[1] if len(sys.argv)>1 else None):
+        compile_module("pair.vert", vertex)
+        compile_module("pair.frag", pixel)
+        run("./draw", "pair.vert.spv", "pair.frag.spv", "pixels", "lut")
+        test_pair.check(Path(work, "pixels").read_bytes(),oracle)
+        print(f"PASS {label}: 3556 distinct RGBA16F pixels, 540 magenta guards after fence",
               flush=True)

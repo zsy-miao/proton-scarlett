@@ -1,13 +1,13 @@
-/* Fixture: render 6x4 inside an 8x6 magenta RGBA16F image, fence and read back. */
+/* Fixture: draw inside a one-pixel guard border, fence and read back RGBA16F. */
 #include <vulkan/vulkan.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%d: %s\n", __LINE__, #x); exit(1); } } while (0)
 #define VK(x) do { VkResult r_=(x); if (r_!=VK_SUCCESS) { fprintf(stderr,"%d: %s: %d\n",__LINE__,#x,r_); exit(1); } } while (0)
 #define INFO(type) .sType=VK_STRUCTURE_TYPE_##type
-enum { W=8, H=6, BYTES=W*H*8 };
 
 static VkDevice device;
 static VkPhysicalDeviceMemoryProperties mem;
@@ -30,7 +30,8 @@ static VkShaderModule module(const char *path) {
 }
 
 int main(int argc,char **argv) {
-    CHECK(argc==4);
+    CHECK(argc==4 || (argc==5 && !strcmp(argv[4],"lut")));
+    const uint32_t W=argc==5?256:8, H=argc==5?16:6, BYTES=W*H*8;
     VkInstanceCreateInfo ici={INFO(INSTANCE_CREATE_INFO)};
     VkInstance instance; VK(vkCreateInstance(&ici,NULL,&instance));
     uint32_t n=0; VK(vkEnumeratePhysicalDevices(instance,&n,NULL)); CHECK(n && n<=64);
