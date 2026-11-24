@@ -35,6 +35,8 @@ Both retail display textures were created on the thread that owns the game windo
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 
+An [offscreen pixel test](scarlett/tests/native-ps/) translated the title's native `PS_clearRipple` shader and ran it on RADV and RTX 3070. All 24 drawn pixels matched `(0.5, 0.5, 1, 0)` and all 24 border pixels stayed unchanged. The test supplies its own vertex shader; the retail draw path is still unfinished.
+
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
