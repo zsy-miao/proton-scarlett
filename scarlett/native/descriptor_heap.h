@@ -1,5 +1,6 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
-enum { R8_VIEW=0x230, RAW38_VIEW=0x231 };
+enum { R8_VIEW=0x230, RAW38_VIEW=0x231, RGBA1_VIEW=0x232 };
+static BOOL refresh_required(UINT kind) { return kind==R8_VIEW || kind==RGBA1_VIEW; }
 struct descriptor_record {
     UINT64 serial;
     UINT kind, offset; /* Address views: byte offset in the retained WC buffer */
@@ -215,7 +216,7 @@ HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorH
     if (!h->records || h->rtv) return S_OK;
     AcquireSRWLockShared(&h->owner->descriptor_lock);
     SIZE_T first=(slot-h->start)/h->stride;
-    for (UINT n=0;n<count;n++) if (h->records[first+n].kind==R8_VIEW) {
+    for (UINT n=0;n<count;n++) if (refresh_required(h->records[first+n].kind)) {
         if (bank) *bank=NULL;
         if (cpu) cpu->ptr=0;
         if (gpu) gpu->ptr=0;

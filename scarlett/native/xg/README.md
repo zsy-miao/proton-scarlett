@@ -143,7 +143,7 @@ can copy one such record from a CPU heap to a visible heap; overwriting or
 releasing either slot does not revoke the other's reference. Ordinary view
 and range resolvers reject R8 records. A tag copied as bytes is insufficient.
 
-An adapter must call `xs_refresh_r8` immediately before use on an open,
+An adapter must call `xs_refresh_wc_texture` immediately before use on an open,
 ordered direct or compute list with the WC buffer in COMMON. Each call records
 2,048 contiguous 16-byte GPU copies into private linear rows and a footprint
 copy into a private native R8 texture. The recorder returns its one-slot heap
@@ -165,3 +165,25 @@ sample.dxil`. Use the device, queue and VM objects and compiler flags in
 instead of the fixture-specific device file. Link `../test-r8-view.cpp` and
 the XG import library. Place `sample.dxil` beside `game_scarlett_master.exe`.
 Build with `-DTEST_R8_DIRECT` for a direct list or omit it for compute.
+
+## Runtime 1×1 RGBA8_UNORM
+
+For the single 2D layer, mip and sample, quality zero and flags `0x300000`,
+the small UNKNOWN-layout query on RADV and RTX 3070 returned 4096 bytes at
+alignment 4096. With option zero and default input alignment the project
+recommends `0x105` (4KB_S). The explicit guest allocation occupies one full
+tile. CopyIntoSubresource takes plane/subresource zero and pitches 4/4. The
+source was a DWORD on the calling thread's stack, unlike the R8 pool source.
+Snapshot it and validate the full, aligned WC destination by section handle;
+write only the four bytes at the tile origin.
+
+Retail requested three matching address views, with original WC offsets
+`0xe5c7000`, `0xe5c8000`, and `0xe5c9000`. The first texel was `0xffffffff`.
+The next allocation query (`+c8`, title return `+344145`) is 1×1 **UINT**,
+format 30, with otherwise identical small alignment, flags and shape.
+No retail shader sampling was observed. For a fixture consumption, use the
+R8 view test build above with `-DTEST_RGBA1` and `../test-rgba1.hlsl` compiled
+as `rgba1.dxil`. The native 1×1 texture is refreshed directly from the retained
+buffer on the consuming command list. Two nonuniform RGBA patterns check each
+channel, all 4092 padding bytes, neighboring guards, descriptor overwrite,
+heap release and exact VA reuse.

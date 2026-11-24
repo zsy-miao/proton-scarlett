@@ -14,8 +14,8 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
     const D3D12_RESOURCE_DESC *d, uintptr_t option, D3D12_TEXTURE_LAYOUT *out)
 {
     if (!d || !out) return E_POINTER;
-    /* Project recommendation for the runtime-created texture copied by copy_r8. */
-    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && is_r8(d)) {
+    /* Project recommendation for the runtime-created texture copied by copy_texture. */
+    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && (is_r8(d) || is_rgba1(d))) {
         *out=(D3D12_TEXTURE_LAYOUT)R8_LAYOUT;
         return S_OK;
     }
@@ -39,7 +39,7 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
     }
 }
 
-struct computer { const void *vt; LONG refs; };
+struct computer { const void *vt; LONG refs; BOOL rgba1; };
 static ULONG WINAPI add_ref(struct computer *c) { return InterlockedIncrement(&c->refs); }
 static ULONG WINAPI release(struct computer *c)
 {
@@ -50,20 +50,20 @@ static ULONG WINAPI release(struct computer *c)
 
 /* Acquire the original section, then map by HANDLE; the title VA can be released
  * or reused without redirecting the copy. Never use either alias past this call. */
-static HRESULT r8_alias(const void *at,BOOL wc,void **mapping,BYTE **slot,BOOL *system)
+static HRESULT texture_alias(const void *at,SIZE_T bytes,BOOL wc,void **mapping,BYTE **slot,BOOL *system)
 {
     struct scarlett_section_info held,view;
-    HRESULT hr=scarlett_query_section(wc?0x53430005:0x5343000c,at,R8_BYTES,&held);
+    HRESULT hr=scarlett_query_section(wc?0x53430005:0x5343000c,at,bytes,&held);
     if (FAILED(hr) && !wc) {
-        hr=scarlett_acquire_section(at,R8_BYTES,&held);
+        hr=scarlett_acquire_section(at,bytes,&held);
         if (SUCCEEDED(hr)) *system=TRUE;
     }
     if (FAILED(hr)) return hr;
-    if (held.view_size!=(wc?0x89700000u:0x49400000u) || held.offset>held.view_size-R8_BYTES ||
+    if (held.view_size!=(wc?0x89700000u:0x49400000u) || held.offset>held.view_size-bytes ||
         (UINT_PTR)at-(UINT_PTR)held.base!=held.offset || (wc && held.offset%4096)) hr=E_INVALIDARG;
     else if (!wc && *system) {
         SIZE_T start=held.offset & ~(SIZE_T)65535, delta=held.offset-start;
-        *mapping=MapViewOfFile(held.section,FILE_MAP_READ,0,(DWORD)start,delta+R8_BYTES);
+        *mapping=MapViewOfFile(held.section,FILE_MAP_READ,0,(DWORD)start,delta+bytes);
         if (*mapping) *slot=(BYTE *)*mapping+delta;
         else hr=HRESULT_FROM_WIN32(GetLastError());
     } else {
@@ -77,19 +77,29 @@ static HRESULT r8_alias(const void *at,BOOL wc,void **mapping,BYTE **slot,BOOL *
     return hr;
 }
 
-static HRESULT WINAPI copy_r8(struct computer *c,void *dst,UINT plane,UINT sub,const void *src,UINT row,UINT slice)
+static HRESULT WINAPI copy_texture(struct computer *c,void *dst,UINT plane,UINT sub,const void *src,UINT row,UINT slice)
 {
-    (void)c;
     if (!dst || !src) return E_POINTER;
-    if (plane || sub || row!=256 || slice!=R8_BYTES) return E_INVALIDARG;
+    if (plane || sub || row!=(c->rgba1?4u:256u) || slice!=(c->rgba1?4u:R8_BYTES)) return E_INVALIDARG;
     BYTE *in=NULL,*out=NULL; void *wb=NULL,*wc=NULL;
     BOOL system=FALSE;
-    HRESULT hr=r8_alias(src,FALSE,&wb,&in,&system);
-    if (FAILED(hr)) return hr;
-    hr=r8_alias(dst,TRUE,&wc,&out,NULL);
+    HRESULT hr;
+    DWORD texel;
+    if (c->rgba1) {
+        /* This runtime producer passes a DWORD on the calling thread's stack. */
+        ULONG_PTR lo,hi,p=(ULONG_PTR)src; SIZE_T got;
+        GetCurrentThreadStackLimits(&lo,&hi);
+        if (p<lo || p>=hi || hi-p<sizeof texel ||
+            !ReadProcessMemory(GetCurrentProcess(),src,&texel,sizeof texel,&got) || got!=sizeof texel) return E_POINTER;
+    } else {
+        hr=texture_alias(src,R8_BYTES,FALSE,&wb,&in,&system);
+        if (FAILED(hr)) return hr;
+    }
+    hr=texture_alias(dst,c->rgba1?R8_ALIGNMENT:R8_BYTES,TRUE,&wc,&out,NULL);
     if (SUCCEEDED(hr)) {
-        /* Each 4KB_S tile contains 16-byte row segments; write WC bytes in order. */
-        for (UINT i=0;i<R8_BYTES;i+=16) {
+        /* A one-texel 4KB_S texture starts at the tile origin. Preserve all padding. */
+        if (c->rgba1) memcpy(out,&texel,sizeof texel);
+        else for (UINT i=0;i<R8_BYTES;i+=16) {
             UINT x=((i>>12)&3)*64+((i>>5)&16)+((i>>6)&32);
             UINT y=(i>>14)*64+((i>>5)&32)+((i>>4)&31);
             memcpy(out+i,in+y*256+x,16);
@@ -98,16 +108,16 @@ static HRESULT WINAPI copy_r8(struct computer *c,void *dst,UINT plane,UINT sub,c
         VirtualFree(wc,0,MEM_RELEASE);
     }
     if (system) UnmapViewOfFile(wb);
-    else VirtualFree(wb,0,MEM_RELEASE);
+    else if (wb) VirtualFree(wb,0,MEM_RELEASE);
     return hr;
 }
 static const struct {
     __typeof__(&add_ref) add_ref;
     __typeof__(&release) release;
     xs_stop_fn gap[6];
-    __typeof__(&copy_r8) copy_into;
+    __typeof__(&copy_texture) copy_into;
     xs_stop_fn other[3];
-} methods={add_ref,release,{[0 ... 5]=xs_stop},copy_r8,{[0 ... 2]=xs_stop}};
+} methods={add_ref,release,{[0 ... 5]=xs_stop},copy_texture,{[0 ... 2]=xs_stop}};
 
 __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     const D3D12_RESOURCE_DESC *d, void **out)
@@ -117,10 +127,11 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     D3D12_RESOURCE_DESC desc={0};
     SIZE_T n=offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof desc.Flags,got;
     if (!d || !ReadProcessMemory(GetCurrentProcess(),d,&desc,n,&got) || got!=n) return E_POINTER;
-    if (!is_r8(&desc) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
+    BOOL rgba1=is_rgba1(&desc);
+    if ((!rgba1 && !is_r8(&desc)) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
-    *c=(struct computer){&methods,1};
+    *c=(struct computer){&methods,1,rgba1};
     *out=c;
     return S_OK;
 }

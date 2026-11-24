@@ -256,7 +256,7 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
         UINT64 bits[2];
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
         if (!copy_in(bits,(void *)slot,sizeof bits)) hr=E_POINTER;
-        else if (kind==SRV && r->kind==R8_VIEW) hr=E_NOTIMPL;
+        else if (kind==SRV && refresh_required(r->kind)) hr=E_NOTIMPL;
         else if (kind==SRV && r->kind==RAW38_VIEW) {
             if (!r->resource || bits[0]!=r->serial || bits[1]!=(0x5853444553430000ull|RAW38_VIEW)) hr=E_INVALIDARG;
         }
@@ -395,8 +395,10 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     DWORD w[16];
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
-    if (is_r8(&rd) && !rd.Alignment && (UINT)rd.Layout==R8_LAYOUT)
-        return write_wc_address_view(device,R8_VIEW,w,dest);
+    if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
+        if (is_r8(&rd)) return write_wc_address_view(device,R8_VIEW,w,dest);
+        if (is_rgba1(&rd)) return write_wc_address_view(device,RGBA1_VIEW,w,dest);
+    }
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment ||
         rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
         rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Layout!=D3D12_TEXTURE_LAYOUT_ROW_MAJOR || rd.Flags ||
