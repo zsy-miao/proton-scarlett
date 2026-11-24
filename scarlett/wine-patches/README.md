@@ -1,5 +1,9 @@
 # Scarlett section lifetime ABI v1 (native x64)
 
+`0019-wine-a8-line-copy.patch` follows `0018`. The native 128-byte A8
+write accepts a 256-byte-aligned destination after validating the whole
+256-byte span. Stage the rebuilt `ntdll.so` with the matching `xg_xs.dll`.
+
 Apply `0018-wine-linear-seven-copy.patch` after `0017` for the seven-level
 128×72 R32 texture copy. Stage the rebuilt `ntdll.so` with `xg_xs.dll`.
 The native writer checks the WC pool generation and the entire chain

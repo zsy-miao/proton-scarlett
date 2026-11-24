@@ -484,3 +484,9 @@ Five retail launches (three RTX diagnostics and two ordinary runs on the
 same stage). AMD stopped at list `+258`, return `+32820`. RTX first
 rejected a seven-mip 128×72 `R32_FLOAT` size query at `+344145`.
 Both issued tokens 1 and 2; the final present count was 1 on each.
+
+Pooled Direct `+258(0)` now records the requested depth order on the
+guest list. It survives a recording split or failed reset, prevents a
+native recorder borrow, and clears on successful reset. No guest draw
+with pending depth order is enabled. Both adapters passed the list-state,
+ordering and lifetime tests. AMD reached list `+178`, return `+328be`.

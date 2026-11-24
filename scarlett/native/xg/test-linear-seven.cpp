@@ -5,8 +5,8 @@
 #include <vector>
 using Microsoft::WRL::ComPtr;
 #define CK(e) do {if(!(e)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#e);return 1;}}while(0)
-int main(){
-    constexpr UINT pool=0x89700000,off=0x1c3eb000,span=0xd900,guard=256,total=span+2*guard;
+static int exercise(bool line){
+    const UINT pool=0x89700000,off=line?0xe6cf800:0x1c3eb000,span=line?256:0xd900,guard=256,total=span+2*guard;
     auto xm=LoadLibraryA("xmem.dll"),xg=LoadLibraryA("xg_xs.dll");CK(xm && xg);
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");CK(alloc);
     BYTE *b=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(b);
@@ -18,6 +18,7 @@ int main(){
     else{SIZE_T pos=0;CK(pin==S_FALSE && SUCCEEDED(section.acquire(d.Get(),b+off,span,&pos)) && pos==off);raw=section.resource();}
     auto create=(HRESULT(WINAPI*)(const void*,void**))(void*)GetProcAddress(xg,"XGCreateTextureComputer");CK(create);
     DWORD desc[]={3,0,0,0,128,0,72,0x70001,41,1,0,0x100,0x300000};
+    if(line){desc[0]=2;desc[6]=1;desc[7]=0x10001;desc[8]=65;desc[11]=0;}
     void *c=nullptr;for(UINT i=0;i<13;i++)if(i!=1){desc[i]^=1;CK(FAILED(create(desc,&c))&&!c);desc[i]^=1;}
     CK(create(desc,&c)==S_OK && c);auto vt=*(void***)c;
     auto copy=(HRESULT(WINAPI*)(void*,void*,UINT,UINT,const void*,UINT,UINT))(void*)vt[8];
@@ -29,8 +30,15 @@ int main(){
        FAILED(copy(c,dst+1,0,6,src,8,8)) && FAILED(copy(c,b+pool-4096,0,6,src,8,8)) &&
        FAILED(copy(c,dst,0,0,src+65536-512,512,36864)) && FAILED(copy(c,src,0,6,src,8,8)));
     CK(!memcmp(dst-guard,expect.data(),total));
+    if(line){
+        BYTE stack[128];for(UINT j=0;j<128;j++)stack[j]=BYTE(13+117*j);
+        CK(FAILED(copy(c,dst,0,0,src,128,128)) && FAILED(copy(c,dst,1,0,stack,128,128)) && FAILED(copy(c,dst,0,1,stack,128,128)) &&
+            FAILED(copy(c,dst,0,0,stack,127,128)) && FAILED(copy(c,dst,0,0,stack,128,127)) && FAILED(copy(c,dst+1,0,0,stack,128,128)));
+        CK(!memcmp(dst-guard,expect.data(),total) && copy(c,dst,0,0,stack,128,128)==S_OK);
+        memcpy(expect.data()+guard,stack,128);memset(stack,0,128);CK(!memcmp(dst-guard,expect.data(),total));
+    }
     UINT end=span;
-    for(UINT m=0;m<7;m++){
+    for(UINT m=0;!line && m<7;m++){
         UINT row=512>>m,hgt=72>>m,bytes=row*hgt,stride=m?256:512;
         // Reference spans include internal blank rows at mip 3/4/5/6.
         const UINT starts[]={0x4900,0x2500,0x1300,0xa00,0x500,0x200,0};
@@ -49,5 +57,6 @@ int main(){
     l->CopyBufferRegion(read.Get(),0,raw,off-guard,total);CK(SUCCEEDED(l->Close()));ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
     ComPtr<ID3D12Fence> f;HANDLE ev=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(ev && SUCCEEDED(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f))) && SUCCEEDED(q->Signal(f.Get(),1)) && SUCCEEDED(f->SetEventOnCompletion(1,ev)) && WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
     void *mapped;CK(SUCCEEDED(read->Map(0,nullptr,&mapped))&&!memcmp(mapped,expect.data(),total));read->Unmap(0,nullptr);CloseHandle(ev);
-    CK(VirtualFree(b,0,MEM_RELEASE));printf("PASS seven XG copies: %s original WC GPU readback, all bytes, padding, adjacent guards and negatives\n",native?"native":"section");
+    CK(VirtualFree(b,0,MEM_RELEASE));printf("PASS %s: %s original WC GPU readback, all bytes, padding, adjacent guards and negatives\n",line?"A8 line from thread stack":"seven XG copies",native?"native":"section");return 0;
 }
+int main(){return exercise(false)||exercise(true); }

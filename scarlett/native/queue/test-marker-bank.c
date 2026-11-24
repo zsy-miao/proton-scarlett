@@ -1,5 +1,6 @@
 /* The same two marker banks use native GPU writes or ordered CPU aliases. */
 #include "queue.c"
+#include "test-depth-slots.h"
 #define CK(x) do { if (!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);return 1;} } while(0)
 #define HR(x) do { HRESULT h_=(x);if(FAILED(h_)){fprintf(stderr,"FAIL %d: %s hr=%lx\n",__LINE__,#x,h_);return 1;} } while(0)
 extern HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
@@ -47,11 +48,14 @@ static int check(UINT offset,UINT value,BOOL native)
         ID3D12Resource_Unmap(upload,0,NULL);
     }
     HR(xs_allocator(d,0,&a));HR(xs_allocator(d,0,&b));HR(xs_device_list(d,0,a,TRUE,owner,&list));HR(xs_direct_queue(d,&q));HR(xs_shared_fence(d,&gate));HR(xs_shared_fence(d,&done));struct startup_list *s=sl(list);
+    CK(guarded_depth_slots(list));
     for(UINT pass=0;pass<2;pass++){
+        CK(!s->depth_zero_pending && record_depth_order(s,1)==E_NOTIMPL);
         HR(xs_bind_pool_heaps(list,2,pair));if(native)CK(FAILED(prefix_write(s,addr,value^1,0,0)));
         pool_vtbl.marker(list,addr,value,0,0);CK(s->marker && FAILED(prefix_write(s,addr,value,0,0)));
         HR(xs_bind_pool_heaps(list,2,pair));if(native && value)CK(FAILED(pool_timestamp(s,ts+8,0,0,1)));
         pool_vtbl.timestamp(list,ts,0,0,1);
+        pool_vtbl.depth_order(list,0);
         HRESULT (*write_post)(struct startup_list*,UINT64,UINT,UINT64,UINT)=native?record_native_post:split_after_timestamp;
         CK(FAILED(write_post(s,addr+8,post,0,0)) && FAILED(write_post(s,addr+4,post,1,0)));
         if(value)CK(FAILED(write_post(s,addr+4,post^1,0,0)));
@@ -61,6 +65,7 @@ static int check(UINT offset,UINT value,BOOL native)
         __atomic_store_n((UINT64*)alias.base,target,__ATOMIC_RELEASE);
         CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
         pool_vtbl.wait64(list,(UINT_PTR)page,7,target,1);
+        CK(s->head && s->depth_zero_pending && !xs_list_host(list));
         if(value){
             CK(atlas_sync_valid(s,0xc280,0x20000,0,range) && !atlas_sync_valid(s,0xc3c0,0x20000,0,range) &&
                 !atlas_sync_valid(s,0xc280,0x80020000,0,range) && !atlas_sync_valid(s,0xc280,0x20000,4,range) &&
@@ -70,10 +75,12 @@ static int check(UINT offset,UINT value,BOOL native)
             ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,4,upload,12,4);
         }else CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
         HR(sl_close(list));CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
+        CK(FAILED(record_depth_order(s,0)) && FAILED(sl_reset(list,b,NULL,1)) && s->depth_zero_pending);
         if(!pass)HR(sl_reset(list,b,NULL,0));
     }
     __atomic_store_n((UINT64*)alias.base,low,__ATOMIC_RELEASE);
-    HR(xs_queue_wait(q,gate,1));startup_submit(q,1,&list,0,0);HR(queue_signal(q,done,1));HR(sl_reset(list,a,NULL,0));IUnknown_Release(list);
+    HR(xs_queue_wait(q,gate,1));startup_submit(q,1,&list,0,0);HR(queue_signal(q,done,1));HR(sl_reset(list,a,NULL,0));CK(!s->depth_zero_pending && xs_list_host(list) && FAILED(record_depth_order(s,0)));
+    HR(sl_close(list));HR(sl_reset(list,b,NULL,0));CK(FAILED(record_depth_order(s,0)));IUnknown_Release(list);
     CK(VirtualFree(page,bytes,MEM_RELEASE));CK(VirtualAlloc(page,bytes,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==page);memset(page,0xbd,bytes);
     HANDLE end=CreateEventW(NULL,FALSE,FALSE,NULL);CK(end);HR(xs_fence_event(done,1,end));CK(WaitForSingleObject(end,50)==WAIT_TIMEOUT);
     volatile UINT *orig=alias.base;for(UINT j=2;j<bytes/4;j++)CK(orig[j]==0xa7a7a7a7);CK(!*tick);

@@ -65,7 +65,7 @@ static HRESULT texture_alias(const void *at,SIZE_T bytes,BOOL wc,void **mapping,
     }
     if (FAILED(hr)) return hr;
     if (held.view_size!=(wc?0x89700000u:0x49400000u) || held.offset>held.view_size-bytes ||
-        (UINT_PTR)at-(UINT_PTR)held.base!=held.offset || (wc && held.offset%4096)) hr=E_INVALIDARG;
+        (UINT_PTR)at-(UINT_PTR)held.base!=held.offset || (wc && held.offset%(bytes==256?256:4096))) hr=E_INVALIDARG;
     else if (!wc && *system) {
         SIZE_T start=held.offset & ~(SIZE_T)65535, delta=held.offset-start;
         *mapping=MapViewOfFile(held.section,FILE_MAP_READ,0,(DWORD)start,delta+bytes);
@@ -101,11 +101,12 @@ static HRESULT WINAPI copy_texture(struct computer *c,void *dst,UINT plane,UINT 
         hr=texture_alias(src,R8_BYTES,FALSE,&wb,&in,&system);
         if (FAILED(hr)) return hr;
     }
-    SIZE_T span=c->stack_bytes?c->layers*R8_ALIGNMENT:R8_BYTES,layer_offset=sub*R8_ALIGNMENT;
+    UINT alignment=bytes==128?256:R8_ALIGNMENT;
+    SIZE_T span=c->stack_bytes?c->layers*alignment:R8_BYTES,layer_offset=sub*alignment;
     struct {UINT64 id;BYTE data[R8_BYTES];} *stage=NULL;UINT64 id=0;
     if(native_pool_ctl(0x53430103,dst,&id,sizeof id)==0){
         UINT64 last=0;
-        if ((UINT_PTR)dst%R8_ALIGNMENT || (UINT_PTR)dst>UINTPTR_MAX-(span-1) ||
+        if ((UINT_PTR)dst%alignment || (UINT_PTR)dst>UINTPTR_MAX-(span-1) ||
             native_pool_ctl(0x53430103,(BYTE*)dst+span-1,&last,sizeof last)<0 || last!=id) hr=E_INVALIDARG;
         else {
             stage=HeapAlloc(GetProcessHeap(),0,sizeof(UINT64)+bytes);hr=stage?S_OK:E_OUTOFMEMORY;
@@ -199,14 +200,16 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     BOOL layered=is_layered_texel(&desc),texel32=layered || is_texel32(&desc);
     BOOL row=is_srgb_row(&desc);
     BOOL atlas=atlas_desc(&desc);
+    BOOL line=desc.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE1D && runtime_texture(&desc) && desc.Width==128 &&
+        desc.Height==1 && desc.Format==DXGI_FORMAT_A8_UNORM && !desc.Alignment && !desc.Layout;
     BOOL seven=desc.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !desc.Alignment &&
         desc.Width==128 && desc.Height==72 && desc.MipLevels==7 && desc.DepthOrArraySize==1 &&
         desc.Format==DXGI_FORMAT_R32_FLOAT && desc.SampleDesc.Count==1 && !desc.SampleDesc.Quality &&
         (UINT)desc.Layout==0x100 && (UINT)desc.Flags==0x300000;
-    if (!seven && !atlas && ((!row && !texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=(row?SRGB_ROW_LAYOUT:R8_LAYOUT) || desc.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
+    if (!line && !seven && !atlas && ((!row && !texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=(row?SRGB_ROW_LAYOUT:R8_LAYOUT) || desc.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
-    *c=(struct computer){&methods,1,row?SRGB_ROW_BYTES:texel32?4:0,layered?desc.DepthOrArraySize:1};
+    *c=(struct computer){&methods,1,line?128:row?SRGB_ROW_BYTES:texel32?4:0,layered?desc.DepthOrArraySize:1};
     if(atlas){c->vt=&atlas_methods;c->stack_bytes=(UINT)desc.Width;}
     if(seven)c->vt=&seven_methods;
     *out=c;

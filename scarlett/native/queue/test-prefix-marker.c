@@ -27,6 +27,7 @@ static LONG test_exchange(volatile LONG *word,LONG value)
 #undef InterlockedExchange
 #define InterlockedExchange test_exchange
 #include "queue.c"
+#include "test-depth-slots.h"
 #define CK(c) do { if (!(c)) { fprintf(stderr,"FAIL %d: %s\n",__LINE__,#c); return 1; } } while (0)
 #define HR(c) CK(SUCCEEDED(c))
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
@@ -82,6 +83,7 @@ int main(void)
     HR(xs_device_list(d,0,a,TRUE,(IUnknown *)d,&list)); HR(xs_direct_queue(d,&q));
     HR(xs_shared_fence(d,&gate));HR(xs_shared_fence(d,&done));
     struct startup_list *s=sl(list); UINT64 addr=(UINT_PTR)page+8;
+    CK(guarded_depth_slots(list));
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
     const UINT64 target=0x7fffffff00000011ull,low=target-(1ull<<32);
     UINT64 *cell=alias.base;
@@ -105,7 +107,10 @@ int main(void)
     ID3D12Resource *src;HR(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_GENERIC_READ,NULL,&IID_ID3D12Resource,(void **)&src));
     UINT64 *pattern;HR(ID3D12Resource_Map(src,0,NULL,(void **)&pattern));
     pool_vtbl.marker(list,addr,0,0,0);pool_vtbl.timestamp(list,dst+16,0,0,1);
+    CK(record_depth_order(s,1)==E_NOTIMPL);
+    pool_vtbl.depth_order(list,0);
     pool_vtbl.marker(list,addr+4,0x11111111,0,0);
+    CK(s->head && s->depth_zero_pending && !xs_list_host(list));
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
     CK(FAILED(record_counter_wait(s,addr-8,7,target,1)));
     HR(sl_close(list));HR(sl_reset(list,b,NULL,0));
@@ -120,6 +125,7 @@ int main(void)
     void *discard_alias=s->marker->alias,*discard_stamp=s->stamp->mapping;
 #endif
     HR(sl_close(list)); HR(sl_reset(list,b,NULL,0));
+    CK(!s->depth_zero_pending);
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
     CK(unmapped(discard_alias,10) && unmapped(discard_stamp,10));
     puts("PASS discard before submission released both original retained mappings without publishing");
@@ -147,7 +153,10 @@ int main(void)
     HANDLE publisher=CreateThread(NULL,0,publish_after_earlier,&prod,0,NULL);CK(publisher);
 #endif
     ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,s->stamp->dst,delta+40,src,0,8);
+    pool_vtbl.depth_order(list,0);
     HR(sl_close(list));volatile DWORD *words=alias.base;
+    CK(!xs_list_host(list) && record_depth_order(s,0)==E_NOTIMPL);
+    CK(FAILED(sl_reset(list,b,NULL,1)) && s->depth_zero_pending);
     UINT64 first=0,gpu0,cpu0,gpu1,cpu1; BYTE *reuse=NULL;
     for(UINT pass=1;pass<=2;pass++) {
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
@@ -164,7 +173,7 @@ int main(void)
 #endif
         startup_submit(q,1,&list,0,0);HR(queue_signal(q,done,pass));
         if(pass==2) {
-            HR(sl_reset(list,a,NULL,0));CK(!s->marker && !s->post && !s->stamp && !s->head);
+            HR(sl_reset(list,a,NULL,0));CK(!s->marker && !s->post && !s->stamp && !s->head && !s->depth_zero_pending);
             CK(!IUnknown_Release(list)); CK(VirtualFree(page,65536,MEM_RELEASE));
              CK(VirtualAlloc(page,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==page);memset(page,0x37,65536);
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
@@ -235,7 +244,9 @@ int main(void)
     HR(make(d,65536,(void **)&page));
     HR(xs_device_list(d,0,a,TRUE,(IUnknown *)d,&list));
     CK(xs_list_host(list)!=NULL && prefix_write(sl(list),(UINT_PTR)page+8,0,0,0)==E_NOTIMPL);
+    CK(record_depth_order(sl(list),0)==E_NOTIMPL);
     HR(sl_close(list));HR(sl_reset(list,b,NULL,0));
+    CK(record_depth_order(sl(list),0)==E_NOTIMPL);
     CK(prefix_write(sl(list),(UINT_PTR)page+8,0,0,0)==E_NOTIMPL);
     CK(!IUnknown_Release(list) && VirtualFree(page,65536,MEM_RELEASE));
     IUnknown_Release(a);IUnknown_Release(b);IUnknown_Release(done);IUnknown_Release(gate);IUnknown_Release(q);

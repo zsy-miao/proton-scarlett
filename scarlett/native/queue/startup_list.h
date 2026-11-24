@@ -40,6 +40,8 @@ struct startup_list {
     ID3D12CommandAllocator *tail_allocator;
     struct system_timestamp *stamp;
     BOOL closed,host_exposed,post_boundary;
+    SRWLOCK borrow_lock; /* Serialize a native borrow against recording deferred guest state. */
+    BOOL depth_zero_pending;
     struct list_face local; /* Non-pooled lists need no inline ABI. */
 };
 const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
@@ -157,6 +159,9 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
+    AcquireSRWLockExclusive(&s->borrow_lock);
+    s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
+    ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     s->phase=B_EMPTY;
@@ -512,6 +517,25 @@ static void WINAPI pool_topology(IUnknown *i,UINT topology)
     ID3D12GraphicsCommandList7_IASetPrimitiveTopology(s->host,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     recorded_direct_state(s);
 }
+/* shortcut: retain zero without emitting a host mode. Draw/indirect/bundle slots must
+ * stay fail-closed until a consumer translates this state for its actual PSO. */
+static HRESULT record_depth_order(struct startup_list *s,UINT value)
+{
+    if (value) return E_NOTIMPL;
+    HRESULT hr=E_NOTIMPL;
+    AcquireSRWLockExclusive(&s->borrow_lock);
+    if (open_direct_state(s)) {
+        s->depth_zero_pending=TRUE;
+        recorded_direct_state(s);
+        hr=S_OK;
+    }
+    ReleaseSRWLockExclusive(&s->borrow_lock);
+    return hr;
+}
+static void WINAPI pool_depth_order(IUnknown *i,UINT value)
+{
+    if (FAILED(record_depth_order(sl(i),value))) xs_stop();
+}
 static HRESULT record_pool_rate(struct startup_list *s,UINT rate,const D3D12_SHADING_RATE_COMBINER *input)
 {
     D3D12_SHADING_RATE_COMBINER pair[2];SIZE_T n;
@@ -558,7 +582,8 @@ static const struct {
     __typeof__(&sl_timestamp) timestamp;
     xs_stop_fn gap248;
     __typeof__(&sl_wait64) wait64;
-    xs_stop_fn gap258[51];
+    __typeof__(&pool_depth_order) depth_order;
+    xs_stop_fn gap260[50];
     __typeof__(&pool_rate) rate;
     xs_stop_fn gap3f8[4];
     __typeof__(&pool_sync418) sync418;
@@ -567,9 +592,10 @@ static const struct {
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 16]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 50]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 16]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),root)==0x110,"pooled graphics root ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),depth_order)==0x258,"pooled depth-order ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),rate)==0x3f0,"pooled shading rate ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),topology)==0xa0,"pooled topology ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),sync418)==0x418,"pooled sync ABI");
@@ -647,12 +673,19 @@ HRESULT xs_startup_list(ID3D12Device *device,D3D12_COMMAND_LIST_TYPE type,IUnkno
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 {
     if (!i || (i->lpVtbl!=&sl_vtbl.prefix && i->lpVtbl!=&pool_vtbl.prefix)) return NULL;
-    if (sl(i)->primary_released) return NULL; /* No untracked use after ending primary access. */
+    struct startup_list *s=sl(i);
+    ID3D12GraphicsCommandList7 *host=NULL;
+    AcquireSRWLockExclusive(&s->borrow_lock);
+    if (!s->primary_released && !s->depth_zero_pending
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
-    if(!escape_native())return NULL;
+        && escape_native()
 #endif
-    sl(i)->host_exposed=TRUE;
-    return sl(i)->host;
+        ) {
+        s->host_exposed=TRUE;
+        host=s->host;
+    }
+    ReleaseSRWLockExclusive(&s->borrow_lock);
+    return host;
 }
 
 /* A list may be reset or released as soon as it is submitted. Pin this

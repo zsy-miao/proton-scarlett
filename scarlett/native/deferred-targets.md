@@ -407,3 +407,13 @@ The two fixtures ran before ordinary verification. AMD stopped at
 for the separate 1D A8 texture; installed RTX hit the same instruction
 first for the R32 chain. Each ordinary run issued tokens 1 and 2 and
 presented only token 1.
+
+The 128×1 A8 texture computer now writes the caller's 128 stack bytes
+into its original 256-byte WC span. RTX traced the destination to pool
+offset `0xe6cf800`; both GPUs passed fenced readback including padding
+and adjacent guards. Resource creation and sampling remain unverified.
+
+Three retail launches (one RTX diagnostic and two matched ordinary runs)
+and four passing fixtures. AMD stopped at list `+178` (`+328be`); RTX
+first hit `+f2cc4b`, before another thread reached `+4ecc821`. Both
+ordinary runs issued tokens 1 and 2 and presented only token 1.

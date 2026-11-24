@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | AMD stops while setting depth order for a clear operation. RTX now copies all seven levels of a texture, but stops while preparing a separate 1D texture. |
+| What's blocking it? | AMD gets past the depth-order setting and stops at the next graphics command. RTX gets past the 1D texture copy but hits a game breakpoint during startup. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
