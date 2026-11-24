@@ -1,6 +1,6 @@
 # The 64 KiB graphics control page
 
-The RTX 3070 retail run stops at `+0x24786d1`, before these uses execute. Static call sites in build `1.0.2.1` identify three consumers of the page requested at `+0x24786b9`:
+The original RTX 3070 retail run stopped at `+0x24786d1`, before these uses executed. Static call sites in build `1.0.2.1` identify three consumers of the page requested at `+0x24786b9`:
 
 | Consumer | What the title does |
 | --- | --- |
@@ -16,6 +16,15 @@ to 1, and allocated 54 marker DWORDs at offset 8. All markers were zero at
 the stop. Watchpoints on the graphics initialization thread recorded no
 subsequent counter access or known GPU wait/marker call before that point.
 This bounds a CPU-only startup experiment on RTX; later GPU use remains untested.
+
+On RTX 3070 / 595.112.07 the CPU-only prototype returned a write-combined
+view for the identified retail executable. The game passed the former
+control allocation check. Its next failure was the 2,960-page descriptor
+arena allocation, before any GPU control-page operation was reached.
+Sixteen allocation/release cycles tested exact-size release, lifetime
+identity on address reuse, and rejection of D3D12 and Vulkan imports. A
+separate RADV run retained delayed GPU writes on the original GPU-visible
+backing after the title address was freed and reused.
 
 The [marker test](../../tests/control-markers.cpp) exercises one possible host operation: D3D12 `WriteBufferImmediate` into mapped readback memory. A fence gate holds back a second write. While it is blocked, the CPU must observe the first marker and be able to clear it; after retirement only the second marker may be set. This passed on the RTX 3070. It tests CPU-visible ordering across two command lists, not the stage of the retail operation or the cache properties of the requested page.
 
