@@ -5,8 +5,9 @@
 #include <d3d12.h>
 #include <stdio.h>
 #ifdef XS_TEST_LINKED
-#include <d3dcompiler.h>
 #include "queue/queue.h"
+#include "produce.h"
+#include "consume.h"
 #else
 __declspec(dllimport)
 #endif
@@ -24,55 +25,65 @@ static HRESULT buffer(ID3D12Device *d, D3D12_HEAP_TYPE type, UINT64 bytes, ID3D1
     D3D12_HEAP_PROPERTIES heap = {.Type=type, .CreationNodeMask=1, .VisibleNodeMask=1};
     D3D12_RESOURCE_DESC desc = {.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER, .Width=bytes, .Height=1,
         .DepthOrArraySize=1, .MipLevels=1, .SampleDesc={1,0}, .Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
-    return ID3D12Device_CreateCommittedResource(d, &heap, 0, &desc, type == D3D12_HEAP_TYPE_UPLOAD ?
-            D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)out);
+    if (type == D3D12_HEAP_TYPE_DEFAULT) desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    return ID3D12Device_CreateCommittedResource(d, &heap, 0, &desc, type == D3D12_HEAP_TYPE_DEFAULT ?
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)out);
 }
 
-static int dispatch(ID3D12Device *d, IUnknown *wrapped)
+static int dispatch(ID3D12Device *d, IUnknown *wrapped, D3D12_INDIRECT_ARGUMENT_TYPE original)
 {
-    static const char source[] = "[numthreads(4,1,1)] void main() {}";
-    ID3D12CommandSignature *sig = xs_signature_host(wrapped);
+    BOOL compute = original == XS_INDIRECT_TYPE_69;
+    D3D12_COMMAND_LIST_TYPE type = compute ? D3D12_COMMAND_LIST_TYPE_COMPUTE : D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ID3D12CommandSignature *sig = xs_signature_host(wrapped, original);
     ID3D12CommandQueue *q;
-    D3D12_COMMAND_QUEUE_DESC qd = {0};
+    D3D12_COMMAND_QUEUE_DESC qd = {.Type=type};
     ID3D12CommandAllocator *a;
     ID3D12GraphicsCommandList *l;
-    ID3D12PipelineState *pso;
+    ID3D12PipelineState *pso[2];
     ID3D12RootSignature *root;
-    ID3D12Resource *args, *readback;
-    D3D12_ROOT_SIGNATURE_DESC rs = {0};
-    D3D12_QUERY_HEAP_DESC qh = {D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS,1,0};
-    ID3D12QueryHeap *query;
-    ID3DBlob *blob, *cs;
+    ID3D12Resource *args, *counter, *readback;
+    D3D12_ROOT_PARAMETER uavs[] = {{.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV},
+            {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV, .Descriptor.ShaderRegister=1}};
+    D3D12_ROOT_SIGNATURE_DESC rs = {.NumParameters=2, .pParameters=uavs};
+    ID3DBlob *blob;
     ID3D12Fence *fence;
     HANDLE event = CreateEventW(NULL, FALSE, FALSE, NULL);
-    CHECK(event && sig && !xs_signature_host((IUnknown *)d));
+    CHECK(event && sig && !xs_signature_host((IUnknown *)d, original));
+    CHECK(!xs_signature_host(wrapped, compute ? D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH : XS_INDIRECT_TYPE_69));
     OK(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, NULL));
     OK(ID3D12Device_CreateRootSignature(d, 0, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob),
             &IID_ID3D12RootSignature, (void **)&root));
     ID3D10Blob_Release(blob);
-    OK(D3DCompile(source, sizeof(source)-1, NULL, NULL, NULL, "main", "cs_5_0", 0, 0, &cs, NULL));
-    D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {.pRootSignature=root,
-        .CS={ID3D10Blob_GetBufferPointer(cs), ID3D10Blob_GetBufferSize(cs)}};
-    OK(ID3D12Device_CreateComputePipelineState(d, &pd, &IID_ID3D12PipelineState, (void **)&pso));
-    ID3D10Blob_Release(cs);
+    const D3D12_SHADER_BYTECODE codes[] = {{produce, sizeof(produce)}, {consume, sizeof(consume)}};
+    for (unsigned i = 0; i < ARRAYSIZE(codes); ++i) {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {.pRootSignature=root, .CS=codes[i]};
+        OK(ID3D12Device_CreateComputePipelineState(d, &pd, &IID_ID3D12PipelineState, (void **)&pso[i]));
+    }
     OK(ID3D12Device_CreateCommandQueue(d, &qd, &IID_ID3D12CommandQueue, (void **)&q));
-    OK(ID3D12Device_CreateCommandAllocator(d, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&a));
-    OK(ID3D12Device_CreateCommandList(d, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, a, pso,
+    OK(ID3D12Device_CreateCommandAllocator(d, type, &IID_ID3D12CommandAllocator, (void **)&a));
+    OK(ID3D12Device_CreateCommandList(d, 0, type, a, pso[0],
             &IID_ID3D12GraphicsCommandList, (void **)&l));
-    OK(ID3D12Device_CreateQueryHeap(d, &qh, &IID_ID3D12QueryHeap, (void **)&query));
     OK(ID3D12Device_CreateFence(d, 0, 0, &IID_ID3D12Fence, (void **)&fence));
-    OK(buffer(d, D3D12_HEAP_TYPE_UPLOAD, 24, &args));
-    OK(buffer(d, D3D12_HEAP_TYPE_READBACK, sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS), &readback));
+    OK(buffer(d, D3D12_HEAP_TYPE_DEFAULT, 32, &args));
+    OK(buffer(d, D3D12_HEAP_TYPE_DEFAULT, 4, &counter));
+    OK(buffer(d, D3D12_HEAP_TYPE_READBACK, 4, &readback));
     void *map;
-    OK(ID3D12Resource_Map(args, 0, NULL, &map));
-    const UINT data[] = {0,0,0,3,2,1};
-    memcpy(map,data,sizeof(data));
-    ID3D12Resource_Unmap(args, 0, NULL);
     ID3D12GraphicsCommandList_SetComputeRootSignature(l, root);
-    ID3D12GraphicsCommandList_BeginQuery(l, query, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(l, 0, ID3D12Resource_GetGPUVirtualAddress(args));
+    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(l, 1, ID3D12Resource_GetGPUVirtualAddress(counter));
+    ID3D12GraphicsCommandList_Dispatch(l, 1, 1, 1);
+    D3D12_RESOURCE_BARRIER barriers[] = {
+        {.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, .Transition={
+            args, 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT}},
+        {.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV, .UAV={counter}}
+    };
+    ID3D12GraphicsCommandList_ResourceBarrier(l, ARRAYSIZE(barriers), barriers);
+    ID3D12GraphicsCommandList_SetPipelineState(l, pso[1]);
     ID3D12GraphicsCommandList_ExecuteIndirect(l, sig, 1, args, 12, NULL, 0);
-    ID3D12GraphicsCommandList_EndQuery(l, query, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
-    ID3D12GraphicsCommandList_ResolveQueryData(l, query, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0, 1, readback, 0);
+    barriers[0].Transition.pResource = counter;
+    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    ID3D12GraphicsCommandList_ResourceBarrier(l, 1, barriers);
+    ID3D12GraphicsCommandList_CopyBufferRegion(l, readback, 0, counter, 0, sizeof(UINT));
     OK(ID3D12GraphicsCommandList_Close(l));
     ID3D12CommandList *submit = (ID3D12CommandList *)l;
     ID3D12CommandQueue_ExecuteCommandLists(q, 1, &submit);
@@ -80,13 +91,15 @@ static int dispatch(ID3D12Device *d, IUnknown *wrapped)
     OK(ID3D12Fence_SetEventOnCompletion(fence, 1, event));
     CHECK(WaitForSingleObject(event, 5000) == WAIT_OBJECT_0);
     OK(ID3D12Resource_Map(readback, 0, NULL, &map));
-    UINT64 count = ((D3D12_QUERY_DATA_PIPELINE_STATISTICS *)map)->CSInvocations;
+    UINT count = *(UINT *)map;
     ID3D12Resource_Unmap(readback, 0, NULL);
-    printf("ExecuteIndirect GPU CSInvocations: %llu (expected 24)\n", (unsigned long long)count);
+    printf("%s: GPU-generated Dispatch indirect counter %u (expected 24)\n",
+           type == D3D12_COMMAND_LIST_TYPE_DIRECT ? "Direct" : "Compute", count);
     CHECK(count == 24);
     ID3D12GraphicsCommandList_Release(l); ID3D12CommandAllocator_Release(a);
-    ID3D12Resource_Release(args); ID3D12Resource_Release(readback); ID3D12QueryHeap_Release(query);
-    ID3D12PipelineState_Release(pso); ID3D12RootSignature_Release(root);
+    ID3D12Resource_Release(args); ID3D12Resource_Release(readback); ID3D12Resource_Release(counter);
+    ID3D12PipelineState_Release(pso[0]); ID3D12PipelineState_Release(pso[1]);
+    ID3D12RootSignature_Release(root);
     ID3D12Fence_Release(fence); ID3D12CommandQueue_Release(q); CloseHandle(event);
     return 0;
 }
@@ -107,7 +120,6 @@ int main(void)
     for (unsigned i = 0; i < ARRAYSIZE(types); ++i) {
         arg.Type = types[i]; desc.ByteStride = strides[i]; out = device;
         HRESULT hr = create(device, &desc, NULL, &IID_ID3D12CommandSignature, &out);
-        if (arg.Type == 0x69) { CHECK(hr == E_NOTIMPL && !out); continue; }
         if (arg.Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH) {
             D3D12_FEATURE_DATA_D3D12_OPTIONS7 caps;
             HRESULT feature = ID3D12Device_CheckFeatureSupport(host, D3D12_FEATURE_D3D12_OPTIONS7, &caps, sizeof(caps));
@@ -119,11 +131,18 @@ int main(void)
         OK(IUnknown_QueryInterface(sig, &IID_ID3D12CommandSignature, &out)); CHECK(out == sig); IUnknown_Release(sig);
         CHECK(IUnknown_QueryInterface(sig, &IID_ID3D12Device, &out) == E_NOINTERFACE && !out);
 #ifdef XS_TEST_LINKED
-        if (arg.Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) CHECK(!dispatch(host, sig));
+        if (arg.Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH || arg.Type == XS_INDIRECT_TYPE_69)
+            CHECK(!dispatch(host, sig, arg.Type));
 #endif
         CHECK(!IUnknown_Release(sig));
     }
-    arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH; desc.ByteStride = 12;
+    arg.Type = 0x69; desc.ByteStride = 12;
+    arg.Constant.RootParameterIndex = 1;
+    CHECK(create(device, &desc, NULL, &IID_ID3D12CommandSignature, &out) == E_NOTIMPL && !out);
+    arg.Constant.RootParameterIndex = 0;
+    desc.NumArgumentDescs = 2;
+    CHECK(create(device, &desc, NULL, &IID_ID3D12CommandSignature, &out) == E_NOTIMPL && !out);
+    desc.NumArgumentDescs = 1;
     CHECK(create(device, &desc, NULL, &IID_IUnknown, &out) == E_NOINTERFACE && !out);
     CHECK(create(device, &desc, device, &IID_ID3D12CommandSignature, &out) == E_NOTIMPL && !out);
     desc.NodeMask = 1;

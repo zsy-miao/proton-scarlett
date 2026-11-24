@@ -15,7 +15,10 @@ struct adapter {
         ID3D12CommandAllocator *allocator;
         ID3D12CommandSignature *signature;
     } host;
-    D3D12_COMMAND_LIST_TYPE allocator_type;
+    union {
+        D3D12_COMMAND_LIST_TYPE allocator_type;
+        D3D12_INDIRECT_ARGUMENT_TYPE signature_type;
+    };
 };
 
 struct qtable {
@@ -98,10 +101,11 @@ static ID3D12CommandQueue *as_queue(IUnknown *iface)
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 static const __typeof__(st) st = { {query, addref, release}, { [0 ... 4] = xs_stop } };
 
-ID3D12CommandSignature *xs_signature_host(IUnknown *iface)
+ID3D12CommandSignature *xs_signature_host(IUnknown *iface, D3D12_INDIRECT_ARGUMENT_TYPE original_type)
 {
-    return iface && iface->lpVtbl == &st.prefix ?
-            CONTAINING_RECORD(iface, struct adapter, iface)->host.signature : NULL;
+    if (!iface || iface->lpVtbl != &st.prefix) return NULL;
+    struct adapter *a = CONTAINING_RECORD(iface, struct adapter, iface);
+    return a->signature_type == original_type ? a->host.signature : NULL;
 }
 
 HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT stride, IUnknown **out)
@@ -110,7 +114,9 @@ HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT
     *out = NULL;
     if (!host) return E_INVALIDARG;
     UINT expected;
-    switch (type) {
+    /* The paired meshlet-culling paths consume the same dispatch record (command-signatures.md). */
+    D3D12_INDIRECT_ARGUMENT_DESC arg = {.Type = type == XS_INDIRECT_TYPE_69 ? D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH : type};
+    switch (arg.Type) {
         case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: expected = sizeof(D3D12_DRAW_ARGUMENTS); break;
         case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: expected = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS); break;
         case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: expected = sizeof(D3D12_DISPATCH_ARGUMENTS); break;
@@ -125,7 +131,6 @@ HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT
         default: return E_NOTIMPL;
     }
     if (stride != expected) return E_NOTIMPL;
-    D3D12_INDIRECT_ARGUMENT_DESC arg = {.Type = type};
     D3D12_COMMAND_SIGNATURE_DESC desc = {stride, 1, &arg, 0};
     struct adapter *a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
     if (!a) return E_OUTOFMEMORY;
@@ -136,6 +141,7 @@ HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT
         return hr;
     }
     a->iface.lpVtbl = &st.prefix;
+    a->signature_type = type;
     a->refs = 1;
     *out = &a->iface;
     return S_OK;

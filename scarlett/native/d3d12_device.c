@@ -223,6 +223,13 @@ static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_S
     if (d.NodeMask || d.NumArgumentDescs != 1) return E_NOTIMPL;
     if (!ReadProcessMemory(GetCurrentProcess(), d.pArgumentDescs, &type, sizeof(type), &n) || n != sizeof(type))
         return E_POINTER;
+    if (type == XS_INDIRECT_TYPE_69) {
+        /* Only this form has a known second dword, explicitly zero at the call site. */
+        UINT word;
+        if (!ReadProcessMemory(GetCurrentProcess(), (const BYTE *)d.pArgumentDescs + sizeof(type),
+                &word, sizeof(word), &n) || n != sizeof(word)) return E_POINTER;
+        if (word) return E_NOTIMPL;
+    }
     IUnknown *signature = NULL;
     HRESULT hr = xs_signature(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, type, d.ByteStride, &signature);
     *out = signature;
