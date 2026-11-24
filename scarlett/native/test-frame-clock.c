@@ -9,6 +9,7 @@ HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 typedef HRESULT (WINAPI *Interval)(IUnknown *,IDXGIOutput *,UINT,UINT,UINT);
 typedef HRESULT (WINAPI *Schedule)(IUnknown *,UINT,UINT,const void *,UINT);
 typedef HRESULT (WINAPI *Wait)(IUnknown *,UINT,DWORD,const void *,UINT,UINT64 *);
+typedef HRESULT (WINAPI *Stats)(IUnknown *,UINT64,UINT,UINT *,void *);
 #define SLOT(i,n,t) ((t)((void *const *)(i)->lpVtbl)[(n)/8])
 #define OK(e) do { HRESULT h=(e); if (h!=S_OK) { fprintf(stderr,"FAIL %d: %s = %08lx\n",__LINE__,#e,(unsigned long)h); return 1; } } while (0)
 #define CHECK(e) do { if (!(e)) { fprintf(stderr,"FAIL %d: %s\n",__LINE__,#e); return 1; } } while (0)
@@ -64,6 +65,10 @@ int main(void)
     OK(xs_frame_present(d,a,(IDXGISwapChain *)chain));
     CHECK(WaitForSingleObject(thread,5500)==WAIT_OBJECT_0);
     OK(task.result); CHECK(task.token==a);
+    BYTE records[6*0x38],original[sizeof(records)]; UINT count=6;
+    memset(records,0xa5,sizeof records);memcpy(original,records,sizeof original);
+    CHECK(SLOT(d,0x288,Stats)(d,a,0x11100,&count,records)==S_FALSE && count==0);
+    CHECK(!memcmp(records,original,sizeof records));
     CHECK(xs_frame_present(d,a,(IDXGISwapChain *)chain)==DXGI_ERROR_INVALID_CALL);
     CHECK(wait(d,2,0,NULL,0,&b)==DXGI_ERROR_WAIT_TIMEOUT);
     OK(wait(d,2,0,NULL,0,&a));

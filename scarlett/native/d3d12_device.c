@@ -670,6 +670,17 @@ static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_S
 #include "frame_clock.h"
 #include "query_readback.h"
 
+static HRESULT WINAPI bootstrap_frame_statistics(IUnknown *iface, UINT64 token, UINT types, UINT *count, void *records)
+{
+    if (!count) return E_POINTER;
+    *count = 0;
+    if (!iface || !records) return E_POINTER;
+    if (!token) return E_INVALIDARG;
+    if (types != 0x11100) return E_NOTIMPL;
+    /* An exact WSI present ID establishes completion but supplies no complete typed timing record. */
+    return S_FALSE;
+}
+
 /* Read only the common caller-written prefix; the console layout/flags need
  * translation. Neither entry has the title's ring index or HWND. */
 static HRESULT resource_gap(UINT slot, UINT64 address, const void *wire, UINT state,
@@ -1015,7 +1026,7 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_frame_interval) frame_interval;
     __typeof__(&bootstrap_frame_event) frame_event;
     __typeof__(&bootstrap_frame_wait) frame_wait;
-    xs_stop_fn gap288;
+    __typeof__(&bootstrap_frame_statistics) frame_statistics;
     xs_stop_fn gap290[4];
     __typeof__(&clear_pipeline) graphics_stream;
     xs_stop_fn gap2b8[21];
@@ -1040,6 +1051,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, frame_interval) == 0x270 &&
                offsetof(struct bootstrap_vtbl, frame_event) == 0x278 &&
                offsetof(struct bootstrap_vtbl, frame_wait) == 0x280 &&
+               offsetof(struct bootstrap_vtbl, frame_statistics) == 0x288 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, register_pool) == 0x250 &&
@@ -1472,7 +1484,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap238 = {xs_stop,xs_stop}, .list = bootstrap_list, .register_pool = register_page_pool,
     .gap258 = {xs_stop,xs_stop,xs_stop},
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
-    .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 3] = xs_stop },
+    .frame_wait = bootstrap_frame_wait, .frame_statistics = bootstrap_frame_statistics, .gap290 = { [0 ... 3] = xs_stop },
     .graphics_stream = clear_pipeline, .gap2b8 = { [0 ... 20] = xs_stop },
     .allocation_info1=bootstrap_allocation_info1, .gap368={ [0 ... 17]=xs_stop },
     .committed = bootstrap_committed, .gap400 = { [0 ... 4] = xs_stop }, .placed = bootstrap_placed

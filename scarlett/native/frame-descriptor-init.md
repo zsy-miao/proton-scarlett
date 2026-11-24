@@ -7,6 +7,7 @@
 | `+0x270` SetFrameIntervalX | `IDXGIOutput *syncTarget, UINT lengthUs, UINT periodInIntervals, flags32` |
 | `+0x278` ScheduleFrameEventX | `eventType32, UINT offsetUs, scheduleObjectList *, flags32` |
 | `+0x280` WaitFrameEventX | `eventType32, UINT timeoutMs, waitObjectList *, flags32, UINT64 *token` |
+| `+0x288` GetFrameStatisticsX | `UINT64 token, UINT typeMask, UINT *count, records *output` |
 
 Microsoft's [FramePacing sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/FramePacing/FramePacing.cpp#L2025-L2046)
 names the units and uses a null output target. [Ebitengine's public binding](https://github.com/hajimehoshi/ebiten/blob/4c219926eef626a924f821547f2b7231a4572783/internal/graphicsdriver/directx/d3d12_windows.go#L1566-L1601)
@@ -17,6 +18,13 @@ connects the wait to presentation. None of these establishes the name or signal 
 - The separate `2478de4` call schedules `(2,0,NULL,0)`; negative HRESULT executes `int3` at `2478dee`. `24900e3` repeats the same registration after calling the interval helper again.
 - `2482405`: wait `(2,INFINITE,NULL,0,&savedToken)`. The input qword came from a 16-entry frame history and is checked nonzero. `2482448`: `(ORIGIN,0,NULL,2,&currentToken)`; `2484637`: `(ORIGIN,INFINITE,NULL,0,&localToken)`, then returns that token. At `2482710` an older token is used with device `+0x288`, mask `0x11100`, count initialized to six, and an output array (consistent with GetFrameStatisticsX).
 - `2482313`–`2482338` put the current token in the first qword of each plane, followed by resource count 1 and a resource-pointer array. `24824c1` passes the plane count, plane array and parameter block to queue `+0x100` (consistent with PresentX). `24821dd` also passes the token to the existing queue submission slot `+0x118`.
+
+The statistics caller only consumes records on `S_OK` with a nonzero count.
+For its `0x11100` mask, the provider reports `S_FALSE` and zero records. An
+observed display count does not supply a GPU or scanout timestamp. A CPU
+test checked that all six 56-byte records remained untouched, including
+after a confirmed present. This path was identified ahead of retail use.
+See Microsoft's [FramePacing timing query (MIT)](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/FramePacing/FramePacing.cpp#L1305-L1367).
 
 The scheduler accepts a null output, 16667/33333 µs, period 1–3, no interval flags.
 Origins use a monotonic host QPC time grid with bounded offsets; late callers skip
