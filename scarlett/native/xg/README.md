@@ -322,3 +322,31 @@ UNORM. The test wipes the stack source, releases/overwrites the title slots,
 and reuses the original title VA before releasing the final gate. Retail
 passed the texture copy and SRV write; next it rejected a 2048-byte buffer
 address SRV (UNKNOWN format, 1 element of stride 2048), `+230`, return `4ecc821`.
+
+### One-element structured WC buffer
+
+Retail requested UNKNOWN-format buffer SRVs with FirstElement 0, NumElements 1,
+StructureByteStride equal to resource width and flags 0. The two 2048-byte
+ranges started at offsets `e5c6200` and `e607000` in the marked `89700000`-byte
+WC pool; the two 320-byte ranges at `1c80` and `1e00` (hex). The first offset
+cannot be expressed as a 2048-byte element index in a whole-pool view.
+
+A copied descriptor retains the source import, byte offset and stride.
+Only one complete DWORD-aligned element of at most 2048 bytes is accepted.
+Use the existing refresh recorder immediately before consumption on the same
+queue with source in COMMON. It records an exact-range GPU copy to offset 0
+of a stride-sized buffer, then transitions it for shader reads. Bind its
+private heap and retain the returned use object until the fence completes.
+
+Build `test-raw38.cpp` as for the RAW38 fixture, adding `-DSTRIDE=2048` or
+`-DSTRIDE=320`. Compile `test-struct1.hlsl` with the same define, `-E main
+-T cs_6_0 -Fo struct1.dxil`. Each fixture checks all words of element 0,
+all zero reads from element 1, and GetDimensions after a gated late CPU write,
+exact VA reuse, device cache rotation, slot overwrite and heap release. Retail
+verified descriptor creation, and next rejected a three-element structured
+view (`+230`, return `4ecc821`, width 540, stride 180).
+
+Both GPUs passed the 320- and 2048-byte tests. For the 2048-byte fixture on
+RADV, `-DTEST_NATIVE_POOL` also checks the original pool offset `0xe5c6200`
+and both adjacent 16-byte guards by independent GPU readback. Both retail
+traces put the next 540-byte view at offset `0xe5c6a00`.

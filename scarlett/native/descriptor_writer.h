@@ -449,7 +449,10 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment ||
         rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
         rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Layout!=D3D12_TEXTURE_LAYOUT_ROW_MAJOR || rd.Flags ||
-        w[1]!=1 || w[2]!=0x1688 || w[7] || w[12] || w[13] || w[14] || w[15]) return E_NOTIMPL;
+        w[1]!=1 || w[2]!=0x1688 || w[12] || w[13] || w[14] || w[15]) return E_NOTIMPL;
+    if (w[0]==DXGI_FORMAT_UNKNOWN && w[7] && w[7]<=2048 && !(w[7]&3) && rd.Width==w[7])
+        return write_wc_address_view(device,STRUCT1_BASE+w[7],w,dest);
+    if (w[7]) return E_NOTIMPL;
     UINT64 va; memcpy(&va,w+10,sizeof va);
     if (w[0]==DXGI_FORMAT_R16_UINT && !w[8])
         return write_pool_srv(device,&rd,w,(const void *)va,dest);
