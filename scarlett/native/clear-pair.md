@@ -36,6 +36,14 @@ DXC `1.9(dev;4950-b106a961)` using
 `dxc -Ges -Gis -O3 -Qstrip_debug -Qstrip_reflect -T ${stage}_6_0 -E $stage -Fo $stage.dxil clear_pair.hlsl`.
 Use the resulting file bytes in the `clear_vs_dxil` and `clear_ps_dxil` arrays.
 
+The second prewarm request changes just the active RTV to `RGBA8_UNORM_SRGB`.
+Its checked PS passes half-rounded RGB to the attachment for sRGB conversion;
+rounding RGB to linear bytes first would erase dark colors. Alpha stays
+linear. Build `clear_srgb_dxil.h` with the same flags and `-T ps_6_0 -E ps_srgb`.
+In the fenced fixture both GPUs stored red byte 3 for linear red `1/1024`
+and alpha byte 128 for `0.5`. In the RTX retail trace the first two PSOs
+were created. No retail draw using either one was established.
+
 **GPU test.** Put the local `stream.bin`, `vs.bin`, `ps.bin` captures in
 a scratch `game` directory. Build from the patched tree:
 

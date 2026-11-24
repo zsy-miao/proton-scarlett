@@ -1,4 +1,5 @@
 #include "clear_pair_dxil.h"
+#include "clear_srgb_dxil.h"
 
 /* Reuse PSO lifetime/identity, but never identify graphics PSOs as BVH kernels. */
 static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
@@ -36,7 +37,11 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     const void *v=(void *)q[3],*s=(void *)q[6];
     q[1]=q[3]=q[6]=0;
     /* All tags, lengths, absent stages, input layout and fixed state are pinned. */
+    UINT rtv=(UINT)(q[0x280/8]>>32);
+    BOOL srgb=rtv==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM<<32);
     if (!shader_digest_matches((BYTE *)q,sizeof q,fixed_digest)) return E_NOTIMPL;
+    if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)rtv<<32);
     if (!copy_in(vs,v,sizeof vs) || !copy_in(ps,s,sizeof ps)) return E_POINTER;
     if (!shader_digest_matches(vs,sizeof vs,vs_digest) || !shader_digest_matches(ps,sizeof ps,ps_digest))
         return E_NOTIMPL;
@@ -50,7 +55,7 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     if (!host) return E_INVALIDARG;
     q[1]=(UINT_PTR)host;
     q[3]=(UINT_PTR)clear_vs_dxil; q[4]=sizeof clear_vs_dxil;
-    q[6]=(UINT_PTR)clear_ps_dxil; q[7]=sizeof clear_ps_dxil;
+    q[6]=(UINT_PTR)(srgb?clear_srgb_dxil:clear_ps_dxil); q[7]=srgb?sizeof clear_srgb_dxil:sizeof clear_ps_dxil;
     sd.pPipelineStateSubobjectStream=q;
     ID3D12Device2 *d2=NULL;
     ID3D12PipelineState *pso=NULL;

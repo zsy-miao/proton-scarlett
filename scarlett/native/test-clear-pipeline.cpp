@@ -1,11 +1,11 @@
 #include "test-clear-common.hpp"
-static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode) {
+static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb) {
     constexpr UINT W=16,H=8;
     auto resource=[&](D3D12_HEAP_TYPE t,D3D12_RESOURCE_STATES st) {
         D3D12_HEAP_PROPERTIES hp={};hp.Type=t;hp.CreationNodeMask=hp.VisibleNodeMask=1;
         D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=4096;
         rd.Height=rd.DepthOrArraySize=rd.MipLevels=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        if(t==D3D12_HEAP_TYPE_DEFAULT){rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;rd.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+        if(t==D3D12_HEAP_TYPE_DEFAULT){rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;rd.Format=srgb?DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:DXGI_FORMAT_R8G8B8A8_UNORM;
             rd.Width=W;rd.Height=H;rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;}
         ComPtr<ID3D12Resource> o; HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,st,nullptr,IID_PPV_ARGS(&o)));return o;
     };
@@ -19,8 +19,8 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
     UINT posHeader=(128<<7)|(28<<3)|16|(mode==2?2:3);
     UINT colHeader=(512<<7)|(36<<3)|16|(mode==1?3:4);
     memcpy(data,&posHeader,4);memcpy(data+12,&colHeader,4);
-    const float attrs[][4]={{.3000244f,.5f,.25f,1},{0,1,1,0},{0,0,1,0},
-                            {1,.2176492f,.75f,0},{1,1,0,1},{1,0,0,1}};
+    const float attrs[][4]={{srgb?.0009765625f:.3000244f,.5f,.25f,1},{0,1,1,0},{0,0,1,0},
+                            {1,srgb?.009765625f:.2176492f,.75f,srgb?.5f:0.f},{1,1,0,1},{1,0,0,1}};
     for (int i=0;i<6;++i) {
         float x=(i>=3?8.f:0.f)+(i%3==1?7.25f:1.f),y=i%3==2?7.25f:1.f;
         float pos[]={2*x/W-1,1-2*y/H,.5f};
@@ -50,6 +50,7 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
         // Analytic triangle coverage at pixel centers. RTZ makes .3000244 and
         // .2176492 map to UNORM 76 and 55, whereas a direct/nearest export gives 77/56.
         BYTE expected[][4]={{255,0,255,255},{76,128,64,255},{255,55,191,0},{0,0,0,0}};
+        if(srgb){const BYTE a[]={3,188,137,255},b[]={255,25,225,128};memcpy(expected[1],a,4);memcpy(expected[2],b,4);}
         const BYTE *want=expected[!covered?0:mode==1?3:x<8?1:2];
         const BYTE *got=data+dst.PlacedFootprint.Offset+y*dst.PlacedFootprint.Footprint.RowPitch+x*4;
         if(memcmp(got,want,4)){fprintf(stderr,"mode=%d (%u,%u) got %u,%u,%u,%u; expected %u,%u,%u,%u\n",
@@ -68,11 +69,18 @@ int main(){
     auto create=(Create)(*(void***)(d.Get()))[0x2b0/8];
     auto bad=[&](HRESULT expected){void *out=r.Get();CK(create(d.Get(),&sd,IID_ID3D12PipelineState,&out)==expected && !out);};
     bad(E_INVALIDARG);q[1]=(UINT_PTR)r.Get();
-    sd.SizeInBytes-=8;bad(E_NOTIMPL);sd.SizeInBytes+=8;q[0x280/8]^=1ull<<32;bad(E_NOTIMPL);q[0x280/8]^=1ull<<32;
+    sd.SizeInBytes-=8;bad(E_NOTIMPL);sd.SizeInBytes+=8;q[0x280/8]^=2ull<<32;bad(E_NOTIMPL);q[0x280/8]^=2ull<<32;
     q[3]=1;bad(E_POINTER);q[3]=(UINT_PTR)vs;vs[900]^=1;bad(E_NOTIMPL);vs[900]^=1;ps[800]^=1;bad(E_NOTIMPL);ps[800]^=1;
     ComPtr<IUnknown> p;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)p.GetAddressOf()));
     auto hp=clear_test_host(p.Get());CK(hp && (void*)hp!=(void*)p.Get());
     ComPtr<IUnknown> identity;HR(p->QueryInterface(IID_ID3D12PipelineState,(void**)identity.GetAddressOf()));CK(identity.Get()==p.Get());
-    for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode);
+    for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode,false);
+    q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB<<32);
+    q[0x2a8/8]^=20ull<<32;bad(E_NOTIMPL);q[0x2a8/8]^=20ull<<32;
+    q[1]=(UINT_PTR)foreign.Get();bad(E_INVALIDARG);q[1]=(UINT_PTR)r.Get();
+    ComPtr<IUnknown> srgb;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)srgb.GetAddressOf()));
+    hp=clear_test_host(srgb.Get());CK(hp);
+    for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode,true);
+    puts("PASS clear sRGB: dark RGB, linear alpha, coverage and guards");
     puts("PASS +2b0 qualified creation, guest identity and rejection controls");
 }
