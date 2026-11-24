@@ -583,3 +583,22 @@ control on both GPUs counted `32/0` samples on the left/right halves with
 narrow bounds and `32/32` with full bounds. The guest setter is still
 guarded. In every staged ordinary run and the installed comparison, the
 game issued tokens 1 and 2; only token 1 presented (WSI count 0→1).
+
+### Clear raster state and vertex source
+
+The list records the measured depth bounds `(0,1)`, one scissor
+`(0,0,3840,2160)`, and one viewport `(0,0,3840,2160,0,1)` after binding
+the offscreen pair. Split recordings replay all three on the tail;
+successful reset clears them. Eight fixture launches passed across the
+depth-bounds and raster stages. The pending `+470` submission guard is
+unchanged.
+
+Five retail launches: three diagnostics and two final ordinary runs.
+RADV and RTX both stopped at list `+160`, return `+32327`, before a draw.
+On RADV, parameter 0 received the CPU writer's VA `0x1143ff80` on the
+#4 recorder. The 100-byte span starts at `+0x3ff80` in the original
+placed allocation and contains the three clear vertices. The allocation
+was live, but `ScarlettPlacedDataV1` does not expose its first 27 MiB.
+The bind-time stamp and reuse counter do not prove the bytes survive
+through GPU consumption. Both ordinary runs issued tokens 1 and 2 and
+presented only token 1 (WSI count 0→1).

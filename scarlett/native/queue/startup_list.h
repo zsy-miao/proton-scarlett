@@ -45,7 +45,7 @@ struct startup_list {
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
     ID3D12CommandAllocator *tail_allocator;
     struct system_timestamp *stamp;
-    BOOL closed,host_exposed,post_boundary,stencil_zero,blend_ones;
+    BOOL closed,host_exposed,post_boundary,stencil_zero,blend_ones,full_bounds,full_rect,full_vp;
     SRWLOCK borrow_lock; /* Serialize a native borrow against recording deferred guest state. */
     BOOL depth_zero_pending,pending_470;
     struct list_face local; /* Non-pooled lists need no inline ABI. */
@@ -181,6 +181,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
     s->stencil_zero=FALSE;
     s->blend_ones=FALSE;
+    s->full_bounds=s->full_rect=s->full_vp=FALSE;
     s->pending_470=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
@@ -310,6 +311,8 @@ static HRESULT record_native_post(struct startup_list *s,UINT64 addr,UINT value,
     m->native_post=value;
     return S_OK;
 }
+static const D3D12_RECT clear_rect={0,0,3840,2160};
+static const D3D12_VIEWPORT clear_viewport={0,0,3840,2160,0,1};
 static const FLOAT ones_factor[4]={1,1,1,1};
 static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *post)
 {
@@ -321,6 +324,9 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->blend_ones) ID3D12GraphicsCommandList7_OMSetBlendFactor(tail,ones_factor);
     if (SUCCEEDED(hr))replay_om(&s->om,tail);
+    if (SUCCEEDED(hr) && s->full_bounds) ID3D12GraphicsCommandList7_OMSetDepthBounds(tail,0.f,1.f);
+    if (SUCCEEDED(hr) && s->full_rect) ID3D12GraphicsCommandList7_RSSetScissorRects(tail,1,&clear_rect);
+    if (SUCCEEDED(hr) && s->full_vp) ID3D12GraphicsCommandList7_RSSetViewports(tail,1,&clear_viewport);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
@@ -685,6 +691,35 @@ static void WINAPI pool_om(IUnknown *i,UINT count,const SIZE_T *rt,BOOL range,co
 {
     if(FAILED(record_om(sl(i),count,rt,range,ds)))xs_stop();
 }
+static HRESULT record_bounds(struct startup_list *s,FLOAT lo,FLOAT hi)
+{
+    const FLOAT full[]={0.f,1.f};
+    if(!open_direct_state(s) || !s->pending_470 || !s->om.heap[1] ||
+       memcmp(&lo,full,sizeof lo) || memcmp(&hi,full+1,sizeof hi))return E_NOTIMPL;
+    D3D12_FEATURE_DATA_D3D12_OPTIONS2 opts;
+    HRESULT hr=ID3D12Device_CheckFeatureSupport(s->device,D3D12_FEATURE_D3D12_OPTIONS2,&opts,sizeof opts);
+    if(FAILED(hr))return hr;
+    if(!opts.DepthBoundsTestSupported)return DXGI_ERROR_UNSUPPORTED;
+    ID3D12GraphicsCommandList7_OMSetDepthBounds(s->host,lo,hi);
+    s->full_bounds=TRUE;recorded_direct_state(s);return S_OK;
+}
+static void WINAPI pool_bounds(IUnknown *i,FLOAT lo,FLOAT hi)
+{
+    if(FAILED(record_bounds(sl(i),lo,hi)))xs_stop();
+}
+/* shortcut: only the observed single full-target rectangle and viewport on the #4 path. */
+static HRESULT record_clear_raster(struct startup_list *s,UINT count,const void *input,BOOL viewport)
+{
+    if(!open_direct_state(s) || !s->pending_470 || !s->full_bounds || count!=1 || (viewport && !s->full_rect))return E_NOTIMPL;
+    BYTE data[sizeof clear_viewport];SIZE_T n=viewport?sizeof clear_viewport:sizeof clear_rect,got;
+    if(!ReadProcessMemory(GetCurrentProcess(),input,data,n,&got) || got!=n)return E_POINTER;
+    if(memcmp(data,viewport?(const void*)&clear_viewport:(const void*)&clear_rect,n))return E_NOTIMPL;
+    if(viewport){ID3D12GraphicsCommandList7_RSSetViewports(s->host,1,&clear_viewport);s->full_vp=TRUE;}
+    else {ID3D12GraphicsCommandList7_RSSetScissorRects(s->host,1,&clear_rect);s->full_rect=TRUE;}
+    recorded_direct_state(s);return S_OK;
+}
+static void WINAPI pool_rect(IUnknown *i,UINT n,const D3D12_RECT *r){if(FAILED(record_clear_raster(sl(i),n,r,FALSE)))xs_stop();}
+static void WINAPI pool_vp(IUnknown *i,UINT n,const D3D12_VIEWPORT *v){if(FAILED(record_clear_raster(sl(i),n,v,TRUE)))xs_stop();}
 /* Only these slots have been traced on the pool's returned pointer. */
 static void WINAPI pool_470(IUnknown *,UINT64);
 static const struct {
@@ -693,12 +728,12 @@ static const struct {
     __typeof__(&sl_close) close;
     xs_stop_fn gap50[10];
     __typeof__(&pool_topology) topology;
-    xs_stop_fn gapa8[2]; __typeof__(&pool_blend) blend; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
+    __typeof__(&pool_vp) vp;__typeof__(&pool_rect) rect; __typeof__(&pool_blend) blend; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
     xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[12];
     __typeof__(&pool_index) index; xs_stop_fn gap180[2];__typeof__(&pool_om) om;xs_stop_fn gap198;
     __typeof__(&sl_primary_clear) clear;
-    xs_stop_fn gap1a8[18];
+    xs_stop_fn gap1a8[17];__typeof__(&pool_bounds) bounds;
     __typeof__(&sl_marker) marker;
     __typeof__(&sl_timestamp) timestamp;
     xs_stop_fn gap248;
@@ -713,11 +748,13 @@ static const struct {
     xs_stop_fn gap460[2]; __typeof__(&pool_470) state470; xs_stop_fn gap478[3];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {xs_stop,xs_stop},pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),blend)==0xb8,"blend factor ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),om)==0x190,"OM ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),state470)==0x470,"pooled opaque state ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),vp)==0xa8 && offsetof(__typeof__(pool_vtbl),rect)==0xb0,"raster ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),bounds)==0x230,"depth bounds ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),stencil)==0xc0,"stencil reference ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),pipeline)==0xc8,"pooled PSO ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),root)==0x110,"pooled graphics root ABI");

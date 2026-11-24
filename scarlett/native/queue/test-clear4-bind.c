@@ -23,6 +23,19 @@ static void count_om(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_CPU_DESCRI
 #undef ID3D12GraphicsCommandList7_OMSetRenderTargets
 #define ID3D12GraphicsCommandList7_OMSetRenderTargets count_om
 HRESULT xs_write_view(IUnknown*,UINT,IUnknown*,const void*,SIZE_T);
+static UINT bounds_calls;static FLOAT last_bounds[2];static ID3D12GraphicsCommandList7 *bounds_recorder;
+static void count_bounds(ID3D12GraphicsCommandList7 *l,FLOAT lo,FLOAT hi){
+    ++bounds_calls;last_bounds[0]=lo;last_bounds[1]=hi;bounds_recorder=l;ID3D12GraphicsCommandList7_OMSetDepthBounds(l,lo,hi);
+}
+#undef ID3D12GraphicsCommandList7_OMSetDepthBounds
+#define ID3D12GraphicsCommandList7_OMSetDepthBounds count_bounds
+static UINT rects,vps;static ID3D12GraphicsCommandList7 *rect_host,*vp_host;
+static void count_rect(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_RECT *r){if(n==1 && !r->left && !r->top && r->right==3840 && r->bottom==2160){rect_host=l;++rects;}ID3D12GraphicsCommandList7_RSSetScissorRects(l,n,r);}
+static void count_vp(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_VIEWPORT *v){if(n==1 && !v->TopLeftX && !v->TopLeftY && v->Width==3840 && v->Height==2160 && !v->MinDepth && v->MaxDepth==1){vp_host=l;++vps;}ID3D12GraphicsCommandList7_RSSetViewports(l,n,v);}
+#undef ID3D12GraphicsCommandList7_RSSetViewports
+#undef ID3D12GraphicsCommandList7_RSSetScissorRects
+#define ID3D12GraphicsCommandList7_RSSetViewports count_vp
+#define ID3D12GraphicsCommandList7_RSSetScissorRects count_rect
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
@@ -102,16 +115,29 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     for(UINT k=0;k<2;k++){REQUIRE(s->attachments[k].identity==ids[k] && s->attachments[k].slot==slots[k] && s->attachments[k].serial==*(UINT64*)slots[k]);b[k].pResource=images[k];REQUIRE(!memcmp(b+k,seen+k,offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof b[k].Flags));}
     g.pTextureBarriers=seen;isolated->lpVtbl->Barrier(isolated,1,&g);
     UINT ob=om_calls;REQUIRE(record_om(s,1,slots,TRUE,slots+1)==E_NOTIMPL && record_om(s,1,slots,FALSE,NULL)==E_POINTER);
+    REQUIRE(FAILED(record_bounds(s,0,1)));
     pool_vtbl.om(l,1,slots,FALSE,slots+1);struct om_views frozen=s->om;
+    REQUIRE(FAILED(record_clear_raster(s,1,&clear_rect,FALSE)));UINT nr=rects,nv=vps;
+    UINT nb=bounds_calls;
+    REQUIRE(FAILED(record_bounds(s,.125f,.375f)) && FAILED(record_bounds(s,-0.f,1.f)) && bounds_calls==nb);
+    pool_vtbl.bounds(l,0,1);REQUIRE(s->full_bounds && s->depth_zero_pending && s->pending_470 && !xs_list_host(l) &&
+        bounds_calls==nb+1 && bounds_recorder==s->host && last_bounds[0]==0 && last_bounds[1]==1);
+    D3D12_RECT bad_rect=clear_rect;bad_rect.left=1;D3D12_VIEWPORT bad_vp=clear_viewport;bad_vp.MaxDepth=.5f;
+    REQUIRE(FAILED(record_clear_raster(s,1,&clear_viewport,TRUE)) && FAILED(record_clear_raster(s,2,&clear_rect,FALSE)) && record_clear_raster(s,1,NULL,FALSE)==E_POINTER && FAILED(record_clear_raster(s,1,&bad_rect,FALSE)));
+    pool_vtbl.rect(l,1,&clear_rect);REQUIRE(FAILED(record_clear_raster(s,1,&bad_vp,TRUE)));pool_vtbl.vp(l,1,&clear_viewport);
+    REQUIRE(rects==nr+1 && vps==nv+1 && rect_host==s->host && vp_host==s->host);
     DWORD rt[]={28,4,0,0},ds[]={20,3,0,0,0,0};
     REQUIRE(xs_write_view(owner,0xa8,ids[1],ds,slots[1])==S_OK && FAILED(record_om(s,1,slots,FALSE,slots+1)));
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,slots[0])==S_OK && xs_write_view(owner,0xa8,siblings[1],ds,slots[1])==S_OK);
     REQUIRE(FAILED(record_om(s,1,slots,FALSE,slots+1)) && !memcmp(&frozen,&s->om,sizeof frozen) && om_calls==ob+1);
     s->marker=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *s->marker);struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);REQUIRE(s->marker && post);s->marker->refs=1;
     REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
+    REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
+    REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
     ID3D12GraphicsCommandList7_ClearDepthStencilView(isolated,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
-    REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity);
+    REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
+    puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");
     IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;
 }
