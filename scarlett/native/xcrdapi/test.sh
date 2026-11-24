@@ -32,3 +32,6 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$tmp" test
 wine "$tmp/test_console.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror test_status.c -luuid -o "$tmp/test_status.exe"
 wine "$tmp/test_status.exe"
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror test_queue.cpp \
+    -L"$tmp" -lxcrdapi -luuid -static -o "$tmp/test_queue.exe"
+wine "$tmp/test_queue.exe"

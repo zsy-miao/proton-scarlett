@@ -70,7 +70,7 @@ passes the stack request to **queue** slot `+18` at `28c9a0b`. This is not
 a call to file slot `+18`; the queue receives neither a Win32 handle nor a
 path. See the public [request source union](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/System/SimpleDirectStorageCombo/DirectStorageWin32/dstorage_win32.h#L271-L306).
 
-`CreateQueue1` still returns `E_NOTIMPL`. That sample declares a **different
+That sample declares a **different
 queue IID** (`a3f6649a-8c2c-4b3a-8b6e-10186a04b9bc`), so it does not
 verify the full vtable for the title's `3c02cb0c-...` queue or its extensions.
 The observed base calls and source union alone are insufficient: a queue needs
@@ -98,5 +98,37 @@ explicitly leaves pre-enqueue state undefined. This implementation initializes
 each slot to `E_PENDING`. Once enqueued, [GetHResult](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragestatusarrayx/methods/idstoragestatusarrayx_gethresult)
 stays pending while any covered request is outstanding, then reports `S_OK`
 or the first failure in request order. For valid indices, [IsComplete](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragestatusarrayx/methods/idstoragestatusarrayx_iscomplete)
-is true on either terminal result. Only a private producer fixture exercises
-transitions; the DLL exposes no queue or completion writer.
+is true on either terminal result. The file queue uses these transitions at enqueued status boundaries.
+
+## CreateQueue1: captured descriptor and supported slots
+
+With the 9f4dea89 R8 provider, a scratch `+50` probe on both RADV and RTX
+3070 read the same four little-endian QWORDs in the caller's 32-byte
+record: `0`, `0x2103f`, `0x1467835d6`, `1`. The third points to the optional
+debug name `fiDeviceDirectStorage`; it is not an identity or a capability.
+The [GDK queue descriptor](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/structs/dstorage_queue_desc1?view=gdk-2510)
+uses a UINT64 source, UINT16 capacity, INT8 priority, name pointer and
+[64-bit options](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/structs/dstorage_queue_options?view=gdk-2510).
+Thus: file source (0), capacity 4,159, realtime priority (2), and bit 0
+disabling automatic submission. Mixed-priority scheduling is not implemented.
+
+The title uses queue slots `+18` (request, `28c9a0b`), `+20` (status,
+`e8940`), `+30` (submit, `e894d`), and `+40` (no-argument teardown at
+`28c9637`, before Release). These match the base method shapes and
+[GDK queue contracts](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragequeuex/idstoragequeuex?view=gdk-2510).
+The implementation binds only these slots and IUnknown for the captured IID;
+other slots through `+68` stop instead of guessing a return signature.
+The [request layout](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/structs/dstorage_request?view=gdk-2510)
+and its [options](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/structs/dstorage_request_options?view=gdk-2510)
+qualify plain file reads only: options and intermediate size zero, equal
+source/destination byte counts, a linear destination of at most 32 MiB.
+Destinations must remain writable through completion. The worker serializes
+reads per queue; a status marker reports the first failure since the preceding
+marker, including across submit boundaries. The caller must not reuse an
+in-flight status index. Full queues wait for space until another thread
+submits. Closing or releasing the final reference drains the queue and joins
+the worker, including when the title has released the source file or array.
+
+Both unchanged retail runs with this queue passed `+28c95ce` and stopped on
+Wine's unimplemented import `xmem.dll.XMemMapPhysicalPagesScatter`. The
+queue transfer and completion evidence is from the synthetic fixture.

@@ -42,7 +42,8 @@ _Static_assert(offsetof(ConsoleFileVtable, close) == 0x18 && offsetof(ConsoleFil
                "console file vtable");
 static const ConsoleFileVtable console_file_vt;
 struct Factory { const void *vt; };
-struct File { const void *vt; LONG refs; SRWLOCK lock; HANDLE handle; };
+struct File { const void *vt; LONG refs; SRWLOCK lock; HANDLE handle; File *next; };
+static File *files;
 static Factory singleton, console;
 static LONG factory_refs = 1; /* permanent factory reference */
 static SRWLOCK staging_lock = SRWLOCK_INIT;
@@ -98,7 +99,14 @@ static void STDMETHODCALLTYPE file_close(File *f)
 }
 static ULONG STDMETHODCALLTYPE file_release(File *f)
 {
+    AcquireSRWLockExclusive(&staging_lock);
     ULONG remaining = InterlockedDecrement(&f->refs);
+    if (!remaining && f->vt == &console_file_vt) {
+        File **p = &files;
+        while (*p != f) p = &(*p)->next;
+        *p = f->next;
+    }
+    ReleaseSRWLockExclusive(&staging_lock);
     if (!remaining) {
         file_close(f);
         if (f->vt == &console_file_vt) {
@@ -153,6 +161,7 @@ static HRESULT STDMETHODCALLTYPE open_file(Factory *factory, PCWSTR path, REFIID
     f->handle = h;
     if (is_console) {
         AcquireSRWLockExclusive(&staging_lock);
+        f->next=files; files=f;
         ++live_files;
         ++total_files;
         if (++open_files > peak_files) peak_files = open_files;
@@ -186,14 +195,22 @@ typedef struct {
     bool (STDMETHODCALLTYPE *is_complete)(Status *, UINT32);
     HRESULT (STDMETHODCALLTYPE *get_hresult)(Status *, UINT32);
 } StatusVtable;
-struct Status { const StatusVtable *vt; LONG refs; UINT32 capacity; LONG entries[]; };
+struct Status { const StatusVtable *vt; LONG refs; UINT32 capacity; Status *next; LONG entries[]; };
 _Static_assert(offsetof(StatusVtable, is_complete) == 0x18 && offsetof(StatusVtable, get_hresult) == 0x20,
                "console status vtable");
 
+static Status *statuses;
 static ULONG STDMETHODCALLTYPE status_add_ref(Status *s) { return InterlockedIncrement(&s->refs); }
 static ULONG STDMETHODCALLTYPE status_release(Status *s)
 {
+    AcquireSRWLockExclusive(&staging_lock);
     ULONG refs = InterlockedDecrement(&s->refs);
+    if (!refs) {
+        Status **p=&statuses;
+        while (*p!=s) p=&(*p)->next;
+        *p=s->next;
+    }
+    ReleaseSRWLockExclusive(&staging_lock);
     if (!refs) HeapFree(GetProcessHeap(), 0, s);
     return refs;
 }
@@ -246,6 +263,9 @@ static HRESULT STDMETHODCALLTYPE console_create_status(Factory *f, UINT32 capaci
     s->refs = 1;
     s->capacity = capacity;
     for (UINT32 i = 0; i < capacity; ++i) s->entries[i] = E_PENDING;
+    AcquireSRWLockExclusive(&staging_lock);
+    s->next=statuses; statuses=s;
+    ReleaseSRWLockExclusive(&staging_lock);
     *out = s;
     return S_OK;
 }
@@ -258,7 +278,12 @@ static Factory singleton = {&factory_vt};
 /* IDStorageFactoryX2 subset. Consumer offsets and unresolved slots: see ABI.md. */
 enum { STAGING_BYTES = 32 * 1024 * 1024 };
 static void *staging;
-static UINT32 peak_staging;
+static UINT32 queue_bytes, peak_bytes;
+static void track_peak(void)
+{
+    UINT32 bytes=queue_bytes+(staging ? STAGING_BYTES : 0);
+    if (bytes>peak_bytes) peak_bytes=bytes;
+}
 
 static HRESULT STDMETHODCALLTYPE console_staging(Factory *f, UINT32 size)
 {
@@ -266,11 +291,11 @@ static HRESULT STDMETHODCALLTYPE console_staging(Factory *f, UINT32 size)
     (void)f;
     if (size != 0 && size != STAGING_BYTES) return E_NOTIMPL;
     AcquireSRWLockExclusive(&staging_lock);
-    if (live_files) hr = HRESULT_FROM_WIN32(ERROR_BUSY);
+    if (live_files || queue_bytes) hr = HRESULT_FROM_WIN32(ERROR_BUSY);
     else if (size && !staging) {
         staging = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (!staging) hr = HRESULT_FROM_WIN32(GetLastError());
-        else peak_staging = size;
+        else track_peak();
     } else if (!size && staging) {
         if (VirtualFree(staging, 0, MEM_RELEASE)) staging = NULL;
         else hr = HRESULT_FROM_WIN32(GetLastError());
@@ -287,17 +312,18 @@ typedef struct {
     UINT32 counters[9], current_files, max_files, cumulative_files, current_bytes, peak_bytes, error_count;
 } ConsoleStats;
 _Static_assert(offsetof(ConsoleStats, current_bytes) == 244 && sizeof(ConsoleStats) == 256, "stats layout");
+static ConsoleStats queue_stats;
 static void STDMETHODCALLTYPE console_stats(Factory *f, ConsoleStats *stats)
 {
     (void)f;
     if (!stats) return;
-    ZeroMemory(stats, sizeof(*stats));
     AcquireSRWLockShared(&staging_lock);
+    *stats=queue_stats;
     stats->current_files = open_files;
     stats->max_files = peak_files;
     stats->cumulative_files = total_files;
-    stats->current_bytes = staging ? STAGING_BYTES : 0;
-    stats->peak_bytes = peak_staging;
+    stats->current_bytes = queue_bytes+(staging ? STAGING_BYTES : 0);
+    stats->peak_bytes = peak_bytes;
     ReleaseSRWLockShared(&staging_lock);
 }
 
@@ -322,9 +348,11 @@ typedef struct {
 } ConsoleVtable;
 _Static_assert(offsetof(ConsoleVtable, set_staging_size) == 0x40 &&
                offsetof(ConsoleVtable, create_queue1) == 0x50, "console x64 vtable");
+#include "file_queue.h"
+
 static const ConsoleVtable console_vt = {factory_query, factory_add_ref, factory_release,
     create_queue, open_file, console_create_status, {unsupported_scalar, unsupported_scalar},
-    console_staging, console_stats, create_queue};
+    console_staging, console_stats, console_create_queue1};
 static Factory console = {&console_vt};
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)

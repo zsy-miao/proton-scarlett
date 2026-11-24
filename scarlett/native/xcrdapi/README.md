@@ -20,18 +20,19 @@ commits a private 32 MiB buffer with `VirtualAlloc`, reuses it on repeated
 requests, and releases it on size zero or DLL unload; other sizes return
 `E_NOTIMPL`. Staging changes while a console file object exists return
 `HRESULT_FROM_WIN32(ERROR_BUSY)`. `GetStats` reports current/peak staging bytes
-and current/peak/cumulative file opens; queue, storage-request,
-and decompression counters are zero. Console `CreateStatusArray` supports
+and current/peak/cumulative file opens; the observed realtime queue class reports queue, request, byte and error counters. Console `CreateStatusArray` supports
 1–65,536 independent entries. Each starts as `E_PENDING`/incomplete (a local
 choice; the GDK leaves pre-enqueue state undefined). Out-of-range indices
 return `E_INVALIDARG`/false. Console `OpenFile` opens an existing Unicode path
 read-only and shared for reads. `GetHandle` returns a caller-owned read-only
 handle that survives object `Close` or final `Release`; callers use
 `CloseHandle`. After `Close`, `GetHandle` returns `INVALID_HANDLE_VALUE` with
-`ERROR_INVALID_HANDLE`. Console queue creation returns `E_NOTIMPL` and clears
-the output; reads through returned Win32 handles work without a queue.
+`ERROR_INVALID_HANDLE`. Console `CreateQueue1` supports the [captured file queue](ABI.md#createqueue1-captured-descriptor-and-supported-slots).
+An explicit submit runs offset reads on a FIFO worker. Status markers report
+completion or the first error; unsupported compression and request formats
+never produce a successful copy. Other queue descriptors remain unsupported.
 
-On RADV and RTX 3070, retail build `1.0.2.1` called factory slot `+0x50`
+Before this queue implementation, on RADV and RTX 3070, retail build `1.0.2.1` called factory slot `+0x50`
 (`CreateQueue1`) with a descriptor and queue IID
 `3c02cb0c-c050-4195-99a1-a1ce94ba33c5`. The provider returned
 `0x80004001` and a null queue to title RVA `+0x28c95ca`. The same thread
@@ -59,6 +60,7 @@ of writes and independent handle ownership across `Close` and final `Release`.
 `test_status.c` drives the
 private writer with synthetic request results to verify pending, successful
 and failed completion, index isolation and reuse.
+`test_queue.cpp` uses the public title slots to test actual reads, pending and terminal status, malformed requests, full-queue backpressure and final release.
 Only synthetic callers run, in a newly created private Wine prefix
 removed on exit. No SDK runtime DLL is installed or loaded. The resulting
 `build/XCRDAPI.dll` remains available after the test.
