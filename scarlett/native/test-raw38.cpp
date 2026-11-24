@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include <initializer_list>
+#include <utility>
 using Microsoft::WRL::ComPtr;
 #define CK(x) do{if(!(x)){fprintf(stderr,"FAIL %d %s err=%lu\n",__LINE__,#x,GetLastError());ExitProcess(1);}}while(0)
 #define HR(x) do{HRESULT h_=(x);if(FAILED(h_)){fprintf(stderr,"FAIL %d %s hr=%08lx\n",__LINE__,#x,(unsigned long)h_);ExitProcess(1);}}while(0)
@@ -24,12 +25,17 @@ constexpr SIZE_T span=0x89700000u;
 struct xs_texture_use;
 extern "C" HRESULT xs_refresh_wc_texture(IUnknown *,SIZE_T,ID3D12GraphicsCommandList *,ID3D12DescriptorHeap **,xs_texture_use **);
 extern "C" void xs_drop_texture_use(xs_texture_use *);
-constexpr UINT width=STRIDE,results=2*(width/4)+2;
-#ifdef TEST_NATIVE_POOL
-static_assert(STRIDE==2048);constexpr SIZE_T offset=0xe5c6200;
-#else
-constexpr SIZE_T offset=STRIDE==320?0x1c80:0x6200;
+#ifndef ELEMENTS
+#define ELEMENTS 1
 #endif
+constexpr UINT width=STRIDE*ELEMENTS,results=(width+STRIDE)/4+2;
+#if defined(TEST_NATIVE_POOL) && !defined(TEST_WC_OFFSET) && STRIDE==2048
+#define TEST_WC_OFFSET 0xe5c6200
+#endif
+#ifndef TEST_WC_OFFSET
+#define TEST_WC_OFFSET (STRIDE==180?0xe5c6a00:STRIDE==320?0x1c80:0x6200)
+#endif
+constexpr SIZE_T offset=TEST_WC_OFFSET;
 #else
 constexpr UINT width=160,results=65;
 constexpr SIZE_T offset=0x1b80;
@@ -42,8 +48,8 @@ int main(){
 #ifdef TEST_NATIVE_POOL
     using Take=HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*);
     auto take=(Take)(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"ScarlettAcquireNativePoolV1");UINT off=0;ComPtr<ID3D12Resource> proof;
-    CK(take && take(d.Get(),b+offset,width,nullptr,&proof,&off)==S_OK && off==offset && off%width==512 && proof->GetDesc().Width==span);
-    printf("retained GPU base=%llx + offset=%x, stride remainder=%u\n",proof->GetGPUVirtualAddress(),off,off%width);
+    CK(take && take(d.Get(),b+offset,width,nullptr,&proof,&off)==S_OK && off==offset && off%STRIDE==offset%STRIDE && proof->GetDesc().Width==span);
+    printf("retained buffer offset=%x width=%u stride=%u remainder=%u\n",off,width,STRIDE,off%STRIDE);
 #endif
     DWORD params[20]={}; params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     const IID id={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
@@ -54,19 +60,26 @@ int main(){
     hd[1]=4;hd[2]=1;HR(make(guest.Get(),hd,IID_ID3D12DescriptorHeap,(void**)dst.GetAddressOf()));
     auto from=SLOT(src.Get(),0x48,Start)(src.Get()), to=SLOT(dst.Get(),0x48,Start)(dst.Get())+32;
 #ifdef STRIDE
-    DWORD w[16]={0,1,0x1688,0,0,0,1,width};
+    DWORD w[16]={0,1,0x1688,0,0,0,ELEMENTS,STRIDE};
 #else
     DWORD w[16]={39,1,0x1688,0,0,0,38,0,1};
 #endif
     auto address=[&](BYTE *p){memcpy(w+10,&p,sizeof p);};
-    address(b+span-width); HR(xs_write_address_srv(guest.Get(),desc,w,from));
+    address(b+span-((width+15)&~15u)); HR(xs_write_address_srv(guest.Get(),desc,w,from));
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
     UINT64 serial=*(UINT64*)from;
 #ifdef STRIDE
     for (DWORD invalid:{0u,3u,2049u,2052u,0xfffffffcU}) {
         desc[4]=w[7]=invalid;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
     }
-    desc[4]=w[7]=width;
+    desc[4]=width;w[7]=STRIDE;
+    for(DWORD badCount:{0u,0x40000001u,~0u}) {w[6]=badCount;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));}
+    w[6]=ELEMENTS;
+    // A wrapping DWORD product would pass this truncated width check.
+    w[6]=0x40000001;w[7]=4;desc[4]=4;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
+    w[6]=0x400001;desc[4]=w[6]*4;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
+    w[7]=STRIDE;w[6]=ELEMENTS;desc[4]=width;
+    for(UINT badWidth:{width-1,width+1}){desc[4]=badWidth;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));}desc[4]=width;
     BYTE *guard=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);
     CK(guard && VirtualAlloc(guard,4096,MEM_COMMIT,PAGE_READWRITE));
     memcpy(guard+4096-63,w,63);CK(xs_write_address_srv(guest.Get(),desc,guard+4096-63,from)==E_POINTER);
@@ -78,7 +91,7 @@ int main(){
     for (UINT j:{0u,1u,2u,3u,4u,5u,6u,7u,8u,9u,12u,13u,14u,15u}) {
         w[j]^=1; CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from))); w[j]^=1;
     }
-    for (auto p:{b+span-width+16,b+offset+1,(BYTE*)&serial}) {
+    for (auto p:{b+span-((width+15)&~15u)+16,b+offset+1,(BYTE*)&serial}) {
         address(p);CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
     }
     CK(*(UINT64*)from==serial);
@@ -116,7 +129,7 @@ int main(){
     ComPtr<ID3D12Resource> out,read;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&out)));
     hp.Type=D3D12_HEAP_TYPE_READBACK;rd.Width=results*4;
 #ifdef TEST_NATIVE_POOL
-    rd.Width+=width+32;
+    rd.Width+=width+STRIDE+16; // Inspect all neighboring data for the first OOB element.
 #endif
     rd.Flags=D3D12_RESOURCE_FLAG_NONE;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read)));
     D3D12_COMMAND_QUEUE_DESC qd={};
@@ -131,13 +144,17 @@ int main(){
     *(UINT64*)to^=1; CK(FAILED(xs_refresh_wc_texture(dst.Get(),to,l.Get(),&bank,&hold)) && !bank && !hold); *(UINT64*)to^=1;
     HR(xs_refresh_wc_texture(dst.Get(),to,l.Get(),&bank,&hold));gh=bank->GetGPUDescriptorHandleForHeapStart();
 #endif
+#ifdef TEST_NATIVE_POOL
+    // Poison the entire output so an unexecuted or missing OOB store cannot pass as zero.
+    memset(b,0xef,results*4);MemoryBarrier();D3D12_RESOURCE_BARRIER init={};init.Transition={out.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_DEST};
+    l->ResourceBarrier(1,&init);l->CopyBufferRegion(out.Get(),0,proof.Get(),0,results*4);std::swap(init.Transition.StateBefore,init.Transition.StateAfter);l->ResourceBarrier(1,&init);
+#endif
     l->SetComputeRootSignature(root.Get());l->SetDescriptorHeaps(1,&bank);l->SetComputeRootDescriptorTable(0,gh);
-    l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress());l->Dispatch((width/4+63)/64,1,1);
+    l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress());l->Dispatch(((results-2)+63)/64,1,1);
     D3D12_RESOURCE_BARRIER br={};br.Transition={out.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE};
     l->ResourceBarrier(1,&br); l->CopyBufferRegion(read.Get(),0,out.Get(),0,results*4);
 #ifdef TEST_NATIVE_POOL
-    // Inspect the original guarded window independently of the rebased SRV.
-    l->CopyBufferRegion(read.Get(),results*4,proof.Get(),offset-16,width+32);proof.Reset();
+    l->CopyBufferRegion(read.Get(),results*4,proof.Get(),offset-16,width+STRIDE+16);proof.Reset();
 #endif
     HR(l->Close());
     HR(q->Wait(gate.Get(),1));ID3D12CommandList *batch[]={l.Get()};q->ExecuteCommandLists(1,batch);HR(q->Signal(done.Get(),1));
@@ -148,43 +165,42 @@ int main(){
     data[-1]=0xdeadca11;MemoryBarrier();
 #ifdef TEST_NATIVE_POOL
     for(UINT j=1;j<=4;j++)data[-(int)j]=0xdeadca10+j;
+    MemoryBarrier();
 #endif
 #endif
     MemoryBarrier(); CK(VirtualFree(b,0,MEM_RELEASE));
-#ifdef TEST_NATIVE_POOL
-    BYTE *reuse=b+(offset&~SIZE_T(65535));
-#else
-    BYTE *reuse=b;
-#endif
-    CK(VirtualAlloc(reuse,65536,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE)==reuse);memset(reuse,0xad,65536);
+    BYTE *reuse=b+(offset&~SIZE_T(65535)); CK(VirtualAlloc(reuse,65536,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE)==reuse);memset(reuse,0xad,65536);
     // A fresh lookup of the same VA must fail, leaving the retained destination intact.
     CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,to)));
     // Rotate the device's one-entry WC cache. Only the copied descriptor now owns the old import.
-    BYTE *second=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404); CK(second && second!=b);
+    BYTE *second=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404); CK(second && second+offset!=reuse+(offset&65535));
     memset(second+offset,0x6b,width); address(second+offset);
     HR(xs_write_address_srv(guest.Get(),desc,w,to+32));
 #ifdef STRIDE
     HR(xs_write_view(guest.Get(),0x90,nullptr,nullview,to)); dst.Reset();guest.Reset();
+#ifdef TEST_NATIVE_POOL
+    CK(WaitForSingleObject(ev,0)==WAIT_TIMEOUT && take(d.Get(),reuse+(offset&65535),width,nullptr,&proof,&off)==S_FALSE && !proof);
+#endif
 #endif
     HR(gate->Signal(1));CK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
     DWORD *map;HR(read->Map(0,nullptr,(void**)&map));for(UINT i=0;i<results;i++){
 #ifdef STRIDE
-        UINT expected=i<width/4?0x11002347+i*73:i<width/2?0:i==width/2?1:width;
+        UINT expected=i<width/4?0x11002347+i*73:i<results-2?0:i==results-2?ELEMENTS:STRIDE;
 #else
         UINT expected=i==64 ? 152 : i<38 ? 0x11002347+i*73 : 0;
 #endif
         if (map[i]!=expected) {fprintf(stderr,"FAIL index=%u got=%#lx expected=%#x\n",i,map[i],expected);ExitProcess(1);}
     }
 #ifdef TEST_NATIVE_POOL
-    for(UINT j=0;j<width/4+8;j++)CK(map[results+j]==(j<4?0xdeadca14-j:0x11002347+(j-4)*73));
-    printf("PASS original 16-byte guards before/after offset %#zx; all 512 original words, late write at exact title address\n",offset);
+    for(UINT j=0;j<(width+STRIDE+16)/4;j++)CK(map[results+j]==(j<4?0xdeadca14-j:0x11002347+(j-4)*73));
+    printf("PASS original 16-byte prefix, %u-byte payload and %u-byte poisoned suffix after exact VA reuse; cached descriptors released before signal\n",width,STRIDE);
 #endif
     read->Unmap(0,nullptr);
     for(UINT i=0;i<65536;i++) CK(reuse[i]==0xad);
     CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(second,0,MEM_RELEASE));CloseHandle(ev); HR(d->GetDeviceRemovedReason());
 #ifdef STRIDE
     xs_drop_texture_use(hold);
-    printf("PASS one structured element: %u original words, %u OOB zeros, count=1 stride=%u; late write, slot overwrite, cache rotation, exact VA reuse, heap release before fence\n",width/4,width/4,width);
+    printf("PASS WC offset=%zx: %u original words, %u OOB zeros, count=%u stride=%u; late write, slot overwrite, cache rotation, exact VA reuse, heap release before fence\n",offset,width/4,STRIDE/4,ELEMENTS,STRIDE);
 #else
     puts("PASS 38 original DWORDs, 26 OOB zeros including both padding DWORDs; size=152, source overwrite, tag, VA reuse and guard checks");
 #endif

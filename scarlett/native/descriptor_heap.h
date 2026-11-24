@@ -1,5 +1,5 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
-enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, SRGB_ROW_VIEW=0x236, STRUCT1_BASE=0x1000, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
+enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, SRGB_ROW_VIEW=0x236, STRUCT_VIEW=0x237, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
 static UINT array_view_layers(UINT kind)
 {
     UINT layers=kind-ARRAY_VIEW_BASE;
@@ -12,16 +12,13 @@ static DXGI_FORMAT refresh_format(UINT kind)
     DXGI_FORMAT format=(DXGI_FORMAT)(kind-TEXEL32_BASE);
     return kind==R8_VIEW ? DXGI_FORMAT_R8_UNORM : texel32_format(format) ? format : DXGI_FORMAT_UNKNOWN;
 }
-/* One structured element; encode its byte stride in the copied record kind. */
-static UINT struct1_stride(UINT kind)
-{
-    UINT stride=kind-STRUCT1_BASE;
-    return stride && stride<=2048 && !(stride&3) ? stride : 0;
-}
-static BOOL refresh_required(UINT kind) { return struct1_stride(kind) || refresh_format(kind)!=DXGI_FORMAT_UNKNOWN; }
+/* Bound temporary allocations per recorded use. */
+enum { STRUCT_MAX_BYTES=16u<<20 };
+static BOOL refresh_required(UINT kind) { return kind==STRUCT_VIEW || refresh_format(kind)!=DXGI_FORMAT_UNKNOWN; }
 struct descriptor_record {
     UINT64 serial;
     UINT kind, offset; /* Address views: byte offset in the retained WC buffer */
+    UINT elements,stride; /* structured SRV only */
     ID3D12Resource *resource;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *placed; /* exactly first=0, 174 MiB / 4 RAW dwords */

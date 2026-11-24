@@ -332,10 +332,12 @@ WC pool; the two 320-byte ranges at `1c80` and `1e00` (hex). The first offset
 cannot be expressed as a 2048-byte element index in a whole-pool view.
 
 A copied descriptor retains the source import, byte offset and stride.
-Only one complete DWORD-aligned element of at most 2048 bytes is accepted.
+Whole views are accepted when count × stride matches the resource width.
+Stride must be a multiple of four and at most 2048 bytes; the complete view
+is limited to 16 MiB and must fit inside the retained pool.
 Use the existing refresh recorder immediately before consumption on the same
 queue with source in COMMON. It records an exact-range GPU copy to offset 0
-of a stride-sized buffer, then transitions it for shader reads. Bind its
+of a view-sized buffer, then transitions it for shader reads. Bind its
 private heap and retain the returned use object until the fence completes.
 
 Build `test-raw38.cpp` as for the RAW38 fixture, adding `-DSTRIDE=2048` or
@@ -350,3 +352,9 @@ Both GPUs passed the 320- and 2048-byte tests. For the 2048-byte fixture on
 RADV, `-DTEST_NATIVE_POOL` also checks the original pool offset `0xe5c6200`
 and both adjacent 16-byte guards by independent GPU readback. Both retail
 traces put the next 540-byte view at offset `0xe5c6a00`.
+
+Retail now creates both 540-byte views, at `0xe5c6a00` and `0xe5c6c80`.
+Build the fixture and shader with `STRIDE=180` and `ELEMENTS=3`.
+The shader checks all 135 words across the three records, plus 45 zero
+reads from the fourth record. On AMD, `TEST_NATIVE_POOL` independently checks
+that the adjacent 180-byte range actually contains nonzero data.

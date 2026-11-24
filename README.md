@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Both GPUs set up four buffers that each hold one record for a shader to read. The game stops at the next buffer, which holds three records. |
+| What's blocking it? | Both GPUs now set up the shader buffers. The game stops while configuring the allocator it uses to record graphics commands. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -23,7 +23,7 @@ Both GPUs pass the size and alignment queries for the [four-sample color target]
 
 Both adapters handle the six- and [twelve-layer textures](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070). The twelve-layer image takes 4 KiB on AMD and 8 KiB on RTX; its guest layout takes 48 KiB on both. Both also passed two-layer array shader tests and the [256-pixel sRGB row](scarlett/native/xg/README.md#256-texel-srgb-texture1d).
 
-Both retail runs create four [one-element structured-buffer views](scarlett/native/xg/README.md#one-element-structured-wc-buffer): two with 2,048-byte elements and two with 320-byte elements. GPU tests read every word at the original byte offset, including writes made after submission. The next request is a 540-byte view with three 180-byte elements (device `+0x230`, title return `+0x4ecc821`).
+Both retail runs create four [one-element structured-buffer views](scarlett/native/xg/README.md#one-element-structured-wc-buffer) and two views containing three 180-byte records. GPU tests read all 135 words in the three records; all 45 reads from a fourth record returned zero. Both runs next stop at a command allocator callback (slot `+0x48`, title return `+0x188501`).
 
 On the tested RADV driver, the allocator, texture writes and graphics descriptors now [share one directly mapped pool](scarlett/native/radv-retained-pool.md). AMD retail passes its previous `+0xcc2936` breakpoint. GPU tests read all four color and depth/stencil samples from the original allocation after its CPU address was freed and reused; both guards and the replacement mapping stayed intact.
 
