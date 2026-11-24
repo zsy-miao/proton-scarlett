@@ -11,14 +11,25 @@ pinned handles after unlocking; there is no subsequent title VA lookup.
 extent-relative byte range. A trusted recorder must use that range, check
 its operation-specific constraints (e.g. alignment, state and device), and
 keep the capture alive through the last queue fence. Empty ranges, crossings,
-code and out-of-bounds requests return no operand. The original code handle
+code and out-of-bounds requests return no operand. The code resource
 stays inside XMem. The production factory still fails: a whole-arena
 descriptor has no checked consumer on this baseline.
 
+`ScarlettPlacedCopyToV1(capture, sourceOffset, bytes, list, dst, dstOffset,
+&retained)` accepts any nonempty in-bounds buffer copy in the captured
+offset space. It checks device identity and both ranges before recording,
+then splits at 27 and 74 MiB. In particular `8404` is a data source only.
+The recorder supplies an open direct, compute or copy list, compatible
+resource states and an independently backed, non-aliasing destination.
+Keep the destination and the returned capture reference through the last
+execution fence (or discard the unsubmitted recording); release the reference
+with `ScarlettReleasePlacedV1`. Failure clears the output and records nothing.
+
 Build `test-placed-capture.cpp` like `test-descriptor-pages.cpp`; it needs
 no DXIL files. Launch the synthetic with `SCARLETT_TEST_GPU=radv`. It
-rejects missing and mixed runs, then copies the last data words from two
-generations after both runs were freed and the title VAs replaced.
+rejects missing and mixed runs, copies across both boundaries and reads the
+last byte of two generations after both runs were freed and the VAs reused.
+A second independent device on the same adapter checks both device mismatches.
 
 `test-arena-data.cpp` obtains both writable resources from one capture.
 Each extent has one UAV-capable buffer over its original heap, created

@@ -34,13 +34,17 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettAcquireCodeReadSourceV1(
 extern "C" HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3]);
 
 struct XsPlacedCapture {
-    HANDLE code; /* owned, private to xmem; never a data operand */
+    LONG refs = 1;
+    IUnknown *owner = nullptr;
+    ImportedBuffer code;
     ID3D12Resource *data[2]{};
+    ID3D12Resource *resource(unsigned i) const { return i ? data[i-1] : code.resource(); }
     ~XsPlacedCapture() {
         for (auto *r : data) if (r) r->Release();
-        CloseHandle(code);
+        if (owner) owner->Release();
     }
 };
+static constexpr UINT64 edges[] = {0,27ull<<20,74ull<<20,174ull<<20};
 
 extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12Device3 *device,
         const void *base, UINT64 width, XsPlacedCapture **out)
@@ -53,17 +57,14 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12De
     if (FAILED(hr)) return hr;
     auto *p = new(std::nothrow) XsPlacedCapture;
     if (p) {
-        p->code = parts[0];
-        hr = xs_place_arena_data_uav(device,parts[1],0x2404,47u<<20,&p->data[0]);
+        hr = device->QueryInterface(IID_PPV_ARGS(&p->owner));
+        if (SUCCEEDED(hr)) hr = p->code.wc(device,edges[1],parts[0],nullptr);
+        if (SUCCEEDED(hr)) hr = xs_place_arena_data_uav(device,parts[1],0x2404,47u<<20,&p->data[0]);
         if (SUCCEEDED(hr)) hr = xs_place_arena_data_uav(device,parts[2],0x2004,100u<<20,&p->data[1]);
         if (FAILED(hr)) delete p;
         else *out = p;
-    } else {
-        CloseHandle(parts[0]);
-        hr = E_OUTOFMEMORY;
-    }
-    CloseHandle(parts[1]);
-    CloseHandle(parts[2]);
+    } else hr = E_OUTOFMEMORY;
+    for (auto h:parts) CloseHandle(h);
     return hr;
 }
 
@@ -72,17 +73,53 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedDataV1(const XsPla
 {
     if (!out) return E_POINTER;
     *out = {};
-    constexpr UINT64 first = 27ull<<20, second = 74ull<<20, end = 174ull<<20;
-    if (!p || !bytes || at < first || at >= end) return E_INVALIDARG;
-    bool wb = at >= second;
-    if (bytes > (wb ? end : second) - at) return E_INVALIDARG;
-    *out = {p->data[wb],at - (wb ? second : first),bytes};
+    if (!p || !bytes || at < edges[1] || at >= edges[3]) return E_INVALIDARG;
+    unsigned i = at < edges[2] ? 1 : 2;
+    if (bytes > edges[i+1]-at) return E_INVALIDARG;
+    *out = {p->resource(i),at-edges[i],bytes};
+    return S_OK;
+}
+
+static bool on_device(ID3D12DeviceChild *child, IUnknown *owner)
+{
+    IUnknown *id;
+    if (FAILED(child->GetDevice(IID_PPV_ARGS(&id)))) return false;
+    bool same = id == owner;
+    id->Release();
+    return same;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedCopyToV1(XsPlacedCapture *p,
+        UINT64 at, UINT64 bytes, ID3D12GraphicsCommandList *list, ID3D12Resource *dst,
+        UINT64 to, XsPlacedCapture **retained)
+{
+    if (!retained) return E_POINTER;
+    *retained = nullptr;
+    if (!p || !list || !dst || !bytes || at >= edges[3] || bytes > edges[3]-at ||
+        !on_device(list,p->owner) || !on_device(dst,p->owner)) return E_INVALIDARG;
+    auto type = list->GetType();
+    if (type != D3D12_COMMAND_LIST_TYPE_COPY && type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
+        type != D3D12_COMMAND_LIST_TYPE_DIRECT) return E_INVALIDARG;
+    auto desc = dst->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || to > desc.Width || bytes > desc.Width-to)
+        return E_INVALIDARG;
+    for (unsigned i=0; i<3; ++i) if (dst == p->resource(i)) return E_INVALIDARG;
+
+    // All checks precede the first command: a crossing copy cannot leave a partial recording on error.
+    InterlockedIncrement(&p->refs);
+    *retained = p;
+    for (unsigned i=0; bytes; ++i) {
+        if (at >= edges[i+1]) continue;
+        UINT64 n = bytes < edges[i+1]-at ? bytes : edges[i+1]-at;
+        list->CopyBufferRegion(dst,to,p->resource(i),at-edges[i],n);
+        bytes -= n; at += n; to += n;
+    }
     return S_OK;
 }
 
 extern "C" __declspec(dllexport) void WINAPI ScarlettReleasePlacedV1(XsPlacedCapture *p)
 {
-    delete p;
+    if (p && !InterlockedDecrement(&p->refs)) delete p;
 }
 
 static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)
