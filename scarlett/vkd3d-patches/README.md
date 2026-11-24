@@ -72,3 +72,8 @@ For the RTX write-back page pool, apply `0025` after `0024` with Wine patch
 `0011` and the matching XMem provider. The physical-page factory accepts
 the pool's 1,024 MiB and 1,116 MiB chunks. `test-page-pool.c` checks all
 six retained heaps after the CPU address is reused.
+
+For the [4× MSAA color target](../native/msaa-color.md), apply `0026` after
+`0025` with Wine `0012`. Rebuild the x64 core, `win32u.so`, and the graphics
+provider together. The linked fixture checks sample contents, resolve, and
+the original allocation on RTX; RADV checks explicit import refusal.

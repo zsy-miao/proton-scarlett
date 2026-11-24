@@ -39,6 +39,7 @@ struct color_resource {
     LONG refs;
     struct xbox_device *owner;
     ID3D12Resource *host;
+    BOOL msaa;
     void *slice;
     void (WINAPI *xfree)(void *,UINT64);
     struct color_resource *next;
@@ -60,7 +61,7 @@ static ULONG WINAPI color_release(IUnknown *i)
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     if (!refs) {
-        r->xfree(r->slice,XS_DISPLAY_ATTR); /* hook runs now, irrespective of host refs */
+        if (r->xfree) r->xfree(r->slice,XS_DISPLAY_ATTR); /* hook runs now, irrespective of host refs */
         ID3D12Resource_Release(r->host);
         HeapFree(GetProcessHeap(),0,r);
         IUnknown_Release(&d->iface);

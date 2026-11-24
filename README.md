@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Both GPUs now handle the tiny 3D textures used during startup. The game stops when it asks how much memory it needs for an image with anti-aliasing (smoother edges). |
+| What's blocking it? | The game is setting up smoother edges. The RTX 3070 creates the image but stops when the game asks to read it. AMD can't put the image in the requested memory and stops at the next request, for a buffer that tracks depth. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -19,7 +19,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 **NVIDIA (RTX 3070):** Retail build `1.0.2.1` passes the CPU-only control page, maps all five ranges of the 185 MiB descriptor arena, and creates both [3840×2160 primary color textures](scarlett/native/color-allocation.md) in the original 64 MiB allocation. It passes the 6,236 MiB write-back pool allocation and creates the clear graphics pipeline.
 
-**Current stop on both GPUs:** Retail creates 1×1 texture views in three formats (`R8G8B8A8_UNORM`, `R8G8B8A8_UINT`, and `R32_FLOAT`) and three 1×1×1 `R8G8B8A8_UNORM` volume views. The next allocation query asks for a 1×1 `R8G8B8A8_UNORM` render target with four samples per pixel (4× MSAA), at device `+0xc8` (title return `+0x344188`).
+Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md): 4 MiB for each. On the RTX 3070, retail creates it in the original write-combined pool and stops at its `Texture2DMS` shader view (`+0x164f01`). RADV cannot import the color target into that pool. Retail continues after that failure and stops at the 4× `R32G8X24_TYPELESS` depth allocation query (`+0x344188`).
 
 Before those textures, retail creates the R8 texture view and the [4,159-entry DirectStorage file queue](scarlett/native/xcrdapi/README.md), [maps 6,720 consecutive pages](scarlett/native/xmem/README.md#scatter-mapping-into-the-24-gib-cpu-arena) from the original write-back pool (420 MiB), and creates a [38-element raw view](scarlett/native/frame-descriptor-init.md#raw-wc-address-view-after-scatter) of a 160-byte buffer.
 

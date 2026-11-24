@@ -223,9 +223,37 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
     return out;
 }
 
+static BOOL msaa_color_desc(const D3D12_RESOURCE_DESC *r)
+{
+    return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment && r->Width==1 &&
+        r->Height==1 && r->DepthOrArraySize==1 && r->MipLevels==1 && r->Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
+        r->SampleDesc.Count==4 && !r->SampleDesc.Quality && r->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN &&
+        r->Flags==D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+}
+
+/* Both public slots consume the same descriptor. Require the per-resource and
+ * aggregate results from the host to agree for this one-resource query. */
+static HRESULT msaa_color_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
+        D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
+{
+    ID3D12Device4 *d=NULL;
+    HRESULT hr=ID3D12Device_QueryInterface(host,&IID_ID3D12Device4,(void **)&d);
+    if (FAILED(hr)) return hr;
+    D3D12_RESOURCE_ALLOCATION_INFO info={0};
+    D3D12_RESOURCE_ALLOCATION_INFO1 one={0};
+    d->lpVtbl->GetResourceAllocationInfo1(d,&info,1,1,rd,&one);
+    ID3D12Device4_Release(d);
+    if (info.SizeInBytes!=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT || info.Alignment!=info.SizeInBytes ||
+        one.Offset || one.SizeInBytes!=info.SizeInBytes || one.Alignment!=info.Alignment) return E_NOTIMPL;
+    *out=info;
+    if (detail) *detail=one;
+    return S_OK;
+}
+
 static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
+    if (msaa_color_desc(out)) return S_OK;
     if (is_volume1(out) && (UINT)out->Layout==R8_LAYOUT && out->Alignment==R8_ALIGNMENT) return S_OK;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
         out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
@@ -265,6 +293,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
+    if (msaa_color_desc(&rd)) return msaa_color_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL texel32=is_texel32(&rd);
     if (texel32 && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
@@ -290,6 +319,24 @@ static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info(D3D12_RE
         IUnknown *iface,UINT node,UINT count,const void *wire)
 {
     if (FAILED(xs_color_allocation_info(iface,node,count,wire,out))) xs_stop();
+    return out;
+}
+
+HRESULT xs_msaa_allocation_info1(IUnknown *iface,UINT node,UINT count,const void *wire,
+        D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
+{
+    D3D12_RESOURCE_DESC rd={0};
+    if (!out || !detail) return E_POINTER;
+    if (!iface || count!=1 || node!=1) return E_INVALIDARG;
+    HRESULT hr=read_texture_desc(wire,&rd);
+    if (FAILED(hr)) return hr;
+    if (!msaa_color_desc(&rd)) return E_NOTIMPL;
+    return msaa_color_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&rd,out,detail);
+}
+static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info1(D3D12_RESOURCE_ALLOCATION_INFO *out,
+        IUnknown *iface,UINT node,UINT count,const void *wire,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
+{
+    if (FAILED(xs_msaa_allocation_info1(iface,node,count,wire,out,detail))) xs_stop();
     return out;
 }
 
@@ -387,11 +434,49 @@ static HRESULT resource_gap(UINT slot, UINT64 address, const void *wire, UINT st
     OutputDebugStringA(text);
     return E_NOTIMPL;
 }
+#ifdef SCARLETT_STAGED_PLACED
+static HRESULT create_msaa_color(struct xbox_device *d,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!iid || !va) return E_INVALIDARG;
+    if (!IsEqualIID(iid,&IID_ID3D12Resource)) return E_NOINTERFACE;
+    D3D12_CLEAR_VALUE cv;
+    if (!copy_in(&cv,clear,sizeof cv)) return E_POINTER;
+    if (state!=6 || cv.Format!=DXGI_FORMAT_R8G8B8A8_UNORM || memcmp(cv.Color,(float[4]){1,1,1,1},16)) return E_NOTIMPL;
+    struct scarlett_section_info i;
+    const UINT span=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    HRESULT hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
+    if (FAILED(hr)) return hr;
+    if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset%span || i.offset>i.view_size-span) hr=E_INVALIDARG;
+    else {
+        HRESULT (WINAPI *import)(ID3D12Device *,HANDLE,SIZE_T,SIZE_T,ID3D12Resource **)=
+            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettMsaaColorV1");
+        struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
+        if (!r) hr=E_OUTOFMEMORY;
+        else {
+            hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):E_NOTIMPL;
+            if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
+            else {
+                r->iface.lpVtbl=&color_vtbl.unknown; r->msaa=TRUE; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
+                AcquireSRWLockExclusive(&d->descriptor_lock); r->next=d->colors; d->colors=r; ReleaseSRWLockExclusive(&d->descriptor_lock);
+                *out=&r->iface;
+            }
+        }
+    }
+    CloseHandle(i.section);
+    return hr;
+}
+#endif
 static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const void *desc, UINT state,
         const void *clear, REFIID iid, void **out)
 {
 #ifdef SCARLETT_STAGED_PLACED
-    return placed_create(CONTAINING_RECORD(iface,struct xbox_device,iface),address,desc,state,clear,iid,out);
+    struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
+    D3D12_RESOURCE_DESC rd={0};
+    if (copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) && msaa_color_desc(&rd))
+        return create_msaa_color(d,address,state,clear,iid,out);
+    return placed_create(d,address,desc,state,clear,iid,out);
 #else
     (void)iface; (void)iid;
     return resource_gap(0x428,address,desc,state,0,clear,out);
@@ -590,7 +675,9 @@ struct bootstrap_vtbl {
     xs_stop_fn gap288;
     xs_stop_fn gap290[4];
     __typeof__(&clear_pipeline) graphics_stream;
-    xs_stop_fn gap2b8[40];
+    xs_stop_fn gap2b8[21];
+    __typeof__(&bootstrap_allocation_info1) allocation_info1;
+    xs_stop_fn gap368[18];
     __typeof__(&bootstrap_committed) committed;
     xs_stop_fn gap400[5];
     __typeof__(&bootstrap_placed) placed;
@@ -614,6 +701,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, register_pool) == 0x250 &&
                offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
+               offsetof(struct bootstrap_vtbl, allocation_info1) == 0x360 &&
                offsetof(struct bootstrap_vtbl, root) == 0x80 &&
                offsetof(struct bootstrap_vtbl, bvh_pipeline) == 0x1f0 &&
                offsetof(struct bootstrap_vtbl, rtv) == 0xa0 &&
@@ -726,7 +814,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap258 = {xs_stop,xs_stop,xs_stop},
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
     .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 3] = xs_stop },
-    .graphics_stream = clear_pipeline, .gap2b8 = { [0 ... 39] = xs_stop },
+    .graphics_stream = clear_pipeline, .gap2b8 = { [0 ... 20] = xs_stop },
+    .allocation_info1=bootstrap_allocation_info1, .gap368={ [0 ... 17]=xs_stop },
     .committed = bootstrap_committed, .gap400 = { [0 ... 4] = xs_stop }, .placed = bootstrap_placed
 };
 #endif

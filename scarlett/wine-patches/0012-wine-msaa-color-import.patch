@@ -1,0 +1,55 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -312,6 +312,7 @@
+ #define SCARLETT_DMA_HANDLE 0x40000000u
+ #define SCARLETT_CONTROL_HANDLE 0x20000000u
+ #define SCARLETT_CPU_CONTROL_HANDLE 0x08000000u
++#define SCARLETT_MSAA_HANDLE 0x04000000u
+ 
+ static int control_gem_fd( struct vulkan_device *device, int source )
+ {
+@@ -1223,14 +1224,18 @@
+             if (shared && shared != import_win32->handle) NtClose( shared );
+             break;
+         }
++        case SCARLETT_MSAA_HANDLE:
+         case SCARLETT_WB_HANDLE:
+         case SCARLETT_DMA_HANDLE:
+         {
+             BOOL cached = import_win32->handleType == SCARLETT_WB_HANDLE;
+             const UINT64 tag[2] = {cached ? 0x5343574200000001ull : 0x5343574300000001ull, alloc_info->allocationSize};
++            BOOL msaa = import_win32->handleType == SCARLETT_MSAA_HANDLE;
++            if (msaa && (alloc_info->allocationSize != 0x89700000 || alloc_info->memoryTypeIndex ||
++                         !device->extensions.has_VK_EXT_external_memory_dma_buf)) goto failed;
+             memory->local = d3dkmt_open_tagged_resource( 0, import_win32->handle, &memory->mutex, &memory->sync, tag );
+             if (!memory->local) goto failed;
+-            if (cached)
++            if (cached || msaa)
+             {
+                 VkMemoryFdPropertiesKHR props = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+                 if ((control_fd = d3dkmt_object_get_fd( memory->local )) < 0 || !device->p_vkGetMemoryFdPropertiesKHR ||
+@@ -1699,7 +1704,12 @@
+         case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_IMAGE_CREATE_INFO_NV: break;
+         case VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO:
+             external_info = (VkExternalMemoryImageCreateInfo *)*next;
+-            if (!(external_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
++            if (external_info->handleTypes == SCARLETT_MSAA_HANDLE)
++            {
++                if (!device->extensions.has_VK_EXT_external_memory_dma_buf) return VK_ERROR_FEATURE_NOT_PRESENT;
++                external_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++            }
++            else if (!(external_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
+                 FIXME( "Unsupported handle types %#x\n", external_info->handleTypes );
+             else
+                 external_info->handleTypes = get_host_external_memory_type();
+@@ -1784,7 +1794,8 @@
+         {
+             VkPhysicalDeviceExternalImageFormatInfo *external_info = (VkPhysicalDeviceExternalImageFormatInfo *)*next;
+             handle_type = external_info->handleType;
+-            if (handle_type & EXTERNAL_MEMORY_WIN32_BITS) external_info->handleType = get_host_external_memory_type();
++            if (handle_type == SCARLETT_MSAA_HANDLE) external_info->handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++            else if (handle_type & EXTERNAL_MEMORY_WIN32_BITS) external_info->handleType = get_host_external_memory_type();
+             break;
+         }
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_IMAGE_FORMAT_INFO_EXT: break;
