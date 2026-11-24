@@ -3,7 +3,17 @@
 scarlett-proton is a Proton fork implementing Xbox Series X|S console APIs for x86-64 games on Linux.
 Wine loads the original executable; project-owned DLLs supply console imports. [Build and test](scarlett/README.md).
 
-**Native layer status:** early development. The graphics DLL creates a device wrapper backed by vkd3d-proton for the observed retail request. Console rendering and gameplay are not yet supported.
+## GTA VI on Linux: progress at a glance
+
+| Question | Where things stand |
+| --- | --- |
+| Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
+| How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
+| Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
+| What's blocking it? | During startup, the game asks for a one-pixel image in a format the project doesn't support yet. Both GPUs stop there. |
+| Do the controls work? | A [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
+
+## Technical progress
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
