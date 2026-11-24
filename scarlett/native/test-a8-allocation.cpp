@@ -14,7 +14,14 @@ int main() {
     ComPtr<IUnknown> dev;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)dev.GetAddressOf()));
     using Query=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *);
     auto query=(Query)((*(void***)dev.Get())[0xc8/8]);
-    DWORD wire[]={3,0,0,0,3840,0,2160,0x10001,65,1,0,0,0x300001};
+#ifdef TEST_BGRA
+    constexpr bool bgra=true;
+#else
+    constexpr bool bgra=false;
+#endif
+    constexpr UINT width=bgra?2048:3840,height=bgra?2048:2160;
+    constexpr DXGI_FORMAT format=bgra?DXGI_FORMAT_B8G8R8A8_UNORM:DXGI_FORMAT_A8_UNORM;
+    DWORD wire[]={3,0,0,0,width,0,height,0x10001,format,1,0,0,0x300001};
     auto pages=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(pages && VirtualAlloc(pages,4096,MEM_COMMIT,PAGE_READWRITE));
     BYTE *prefix=pages+4096-sizeof wire;memcpy(prefix,wire,sizeof wire);
     struct {UINT64 before;D3D12_RESOURCE_ALLOCATION_INFO info;UINT64 after;} g={1,{},2};
@@ -28,8 +35,8 @@ int main() {
     extra.one.Offset=~0ull;g.info={};
     CK(query1(&g.info,dev.Get(),1,1,prefix,&extra.one)==&g.info && g.before==1 && g.after==2 && extra.a==1 && extra.b==2);
     CK(extra.one.Offset==0 && extra.one.SizeInBytes==desktop.SizeInBytes && extra.one.Alignment==desktop.Alignment);
-    printf("A8 +c8 size=%#llx alignment=%#llx host=%#llx/%#llx\n",g.info.SizeInBytes,g.info.Alignment,desktop.SizeInBytes,desktop.Alignment);
-    CK(!memcmp(&desktop,&g.info,sizeof desktop) && (g.info.SizeInBytes==0x880000 || g.info.SizeInBytes==0x800000) && g.info.Alignment==65536);
+    printf("format=%u +c8/+360 size=%#llx alignment=%#llx host=%#llx/%#llx\n",format,g.info.SizeInBytes,g.info.Alignment,desktop.SizeInBytes,desktop.Alignment);
+    CK(!memcmp(&desktop,&g.info,sizeof desktop) && (bgra ? (g.info.SizeInBytes==0x1000000 || g.info.SizeInBytes==0x1010000) : (g.info.SizeInBytes==0x880000 || g.info.SizeInBytes==0x800000)) && g.info.Alignment==65536);
     auto deny=[&](UINT node,UINT cnt,const void *p){D3D12_RESOURCE_ALLOCATION_INFO bad={1,2};
         return FAILED(xs_color_allocation_info(dev.Get(),node,cnt,p,&bad)) && !bad.SizeInBytes && !bad.Alignment &&
             FAILED(xs_msaa_allocation_info1(dev.Get(),node,cnt,p,&bad,&extra.one));};
@@ -50,14 +57,14 @@ int main() {
     auto hp=hd.Properties;hp.Type=D3D12_HEAP_TYPE_READBACK;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));
     ComPtr<ID3D12CommandQueue> q;ComPtr<ID3D12CommandAllocator> a;ComPtr<ID3D12GraphicsCommandList> l;D3D12_COMMAND_QUEUE_DESC qd={};
     HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q)));HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));HR(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l)));
-    float dark[]={0.25f,0.25f,0.25f,0.25f},bright[]={0.75f,0.75f,0.75f,0.75f};D3D12_RECT corner={3839,2159,3840,2160};
+    float dark[]={0.25f,0.25f,0.25f,0.25f},bright[]={0.75f,0.75f,0.75f,0.75f};D3D12_RECT corner={width-1,height-1,width,height};
     l->ClearRenderTargetView(view,dark,0,nullptr);l->ClearRenderTargetView(view,bright,1,&corner);
     D3D12_RESOURCE_BARRIER b={};b.Transition={image.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION src={},dst={};src.pResource=image.Get();dst.pResource=rb.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    dst.PlacedFootprint.Footprint={DXGI_FORMAT_A8_UNORM,2,1,1,256};D3D12_BOX box={3838,2159,0,3840,2160,1};
+    dst.PlacedFootprint.Footprint={format,2,1,1,256};D3D12_BOX box={width-2,height-1,0,width,height,1};
     l->CopyTextureRegion(&dst,0,0,0,&src,&box);HR(l->Close());ID3D12CommandList *lists[]={l.Get()};q->ExecuteCommandLists(1,lists);
     ComPtr<ID3D12Fence> fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));HR(q->Signal(fence.Get(),1));
     HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(fence->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);CloseHandle(e);
-    BYTE *p;HR(rb->Map(0,nullptr,(void**)&p));printf("A8 desktop RT last two bytes %02x %02x\n",p[0],p[1]);CK(p[0]==64 && p[1]==191);rb->Unmap(0,nullptr);
-    puts("PASS A8 allocation query: guarded wire/output, native placement and fenced two-texel readback");
+    BYTE *p;HR(rb->Map(0,nullptr,(void**)&p));CK(bgra ? (((DWORD*)p)[0]==0x40404040 && ((DWORD*)p)[1]==0xbfbfbfbf) : (p[0]==64 && p[1]==191));rb->Unmap(0,nullptr);
+    printf("PASS %s allocation query: guarded wire/output, native placement and fenced two-texel readback\n",bgra?"BGRA8":"A8");
 }

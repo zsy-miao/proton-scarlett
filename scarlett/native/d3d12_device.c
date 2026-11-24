@@ -253,7 +253,7 @@ static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
 {
-    BOOL a8=rd->Format==DXGI_FORMAT_A8_UNORM;
+    BOOL a8=rd->Format==DXGI_FORMAT_A8_UNORM, bgra=rd->Format==DXGI_FORMAT_B8G8R8A8_UNORM;
     BOOL fp=rd->Format==DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (fp) {
         /* Exact sizing probes only; no guest layout or placement translation. */
@@ -264,9 +264,9 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         else if (rd->Width==2560 && rd->Height==1440 && (UINT)rd->Flags==0x300005)
             rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         else return E_NOTIMPL;
-    } else if (a8) {
+    } else if (a8 || bgra) {
         /* read_texture_desc validated the 2D shape. Only the low RT flag is translated. */
-        if (rd->Width!=3840 || rd->Height!=2160 || rd->Alignment ||
+        if (rd->Width!=(a8?3840u:2048u) || rd->Height!=(a8?2160u:2048u) || rd->Alignment ||
             rd->Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN || (UINT)rd->Flags!=0x300001) return E_NOTIMPL;
         rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     } else if (!msaa_desc(rd)) return E_NOTIMPL;
@@ -281,6 +281,8 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     if (fp) {
         if (info.Alignment!=65536 || (rd->Width==1280 ? info.SizeInBytes!=0x780000 && info.SizeInBytes!=0x790000 :
             info.SizeInBytes!=0x1e00000 && info.SizeInBytes!=0x1ce0000)) return E_NOTIMPL;
+    } else if (bgra) {
+        if (info.Alignment!=65536 || (info.SizeInBytes!=0x1000000 && info.SizeInBytes!=0x1010000)) return E_NOTIMPL;
     } else if (a8) {
         if (info.Alignment!=65536 || (info.SizeInBytes!=0x880000 && info.SizeInBytes!=0x800000)) return E_NOTIMPL;
     } else if (info.SizeInBytes!=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT || info.Alignment!=info.SizeInBytes) return E_NOTIMPL;
@@ -332,7 +334,8 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    if (msaa_desc(&rd) || rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL);
+    if (msaa_desc(&rd) || rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
+        rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL layered=is_layered_texel(&rd),texel32=layered || is_texel32(&rd);
     BOOL row=is_srgb_row(&rd);
