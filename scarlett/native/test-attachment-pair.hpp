@@ -1,5 +1,6 @@
 // Fixture-only native recorder for checking the two barriers captured from the guest list.
-extern "C" BOOL test_pair_record(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,ID3D12GraphicsCommandList7*,ID3D12Resource**,IUnknown**);
+extern "C" BOOL test_pair_record(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,ID3D12GraphicsCommandList7*,ID3D12Resource**,IUnknown**,UINT64,IUnknown*);
+extern "C" BOOL test_source_lifetime(ID3D12Device*,IUnknown*,IUnknown*,UINT64,IUnknown*,void(*)(void*),void*);
 extern "C" IUnknown *test_texture(IUnknown *,ID3D12Resource *,BOOL);
 extern "C" HRESULT xs_resolve_color_rtv(IUnknown*,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE*,ID3D12Resource**);
 extern "C" HRESULT xs_resolve_depth_dsv(IUnknown*,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE*,ID3D12Resource**);
@@ -8,7 +9,7 @@ static BYTE *pair_pool(){
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");
     CK(alloc);BYTE *b=(BYTE*)alloc(nullptr,0x89700000,0x20003000,0x283,0x2404);CK(b);return b;
 }
-static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown *root){
+static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown *root,IUnknown *other,ClearSourceControl &control){
     auto xm=GetModuleHandleW(L"xmem.dll");auto take=(HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*))(void*)GetProcAddress(xm,"ScarlettAcquireNativePoolV1");CK(take);
 
     ComPtr<ID3D12Resource> backing;UINT off;HRESULT hr=take(d,base,1,nullptr,&backing,&off);CK(hr==S_OK || hr==S_FALSE);
@@ -40,7 +41,15 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     for(UINT k=0;k<2;k++){auto rd=images[k]->GetDesc();D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
         ComPtr<ID3D12Resource> image;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,k?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&image)));
         siblings[k].Attach(test_texture(owner,image.Get(),k));CK(siblings[k]);sid[k]=siblings[k].Get();}
-    CK(test_pair_record(d,owner,pso,root,ids,slots,l.Get(),images,sid));
+    CK(XMemMapPhysicalPages(control.at[3],752,control.ids)==control.at[3] && XMemMapPhysicalPages(control.at[4],1600,control.ids+752)==control.at[4]);
+    D3D12_RESOURCE_DESC arena={};arena.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;arena.Width=174ull<<20;arena.Height=arena.DepthOrArraySize=arena.MipLevels=arena.SampleDesc.Count=1;arena.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;arena.Flags=(D3D12_RESOURCE_FLAGS)0x20004;
+    UINT64 va=(UINT64)control.at[2]+0x3ff80;ComPtr<IUnknown> placed,duplicate;
+    auto make_arena=[&](ComPtr<IUnknown>& out){HR(((Place)vt[0x428/8])(owner,(UINT64)control.at[2],&arena,UINT_MAX,nullptr,IID_ID3D12Resource,(void**)out.GetAddressOf()));};
+    make_arena(placed);make_arena(duplicate);
+    CK(test_pair_record(d,owner,pso,root,ids,slots,l.Get(),images,sid,va,duplicate.Detach()));
+    memset((void*)va,0x11,100);
+    auto replace=[](void *arg){auto c=(ClearSourceControl*)arg;BYTE *src=c->at[2]+0x3ff80;for(UINT k=0;k<100;k++)src[k]=(BYTE)(7+3*k);MemoryBarrier();c->replace();memset(src,0xcd,100);MemoryBarrier();};
+    CK(test_source_lifetime(d,owner,other,va,placed.Detach(),replace,&control));
     for(UINT k=0;k<2;k++){b[k].SyncAfter=D3D12_BARRIER_SYNC_COPY;b[k].LayoutAfter=D3D12_BARRIER_LAYOUT_COPY_SOURCE;b[k].AccessAfter=D3D12_BARRIER_ACCESS_COPY_SOURCE;}l->Barrier(1,&g);
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=1536;rd.Height=rd.MipLevels=rd.DepthOrArraySize=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;

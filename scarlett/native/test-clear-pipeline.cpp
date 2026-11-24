@@ -1,7 +1,8 @@
 #include "test-clear-common.hpp"
+#include "../tests/clear-fallback/source-control.hpp"
 #include "test-attachment-pair.hpp"
 extern "C" BOOL test_clear4_bind(ID3D12Device *,IUnknown *,IUnknown *,IUnknown *,IUnknown *,IUnknown *,IUnknown *);
-static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb,bool with_ds=false) {
+static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb,bool with_ds=false,ClearSourceControl *control=nullptr) {
     constexpr UINT W=16,H=8;
     auto resource=[&](D3D12_HEAP_TYPE t,D3D12_RESOURCE_STATES st,UINT64 bytes=4096) {
         D3D12_HEAP_PROPERTIES hp={};hp.Type=t;hp.CreationNodeMask=hp.VisibleNodeMask=1;
@@ -29,6 +30,7 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
         if(with_ds){pos[0]=i%3==1?3.f:-1.f;pos[1]=i%3==2?-3.f:1.f;}
         memcpy(data+128+28*i,pos,12);memcpy(data+512+36*i,attrs[i],16);
     }
+    if(control)memcpy(data,control->record(),100);
     src->Unmap(0,nullptr);
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};ComPtr<ID3D12DescriptorHeap>heap;
     HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&heap)));auto handle=heap->GetCPUDescriptorHandleForHeapStart();
@@ -54,7 +56,18 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
         dsrb=resource(D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST,bytes);
     }
     l->OMSetRenderTargets(1,&handle,FALSE,with_ds?&dsh:nullptr);l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    l->SetGraphicsRootSignature(r);l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress()+256);l->DrawInstanced(with_ds?3:6,1,0,0);
+    l->SetGraphicsRootSignature(r);l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress()+256);
+    ComPtr<ID3D12Resource> live;
+    if(control){
+        CK(with_ds);D3D12_RECT left={0,0,W/2,H};l->RSSetScissorRects(1,&left);l->DrawInstanced(3,1,0,0);
+        D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
+        auto rd=src->GetDesc();rd.Width=100;
+        HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&live)));
+        HR(control->live.copy_to(l.Get(),live.Get(),0));
+        D3D12_RESOURCE_BARRIER copy={};copy.Transition={live.Get(),0,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};l->ResourceBarrier(1,&copy);
+        D3D12_RECT right={W/2,0,W,H};l->RSSetScissorRects(1,&right);l->SetGraphicsRootShaderResourceView(0,live->GetGPUVirtualAddress());
+    }
+    l->DrawInstanced(with_ds?3:6,1,0,0);
     D3D12_RESOURCE_BARRIER b={};b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION dst={},from={};from.pResource=rt.Get();dst.pResource=rb.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     auto desc=rt->GetDesc();d->GetCopyableFootprints(&desc,0,1,0,&dst.PlacedFootprint,nullptr,nullptr,nullptr);
@@ -65,8 +78,13 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
         for(UINT plane=0;plane<2;++plane){read.PlacedFootprint=planes[plane];from.SubresourceIndex=plane;l->CopyTextureRegion(&read,0,0,0,&from,nullptr);}
     }
     HR(l->Close());
+    ComPtr<ID3D12Fence> gate;
+    if(control){HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate)));HR(q->Wait(gate.Get(),1));}
     ID3D12CommandList*ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence>fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
     HANDLE evt=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(evt);HR(q->Signal(fence.Get(),1));HR(fence->SetEventOnCompletion(1,evt));
+    if(control){
+        CK(WaitForSingleObject(evt,0)==WAIT_TIMEOUT);control->write({.875f,.625f,.375f,.125f});HR(gate->Signal(1));
+    }
     CK(WaitForSingleObject(evt,10000)==WAIT_OBJECT_0 && fence->GetCompletedValue()==1);CloseHandle(evt);
     HR(rb->Map(0,nullptr,(void**)&data));unsigned colored=0;
     for(unsigned y=0;y<H;++y)for(unsigned x=0;x<W;++x){
@@ -77,6 +95,8 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
         if(srgb){const BYTE a[]={3,188,137,255},b[]={255,25,225,128};memcpy(expected[1],a,4);memcpy(expected[2],b,4);}
         if(with_ds)covered=true;
         const BYTE *want=expected[with_ds?1:!covered?0:mode==1?3:x<8?1:2];
+        const BYTE recorded[]={32,96,159,223},overwritten[]={223,159,96,32};
+        if(control)want=x<W/2?recorded:overwritten;
         const BYTE *got=data+dst.PlacedFootprint.Offset+y*dst.PlacedFootprint.Footprint.RowPitch+x*4;
         if(memcmp(got,want,4)){fprintf(stderr,"mode=%d (%u,%u) got %u,%u,%u,%u; expected %u,%u,%u,%u\n",
             mode,x,y,got[0],got[1],got[2],got[3],want[0],want[1],want[2],want[3]);exit(1);}
@@ -90,6 +110,7 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
             CK(depth==(x<W/2?.25f:.75f) && data[planes[1].Offset+y*planes[1].Footprint.RowPitch+x]==(x<W/2?0x59:0xa6));
         }
         dsrb->Unmap(0,nullptr);puts("PASS #4: color cleared by full-screen draw; bound depth and stencil unchanged at every pixel");
+        if(control)puts("PASS #4 gated same-generation overwrite: recording-time snapshot left, live 8404 copy right");
     }
 }
 int main(){
@@ -115,14 +136,16 @@ int main(){
     q[0x210/8]^=1ull<<32;bad(E_NOTIMPL);q[0x210/8]^=1ull<<32; // DepthEnable at +0x214.
     q[1]=(UINT_PTR)foreign.Get();bad(E_INVALIDARG);q[1]=(UINT_PTR)r.Get();
     ComPtr<IUnknown> ds4;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)ds4.GetAddressOf()));
-    hp=clear_test_host(ds4.Get());CK(hp);draw(hd.Get(),host,hp,0,false,true);q[0x2a8/8]=base_dsv;
+    hp=clear_test_host(ds4.Get());CK(hp);draw(hd.Get(),host,hp,0,false,true);
+    {ClearSourceControl control(hd.Get(),ds4.Get(),r.Get());draw(hd.Get(),host,hp,0,false,true,&control);
+    q[0x2a8/8]=base_dsv;
     q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB<<32);
     q[0x2a8/8]^=20ull<<32;bad(E_NOTIMPL);q[0x2a8/8]^=20ull<<32;
     q[1]=(UINT_PTR)foreign.Get();bad(E_INVALIDARG);q[1]=(UINT_PTR)r.Get();
     ComPtr<IUnknown> srgb;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)srgb.GetAddressOf()));
     hp=clear_test_host(srgb.Get());CK(hp);
     for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode,true);
-    test_pair(wc,hd.Get(),d.Get(),ds4.Get(),r.Get());
+    test_pair(wc,hd.Get(),d.Get(),ds4.Get(),r.Get(),other.Get(),control);}
     auto second=root(d.Get());CK(test_clear4_bind(hd.Get(),d.Get(),other.Get(),r.Get(),second.Get(),ds4.Detach(),p.Get()));
     puts("PASS clear sRGB: dark RGB, linear alpha, coverage and guards");
     puts("PASS +2b0 qualified creation, guest identity and rejection controls");

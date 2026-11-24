@@ -15,6 +15,7 @@ struct placed_backing {
     UINT64 guest_va;
     __typeof__(&ScarlettPlacedMatchesV1) matches;
     __typeof__(&ScarlettPlacedDataV1) data;
+    __typeof__(&ScarlettPlacedCopyToV1) copy;
     __typeof__(&ScarlettReleasePlacedV1) drop;
 };
 static ULONG WINAPI placed_addref(IUnknown *i)
@@ -79,10 +80,11 @@ static HRESULT placed_create(struct xbox_device *d,UINT64 va,const void *wire,UI
     hr=E_NOTIMPL;
     if (!GetModuleHandleExW(0,L"xmem.dll",&p->module)) goto fail;
     __typeof__(&ScarlettCapturePlacedV1) take=(void *)GetProcAddress(p->module,"ScarlettCapturePlacedV1");
+    p->copy=(void *)GetProcAddress(p->module,"ScarlettPlacedCopyToV1");
     p->data=(void *)GetProcAddress(p->module,"ScarlettPlacedDataV1");
     p->matches=(void *)GetProcAddress(p->module,"ScarlettPlacedMatchesV1");
     p->drop=(void *)GetProcAddress(p->module,"ScarlettReleasePlacedV1");
-    if (!take || !p->data || !p->drop || !p->matches || !GetProcAddress(p->module,"ScarlettCreatePlacedTableV1") ||
+    if (!take || !p->copy || !p->data || !p->drop || !p->matches || !GetProcAddress(p->module,"ScarlettCreatePlacedTableV1") ||
         !GetProcAddress(p->module,"ScarlettBindPlacedTableV1") ||
         !GetProcAddress(p->module,"ScarlettReleasePlacedTableV1")) goto fail;
     ID3D12Device3 *host=NULL;

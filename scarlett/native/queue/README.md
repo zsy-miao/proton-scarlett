@@ -602,3 +602,27 @@ was live, but `ScarlettPlacedDataV1` does not expose its first 27 MiB.
 The bind-time stamp and reuse counter do not prove the bytes survive
 through GPU consumption. Both ordinary runs issued tokens 1 and 2 and
 presented only token 1 (WSI count 0→1).
+
+### Clear vertex source and first draw entry
+
+On RADV, the CPU stores at `+1228f1..+12299b` wrote the 100-byte triangle
+record later passed to root parameter 0 on the same recorder. List `+160`
+now records a copy of that range from the matching original allocation
+into a private GPU buffer, transitions the buffer for vertex-shader reads,
+and binds it. A split rebinds the same buffer without copying it again.
+The gated fixture distinguished a write to the retained backing after
+recording from both a CPU snapshot and a replacement at the same address.
+
+Both ordinary runs stopped at **list `+60`, return `+bff06`**. The RADV
+diagnostic measured `DrawInstanced(3,1,0,0)`. The chunk's stamp, hold count
+and reuse counter stayed unchanged from bind to draw entry. There was no
+host draw or consuming retail fence: pending `+470` still blocks submission.
+Only the startup image presented (token 1, WSI count 0→1), although both
+adapters issued token 2.
+
+Three retail launches: one RADV diagnostic and two matched ordinary runs.
+Five fixture attempts: the first RADV control held an extra pipeline
+reference; the corrected source and ordering fixtures passed on both GPUs.
+The input diagnostic recorded successful `GameInputCreate` and completion
+of the controller enumeration callback in the title. It recorded no
+gamepad reading or state copy before the draw stop.

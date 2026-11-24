@@ -18,6 +18,7 @@ _Static_assert(offsetof(struct direct_prefix,put)==0x18 && offsetof(struct direc
 #include "../om-views.h"
 struct startup_list {
     struct om_views om;
+    struct xs_clear_source source;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     enum batch_phase phase;
     IUnknown *sync_owner;
@@ -68,6 +69,16 @@ static void drop_attachments(struct xs_attachment_pin pair[2])
 {
     for(UINT k=0;k<2;k++)if(pair[k].identity){IUnknown_Release(pair[k].identity);pair[k]=(struct xs_attachment_pin){0};}
 }
+static void drop_source(struct xs_clear_source *p)
+{
+    if(p->buffer)ID3D12Resource_Release(p->buffer);
+    if(p->placed)IUnknown_Release(p->placed);
+    *p=(struct xs_clear_source){0};
+}
+static void bind_source(ID3D12GraphicsCommandList7 *host,const struct xs_clear_source *p)
+{
+    ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView(host,0,ID3D12Resource_GetGPUVirtualAddress(p->buffer));
+}
 static void drop_split(struct startup_list *s)
 {
     drop_marker(s->post); s->post=NULL;
@@ -82,7 +93,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
-        drop_om(&s->om);drop_attachments(s->attachments);
+        drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
         drop_split(s); drop_timestamp(s->stamp);
         drop_marker(s->marker);
         if (s->primary) ID3D12Resource_Release(s->primary);
@@ -175,7 +186,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
-    drop_om(&s->om);drop_attachments(s->attachments);
+    drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
     AcquireSRWLockExclusive(&s->borrow_lock);
     if(s->bound){IUnknown_Release(s->bound);s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;}
     if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
@@ -328,6 +339,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr) && s->full_rect) ID3D12GraphicsCommandList7_RSSetScissorRects(tail,1,&clear_rect);
     if (SUCCEEDED(hr) && s->full_vp) ID3D12GraphicsCommandList7_RSSetViewports(tail,1,&clear_viewport);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
+    if (SUCCEEDED(hr) && s->source.buffer)bind_source(tail,&s->source);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
         if (SUCCEEDED(hr)) ID3D12GraphicsCommandList7_SetDescriptorHeaps(tail,2,banks);
@@ -720,6 +732,17 @@ static HRESULT record_clear_raster(struct startup_list *s,UINT count,const void 
 }
 static void WINAPI pool_rect(IUnknown *i,UINT n,const D3D12_RECT *r){if(FAILED(record_clear_raster(sl(i),n,r,FALSE)))xs_stop();}
 static void WINAPI pool_vp(IUnknown *i,UINT n,const D3D12_VIEWPORT *v){if(FAILED(record_clear_raster(sl(i),n,v,TRUE)))xs_stop();}
+static HRESULT record_source(struct startup_list *s,UINT index,UINT64 va)
+{
+    if(!open_direct_state(s) || index || !s->full_vp || !s->pending_470 || !s->depth_zero_pending ||
+        !s->om.heap[1] || !s->bound || !s->required_root || s->graphics_identity!=s->required_root || s->source.buffer)return E_NOTIMPL;
+    HRESULT hr=xs_copy_clear_source(s->pool_owner,s->device,s->host,va,&s->source);
+    if(SUCCEEDED(hr)){bind_source(s->host,&s->source);recorded_direct_state(s);}return hr;
+}
+static void WINAPI pool_source(IUnknown *i,UINT index,UINT64 va)
+{
+    if(FAILED(record_source(sl(i),index,va)))xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static void WINAPI pool_470(IUnknown *,UINT64);
 static const struct {
@@ -730,7 +753,7 @@ static const struct {
     __typeof__(&pool_topology) topology;
     __typeof__(&pool_vp) vp;__typeof__(&pool_rect) rect; __typeof__(&pool_blend) blend; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
-    xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[12];
+    xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[9]; __typeof__(&pool_source) source; xs_stop_fn gap168[2];
     __typeof__(&pool_index) index; xs_stop_fn gap180[2];__typeof__(&pool_om) om;xs_stop_fn gap198;
     __typeof__(&sl_primary_clear) clear;
     xs_stop_fn gap1a8[17];__typeof__(&pool_bounds) bounds;
@@ -748,12 +771,13 @@ static const struct {
     xs_stop_fn gap460[2]; __typeof__(&pool_470) state470; xs_stop_fn gap478[3];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 8]=xs_stop},pool_source,{xs_stop,xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),blend)==0xb8,"blend factor ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),om)==0x190,"OM ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),state470)==0x470,"pooled opaque state ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),vp)==0xa8 && offsetof(__typeof__(pool_vtbl),rect)==0xb0,"raster ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),source)==0x160,"clear vertex source ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),bounds)==0x230,"depth bounds ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),stencil)==0xc0,"stencil reference ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),pipeline)==0xc8,"pooled PSO ABI");
@@ -879,7 +903,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
-struct heap_retirement { IUnknown *bound; ID3D12RootSignature *root; ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event;
+struct heap_retirement { struct xs_clear_source source; IUnknown *bound; ID3D12RootSignature *root; ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     ID3D12GraphicsCommandList7 *tag_head,*tag_tail;
     ID3D12Fence *prefix_gate;
@@ -905,6 +929,7 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
         IUnknown_Release(r->tag_queue);
     }
 #endif
+    drop_source(&r->source);
     if(r->bound)IUnknown_Release(r->bound);
     if(r->root)ID3D12RootSignature_Release(r->root);
     if (r->primary) ID3D12Resource_Release(r->primary);
@@ -916,6 +941,9 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
 static void retain_recording(struct heap_retirement *r,struct startup_list *s)
 {
     if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
+    r->source=s->source;
+    if(r->source.placed)IUnknown_AddRef(r->source.placed);
+    if(r->source.buffer)ID3D12Resource_AddRef(r->source.buffer);
     if ((r->bound=s->bound))IUnknown_AddRef(r->bound);
     if ((r->root=s->graphics_root))ID3D12RootSignature_AddRef(r->root);
     if ((r->primary=s->primary)) ID3D12Resource_AddRef(r->primary);
@@ -975,7 +1003,7 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
     if (!match || desc.Type != s->type) return E_INVALIDARG;
     struct heap_retirement *r=NULL;
     PTP_WAIT wait=NULL;
-    if (s->heaps[0] || s->stamp || s->primary || s->graphics_root || s->bound) {
+    if (s->source.buffer || s->heaps[0] || s->stamp || s->primary || s->graphics_root || s->bound) {
         r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r || FAILED(ID3D12Device_CreateFence(s->device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&r->fence)) ||
             !(r->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(wait=CreateThreadpoolWait(retire_heaps,r,NULL)) ||

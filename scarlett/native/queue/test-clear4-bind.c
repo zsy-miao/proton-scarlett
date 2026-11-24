@@ -36,6 +36,10 @@ static void count_vp(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_VIEWPORT *
 #undef ID3D12GraphicsCommandList7_RSSetScissorRects
 #define ID3D12GraphicsCommandList7_RSSetViewports count_vp
 #define ID3D12GraphicsCommandList7_RSSetScissorRects count_rect
+static UINT binds;static UINT64 last_va;static ID3D12GraphicsCommandList7 *src_host;
+static void count_bind(ID3D12GraphicsCommandList7 *l,UINT i,UINT64 va){if(i==0){++binds;src_host=l;last_va=va;}ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView(l,i,va);}
+#undef ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView
+#define ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView count_bind
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
@@ -96,7 +100,7 @@ BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown 
     puts("PASS +c8/+470: exact receiver, PSO and root; opaque state survives split and rejects clear/borrow/submit; reset and fenced retirement");return TRUE;
 }
 
-BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *root,IUnknown **ids,SIZE_T *slots,ID3D12GraphicsCommandList7 *isolated,ID3D12Resource **images,IUnknown **siblings)
+BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *root,IUnknown **ids,SIZE_T *slots,ID3D12GraphicsCommandList7 *isolated,ID3D12Resource **images,IUnknown **siblings,UINT64 va,IUnknown *duplicate)
 {
     IUnknown *a,*l,*q;REQUIRE(xs_allocator(hd,0,&a)==S_OK && xs_device_list(hd,0,a,TRUE,owner,&l)==S_OK);struct startup_list *s=sl(l);
     D3D12_TEXTURE_BARRIER b[2]={0};for(UINT k=0;k<2;k++){
@@ -124,8 +128,13 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
         bounds_calls==nb+1 && bounds_recorder==s->host && last_bounds[0]==0 && last_bounds[1]==1);
     D3D12_RECT bad_rect=clear_rect;bad_rect.left=1;D3D12_VIEWPORT bad_vp=clear_viewport;bad_vp.MaxDepth=.5f;
     REQUIRE(FAILED(record_clear_raster(s,1,&clear_viewport,TRUE)) && FAILED(record_clear_raster(s,2,&clear_rect,FALSE)) && record_clear_raster(s,1,NULL,FALSE)==E_POINTER && FAILED(record_clear_raster(s,1,&bad_rect,FALSE)));
+    REQUIRE(FAILED(record_source(s,0,va)));
     pool_vtbl.rect(l,1,&clear_rect);REQUIRE(FAILED(record_clear_raster(s,1,&bad_vp,TRUE)));pool_vtbl.vp(l,1,&clear_viewport);
     REQUIRE(rects==nr+1 && vps==nv+1 && rect_host==s->host && vp_host==s->host);
+    REQUIRE(FAILED(record_source(s,0,va)) && IUnknown_Release(duplicate)==0);
+    REQUIRE(FAILED(record_source(s,1,va)) && FAILED(record_source(s,0,va+16)) && !binds && !s->source.buffer);
+    pool_vtbl.source(l,0,va);UINT64 private_va=ID3D12Resource_GetGPUVirtualAddress(s->source.buffer);
+    REQUIRE(private_va!=va && binds==1 && src_host==s->host && last_va==private_va && FAILED(record_source(s,0,va)) && !xs_list_host(l));
     DWORD rt[]={28,4,0,0},ds[]={20,3,0,0,0,0};
     REQUIRE(xs_write_view(owner,0xa8,ids[1],ds,slots[1])==S_OK && FAILED(record_om(s,1,slots,FALSE,slots+1)));
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,slots[0])==S_OK && xs_write_view(owner,0xa8,siblings[1],ds,slots[1])==S_OK);
@@ -134,10 +143,34 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
     REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
+    REQUIRE(binds==2 && src_host==s->host && last_va==private_va && s->pending_470);
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
     ID3D12GraphicsCommandList7_ClearDepthStencilView(isolated,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
+    REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
     puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");
     IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;
+}
+
+/* Copy-only recorder: exercise the same lifetime path without admitting a +470 submission. */
+BOOL test_source_lifetime(ID3D12Device *hd,IUnknown *owner,IUnknown *other,UINT64 va,IUnknown *placed,void (*replace)(void*),void *arg)
+{
+    IUnknown *a,*b,*l,*q,*gate,*done;REQUIRE(xs_allocator(hd,0,&a)==S_OK && xs_allocator(hd,0,&b)==S_OK && xs_device_list(hd,0,a,TRUE,owner,&l)==S_OK);struct startup_list *s=sl(l);
+    REQUIRE(FAILED(xs_copy_clear_source(other,hd,s->host,va,&s->source)) && !s->source.buffer);
+    REQUIRE(xs_copy_clear_source(owner,hd,s->host,va,&s->source)==S_OK && s->source.placed==placed);
+    ID3D12Resource *dst=s->source.buffer,*rb;D3D12_RESOURCE_DESC rd;dst->lpVtbl->GetDesc(dst,&rd);REQUIRE(rd.Width==100);rd.Width=128;
+    D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
+    REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(hd,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb)));
+    BYTE *bytes;REQUIRE(SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&bytes)));memset(bytes,0xe7,128);ID3D12Resource_Unmap(rb,0,NULL);
+    D3D12_RESOURCE_BARRIER barrier={.Transition={dst,0,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&barrier);ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,12,dst,0,100);
+    REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && xs_shared_fence(hd,&gate)==S_OK && xs_shared_fence(hd,&done)==S_OK);
+    REQUIRE(xs_queue_wait(q,gate,1)==S_OK && checked_startup_submit(q,1,&l,0,0)==S_OK && ID3D12CommandQueue_Signal(as_queue(q),as_fence(done),1)==S_OK);
+    REQUIRE(sl_reset(l,b,NULL,0)==S_OK && !s->source.buffer && !ID3D12Fence_GetCompletedValue(as_fence(done)));
+    replace(arg);REQUIRE(FAILED(xs_copy_clear_source(owner,hd,s->host,va,&s->source)) && IUnknown_Release(placed)==1);
+    IUnknown_Release(l);HANDLE e=CreateEventW(NULL,FALSE,FALSE,NULL);REQUIRE(e && xs_fence_event(done,1,e)==S_OK && xs_cpu_signal(gate,1)==S_OK && WaitForSingleObject(e,10000)==WAIT_OBJECT_0);
+    REQUIRE(SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&bytes)));for(UINT k=0;k<128;k++)REQUIRE(bytes[k]==(k>=12 && k<112?(BYTE)(7+3*(k-12)):0xe7));ID3D12Resource_Unmap(rb,0,NULL);
+    CloseHandle(e);ID3D12Resource_Release(rb);IUnknown_Release(q);IUnknown_Release(gate);IUnknown_Release(done);IUnknown_Release(a);IUnknown_Release(b);
+    puts("PASS +160 fenced copy-only control: all 100 overwritten original bytes, neither snapshot nor replacement VA, both guards, reset/release while queued");return TRUE;
 }

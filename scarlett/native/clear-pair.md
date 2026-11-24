@@ -49,6 +49,7 @@ a scratch `game` directory. Build from the patched tree:
 
 ```sh
 n=/path/to/scarlett/native
+python3 "$n/../tests/clear-fallback/prepare.py" /path/to/pinned/game_scarlett_master.exe game/emitter.bin
 flags=(-DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED -Os -Wall -Wextra -Werror)
 flags+=(-DSCARLETT_EXPERIMENTAL_TAGGED_BATCH -DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE -DSCARLETT_EXPERIMENTAL_DIRECT_WAIT -DSCARLETT_EXPERIMENTAL_BRIDGE)
 for f in "$n/test-clear-device.c" "$n/queue/test-clear4-bind.c" "$n/d3d12_vm.c"; do
@@ -56,10 +57,20 @@ for f in "$n/test-clear-device.c" "$n/queue/test-clear4-bind.c" "$n/d3d12_vm.c";
 done
 x86_64-w64-mingw32-g++ -std=c++17 -Wall -Wextra -Werror -Os -static \
   "$n/test-clear-pipeline.cpp" test-clear-device.o test-clear4-bind.o d3d12_vm.o \
-  -ld3d12 -ldxgi -ldxguid -o game/game_scarlett_master.exe
+  /path/to/scratch-tool/scarlett/xmem.dll -lbcrypt -ld3d12 -ldxgi -ldxguid -o game/game_scarlett_master.exe
 TMPDIR="$PWD" SCARLETT_TEST_DISPLAY=sway SCARLETT_TEST_GPU=radv \
   "$n/../test-launch-nixos.sh" game /path/to/scratch-tool
 ```
+
+**Clear #4 source timing control (cross-compiled only).** The clear-fallback
+writer produces the same 100-byte record twice in one continuously mapped
+`8404` generation. The fixture snapshots the first record for the left half
+and records a bounded GPU copy from `ImportedReadSpan` for the right half.
+After submission, while the Direct queue is fence-blocked, the writer changes
+the color in place. After release the readback must be `20 60 9f df` on the
+left and `df 9f 60 20` on the right, with both bound DSV planes unchanged
+at every pixel. These are two explicit fixture policies, not evidence of when
+the retail clear consumes its source.
 
 The fixture replaces the process-specific pointers, calls the guest factory,
 and draws using the returned PSO's host state. A nonzero root VA offset, two

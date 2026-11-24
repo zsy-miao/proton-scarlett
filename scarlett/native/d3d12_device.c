@@ -1088,6 +1088,36 @@ HRESULT xs_pin_attachment_pair(IUnknown *owner,ID3D12Device *hd,const D3D12_TEXT
 done:
     ReleaseSRWLockShared(&d->descriptor_lock);return hr;
 }
+HRESULT xs_copy_clear_source(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,struct xs_clear_source *out)
+{
+#ifdef SCARLETT_STAGED_PLACED
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    if(hd!=d->host || !va)return E_INVALIDARG;
+    struct placed_backing *p=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(struct placed_backing *it=d->placed;it;it=it->next){
+        if(va-it->guest_va!=0x3ff80 || !it->matches(it->capture,(void*)it->guest_va))continue;
+        if(p){p=NULL;break;}p=it;
+    }
+    if(p)placed_addref(&p->title->iface);
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if(!p)return E_INVALIDARG;
+    D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
+    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=100,.Height=1,.DepthOrArraySize=1,
+        .MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+    ID3D12Resource *dst=NULL;struct XsPlacedCapture *hold=NULL;
+    HRESULT hr=ID3D12Device_CreateCommittedResource(hd,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&dst);
+    if(SUCCEEDED(hr))hr=p->copy(p->capture,0x3ff80,100,(ID3D12GraphicsCommandList*)list,dst,0,&hold);
+    if(FAILED(hr)){if(dst)ID3D12Resource_Release(dst);placed_release(&p->title->iface);return hr;}
+    p->drop(hold); /* out->placed owns the same capture through discard/retirement. */
+    D3D12_RESOURCE_BARRIER b={.Transition={dst,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(list,1,&b);
+    *out=(struct xs_clear_source){&p->title->iface,dst};return S_OK;
+#else
+    (void)owner;(void)hd;(void)list;(void)va;(void)out;return E_NOTIMPL;
+#endif
+}
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
 {
     if (!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown) return NULL;

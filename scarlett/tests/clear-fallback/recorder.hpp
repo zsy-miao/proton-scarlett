@@ -49,7 +49,7 @@ struct ClearRecorder {
         t[0xa0/8]=(void*)topology;t[0xc8/8]=(void*)pipeline;t[0x110/8]=(void*)signature;t[0x190/8]=(void*)targets;
         t[0x230/8]=(void*)depth;t[0xb0/8]=(void*)scissor;t[0xa8/8]=(void*)viewport;t[0x160/8]=(void*)srv;t[0x60/8]=(void*)draw;return true;
     }();(void)init;return t;}
-    HRESULT record(){
+    virtual HRESULT record(){
         if(!b.device || !b.pso || !b.root || !b.generation || !b.source || !b.heap || !b.target || !list)return E_INVALIDARG;
         if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return E_INVALIDARG;
         ComPtr<ID3D12Device> d; HRESULT hr=list->GetDevice(IID_PPV_ARGS(&d));if(FAILED(hr))return hr;

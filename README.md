@@ -9,8 +9,8 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | Both GPUs set up the offscreen clear, then stop when the vertex shader needs the triangle’s 100 bytes of position and color data. An earlier graphics setting still prevents submission of that command list. |
-| Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
+| What's blocking it? | Both GPUs reach the game’s request to draw a triangle that clears an offscreen image. The draw stops there because the effect of an earlier graphics setting is still unknown. |
+| Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress
 
