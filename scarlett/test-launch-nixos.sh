@@ -19,7 +19,14 @@ gpu=()
 for node in /dev/dri /dev/nvidia0 /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm; do
     gpu+=(--dev-bind "$node" "$node")
 done
-exec timeout -k 5s 90s "$bwrap" --unshare-all --die-with-parent --new-session --clearenv \
+seconds=${SCARLETT_TEST_SECONDS:-90}
+[[ $seconds =~ ^[1-9][0-9]*$ ]] || { echo "Invalid SCARLETT_TEST_SECONDS" >&2; exit 2; }
+capture=()
+if [[ -n ${XCL_FRAME_DUMP:-} ]]; then
+    [[ $XCL_FRAME_DUMP =~ ^[1-9][0-9]*$ ]] || { echo "Invalid XCL_FRAME_DUMP interval" >&2; exit 2; }
+    capture+=(--setenv XCL_FRAME_DUMP "$XCL_FRAME_DUMP")
+fi
+exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-session --clearenv "${capture[@]}" \
     --ro-bind /nix/store /nix/store --ro-bind "$fhs/usr" /usr \
     --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/lib32 /lib32 \
     --proc /proc --dev /dev --tmpfs /dev/shm --tmpfs /tmp --ro-bind /sys /sys \

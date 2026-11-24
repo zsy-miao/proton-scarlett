@@ -74,6 +74,8 @@ To repeat the actual test on this NixOS/NVIDIA host without restarting Steam:
 This uses `steam-run`'s filesystem, Xvfb, a fresh prefix and no network. It prints the private
 test directory containing `logs/steam-999001.log` and the XCL report. It returns the process
 status, or 124 if the 90-second test window expires.
+For visual checks, `SCARLETT_TEST_SECONDS=360 XCL_FRAME_DUMP=120` allows six minutes and
+saves sampled back buffers as `frame_*.bmp` in the title's XCL logs directory.
 
 `./scarlett/tests/input-frame.sh` launches a synthetic window in the private Xvfb harness.
 It sends one Space press/release to the focused window and checks that the screen pixel
