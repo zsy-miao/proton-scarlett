@@ -20,6 +20,7 @@ ID3D12CommandAllocator *xs_allocator_host(IUnknown *allocator, D3D12_COMMAND_LIS
 extern const IID xs_sync_list_id, xs_pool_list_id;
 HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *allocator, BOOL pooled, IUnknown **out);
 HRESULT xs_device_list(ID3D12Device *host,D3D12_COMMAND_LIST_TYPE type,IUnknown *allocator,BOOL pooled,IUnknown *pool_owner,IUnknown **out);
+ID3D12RootSignature *xs_retain_graphics_root(IUnknown *owner,IUnknown *identity);
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE

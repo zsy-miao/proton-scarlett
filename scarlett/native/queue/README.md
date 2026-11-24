@@ -449,3 +449,15 @@ coarse and 48 fine pixels in the ordering fixture. One diagnostic and
 two ordinary retail launches followed the worker to `+110` (return
 `+327cb`). On RTX the `rage_bink` technique lookup succeeded at index 1
 but group slot 1 was null. Both ordinary runs presented only token 1.
+
+Pooled Direct `+110` (return `+327cb`) binds the graphics root signature
+from the group's `+0x80` field to the active recorder. The fixture reset
+and released the list before its fence completed and still read back all
+four expected pixels through `t0, space3` on both GPUs.
+
+Four retail launches: two RTX diagnostics and two ordinary runs on the
+same staged build. Both workers reached `+258` (return `+32820`). On RTX
+the main thread first hit `+b5a5f8`: the `rage_bink` builder's 308-byte
+root signature had returned `E_NOTIMPL`. Accepting that layout in a
+diagnostic reached device `+1c8`; completed group creation is unverified.
+Both ordinary runs issued tokens 1 and 2 and presented only token 1.

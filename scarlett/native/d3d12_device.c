@@ -1060,6 +1060,18 @@ void xs_finish_flip(IUnknown *pin)
     AcquireSRWLockExclusive(&r->owner->descriptor_lock);r->flipping=FALSE;ReleaseSRWLockExclusive(&r->owner->descriptor_lock);
 }
 #endif
+/* Registry membership, not a dereference or QueryInterface on the guest argument. */
+ID3D12RootSignature *xs_retain_graphics_root(IUnknown *device,IUnknown *identity)
+{
+    if (!device || device->lpVtbl!=&bootstrap_vtbl.unknown) return NULL;
+    struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
+    ID3D12RootSignature *host=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(struct bvh_root *r=d->bvh_roots;r;r=r->next)if(&r->iface==identity && r->kind==ROOT_SRV_SPACE3){
+        host=r->host;ID3D12RootSignature_AddRef(host);break;
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);return host;
+}
 /* Borrowed host root; caller holds the device and root live through use. */
 ID3D12RootSignature *xs_bvh_root_host(IUnknown *device,IUnknown *i)
 {

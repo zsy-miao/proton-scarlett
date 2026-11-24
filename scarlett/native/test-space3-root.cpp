@@ -7,6 +7,14 @@ extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void 
 extern "C" ID3D12RootSignature *xs_bvh_root_host(IUnknown *,IUnknown *);
 #define CK(x) do {if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 #define HR(x) CK(SUCCEEDED(x))
+#ifdef TEST_POOL_ROOT
+extern "C" HRESULT xs_allocator(ID3D12Device*,D3D12_COMMAND_LIST_TYPE,IUnknown**);
+extern "C" HRESULT xs_device_list(ID3D12Device*,D3D12_COMMAND_LIST_TYPE,IUnknown*,BOOL,IUnknown*,IUnknown**);
+extern "C" HRESULT xs_direct_queue(ID3D12Device*,IUnknown**);
+extern "C" ID3D12GraphicsCommandList *test_list_recorder(IUnknown*);
+extern "C" HRESULT test_list_root_checked(IUnknown*,IUnknown*);
+extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
+#endif
 int main() {
     DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
@@ -49,17 +57,48 @@ int main() {
     const UINT vals[]={19,37,0xfedcba98,0x7abc1234};void* m;HR(src->Map(0,nullptr,&m));memcpy(m,vals,sizeof vals);src->Unmap(0,nullptr);
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};ComPtr<ID3D12DescriptorHeap>heap;
     HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&heap)));auto h=heap->GetCPUDescriptorHandleForHeapStart();d->CreateRenderTargetView(rt.Get(),nullptr,h);
+#ifdef TEST_POOL_ROOT
+    ComPtr<IUnknown> queue,list,alloc;HR(xs_direct_queue(d.Get(),queue.GetAddressOf()));
+    HR(xs_allocator(d.Get(),D3D12_COMMAND_LIST_TYPE_DIRECT,alloc.GetAddressOf()));
+    HR(xs_device_list(d.Get(),D3D12_COMMAND_LIST_TYPE_DIRECT,alloc.Get(),TRUE,dev.Get(),list.GetAddressOf()));
+    auto q=test_host_queue(queue.Get()); auto l=test_list_recorder(list.Get());l->SetPipelineState(pipeline.Get());
+    auto slots=*(void***)list.Get();using Close=HRESULT(WINAPI*)(IUnknown*);using Reset=HRESULT(WINAPI*)(IUnknown*,IUnknown*,IUnknown*,UINT);
+    CK(test_list_root_checked(list.Get(),nullptr)==E_INVALIDARG && test_list_root_checked(list.Get(),dev.Get())==E_INVALIDARG);
+    ComPtr<IUnknown> otherDev,foreign;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)otherDev.GetAddressOf()));
+    HR(create(otherDev.Get(),1,capture,92,IID_ID3D12RootSignature,(void**)foreign.GetAddressOf()));CK(test_list_root_checked(list.Get(),foreign.Get())==E_INVALIDARG);
+#else
     ComPtr<ID3D12CommandQueue>q;D3D12_COMMAND_QUEUE_DESC qd={};HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q)));
     ComPtr<ID3D12CommandAllocator>a;HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
     ComPtr<ID3D12GraphicsCommandList>l;HR(d->CreateCommandList(1,qd.Type,a.Get(),pipeline.Get(),IID_PPV_ARGS(&l)));
+#endif
     D3D12_VIEWPORT vp={0,0,4,1,0,1};D3D12_RECT sc={0,0,4,1};l->RSSetViewports(1,&vp);l->RSSetScissorRects(1,&sc);
     l->OMSetRenderTargets(1,&h,FALSE,nullptr);l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    l->SetGraphicsRootSignature(host);l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress());l->DrawInstanced(3,1,0,0);
+#ifdef TEST_POOL_ROOT
+    ((void(WINAPI*)(IUnknown*,IUnknown*))slots[0x110/8])(list.Get(),root.Get());
+#else
+    l->SetGraphicsRootSignature(host);
+#endif
+    l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress());l->DrawInstanced(3,1,0,0);
     D3D12_RESOURCE_BARRIER b={};b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION to={},from={};from.pResource=rt.Get();to.pResource=rb.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    to.PlacedFootprint.Footprint={DXGI_FORMAT_R32_UINT,4,1,1,256};l->CopyTextureRegion(&to,0,0,0,&from,nullptr);HR(l->Close());
-    ID3D12CommandList*ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence>fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
-    HANDLE evt=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(evt);HR(q->Signal(fence.Get(),1));HR(fence->SetEventOnCompletion(1,evt));CK(WaitForSingleObject(evt,10000)==WAIT_OBJECT_0);CloseHandle(evt);
+    to.PlacedFootprint.Footprint={DXGI_FORMAT_R32_UINT,4,1,1,256};l->CopyTextureRegion(&to,0,0,0,&from,nullptr);
+#ifdef TEST_POOL_ROOT
+    HR(((Close)slots[0x48/8])(list.Get()));CK(test_list_root_checked(list.Get(),root.Get())==E_INVALIDARG);
+    ComPtr<ID3D12Fence> gate;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate)));HR(q->Wait(gate.Get(),1));
+    using Submit=void(WINAPI*)(IUnknown*,UINT,IUnknown*const*,UINT64,UINT);IUnknown *entry=list.Get();
+    ((Submit)(*(void***)queue.Get())[0x118/8])(queue.Get(),1,&entry,0,0);
+    HR(((Reset)slots[0x458/8])(list.Get(),alloc.Get(),nullptr,0));
+    IUnknown *old=root.Get();root.Reset();CK(!xs_bvh_root_host(dev.Get(),old) && test_list_root_checked(list.Get(),old)==E_INVALIDARG);list.Reset();
+#else
+    HR(l->Close());
+    ID3D12CommandList*ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
+#endif
+    ComPtr<ID3D12Fence>fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
+    HANDLE evt=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(evt);HR(q->Signal(fence.Get(),1));HR(fence->SetEventOnCompletion(1,evt));
+#ifdef TEST_POOL_ROOT
+    CK(WaitForSingleObject(evt,50)==WAIT_TIMEOUT);HR(gate->Signal(1));
+#endif
+    CK(WaitForSingleObject(evt,10000)==WAIT_OBJECT_0);CloseHandle(evt);
     HR(rb->Map(0,nullptr,&m));CK(!memcmp(m,vals,sizeof vals));rb->Unmap(0,nullptr);
     puts("PASS node/size/space negatives; t0 space3 fenced draw returned four exact R32_UINT pixels");return 0;
 }
