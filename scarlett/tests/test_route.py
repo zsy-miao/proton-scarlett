@@ -34,6 +34,7 @@ class LaunchTest(unittest.TestCase):
         argv = ["proton", verb, target, "argument with spaces"]
         data = proton["CompatData"](str(self.base), proton["is_scarlett_launch"](argv))
         if data.scarlett:
+            (Path(data.prefix_dir) / "dosdevices").mkdir(parents=True, exist_ok=True)
             dest = Path(data.prefix_dir) / "drive_c/windows/system32/gameinput.dll"
             dest.parent.mkdir(parents=True, exist_ok=True)
             data.pfx_copy("unused", str(dest))
@@ -54,6 +55,7 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(args, [str(self.tool / "files/bin/wine"), target, "argument with spaces"])
         self.assertEqual((path, overrides, calls), (r"Z:\tool\scarlett;C:\old", "existing=b;gameinput=n", 1))
         self.assertEqual(orig.read_bytes(), b"existing")
+        self.assertEqual((self.base / "scarlett-title/pfx/dosdevices/g:").readlink(), Path("/My Game"))
 
     def test_conflict(self):
         conflicting = self.base / "scarlett-title/pfx/drive_c/windows/system32/gameinput.dll"

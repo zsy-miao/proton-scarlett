@@ -12,7 +12,7 @@ xvfb=$(realpath "$(command -v Xvfb)")
 xrandr=$(realpath "$(command -v xrandr)")
 work=$(mktemp -d "${TMPDIR:-/tmp}/scarlett-run.XXXXXXXX")
 echo "Test output (including prefix): $work"
-mkdir -p "$work"/{home,compat,steam,logs,runtime}
+mkdir -p "$work"/{home,compat,steam,logs,runtime,shader-cache}
 touch "$work/lock"
 echo "tester:x:$(id -u):$(id -g)::/work/home:/bin/bash" >"$work/passwd"
 gpu=()
@@ -37,6 +37,7 @@ exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-
     --setenv DISPLAY :93 --setenv XDG_RUNTIME_DIR /work/runtime \
     --setenv LD_LIBRARY_PATH /run/opengl-driver/lib:/usr/lib64:/usr/lib32 \
     --setenv VK_DRIVER_FILES /run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json \
+    --setenv VKD3D_SHADER_CACHE_PATH 'Z:\work\shader-cache' \
     --setenv STEAM_COMPAT_CLIENT_INSTALL_PATH /work/steam --setenv STEAM_COMPAT_DATA_PATH /work/compat \
     --setenv SteamGameId 999001 --setenv SteamAppId 999001 \
     --setenv PROTON_LOG 1 --setenv PROTON_LOG_DIR /work/logs \

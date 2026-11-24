@@ -7,7 +7,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
-Retail build `1.0.2.1` passes the initial reservations, all three tested graphics pools (1,172 MiB, 2,199 MiB write-combined, and 563 MiB), and a later 20 MiB CPU allocation. It now loads the fork's [Gaming Runtime provider](scarlett/native/gameruntime/README.md) from system32 and passes runtime initialization. The next observed title breakpoint is `+0x2237178`. No native retail frame has been presented.
+Retail build `1.0.2.1` passes the initial reservations, all three tested graphics pools (1,172 MiB, 2,199 MiB write-combined, and 563 MiB), and a later 20 MiB CPU allocation. It initializes the fork's [Gaming Runtime provider](scarlett/native/gameruntime/README.md) and opens `G:\appdata0.rpf` from the supplied game directory. Two launches then stopped on a worker thread at `+0x5eb27be`. No native retail frame has been presented.
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 

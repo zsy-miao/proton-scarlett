@@ -2125,6 +2125,21 @@ class Session:
             if not os.path.isfile(provider) or os.path.realpath(dll) != os.path.realpath(provider):
                 log("Missing Scarlett GameInput provider or conflicting prefix DLL: " + dll)
                 return 1
+            title_path = target[0]
+            if ntpath.splitdrive(title_path)[0] or "\\" in title_path:
+                translated = subprocess.run([g_proton.wine_bin, "winepath", "-u", title_path],
+                                            env=self.env, stdout=subprocess.PIPE, stderr=self.log_file)
+                if translated.returncode or not translated.stdout.strip():
+                    return 1
+                title_path = os.fsdecode(translated.stdout).rstrip("\r\n")
+            game_dir = os.path.dirname(os.path.realpath(title_path))
+            drive = g_compatdata.path("pfx/dosdevices/g:")
+            try:
+                os.symlink(game_dir, drive)
+            except FileExistsError:
+                if os.path.realpath(drive) != game_dir:
+                    log("Conflicting Scarlett content drive: " + drive)
+                    return 1
             # The GDK loader requests LOAD_LIBRARY_SEARCH_SYSTEM32, bypassing WINEPATH.
             runtime = os.path.join(shim_dir, "xgameruntime.dll")
             if os.path.isfile(runtime):
