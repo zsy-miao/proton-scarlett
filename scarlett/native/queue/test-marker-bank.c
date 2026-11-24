@@ -33,6 +33,19 @@ static int check(UINT offset,UINT value,BOOL native)
         }
     }
     volatile UINT64 *tick=(volatile UINT64*)(sys+head);*tick=0;MemoryBarrier();
+    const UINT64 range=0xffffffffff00ull;
+    D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
+    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=16,.Height=1,.DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+    ID3D12Resource *read=NULL,*upload=NULL;UINT *result=NULL;
+    if(value){
+        HR(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&read));
+        HR(ID3D12Resource_Map(read,0,NULL,(void**)&result));memset(result,0xad,16);
+        hp.Type=D3D12_HEAP_TYPE_UPLOAD;
+        HR(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_GENERIC_READ,NULL,&IID_ID3D12Resource,(void**)&upload));
+        UINT *data;HR(ID3D12Resource_Map(upload,0,NULL,(void**)&data));
+        for(UINT j=0;j<4;j++) data[j]=j+1;
+        ID3D12Resource_Unmap(upload,0,NULL);
+    }
     HR(xs_allocator(d,0,&a));HR(xs_allocator(d,0,&b));HR(xs_device_list(d,0,a,TRUE,owner,&list));HR(xs_direct_queue(d,&q));HR(xs_shared_fence(d,&gate));HR(xs_shared_fence(d,&done));struct startup_list *s=sl(list);
     for(UINT pass=0;pass<2;pass++){
         HR(xs_bind_pool_heaps(list,2,pair));if(native)CK(FAILED(prefix_write(s,addr,value^1,0,0)));
@@ -46,7 +59,17 @@ static int check(UINT offset,UINT value,BOOL native)
         CK(FAILED(record_counter_wait(s,addr,7,target,1)) && FAILED(record_counter_wait(s,(UINT_PTR)page,6,target,1)) &&
                 FAILED(record_counter_wait(s,(UINT_PTR)page,7,target,0)));
         __atomic_store_n((UINT64*)alias.base,target,__ATOMIC_RELEASE);
-        pool_vtbl.wait64(list,(UINT_PTR)page,7,target,1);HR(sl_close(list));
+        CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
+        pool_vtbl.wait64(list,(UINT_PTR)page,7,target,1);
+        if(value){
+            CK(atlas_sync_valid(s,0xc280,0x20000,0,range) && !atlas_sync_valid(s,0xc3c0,0x20000,0,range) &&
+                !atlas_sync_valid(s,0xc280,0x80020000,0,range) && !atlas_sync_valid(s,0xc280,0x20000,4,range) &&
+                !atlas_sync_valid(s,0xc280,0x20000,0,range-1));
+            ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,0,upload,0,16);
+            pool_vtbl.sync418(list,0xc280,0x20000,0,range);
+            ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,4,upload,12,4);
+        }else CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
+        HR(sl_close(list));CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
         if(!pass)HR(sl_reset(list,b,NULL,0));
     }
     __atomic_store_n((UINT64*)alias.base,low,__ATOMIC_RELEASE);
@@ -59,9 +82,15 @@ static int check(UINT offset,UINT value,BOOL native)
     CK(*tick && orig[offset/4]==value && orig[offset/4+1]==post && WaitForSingleObject(end,150)==WAIT_TIMEOUT);
     // Unsigned compare: low has the same low DWORD; the high-bit-clear value is also insufficient.
     __atomic_store_n((UINT64*)alias.base,0x7fffffffffffffffull,__ATOMIC_RELEASE);CK(WaitForSingleObject(end,150)==WAIT_TIMEOUT);
+    if(value)for(UINT j=0;j<4;j++)CK(result[j]==0xadadadad);
     __atomic_store_n((UINT64*)alias.base,target+value,__ATOMIC_RELEASE);
     CK(WaitForSingleObject(end,10000)==WAIT_OBJECT_0);HR(ID3D12Device_GetDeviceRemovedReason(d));
     CK(__atomic_load_n((UINT64*)orig,__ATOMIC_ACQUIRE)==target+value);
+    if(value){
+        CK(result[0]==1 && result[1]==4 && result[2]==3 && result[3]==4);
+        ID3D12Resource_Unmap(read,0,NULL);ID3D12Resource_Release(upload);ID3D12Resource_Release(read);
+        puts("PASS pooled Direct +418: ordered overlapping GPU copies after original wait, suffix fence and guards");
+    }
     for(UINT j=0;j<bytes/4;j++){if(j>=2)CK(orig[j]==(4*j==offset?value:4*j==offset+4?post:0xa7a7a7a7));CK(((UINT*)page)[j]==0xbdbdbdbd);}
     CK(VirtualFree(alias.base,bytes,MEM_RELEASE) && VirtualFree(page,0,MEM_RELEASE) && VirtualFree(sys,0,MEM_RELEASE));CloseHandle(end);
     IUnknown_Release(gate);IUnknown_Release(done);IUnknown_Release(q);IUnknown_Release(a);IUnknown_Release(b);IUnknown_Release(pair[0]);IUnknown_Release(pair[1]);IUnknown_Release(owner);ID3D12Device_Release(d);FreeLibrary(xm);

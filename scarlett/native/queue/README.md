@@ -418,3 +418,14 @@ owner, stride or index. With this change and the linear A8 sizing rule,
 both ordinary runs issued tokens 1 and 2, presented only 1, and stopped
 at device `+360` (return `+abfe0d`) for the 1024×1024 A8 atlas.
 This batch used four diagnostic and two ordinary retail launches.
+
+After atlas setup, pooled Direct list `+418` (return `+156099a`) records
+a global barrier after the second-bank wait: mask `0xc280`, control
+`0x20000`, address zero, range `0xffffffffff00`. On both adapters the
+fixture found the readback unchanged below threshold, then verified the
+overlapping copies completed in order after the original counter advanced.
+
+Six retail launches (four diagnostic, two ordinary). The two ordinary
+runs issued tokens 1 and 2, presented only token 1, and stopped at the
+virtual call returning to `+5121894`. Slot `+40` alone does not identify
+the receiver. The earlier RTX breakpoint at `+5707b8c` did not recur.

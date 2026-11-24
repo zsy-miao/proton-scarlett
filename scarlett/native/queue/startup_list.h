@@ -463,6 +463,22 @@ static void WINAPI sl_primary_clear(IUnknown *i,SIZE_T slot,const FLOAT *color,U
     if (FAILED(record_primary_clear(sl(i),slot,color,count,rects))) xs_stop();
     batch_step(sl(i),B_CLEARED);
 }
+/* The atlas orders the tail of the second-bank recording, after its original-address wait. */
+static BOOL atlas_sync_valid(struct startup_list *s,UINT mask,UINT control,UINT64 address,UINT64 range)
+{
+    return s->reservation && s->pool_owner && s->type==D3D12_COMMAND_LIST_TYPE_DIRECT && !s->closed &&
+        SUCCEEDED(s->error) && !s->host_exposed && !s->primary && s->stamp && s->stamp->second_bank &&
+        s->head && s->post && s->post->counter && !s->post_boundary &&
+        mask==0xc280 && control==0x20000 && !address && range==0xffffffffff00ull;
+}
+static void WINAPI pool_sync418(IUnknown *i,UINT mask,UINT control,UINT64 address,UINT64 range)
+{
+    struct startup_list *s=sl(i);
+    sl_barrier(s,atlas_sync_valid(s,mask,control,address,range));
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    s->phase=B_INELIGIBLE; /* The primary-clear singleton contract has no atlas barrier. */
+#endif
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
@@ -477,13 +493,16 @@ static const struct {
     __typeof__(&sl_timestamp) timestamp;
     xs_stop_fn gap248;
     __typeof__(&sl_wait64) wait64;
-    xs_stop_fn gap258[64];
+    xs_stop_fn gap258[56];
+    __typeof__(&pool_sync418) sync418;
+    xs_stop_fn gap420[7];
     __typeof__(&sl_reset) reset;
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 63]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 55]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),sync418)==0x418,"pooled sync ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),wait64)==0x250,"pooled wait ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),clear)==0x1a0,"pooled clear ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),barrier)==0x490, "pooled barrier ABI");
