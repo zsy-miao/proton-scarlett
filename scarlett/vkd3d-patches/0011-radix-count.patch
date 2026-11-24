@@ -1,0 +1,40 @@
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1317,4 +1317,5 @@
+ void WINAPI DLLEXPORT ScarlettBoundedInitHeadersV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedMortonV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBitonicV1(void) {}
++void WINAPI DLLEXPORT ScarlettRadixCountV1(void) {}
+ DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettRadixCountV1
+     ScarlettBoundedInstanceReadsV1
+     ScarlettBoundedLoadInstancesV1
+     ScarlettBoundedBeginPassV1
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1363,6 +1363,16 @@
+     remap_userdata.shader_interface_info = shader_interface_info;
+     remap_userdata.shader_interface_local_info = NULL;
+     remap_userdata.num_root_descriptors = num_root_descriptors;
++
++    if (dxbc->size == 0x1ffc && hash == UINT64_C(0x979cafc9b7ed73b0) && stage == DXIL_SPV_STAGE_COMPUTE)
++    {
++        const dxil_spv_option_shader_quirk q = {{DXIL_SPV_OPTION_SHADER_QUIRK}, DXIL_SPV_SHADER_QUIRK_XBOX_RADIX_COUNT};
++        if (dxil_spv_converter_add_option(converter, &q.base) != DXIL_SPV_SUCCESS)
++        {
++            ret = VKD3D_ERROR_INVALID_SHADER;
++            goto end;
++        }
++    }
+ 
+     /* The adapter checks the full shader digest before constructing the private root. */
+     boxes = dxbc->size == 0x1118 && hash == UINT64_C(0x5d9580eb7cfa9a7f);

@@ -1,5 +1,7 @@
 # Write-combined graphics pool
 
+For the [radix constructor](../native/bvh-radix.md), apply `0011-radix-count.patch` and nested `../dxil-spirv-patches/0006-radix-count.patch` after the Morton/bitonic pair. Rebuild the core and adapter together. `scarlett/tests/builder-pipelines.sh` covers all ten radix PSOs.
+
 For the two Morton and six bitonic pipelines, apply `0010-vkd3d-bounded-morton-bitonic.patch` after `0009` and `../dxil-spirv-patches/0005-bounded-morton-bitonic.patch` after `0004` inside dxil-spirv. Rebuild the core and adapter together. Use `scarlett/tests/morton-root.sh` (set `DXC` to the host compiler) and `scarlett/tests/bitonic-pipelines.sh`, each taking `XboxBvhBuilder.dll [installed-tool]`. The bitonic factory fixture loads the staged adapter; the sort fixture tests the original kernels against a CPU sort. Guest command-list dispatch is outside these fixtures.
 
 For [BeginPass](../native/bvh-beginpass.md) and [InitHeaders](../native/bvh-init-headers.md), apply the incremental vkd3d patches `0008` and `0009` after `0007`, and nested dxil-spirv patches `0003` and `0004` after `0002`, in numeric order. Build the core and adapter together.

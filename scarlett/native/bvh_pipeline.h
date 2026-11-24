@@ -4,9 +4,13 @@
 #include "bvh_init_dxil.h"
 #include "bvh_offline_dxil.h"
 #include "bvh_partitions_dxil.h"
+#include "bvh_prefix_dxil.h"
+#include "bvh_radix_alloc_dxil.h"
 
 enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX, BVH_COPY_UPDATE, BVH_COPY_COUNTERS, BVH_LOAD_INSTANCES, BVH_BEGIN_PASS, BVH_HEADERS, BVH_MORTON32, BVH_MORTON64,
-    BVH_BITONIC_PRE, BVH_BITONIC_OUTER, BVH_BITONIC_INNER, BVH_BITONIC_PRE64, BVH_BITONIC_OUTER64, BVH_BITONIC_INNER64 };
+    BVH_BITONIC_PRE, BVH_BITONIC_OUTER, BVH_BITONIC_INNER, BVH_BITONIC_PRE64, BVH_BITONIC_OUTER64, BVH_BITONIC_INNER64,
+    BVH_RADIX_RESET, BVH_RADIX_COUNT, BVH_RADIX_ALLOC,
+    BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096 };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -14,6 +18,27 @@ static const struct bvh_candidate {
     UINT constants;
     D3D12_SHADER_BYTECODE cs;
 } bvh_candidates[]={
+    [BVH_RADIX_RESET]={0xfec,{0x7a,0xad,0x87,0xa0,0x35,0x08,0x88,0x93,0x10,0x13,0x3d,0xea,0xdd,0x31,0xd9,0xe2,
+        0x76,0x4a,0x3a,0x66,0x59,0xa2,0xa4,0x5e,0x72,0xd5,0xc2,0x80,0x00,0xb5,0xf9,0xc8},L"XDXR RadixReset",3,{0}},
+    [BVH_RADIX_COUNT]={0x1ffc,{0x6a,0x34,0x25,0x42,0x28,0x73,0xcb,0x21,0x86,0x21,0x4f,0x59,0x36,0xe3,0x0b,0x32,
+        0x48,0x8d,0xba,0x94,0x47,0x7b,0x30,0x57,0xf2,0xca,0x4d,0x76,0xd3,0x1c,0x86,0x91},L"XDXR RadixSortCount",3,{0}},
+    [BVH_RADIX_ALLOC]={0x3f38,{0x0d,0x76,0xeb,0x65,0x9d,0xaf,0xcf,0xa5,0x2e,0x8d,0x2f,0xed,0xb7,0x1e,0x33,0xa2,
+        0xe9,0x95,0x9e,0xeb,0x1b,0x2f,0x3e,0x7e,0xc5,0x4a,0xb3,0x74,0xdc,0x4f,0xbb,0x30},L"XDXR RadixSortAlloc",3,
+        {bvh_radix_alloc_dxil,sizeof bvh_radix_alloc_dxil}},
+    [BVH_PREFIX64]={0x1360,{0x94,0xca,0xc3,0x29,0x8a,0x85,0x19,0x31,0xce,0xbe,0xdc,0x2c,0x09,0xd1,0xd2,0xd6,
+        0x5a,0x9a,0x48,0xea,0x3f,0xdd,0x46,0x35,0x92,0x41,0x45,0x83,0x8a,0x20,0xca,0xc7},L"XDXR RadixSortPrefixSum64",1,{bvh_prefix64_dxil,sizeof bvh_prefix64_dxil}},
+    [BVH_PREFIX128]={0x1380,{0xfa,0xd4,0x42,0x08,0x31,0xb2,0x29,0x16,0x50,0x28,0x15,0x85,0x79,0x4b,0x58,0xd7,
+        0x01,0x51,0x87,0x24,0x16,0x84,0xb8,0x5f,0x6b,0x01,0x82,0x60,0xc5,0xe3,0xce,0xfd},L"XDXR RadixSortPrefixSum128",1,{bvh_prefix128_dxil,sizeof bvh_prefix128_dxil}},
+    [BVH_PREFIX256]={0x13d0,{0x51,0xfe,0x64,0x42,0xd0,0x93,0xc0,0xec,0x2d,0x85,0x51,0x4b,0x64,0x82,0x9b,0x37,
+        0xe7,0x1f,0x52,0x1a,0xd5,0x97,0x35,0x98,0x52,0xcb,0x6b,0x30,0x65,0xbd,0xc2,0xbc},L"XDXR RadixSortPrefixSum256",1,{bvh_prefix256_dxil,sizeof bvh_prefix256_dxil}},
+    [BVH_PREFIX512]={0x1454,{0x54,0xa1,0x87,0x29,0x8d,0x8e,0xeb,0x6b,0xdb,0x1d,0x16,0x87,0xf9,0xd4,0xa4,0x32,
+        0x83,0x9c,0xc7,0x25,0xd3,0x0a,0x61,0x61,0x55,0xb0,0x53,0x7c,0xac,0xbc,0x2c,0x04},L"XDXR RadixSortPrefixSum512",1,{bvh_prefix512_dxil,sizeof bvh_prefix512_dxil}},
+    [BVH_PREFIX1024]={0x1644,{0x74,0xe6,0x3e,0x28,0x5f,0xf2,0x4c,0xc6,0xac,0x51,0xe8,0xb1,0xb3,0x40,0xef,0x3e,
+        0x5c,0xde,0x90,0xb7,0xf5,0xf4,0x27,0xef,0x90,0x81,0xc0,0xeb,0x20,0xed,0xbe,0xb9},L"XDXR RadixSortPrefixSum1024",1,{bvh_prefix1024_dxil,sizeof bvh_prefix1024_dxil}},
+    [BVH_PREFIX2048]={0x1644,{0x80,0xd7,0x69,0x22,0x8b,0xd8,0xfc,0xbb,0x87,0x1d,0x82,0x79,0xfe,0xb7,0x7a,0x7a,
+        0xea,0x35,0x81,0x66,0xa8,0x37,0x25,0x5a,0xf6,0x31,0xdd,0x28,0xfe,0x08,0x82,0x53},L"XDXR RadixSortPrefixSum2048",1,{bvh_prefix2048_dxil,sizeof bvh_prefix2048_dxil}},
+    [BVH_PREFIX4096]={0x16cc,{0xaf,0xb4,0x42,0x56,0xc7,0x40,0x07,0xcc,0xd6,0xd9,0xd3,0x65,0xf0,0xeb,0x1c,0x36,
+        0x1b,0x1a,0xba,0xe3,0x16,0x6e,0xba,0x4e,0x31,0x03,0xd5,0x82,0x18,0x61,0x47,0x38},L"XDXR RadixSortPrefixSum4096",1,{bvh_prefix4096_dxil,sizeof bvh_prefix4096_dxil}},
     [BVH_HEADERS]={0x1488,{0x7b,0xdd,0x8b,0x5b,0xf4,0x76,0xe7,0xf2,0x09,0x51,0xa9,0x2c,0x55,0x6d,0x6f,0x39,
         0x4d,0x4e,0xf9,0xbd,0x4c,0xa3,0x39,0x69,0x69,0x29,0x8d,0x3e,0xe1,0xd8,0xdd,0x7d},L"XDXR InitHeaders",1,{0}},
     [BVH_BEGIN_PASS]={0x1118,{0x9b,0xa6,0x1b,0x8f,0x5b,0x27,0x54,0x1f,0x62,0xe4,0x92,0x2d,0x1c,0x97,0xa2,0x0c,
@@ -126,12 +151,6 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     while (kind<ARRAYSIZE(bvh_candidates) && w.n!=bvh_candidates[kind].bytes) ++kind;
     if (kind==ARRAYSIZE(bvh_candidates) || w.n>sizeof code || memcmp(w.tail,(BYTE[32]){0},sizeof w.tail)) return E_NOTIMPL;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
-    AcquireSRWLockShared(&d->descriptor_lock);
-    struct bvh_root *r=d->bvh_roots;
-    while (r && &r->iface!=w.root) r=r->next;
-    int root_kind=r ? (int)r->kind : -1;
-    ReleaseSRWLockShared(&d->descriptor_lock);
-    if (root_kind<0) return E_INVALIDARG;
     if (!copy_in(code,w.shader,w.n)) return E_POINTER;
     /* Size bounds the copy. The digest, not the size, selects the kernel and its root. */
     while (kind<ARRAYSIZE(bvh_candidates) &&
@@ -140,13 +159,36 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     const struct bvh_candidate *candidate=&bvh_candidates[kind];
     BOOL morton=kind==BVH_MORTON32 || kind==BVH_MORTON64;
     BOOL bitonic=kind>=BVH_BITONIC_PRE && kind<=BVH_BITONIC_INNER64;
-    if (root_kind!=(bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY)) return E_INVALIDARG;
+    BOOL prefix=kind>=BVH_PREFIX64 && kind<=BVH_PREFIX4096;
+    BOOL original_radix=kind==BVH_RADIX_RESET || kind==BVH_RADIX_COUNT;
+    int required_root=prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
+            bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct bvh_root *r=d->bvh_roots;
+    while (r && &r->iface!=w.root) r=r->next;
+    BOOL known=r && r->owner==d && (int)r->kind==required_root;
+    ID3D12RootSignature *shared=known && original_radix ? r->host : NULL;
+    if (shared) ID3D12RootSignature_AddRef(shared);
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if (!known) return E_INVALIDARG;
+    if (kind==BVH_RADIX_COUNT) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettRadixCountV1")) {
+            ID3D12RootSignature_Release(shared); return E_NOTIMPL;
+        }
+    }
 
     D3D12_DESCRIPTOR_RANGE ranges[]={{D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,0},{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,1}};
     D3D12_ROOT_PARAMETER rp[7]={
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,.DescriptorTable={kind==BVH_COPY_COUNTERS ? 2u : 1u,ranges}},
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,candidate->constants}}};
     D3D12_ROOT_SIGNATURE_DESC rs={2,rp,0,NULL,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    if (kind==BVH_RADIX_ALLOC) ranges[0].NumDescriptors=6; /* Scatter requires bounded views. */
+    if (prefix) {
+        rp[2]=rp[1];
+        for (UINT i=0;i<2;i++) rp[i]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0}};
+        rs.NumParameters=3;
+    }
     if (kind==BVH_HEADERS) {
         HMODULE core=GetModuleHandleW(L"d3d12core.dll");
         if (!core || !GetProcAddress(core,"ScarlettBoundedInitHeadersV1")) return E_NOTIMPL;
@@ -205,14 +247,19 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         rp[5]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
         rs.NumParameters=6;
     }
-    ID3DBlob *blob=NULL;
-    HRESULT hr=D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,NULL);
-    if (FAILED(hr)) return hr;
     struct bvh_pipeline *p=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *p);
-    if (!p) { ID3D10Blob_Release(blob); return E_OUTOFMEMORY; }
-    hr=ID3D12Device_CreateRootSignature(d->host,1,ID3D10Blob_GetBufferPointer(blob),ID3D10Blob_GetBufferSize(blob),
-            &IID_ID3D12RootSignature,(void **)&p->root);
-    ID3D10Blob_Release(blob);
+    if (!p) { if (shared) ID3D12RootSignature_Release(shared); return E_OUTOFMEMORY; }
+    HRESULT hr=S_OK;
+    p->root=shared;
+    if (!shared) {
+        ID3DBlob *blob=NULL;
+        hr=D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,NULL);
+        if (SUCCEEDED(hr)) {
+            hr=ID3D12Device_CreateRootSignature(d->host,1,ID3D10Blob_GetBufferPointer(blob),ID3D10Blob_GetBufferSize(blob),
+                    &IID_ID3D12RootSignature,(void **)&p->root);
+            ID3D10Blob_Release(blob);
+        }
+    }
     if (SUCCEEDED(hr)) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pd={.pRootSignature=p->root,.CS=candidate->cs};
         if (!candidate->cs.pShaderBytecode) pd.CS=(D3D12_SHADER_BYTECODE){code,w.n};

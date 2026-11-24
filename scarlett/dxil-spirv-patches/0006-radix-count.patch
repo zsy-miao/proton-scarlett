@@ -1,0 +1,117 @@
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6318,6 +6318,8 @@
+ 	if (fn->getName() == "xbox.Min3_U32") return 14;
+ 	if (fn->getName() == "xbox.Max3_U32") return 15;
+ 	if (fn->getName() == "xbox.Med3_U32") return 16;
++	if (fn->getName() == "xbox.Ballot64") return 25;
++	if (fn->getName() == "xbox.MakeUniform.i32") return 50;
+ 	if (fn->getName() == "xbox.BFI") return 23;
+ 	if (fn->getName() == "xbox.s_load_dword_with_cache") return 364;
+ 	if (fn->getName() == "xbox.Min3_F32") return 8;
+@@ -6334,8 +6336,58 @@
+ 	return 0;
+ }
+ 
++// Every ballot in this exact module is reached by all 512 lanes. Logical waves
++// use consecutive local invocation IDs, independent of native subgroup width.
++static bool emit_radix_count_wave(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
++{
++	auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };
++	auto &threads = impl.execution_mode_meta.workgroup_threads;
++	if (!impl.xbox_radix_count || impl.execution_model != spv::ExecutionModelGLCompute ||
++	    threads[0] != 512 || threads[1] != 1 || threads[2] != 1 || call.getNumOperands() != 2 ||
++	    !u32(call.getOperand(0)->getType()) || !u32(call.getOperand(1)->getType())) return false;
++	auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
++	if (!opcode || opcode->getUniqueInteger().getZExtValue() != opnum) return false;
++	auto arg = impl.get_id_for_value(call.getOperand(1));
++	if (opnum == 50)
++	{
++		// Its only operand here is local_x >> 6, already logical-wave-uniform.
++		if (!u32(call.getType())) return false;
++		auto *op = impl.allocate(spv::OpCopyObject, &call); op->add_id(arg); impl.add(op);
++		return true;
++	}
++	auto *ty = call.getType();
++	if (ty->getTypeID() != llvm::Type::TypeID::StructTyID || ty->getStructNumElements() != 2 || !u32(ty->getStructElementType(0)) ||
++	    !u32(ty->getStructElementType(1))) return false;
++	auto &b = impl.builder();
++	auto t = b.makeUintType(32);
++	auto k = [&](unsigned n) { return b.makeUintConstant(n); };
++	auto emit = [&](spv::Op ins, spv::Id type, std::initializer_list<spv::Id> args) {
++		auto *op = type ? impl.allocate(ins, type) : impl.allocate(ins);
++		for (auto id : args) op->add_id(id);
++		impl.add(op); return op->id;
++	};
++	auto wg = k(spv::ScopeWorkgroup), sem = b.getWorkgroupBarrierSemanticsId();
++	auto barrier = [&]() { emit(spv::OpControlBarrier, 0, {wg, wg, sem}); };
++	// Independent 16-word scratch per static call (2 KiB total); no reuse races.
++	auto scratch = impl.create_variable(spv::StorageClassWorkgroup, b.makeArrayType(t,k(16),0), "BallotWords");
++	auto ptr = [&](spv::Id i) { return emit(spv::OpAccessChain,b.makePointer(spv::StorageClassWorkgroup,t),{scratch,i}); };
++	auto lane = emit(spv::OpLoad,t,{impl.spirv_module.get_builtin_shader_input(spv::BuiltInLocalInvocationIndex)});
++	auto word = emit(spv::OpShiftRightLogical,t,{lane,k(5)}), addr = ptr(word);
++	emit(spv::OpAtomicExchange,t,{addr,wg,k(0),k(0)}); barrier();
++	auto bit = emit(spv::OpBitwiseAnd,t,{lane,k(31)});
++	auto pred = emit(spv::OpINotEqual,b.makeBoolType(),{arg,k(0)});
++	auto mask = emit(spv::OpSelect,t,{pred,emit(spv::OpShiftLeftLogical,t,{k(1),bit}),k(0)});
++	emit(spv::OpAtomicOr,t,{addr,wg,k(0),mask}); barrier();
++	auto lo = emit(spv::OpBitwiseAnd,t,{word,k(~1u)});
++	auto *ret = impl.allocate(spv::OpCompositeConstruct,&call);
++	ret->add_id(emit(spv::OpLoad,t,{ptr(lo)}));
++	ret->add_id(emit(spv::OpLoad,t,{ptr(emit(spv::OpBitwiseOr,t,{lo,k(1)}))}));
++	impl.add(ret); return true;
++}
++
+ static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
+ {
++	if (opnum == 25 || opnum == 50) return emit_radix_count_wave(impl, call, opnum);
+ 	const bool atomic = opnum >= 368;
+ 	const bool read = opnum < 360 || opnum == 364;
+ 	if (opnum == 364 && !impl.xbox_morton && !impl.xbox_bitonic) return false;
+@@ -9755,6 +9807,10 @@
+ 			options.quirks.robust_compute_quad_broadcast = true;
+ 			break;
+ 
++		case ShaderQuirk::XboxRadixCount:
++			xbox_radix_count = true;
++			break;
++
+ 		case ShaderQuirk::PreciseFMA:
+ 			options.quirks.precise_fma = true;
+ 			break;
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -771,7 +771,8 @@
+ 	FixupRsqrtInfNan,
+ 	IgnorePrimitiveShadingRate,
+ 	RobustComputeQuadBroadcast,
+-	PreciseFMA
++	PreciseFMA,
++	XboxRadixCount
+ };
+ 
+ struct OptionShaderQuirk : OptionBase
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -240,6 +240,7 @@
+ 	DXIL_SPV_SHADER_QUIRK_IGNORE_PRIMITIVE_SHADING_RATE = 11,
+ 	DXIL_SPV_SHADER_QUIRK_ROBUST_COMPUTE_QUAD_BROADCAST = 12,
+ 	DXIL_SPV_SHADER_QUIRK_PRECISE_FMA = 13,
++	DXIL_SPV_SHADER_QUIRK_XBOX_RADIX_COUNT = 14,
+ 	DXIL_SPV_SHADER_QUIRK_INT_MAX = 0x7fffffff
+ } dxil_spv_shader_quirk;
+ 
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -473,6 +473,7 @@
+ 	unsigned xbox_atomic_descriptor = ~0u;
+ 	unsigned xbox_centroid_descriptor_plus_one = 0;
+ 	spv::Id xbox_helpers[6] = {};
++	bool xbox_radix_count = false;
+ 	bool xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
+ 	bool root_constant_arrayed = false;
+ 	unsigned patch_location_offset = ~0u;
