@@ -15,7 +15,9 @@ struct direct_prefix {
 };
 _Static_assert(offsetof(struct direct_prefix,put)==0x18 && offsetof(struct direct_prefix,limit)==0x30 &&
         sizeof(struct direct_prefix)==0x38,"Direct inline capacity check");
+#include "../om-views.h"
 struct startup_list {
+    struct om_views om;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     enum batch_phase phase;
     IUnknown *sync_owner;
@@ -37,6 +39,7 @@ struct startup_list {
     HRESULT error;
     BOOL primary_cleared;
     BOOL primary_released; /* Guest layout 0x1f on the retained primary. */
+    struct xs_attachment_pin attachments[2];
     ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
@@ -61,6 +64,10 @@ static void drop_heaps(IUnknown *pair[2])
 {
     for (unsigned i=0;i<2;i++) if (pair[i]) { IUnknown_Release(pair[i]); pair[i]=NULL; }
 }
+static void drop_attachments(struct xs_attachment_pin pair[2])
+{
+    for(UINT k=0;k<2;k++)if(pair[k].identity){IUnknown_Release(pair[k].identity);pair[k]=(struct xs_attachment_pin){0};}
+}
 static void drop_split(struct startup_list *s)
 {
     drop_marker(s->post); s->post=NULL;
@@ -75,6 +82,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
+        drop_om(&s->om);drop_attachments(s->attachments);
         drop_split(s); drop_timestamp(s->stamp);
         drop_marker(s->marker);
         if (s->primary) ID3D12Resource_Release(s->primary);
@@ -167,6 +175,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
+    drop_om(&s->om);drop_attachments(s->attachments);
     AcquireSRWLockExclusive(&s->borrow_lock);
     if(s->bound){IUnknown_Release(s->bound);s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;}
     if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
@@ -311,6 +320,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,s->pipeline,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
     if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->blend_ones) ID3D12GraphicsCommandList7_OMSetBlendFactor(tail,ones_factor);
+    if (SUCCEEDED(hr))replay_om(&s->om,tail);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
@@ -425,6 +435,26 @@ static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT fla
 #else
 #define sl_wait64 xs_stop
 #endif
+static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER_GROUP *g)
+{
+    if(!s->pending_470 || !s->depth_zero_pending || !s->blend_ones || !s->stencil_zero || !s->bound ||
+        !s->required_root || s->graphics_identity!=s->required_root || s->host_exposed || s->attachments[0].identity)return E_NOTIMPL;
+    D3D12_TEXTURE_BARRIER b[2]={0};SIZE_T got,bytes=sizeof(b[0])+offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof(b[0].Flags);
+    if(!ReadProcessMemory(GetCurrentProcess(),g->pTextureBarriers,b,bytes,&got) || got!=bytes)return E_POINTER;
+    const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
+    for(UINT k=0;k<2;k++)if(b[k].SyncBefore!=D3D12_BARRIER_SYNC_ALL_SHADING ||
+        b[k].SyncAfter!=(k?D3D12_BARRIER_SYNC_DEPTH_STENCIL:D3D12_BARRIER_SYNC_RENDER_TARGET) ||
+        b[k].AccessBefore!=D3D12_BARRIER_ACCESS_SHADER_RESOURCE ||
+        b[k].AccessAfter!=(k?D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE:D3D12_BARRIER_ACCESS_RENDER_TARGET) ||
+        b[k].LayoutBefore!=D3D12_BARRIER_LAYOUT_SHADER_RESOURCE ||
+        b[k].LayoutAfter!=(k?D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE:D3D12_BARRIER_LAYOUT_RENDER_TARGET) ||
+        memcmp(&b[k].Subresources,&all,sizeof all) || b[k].Flags)return E_NOTIMPL;
+    HRESULT hr=xs_pin_attachment_pair(s->pool_owner,s->device,b,s->attachments);
+    if(FAILED(hr))return hr;
+    for(UINT k=0;k<2;k++)b[k].pResource=s->attachments[k].host;
+    D3D12_BARRIER_GROUP host={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=2,.pTextureBarriers=b};
+    ID3D12GraphicsCommandList7_Barrier(s->host,1,&host);return S_OK;
+}
 /* shortcut: one observed whole-primary UAV-to-RT transition per recording. */
 static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3D12_BARRIER_GROUP *groups)
 {
@@ -434,6 +464,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
     D3D12_TEXTURE_BARRIER b;
     SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),groups,&g,sizeof g,&n) || n!=sizeof g) return E_POINTER;
+    if(g.Type==D3D12_BARRIER_TYPE_TEXTURE && g.NumBarriers==2)return record_attachment_pair(s,&g);
     if (g.Type!=D3D12_BARRIER_TYPE_TEXTURE || g.NumBarriers!=1) return E_NOTIMPL;
     /* The guest need not supply readable tail padding after Flags. */
     SIZE_T bytes=offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof b.Flags;
@@ -640,6 +671,20 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
 {
     if (FAILED(unbind_index(sl(i),view))) xs_stop();
 }
+static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
+{
+    if(!open_direct_state(s) || !s->pending_470 || !s->attachments[0].identity ||
+        !s->attachments[1].identity || count!=1 || range)return E_NOTIMPL;
+    SIZE_T slots[2],got;
+    if(!ReadProcessMemory(GetCurrentProcess(),rt,slots,sizeof *slots,&got) || got!=sizeof *slots ||
+       !ReadProcessMemory(GetCurrentProcess(),ds,slots+1,sizeof *slots,&got) || got!=sizeof *slots)return E_POINTER;
+    HRESULT hr=xs_freeze_om(s->pool_owner,s->attachments,slots,&s->om);
+    if(SUCCEEDED(hr)){replay_om(&s->om,s->host);recorded_direct_state(s);}return hr;
+}
+static void WINAPI pool_om(IUnknown *i,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
+{
+    if(FAILED(record_om(sl(i),count,rt,range,ds)))xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static void WINAPI pool_470(IUnknown *,UINT64);
 static const struct {
@@ -651,7 +696,7 @@ static const struct {
     xs_stop_fn gapa8[2]; __typeof__(&pool_blend) blend; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
     xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[12];
-    __typeof__(&pool_index) index; xs_stop_fn gap180[4];
+    __typeof__(&pool_index) index; xs_stop_fn gap180[2];__typeof__(&pool_om) om;xs_stop_fn gap198;
     __typeof__(&sl_primary_clear) clear;
     xs_stop_fn gap1a8[18];
     __typeof__(&sl_marker) marker;
@@ -668,9 +713,10 @@ static const struct {
     xs_stop_fn gap460[2]; __typeof__(&pool_470) state470; xs_stop_fn gap478[3];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {xs_stop,xs_stop},pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {xs_stop,xs_stop},pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),blend)==0xb8,"blend factor ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),om)==0x190,"OM ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),state470)==0x470,"pooled opaque state ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),stencil)==0xc0,"stencil reference ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),pipeline)==0xc8,"pooled PSO ABI");

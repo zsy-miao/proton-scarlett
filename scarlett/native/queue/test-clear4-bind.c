@@ -9,6 +9,20 @@ static void counted_execute(ID3D12CommandQueue *q,UINT n,ID3D12CommandList *cons
 }
 #undef ID3D12CommandQueue_ExecuteCommandLists
 #define ID3D12CommandQueue_ExecuteCommandLists counted_execute
+static D3D12_TEXTURE_BARRIER seen[2];static UINT calls;
+static void checked_barrier(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_BARRIER_GROUP *g){
+    if(n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE && g->NumBarriers==2){memcpy(seen,g->pTextureBarriers,sizeof seen);++calls;}
+    ID3D12GraphicsCommandList7_Barrier(l,n,g);
+}
+#undef ID3D12GraphicsCommandList7_Barrier
+#define ID3D12GraphicsCommandList7_Barrier checked_barrier
+static UINT om_calls;static SIZE_T last_rt,last_ds;
+static void count_om(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_CPU_DESCRIPTOR_HANDLE *rt,BOOL range,const D3D12_CPU_DESCRIPTOR_HANDLE *ds){
+    ++om_calls;last_rt=rt->ptr;last_ds=ds->ptr;ID3D12GraphicsCommandList7_OMSetRenderTargets(l,n,rt,range,ds);
+}
+#undef ID3D12GraphicsCommandList7_OMSetRenderTargets
+#define ID3D12GraphicsCommandList7_OMSetRenderTargets count_om
+HRESULT xs_write_view(IUnknown*,UINT,IUnknown*,const void*,SIZE_T);
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
@@ -67,4 +81,37 @@ BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown 
     for(UINT j=0;xs_pin_clear4(owner,hd,p,&tmp);++j){IUnknown_Release(p);REQUIRE(j<5000);Sleep(1);}
     CloseHandle(ev);IUnknown_Release(a);IUnknown_Release(b);IUnknown_Release(q);IUnknown_Release(gate);IUnknown_Release(done);
     puts("PASS +c8/+470: exact receiver, PSO and root; opaque state survives split and rejects clear/borrow/submit; reset and fenced retirement");return TRUE;
+}
+
+BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *root,IUnknown **ids,SIZE_T *slots,ID3D12GraphicsCommandList7 *isolated,ID3D12Resource **images,IUnknown **siblings)
+{
+    IUnknown *a,*l,*q;REQUIRE(xs_allocator(hd,0,&a)==S_OK && xs_device_list(hd,0,a,TRUE,owner,&l)==S_OK);struct startup_list *s=sl(l);
+    D3D12_TEXTURE_BARRIER b[2]={0};for(UINT k=0;k<2;k++){
+        b[k].pResource=(ID3D12Resource*)ids[k];b[k].Subresources.IndexOrFirstMipLevel=UINT_MAX;
+        b[k].SyncBefore=D3D12_BARRIER_SYNC_ALL_SHADING;b[k].SyncAfter=k?D3D12_BARRIER_SYNC_DEPTH_STENCIL:D3D12_BARRIER_SYNC_RENDER_TARGET;
+        b[k].AccessBefore=D3D12_BARRIER_ACCESS_SHADER_RESOURCE;b[k].AccessAfter=k?D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE:D3D12_BARRIER_ACCESS_RENDER_TARGET;
+        b[k].LayoutBefore=D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;b[k].LayoutAfter=k?D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE:D3D12_BARRIER_LAYOUT_RENDER_TARGET;
+    }
+    D3D12_BARRIER_GROUP g={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=2,.pTextureBarriers=b};UINT before=calls;
+    REQUIRE(FAILED(record_primary_barrier(s,1,&g)));pool_vtbl.pipeline(l,pso);pool_vtbl.root(l,root);pool_vtbl.depth_order(l,0);pool_vtbl.stencil(l,0);pool_vtbl.state470(l,UINT64_MAX);pool_vtbl.blend(l,ones_factor);
+    b[1].pResource=(ID3D12Resource*)ids[0];REQUIRE(FAILED(record_primary_barrier(s,1,&g)));b[1].pResource=(ID3D12Resource*)ids[1];
+    b[1].Flags=1;REQUIRE(FAILED(record_primary_barrier(s,1,&g)));b[1].Flags=0;
+    UINT64 *tag=(UINT64*)slots[1];++*tag;REQUIRE(FAILED(record_primary_barrier(s,1,&g)));--*tag;
+    REQUIRE(calls==before && !s->attachments[0].identity && !s->attachments[1].identity);pool_vtbl.barrier(l,1,&g);
+    REQUIRE(calls==before+1 && FAILED(record_primary_barrier(s,1,&g)) && !s->primary);
+    for(UINT k=0;k<2;k++){REQUIRE(s->attachments[k].identity==ids[k] && s->attachments[k].slot==slots[k] && s->attachments[k].serial==*(UINT64*)slots[k]);b[k].pResource=images[k];REQUIRE(!memcmp(b+k,seen+k,offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof b[k].Flags));}
+    g.pTextureBarriers=seen;isolated->lpVtbl->Barrier(isolated,1,&g);
+    UINT ob=om_calls;REQUIRE(record_om(s,1,slots,TRUE,slots+1)==E_NOTIMPL && record_om(s,1,slots,FALSE,NULL)==E_POINTER);
+    pool_vtbl.om(l,1,slots,FALSE,slots+1);struct om_views frozen=s->om;
+    DWORD rt[]={28,4,0,0},ds[]={20,3,0,0,0,0};
+    REQUIRE(xs_write_view(owner,0xa8,ids[1],ds,slots[1])==S_OK && FAILED(record_om(s,1,slots,FALSE,slots+1)));
+    REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,slots[0])==S_OK && xs_write_view(owner,0xa8,siblings[1],ds,slots[1])==S_OK);
+    REQUIRE(FAILED(record_om(s,1,slots,FALSE,slots+1)) && !memcmp(&frozen,&s->om,sizeof frozen) && om_calls==ob+1);
+    s->marker=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *s->marker);struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);REQUIRE(s->marker && post);s->marker->refs=1;
+    REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
+    const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
+    ID3D12GraphicsCommandList7_ClearDepthStencilView(isolated,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
+    REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
+    REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity);
+    IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;
 }

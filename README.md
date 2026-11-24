@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | Both GPUs set the blend factor, then stop while preparing an offscreen color target and its depth buffer for a clear. An earlier graphics setting still prevents submission of that command list. |
+| What's blocking it? | Both GPUs bind the offscreen color target and depth buffer, then stop when the game sets the depth bounds for the clear. An earlier graphics setting still prevents submission of that command list. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -28,7 +28,7 @@ Backend patch `0031` lets the [1440p floating-point target](scarlett/native/half
 
 With `0032`, retail placed the [720p tiled buffer](scarlett/native/tiled-r32-resource.md) and reached its first shader-view request on both GPUs (return `+164f01`). Hardware tests read and updated all 921,600 words through explicit tile addressing. The game needs integer and shared-exponent color views of the same bytes.
 
-The local Steam installation matches the tested `1a5178f2` stage byte-for-byte. Both GPUs were tested through the staged path; the last retail run through the installed path was on `bdc4efab` and presented the startup image once. In earlier staged `0033` runs, retail placed the [five-level 720p texture](scarlett/native/r11-six-mips.md) in the original allocation on both adapters and created all eleven views. GPU tests checked every visible texel and the padding; retail shader use of those views has not been observed.
+The local Steam installation matches the tested `1a5178f2` stage byte-for-byte. A separate AMD retail run through that installation reproduced its barrier stop and presented the startup image once. The newer attachment-binding results are from staged runs. In earlier staged `0033` runs, retail placed the [five-level 720p texture](scarlett/native/r11-six-mips.md) in the original allocation on both adapters and created all eleven views. GPU tests checked every visible texel and the padding; retail shader use of those views has not been observed.
 
 The [DirectStorage provider](scarlett/native/xcrdapi/README.md) now decompresses the startup reads. In a retail trace all 4,200 destinations matched independent decodes: 4,199 from the shader pipeline cache and one from the audio archive. All six batches completed successfully. The game's cache lookup table previously had 24,576 zero keys; with the fix it had none.
 

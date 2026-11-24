@@ -91,6 +91,8 @@ _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline
 #include "placed_resource.h"
 #endif
 #include "descriptor_writer.h"
+#include "om-views.h"
+#include "om-freeze.h"
 #include "page_pool.h"
 #include "bvh_root.h"
 #include "bvh_pipeline.h"
@@ -742,12 +744,16 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
             if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
             else {
                 r->iface.lpVtbl=&color_vtbl.unknown; r->depth4k=ds && rd->Width==3840; r->small_rt=small; r->single_format=single?format:DXGI_FORMAT_UNKNOWN; r->msaa=!single; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
+                if(rd->Width==3840 && (r->depth4k || (small && format==DXGI_FORMAT_R8G8B8A8_UNORM))){
+                    if(native){r->pair_heap=native;ID3D12Heap_AddRef(native);}
+                    else {r->pair_section=i.section;i.section=NULL;}
+                }
                 AcquireSRWLockExclusive(&d->descriptor_lock); r->next=d->colors; d->colors=r; ReleaseSRWLockExclusive(&d->descriptor_lock);
                 *out=&r->iface;
             }
         }
     }
-    if(native)ID3D12Heap_Release(native);else CloseHandle(i.section);
+    if(native)ID3D12Heap_Release(native);else if(i.section)CloseHandle(i.section);
     return hr;
 }
 #endif
@@ -1049,6 +1055,39 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
 static const struct bootstrap_vtbl bootstrap_vtbl;
 
 /* Return the retained host image, never call through the guest's resource pointer. */
+/* Snapshot only an unambiguous live descriptor generation. OM must recheck
+ * the actual supplied slots before consuming these recording-owned pins. */
+HRESULT xs_pin_attachment_pair(IUnknown *owner,ID3D12Device *hd,const D3D12_TEXTURE_BARRIER *b,struct xs_attachment_pin out[2])
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    if(d->host!=hd)return E_INVALIDARG;
+    HRESULT hr=E_INVALIDARG;struct xs_attachment_pin pair[2]={0};struct color_resource *targets[2]={0};
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(UINT k=0;k<2;k++){
+        struct color_resource *c=d->colors;
+        while(c && &c->iface!=(IUnknown*)b[k].pResource)c=c->next;
+        if(!c || c->owner!=d || c->slice || !(k?c->depth4k:(c->small_rt && c->single_format==DXGI_FORMAT_R8G8B8A8_UNORM)) ||
+            (!c->pair_heap && !c->pair_section))goto done;
+        targets[k]=c;
+        for(struct desc_heap *h=k?d->dsv_heaps:d->rtv_heaps;h;h=h->next)for(UINT j=0;h->records && j<h->count;j++){
+            if(h->records[j].resource!=c->host)continue;
+            SIZE_T slot=h->start+(SIZE_T)j*h->stride;D3D12_CPU_DESCRIPTOR_HANDLE handle;
+            if(pair[k].identity || attachment_locked(h,slot,k?DSV:RTV,&handle)!=c->host)goto done;
+            pair[k]=(struct xs_attachment_pin){&c->iface,c->host,slot,h->records[j].serial};
+        }
+        if(!pair[k].identity)goto done;
+    }
+    if(targets[0]->pair_heap){if(targets[0]->pair_heap!=targets[1]->pair_heap)goto done;}
+    else {
+        BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+        if(!same || !targets[1]->pair_section || !same(targets[0]->pair_section,targets[1]->pair_section))goto done;
+    }
+    for(UINT k=0;k<2;k++)IUnknown_AddRef(pair[k].identity);
+    memcpy(out,pair,sizeof pair);hr=S_OK;
+done:
+    ReleaseSRWLockShared(&d->descriptor_lock);return hr;
+}
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
 {
     if (!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown) return NULL;

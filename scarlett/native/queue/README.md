@@ -556,3 +556,30 @@ the selected 4K color and depth resources. The color resource matched
 neither primary ring entry and both secondary entries were empty.
 Neither the attachment bind nor the draw was reached. Both ordinary
 runs issued tokens 1 and 2 and presented only token 1.
+
+### Offscreen clear: paired barriers and attachment bind
+
+List `+490` records the two whole-resource barriers in order on the same
+recorder, retaining the original 3840×2160 resources. In hex, the color
+barrier changes sync `1000→40`, access `80→8`, layout `6→2`; depth changes
+sync `1000→20`, access `80→20`, layout `6→4`. The host receives the
+original fields with the corresponding host resource pointers.
+
+At `+33311`, list `+190` received one RTV and a pointer to a DSV handle
+on the caller's stack. Both handles resolved to the barrier pair, with
+serials 119 and 121 in the RTX capture. The bind validates both records
+under one descriptor lock and copies the descriptors into private heaps.
+Both GPUs replayed those copies after a split even when the producer
+slots had been rewritten. The color target is offscreen; the bind does
+not establish a draw, composite, or token-2 render submission.
+
+| Batch | Retail launches | Hardware fixtures | First ordinary stop |
+| --- | --- | --- | --- |
+| Barriers | 2 diagnostic, 2 staged ordinary, 1 installed RADV | 4 passed; 1 RADV setup failure corrected by allocating the WC pool earlier | Both staged GPUs: bind at `+33317`. Installed `1a5178f2`: barriers at `+32113`. |
+| Attachment bind | 1 RADV diagnostic, 2 staged ordinary | All 6 passed | Both GPUs: **list** `+230`, return `+33396`, setting depth bounds. |
+
+RADV measured `(0.0,1.0)` on the clear recorder. The independent host
+control on both GPUs counted `32/0` samples on the left/right halves with
+narrow bounds and `32/32` with full bounds. The guest setter is still
+guarded. In every staged ordinary run and the installed comparison, the
+game issued tokens 1 and 2; only token 1 presented (WSI count 0→1).

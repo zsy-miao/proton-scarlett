@@ -48,3 +48,19 @@ HRESULT clear_test_resolve(IUnknown *device,IUnknown *pinned_pso,IUnknown *pinne
     ReleaseSRWLockShared(&d->descriptor_lock);
     return hr;
 }
+
+/* Committed stand-ins, as in test-clear-device.c, with the real registry,
+ * writer, final release and weak lookup. Not a placed-allocation test. */
+IUnknown *test_texture(IUnknown *owner,ID3D12Resource *image,BOOL depth)
+{
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    struct color_resource *c=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *c);
+    if(!c)return NULL;
+    c->iface.lpVtbl=&color_vtbl.unknown;c->owner=d;c->refs=1;c->host=image;
+    c->depth=c->depth4k=depth;c->small_rt=!depth;
+    c->single_format=depth?DXGI_FORMAT_R32G8X24_TYPELESS:DXGI_FORMAT_R8G8B8A8_UNORM;
+    IUnknown_AddRef(owner);ID3D12Resource_AddRef(image);
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    c->next=d->colors;d->colors=c;
+    ReleaseSRWLockExclusive(&d->descriptor_lock);return &c->iface;
+}

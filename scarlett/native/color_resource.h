@@ -49,6 +49,9 @@ struct color_resource {
     void *slice;
     void (WINAPI *xfree)(void *,UINT64);
     struct color_resource *next;
+    /* Creation-time generation for the two qualified offscreen 4K targets. */
+    ID3D12Heap *pair_heap;
+    HANDLE pair_section;
     HANDLE tile_section;
     ID3D12Heap *tile_heap;
     UINT_PTR tile_va,tile_offset;
@@ -75,6 +78,8 @@ static ULONG WINAPI color_release(IUnknown *i)
 #endif
         if (r->xfree) r->xfree(r->slice,XS_DISPLAY_ATTR); /* hook runs now, irrespective of host refs */
         ID3D12Resource_Release(r->host);
+        if (r->pair_heap) ID3D12Heap_Release(r->pair_heap);
+        if (r->pair_section) CloseHandle(r->pair_section);
         if (r->tile_heap) ID3D12Heap_Release(r->tile_heap);
         if (r->tile_section) CloseHandle(r->tile_section);
         HeapFree(GetProcessHeap(),0,r);

@@ -24,6 +24,10 @@ HRESULT xs_device_list(ID3D12Device *host,D3D12_COMMAND_LIST_TYPE type,IUnknown 
 ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *host,IUnknown *identity,IUnknown **root);
 ID3D12RootSignature *xs_retain_graphics_root(IUnknown *owner,IUnknown *identity);
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);
+struct xs_attachment_pin {IUnknown *identity; ID3D12Resource *host; SIZE_T slot; UINT64 serial;};
+struct om_views;
+HRESULT xs_freeze_om(IUnknown *,const struct xs_attachment_pin [2],const SIZE_T [2],struct om_views *);
+HRESULT xs_pin_attachment_pair(IUnknown *,ID3D12Device *,const D3D12_TEXTURE_BARRIER *,struct xs_attachment_pin [2]);
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
 HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);
