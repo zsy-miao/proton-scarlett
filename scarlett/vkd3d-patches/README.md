@@ -67,3 +67,8 @@ patch `0010`. Rebuild the x64 graphics core and `win32u.so` together. Run
 For the RTX primary textures apply `0024` after `0023` and rebuild the x64
 core. `test-allocation-info.cpp` exercises the original backing and final
 release on both GPUs.
+
+For the RTX write-back page pool, apply `0025` after `0024` with Wine patch
+`0011` and the matching XMem provider. The physical-page factory accepts
+the pool's 1,024 MiB and 1,116 MiB chunks. `test-page-pool.c` checks all
+six retained heaps after the CPU address is reused.

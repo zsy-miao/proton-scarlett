@@ -1,0 +1,12 @@
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1149,7 +1149,8 @@
+                 if (cpu_control && (wc_type != 3 || alloc_info->allocationSize != 65536)) return VK_ERROR_FEATURE_NOT_PRESENT;
+                 if ((wb = export_info->handleTypes == SCARLETT_WB_HANDLE))
+                 {
+-                    if (wc_type == 3 && alloc_info->allocationSize != 0x6400000 && alloc_info->allocationSize != 0xa00000)
++                    if (wc_type == 3 && alloc_info->allocationSize != 0x6400000 && alloc_info->allocationSize != 0xa00000 &&
++                        alloc_info->allocationSize != (1ull << 30) && alloc_info->allocationSize != (1116ull << 20))
+                         return VK_ERROR_FEATURE_NOT_PRESENT;
+                     wc_type = wc_type == 3 ? 4 : 5;
+                 }

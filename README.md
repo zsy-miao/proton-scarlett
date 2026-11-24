@@ -7,7 +7,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
-**NVIDIA (RTX 3070):** Retail build `1.0.2.1` passes the CPU-only control page and all five maps of the 185 MiB descriptor arena. It now creates both [3840×2160 primary color textures](scarlett/native/color-allocation.md) in the original 64 MiB allocation. With the current graphics backend the next observed title breakpoint is `+0x19f5291`; the cause is under investigation.
+**NVIDIA (RTX 3070):** Retail build `1.0.2.1` passes the CPU-only control page, maps all five ranges of the 185 MiB descriptor arena, and creates both [3840×2160 primary color textures](scarlett/native/color-allocation.md) in the original 64 MiB allocation. It now passes the 6,236 MiB write-back pool allocation and creates the clear graphics pipeline. The next observed stop is the same null read as on AMD (`+0x16f71ea`).
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 

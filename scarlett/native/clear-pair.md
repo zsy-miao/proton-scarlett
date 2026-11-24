@@ -1,5 +1,12 @@
 # Guest graphics stream +2b0: one clear pair
 
+The retail call at `+0x19f51f7` prewarms this pipeline. In a controlled
+test, the title's own `+0x122630` routine wrote 100 bytes for three
+position/color vertices, bound one render target and no depth target, and
+requested `DrawInstanced(3,1,0,0)`. The worker's submission path passes a
+token and flags `3` to queue `+0x118`. No retail trace yet links the
+prewarmed PSO to a submitted list or a completed draw.
+
 The first observed call (return RVA `2479a8d`) uses a 688-byte stream.
 After clearing the root, VS and PS pointers, SHA-256 covers every tag, size,
 padding byte and all fixed state; the only active target is RGBA8_UNORM,

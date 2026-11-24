@@ -1,0 +1,16 @@
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7892,8 +7892,11 @@
+                 device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV) wc_type = 2;
+         else return DXGI_ERROR_UNSUPPORTED;
+         if (wb) {
+-            if (wc_type == 3 && !pages) return E_NOINTERFACE; /* large NVIDIA system-section path */
+-            if (pages ? (size != 0x6400000 && size != 0xa00000) : (size < 0x23300000 || size > 0x49400000)) return DXGI_ERROR_UNSUPPORTED;
++            bool tile = size == (1ull << 30) || size == (1116ull << 20);
++            /* Public large NVIDIA WB allocations still use the system-section path.
++             * A captured tile handle is revalidated by win32u on import. */
++            if (wc_type == 3 && !pages && !(input && tile)) return E_NOINTERFACE;
++            if (pages ? (!tile && size != 0x6400000 && size != 0xa00000) : (size < 0x23300000 || size > 0x49400000)) return DXGI_ERROR_UNSUPPORTED;
+             wc_type = wc_type == 3 ? 4 : 5;
+         }
+         if (device->memory_properties.memoryTypeCount <= wc_type || device->memory_properties.memoryTypes[wc_type].propertyFlags !=
