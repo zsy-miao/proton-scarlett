@@ -5,7 +5,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 **Native layer status:** early development. The graphics DLL exposes a small desktop-compatible subset through vkd3d-proton. Xbox device creation, rendering a retail frame, and gameplay are not yet supported.
 
-On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. Retail build `1.0.2.1` currently stops in Wine's loader (`STATUS_DLL_NOT_FOUND`) before the game entry point.
+On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A second test loaded the fork's `xmem.dll` and passed CPU page reservation, commitment and release checks. Retail build `1.0.2.1` still stops before its entry point (`STATUS_DLL_NOT_FOUND`): `chad.dll`, `xg_xs.dll`, `XCRDAPI.dll`, `xapu.dll` and `AcpHal.dll` are missing. The two libraries already present also have incomplete Xbox API coverage.
 
 The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 
