@@ -39,6 +39,20 @@ tools memory, tags, and other special page sizes or protection modifiers.
 Errors from supported calls pass through from Win32. There is no console
 budget accounting.
 
+### Retail write-back page pool
+
+Build `1.0.2.1` calls `XMemAllocatePhysicalPages(0x380)` at `+0x1e6c22d`
+for 99,776 pages of 64 KiB. The installed provider rejects the flags with
+`ERROR_NOT_SUPPORTED` and sets the returned count to zero. The title branches
+on the false return and breaks at `+0x19f5291` during System Init.
+
+A scratch RADV provider allocated all 6,236 MiB in six write-back heaps.
+Its page IDs remain distinct after the title drops the low four bits.
+Retail accepted the full count, then broke at `+0x1e6c284` when the matching
+`XMemVirtualAlloc(NULL, 0x185c00000, 0x20402000, 0x23, 0x2004)` reservation
+failed. Allocation and reimport were tested; the public build does not yet
+map these pages into a contiguous title address range.
+
 ### Reservation and mapping milestone
 
 The descriptor arena (`0x1e8649a`) requests `XMemVirtualAlloc(NULL, total,

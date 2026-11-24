@@ -17,7 +17,7 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 Retail creates both `R16_UINT` views in the write-combined pool: 3,072 elements at its base and 378 elements at byte offset `0x1800`. A [RADV GPU test](scarlett/native/test-pool-srv.hpp) read every element after the CPU address was freed and reused; the six reads into the second resource's padding returned zero.
 
-Retail creates its first trilinear wrap sampler and copies it to the shader-visible heap. The [sampler test](scarlett/native/color-allocation.md#primary-texture-srv-0x90) verified the filtered color at the wrap boundary after the CPU sampler heap was released. Retail next hits a title breakpoint at `+0x19f5291`. **No retail builder dispatch or presented frame has been observed.**
+Retail creates its first trilinear wrap sampler and copies it to the shader-visible heap. The [sampler test](scarlett/native/color-allocation.md#primary-texture-srv-0x90) verified the filtered color at the wrap boundary after the CPU sampler heap was released. The installed build next rejects a [6,236 MiB physical-page allocation](scarlett/native/xmem/README.md#retail-write-back-page-pool) and hits a title breakpoint at `+0x19f5291`. **No retail builder dispatch or presented frame has been observed.**
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
