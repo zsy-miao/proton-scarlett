@@ -48,9 +48,12 @@ arguments comprise a title destination, two zeros, the source, row pitch
 256 and slice pitch 32768. `193df37` obtained the destination from the
 title allocator. In a separate metadata-only probe it was offset `0x2000`
 into a MEM_MAPPED / PAGE_READWRITE|PAGE_WRITECOMBINE allocation. Source
-was a distinct MEM_MAPPED / PAGE_READWRITE allocation. Marked-section
-acquisition for 32768 bytes failed for both (`0xd0000019`).
+was a distinct MEM_MAPPED / PAGE_READWRITE allocation. The generic section
+query rejected both ranges (`0xd0000019`). A follow-up retail trace acquired
+the full 32,768-byte destination with the WC query (`0x53430005`), at offset
+`0x2000` in the `0x89700000`-byte pool. The WB query (`0x5343000c`) acquired
+the source in the `0x49400000`-byte pool. Swapping the queries failed for both.
 
-The hardware placement test proves the allocation contract, not the guest
-texel address equation or a lifetime contract for these title bytes. No
+The section handles identify the original allocations. Neither that lookup
+nor the hardware placement test establishes the guest texel address equation. No
 XG success, raw linear copy or detached host texture is substituted here.
