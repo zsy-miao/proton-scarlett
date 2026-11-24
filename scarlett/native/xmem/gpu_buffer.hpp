@@ -37,7 +37,7 @@ public:
     ~ImportedBuffer() { reset(); } // The owner must first retire every consuming queue.
 
     HRESULT create(ID3D12Device3 *device, HANDLE section, SIZE_T size) {
-        const SIZE_T alignment = 2u << 20;
+        const SIZE_T alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
         if (!device || !section || base || !size || size % alignment) return E_INVALIDARG;
         base = map_aligned_section(section, size);
         if (!base) return HRESULT_FROM_WIN32(GetLastError());

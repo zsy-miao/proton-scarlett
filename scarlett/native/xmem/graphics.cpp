@@ -39,7 +39,8 @@ extern "C" void *xmem_graphics_alloc(void *base, SIZE_T size, BOOL wc)
         void *result = nullptr;
         hr = validate_import(base,size,&result);
         if (SUCCEEDED(hr)) return result;
-    } else if (SUCCEEDED(hr = scarlett_query_section(0x53430001, base, size, &info))) {
+    } else if (SUCCEEDED(hr = scarlett_query_section(size == 0x23300000 ? 0x53430003 : 0x53430001,
+                                                      base, size, &info))) {
         hr = validate_import(info.base, size, nullptr);
         if (SUCCEEDED(hr)) return info.base;
         VirtualFree(info.base, 0, MEM_RELEASE);

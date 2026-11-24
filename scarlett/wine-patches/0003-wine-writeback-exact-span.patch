@@ -1,0 +1,41 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index a28ef7d4e0773e0a1f9124d9c57016acf44d3526..bc70af6928dbb1d6436c7abb09c2089764269227 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6666,13 +6666,14 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+         goto done;
+     }
+     info.size = ((struct scarlett_section_info *)buffer)->size;
+-    if (info.size && op == MemoryWineScarlettCreateV1)
++    if (info.size && (op == MemoryWineScarlettCreateV1 || op == MemoryWineScarlettCreateSpanV1))
+     {
+         LARGE_INTEGER size;
+         HANDLE section;
++        SIZE_T size_mask = op == MemoryWineScarlettCreateSpanV1 ? granularity_mask : SCARLETT_ALIGN_MASK;
+ 
+         size.QuadPart = info.size;
+-        if (size.QuadPart > 0 && !(((UINT_PTR)addr | info.size) & SCARLETT_ALIGN_MASK) &&
++        if (size.QuadPart > 0 && !((UINT_PTR)addr & SCARLETT_ALIGN_MASK) && !(info.size & size_mask) &&
+             info.size <= (UINT_PTR)user_space_limit && (UINT_PTR)addr <= (UINT_PTR)user_space_limit - info.size)
+         {
+             status = NtCreateSection( &section, SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE,
+@@ -6753,6 +6754,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+ 
+ #ifdef __x86_64__
+         case MemoryWineScarlettCreateV1:
++        case MemoryWineScarlettCreateSpanV1:
+         case MemoryWineScarlettAcquireV1:
+         case MemoryWineScarlettMapWcV1:
+         case MemoryWineScarlettAcquireWcV1:
+diff --git a/include/winternl.h b/include/winternl.h
+index c7d8592968283cc47797b10f577b9d8f9dc2ee53..113079ef4dcf7ca8afa8ebfbf87f9a80eb069ced 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2461,6 +2461,7 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+     MemoryWineUnixWow64Funcs,
+     MemoryWineScarlettCreateV1 = 0x53430001,
+     MemoryWineScarlettAcquireV1 = 0x53430002,
++    MemoryWineScarlettCreateSpanV1 = 0x53430003,
+     MemoryWineScarlettMapWcV1 = 0x53430004,
+     MemoryWineScarlettAcquireWcV1 = 0x53430005,
+ #endif

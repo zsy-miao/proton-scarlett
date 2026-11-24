@@ -1,7 +1,7 @@
 /* Synthetic Proton release/alias test. Never submit GPU work against the public VA. */
 #include "gpu_buffer.hpp"
 #include <cstdio>
-#ifdef TEST_WC_SECTION
+#if defined(TEST_WC_SECTION) || defined(TEST_WB563_SECTION)
 #define TEST_MARKED_SECTION
 #endif
 #ifdef TEST_MARKED_SECTION
@@ -87,6 +87,8 @@ int main()
 #endif
 #ifdef TEST_WC_SECTION
     const SIZE_T size = 0x89700000;
+#elif defined(TEST_WB563_SECTION)
+    const SIZE_T size = 0x23300000;
 #else
     const SIZE_T size = 0x49400000;
 #endif
@@ -122,6 +124,14 @@ int main()
     CHECK(title && !((UINT_PTR)title % align));
 #endif
     auto original = query(title);
+#ifdef TEST_WB563_SECTION
+    scarlett_section_info info;
+    CHECK(original.RegionSize == size && original.Protect == PAGE_READWRITE &&
+          original.Type == MEM_MAPPED && original.State == MEM_COMMIT);
+    CHECK(FAILED(scarlett_query_section(0x53430001,nullptr,size,&info)));
+    CHECK(FAILED(scarlett_query_section(0x53430002,title+size/4-1,5,&info)));
+    CHECK(FAILED(scarlett_query_section(0x53430005,title,4,&info)));
+#endif
 #ifdef TEST_WC_SECTION
     CHECK(original.RegionSize == size && original.State == MEM_COMMIT && original.Type == MEM_MAPPED &&
           original.Protect == (PAGE_READWRITE|PAGE_WRITECOMBINE));
@@ -148,6 +158,12 @@ int main()
 #endif
     auto cpu = (volatile DWORD *)allocation.cpu();
     auto shared = allocation.resource();
+#ifdef TEST_WB563_SECTION
+    D3D12_HEAP_PROPERTIES wb_props;
+    D3D12_HEAP_FLAGS wb_flags;
+    HR(shared->GetHeapProperties(&wb_props,&wb_flags));
+    CHECK(wb_props.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK && shared->GetDesc().Width == size);
+#endif
 #ifndef TEST_WC_SECTION
     CHECK(!((UINT_PTR)cpu % align));
 #endif
@@ -249,8 +265,8 @@ int main()
     list->Release(); alloc->Release(); gate->Release(); retire->Release(); queue->Release();
     scratch->Release(); device->Release();
 #ifdef TEST_MARKED_SECTION
-    puts("PASS: ordinary VirtualFree released marked title view; "
-         "GPU retired on old backing after exact public VA reuse");
+    printf("PASS %#llx: ordinary VirtualFree released marked title view; "
+           "GPU retired on old backing after exact public VA reuse\n",(unsigned long long)size);
 #else
     puts("PASS: VirtualFree rejected both section views (87); private replacement released; "
          "GPU retired on old backing after exact public VA reuse");
