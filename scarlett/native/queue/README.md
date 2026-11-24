@@ -951,3 +951,18 @@ process and recorder stop was the composite table bind, list `+120`, return
 token 1 (display count 0→1). Neither capture showed a recognizable image.
 The prior failure's operands weren't captured, so the earlier stop cannot
 be attributed to a particular uninitialized word.
+
+An AMD diagnostic traced the composite table from its producer to the
+same list's `+120(0, handle)` call. All three entries were in the active
+visible heap, starting at slot 368373:
+
+| Cell | Source at the bind |
+| --- | --- |
+| 0 | The 128-byte raw view, nonvisible slot 690, serial 128, offset `0x3de20` in the original placed allocation. |
+| 1 | The selected texture binding, visible slot 98, SRV serial 118. |
+| 2 | An inline constant-buffer descriptor from nonvisible slot 18, with no registered serial. |
+
+All 32 bytes of each entry matched its source at the setter. The three
+destination slots still had no registered serial or kind. The pipeline
+was pending, and the rejected setter left the prior colour table
+selected. No shader read or token-2 presentation followed.
