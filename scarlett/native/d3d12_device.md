@@ -299,6 +299,12 @@ values above `2^40` with identical low words. The public export test checks
 distinct COM identities and rejects unsupported selector combinations. Run after
 the public test above:
 
+Retail also calls `+0x40` with `{3,0,0,1}` for a COPY queue immediately
+after registering the page pool. The linked test records and submits a
+host copy list on the queue behind that wrapper. Its completion stays
+pending until a guest Direct queue signals the gate; the readback then
+matches all 1,024 words. Guest COPY-list submission remains unverified.
+
 ```sh
 mkdir linked
 "$cc" -O2 -Wall -Wextra -Werror -DXS_TEST_LINKED -DSCARLETT_DEVICE_BOOTSTRAP \

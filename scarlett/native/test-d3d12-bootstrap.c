@@ -6,6 +6,7 @@
 #include <stdio.h>
 #ifdef XS_TEST_LINKED
 #include "queue/queue.h"
+#include "queue/present.h"
 #else
 __declspec(dllimport)
 #endif
@@ -148,6 +149,73 @@ static HRESULT buffer(ID3D12Device *d, D3D12_HEAP_TYPE type, ID3D12Resource **ou
 }
 #endif
 
+static int test_copy(ID3D12Device *host, IUnknown *d, IUnknown *direct)
+{
+    Queue create = METHOD(d,0x40,Queue);
+    const UINT desc[] = {3,0,0,1};
+    const UINT unsupported[][4] = {{2,0,0,1}, {3,1,0,1}, {3,0,1,1}, {3,0,0,0}, {3,0,0,2}};
+    IUnknown *q, *gate, *done;
+    void *p;
+    for (UINT i=0; i<ARRAYSIZE(unsupported); ++i) {
+        p = direct;
+        CHECK(create(d,unsupported[i],&IID_ID3D12CommandQueue,&p)==E_NOTIMPL && !p);
+    }
+    CHECK(METHOD(d,0x180,Queue)(d,desc,&IID_ID3D12CommandQueue,&p)==E_NOTIMPL && !p);
+    CHECK(create(d,desc,&IID_ID3D12CommandQueue,(void **)&q)==S_OK && q!=direct);
+    CHECK(IUnknown_QueryInterface(q,&IID_ID3D12CommandQueue,&p)==S_OK && p==q);
+    IUnknown_Release(q);
+    Fence shared = METHOD(d,0x120,Fence);
+    CHECK(shared(d,0,D3D12_FENCE_FLAG_SHARED,&IID_ID3D12Fence,(void **)&gate)==S_OK);
+    CHECK(shared(d,0,D3D12_FENCE_FLAG_SHARED,&IID_ID3D12Fence,(void **)&done)==S_OK);
+    const UINT64 n = (1ull<<40)+7;
+    const volatile UINT64 *word = METHOD(done,0x60,FenceAddress)(done);
+    CHECK(word && !*word);
+#ifdef XS_TEST_LINKED
+    /* No verified guest COPY-list recorder or submit. Use the exact queue behind the wrapper. */
+    ID3D12CommandQueue *hq = xs_display_queue(q);
+    D3D12_COMMAND_QUEUE_DESC actual;
+    CHECK(hq && hq->lpVtbl->GetDesc(hq,&actual)->Type==D3D12_COMMAND_LIST_TYPE_COPY);
+    ID3D12CommandAllocator *a;
+    ID3D12GraphicsCommandList *l;
+    ID3D12Resource *up, *back;
+    CHECK(buffer(host,D3D12_HEAP_TYPE_UPLOAD,&up)==S_OK && buffer(host,D3D12_HEAP_TYPE_READBACK,&back)==S_OK);
+    UINT *map;
+    CHECK(ID3D12Resource_Map(up,0,NULL,(void **)&map)==S_OK);
+    for (UINT i=0; i<1024; ++i) map[i]=(i*7919)^0xc091;
+    ID3D12Resource_Unmap(up,0,NULL);
+    CHECK(ID3D12Device_CreateCommandAllocator(host,actual.Type,&IID_ID3D12CommandAllocator,(void **)&a)==S_OK);
+    CHECK(ID3D12Device_CreateCommandList(host,1,actual.Type,a,NULL,&IID_ID3D12GraphicsCommandList,(void **)&l)==S_OK);
+    ID3D12GraphicsCommandList_CopyBufferRegion(l,back,0,up,0,4096);
+    CHECK(ID3D12GraphicsCommandList_Close(l)==S_OK);
+    CHECK(xs_queue_wait(q,gate,n)==S_OK);
+    ID3D12CommandList *list=(ID3D12CommandList *)l;
+    ID3D12CommandQueue_ExecuteCommandLists(hq,1,&list);
+#else
+    (void)host;
+#endif
+    CHECK(METHOD(q,0x80,Signal)(q,done,n)==S_OK);
+#ifdef XS_TEST_LINKED
+    HANDLE e = CreateEventW(NULL,FALSE,FALSE,NULL);
+    CHECK(e && xs_fence_event(done,n,e)==S_OK && WaitForSingleObject(e,100)==WAIT_TIMEOUT && !*word);
+    CHECK(METHOD(direct,0x80,Signal)(direct,gate,n)==S_OK);
+    CHECK(WaitForSingleObject(e,5000)==WAIT_OBJECT_0);
+    CloseHandle(e);
+#endif
+    ULONGLONG start=GetTickCount64();
+    while (*word!=n && GetTickCount64()-start<5000) Sleep(1);
+    CHECK(*word==n);
+#ifdef XS_TEST_LINKED
+    CHECK(ID3D12Resource_Map(back,0,NULL,(void **)&map)==S_OK);
+    for (UINT i=0; i<1024; ++i) CHECK(map[i]==((i*7919)^0xc091));
+    ID3D12Resource_Unmap(back,0,NULL);
+    ID3D12Resource_Release(up); ID3D12Resource_Release(back);
+    ID3D12GraphicsCommandList_Release(l); ID3D12CommandAllocator_Release(a);
+    puts("PASS COPY: gated GPU transfer, guest Direct signal -> COPY completion; 1024/1024 words");
+#endif
+    CHECK(!IUnknown_Release(q) && !IUnknown_Release(gate) && !IUnknown_Release(done));
+    return 0;
+}
+
 static int test_list(ID3D12Device *host, IUnknown *q, IUnknown *a, IUnknown *l, UINT type)
 {
     void *id;
@@ -233,6 +301,7 @@ int main(void)
     }
     CHECK(METHOD(d,0x40,Queue)(d, direct, &IID_ID3D12Fence, &p) == E_NOINTERFACE && !p);
     CHECK(METHOD(d,0x40,Queue)(d, direct, &IID_ID3D12CommandQueue, (void **)&q) == S_OK);
+    CHECK(!test_copy(host,d,q));
     CHECK(METHOD(d,0x120,Fence)(d, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&f) == S_OK);
     CHECK(IUnknown_QueryInterface(q, &IID_ID3D12CommandQueue, &p) == S_OK && p == q);
     IUnknown_Release((IUnknown *)p);

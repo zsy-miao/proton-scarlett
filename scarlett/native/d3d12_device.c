@@ -143,10 +143,16 @@ static HRESULT WINAPI bootstrap_queue(IUnknown *iface, const D3D12_COMMAND_QUEUE
     if (!out) return E_POINTER;
     *out = NULL;
     if (!iid || !d) return E_INVALIDARG;
-    if (!IsEqualIID(iid, &IID_ID3D12CommandQueue)) return E_NOINTERFACE;
-    if (d->Type != D3D12_COMMAND_LIST_TYPE_DIRECT || d->Priority != D3D12_COMMAND_QUEUE_PRIORITY_NORMAL ||
-            d->Flags != D3D12_COMMAND_QUEUE_FLAG_NONE || d->NodeMask != 1) return E_NOTIMPL;
-    hr = xs_console_direct_queue(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, iface, &queue);
+    IID id;
+    D3D12_COMMAND_QUEUE_DESC desc;
+    if (!copy_in(&id, iid, sizeof(id)) || !copy_in(&desc, d, sizeof(desc))) return E_POINTER;
+    if (!IsEqualIID(&id, &IID_ID3D12CommandQueue)) return E_NOINTERFACE;
+    if (desc.Priority != D3D12_COMMAND_QUEUE_PRIORITY_NORMAL ||
+            desc.Flags != D3D12_COMMAND_QUEUE_FLAG_NONE || desc.NodeMask != 1) return E_NOTIMPL;
+    ID3D12Device *host = CONTAINING_RECORD(iface, struct xbox_device, iface)->host;
+    if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) hr = xs_console_direct_queue(host, iface, &queue);
+    else if (desc.Type == D3D12_COMMAND_LIST_TYPE_COPY) hr = xs_copy_queue(host, &queue);
+    else return E_NOTIMPL;
     *out = queue;
     return hr;
 }

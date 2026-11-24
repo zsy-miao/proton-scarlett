@@ -406,6 +406,14 @@ HRESULT xs_compute_queue(ID3D12Device *host, IUnknown **out)
     return create(host, &desc, out);
 }
 
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+HRESULT xs_copy_queue(ID3D12Device *host, IUnknown **out)
+{
+    const D3D12_COMMAND_QUEUE_DESC desc = {D3D12_COMMAND_LIST_TYPE_COPY, 0, 0, 1};
+    return create(host, &desc, out);
+}
+#endif
+
 HRESULT xs_shared_fence(ID3D12Device *host, IUnknown **out)
 {
     return create(host, NULL, out);

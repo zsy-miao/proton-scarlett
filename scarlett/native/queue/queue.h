@@ -8,6 +8,7 @@ HRESULT xs_direct_queue(ID3D12Device *host, IUnknown **out);
 HRESULT xs_compute_queue(ID3D12Device *host, IUnknown **out);
 HRESULT xs_shared_fence(ID3D12Device *host, IUnknown **out);
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+HRESULT xs_copy_queue(ID3D12Device *host, IUnknown **out);
 #define XS_INDIRECT_TYPE_69 ((D3D12_INDIRECT_ARGUMENT_TYPE)0x69)
 HRESULT xs_query_heap(ID3D12Device *host, const D3D12_QUERY_HEAP_DESC *desc, void **out);
 HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT stride, IUnknown **out);

@@ -19,7 +19,7 @@ Retail creates both `R16_UINT` views in the write-combined pool: 3,072 elements 
 
 Retail creates its first trilinear wrap sampler and copies it to the shader-visible heap. The [sampler test](scarlett/native/color-allocation.md#primary-texture-srv-0x90) verified the filtered color at the wrap boundary after the CPU sampler heap was released.
 
-Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarlett/native/xmem/README.md#retail-write-back-page-pool) with the graphics device. A [GPU test](scarlett/native/test-page-pool.c) verified all six backing heaps after the title address was reused. The next call requests a COPY queue and returns `E_NOTIMPL` (title breakpoint `+0x1e6c2f6`). **No retail builder dispatch or presented frame has been observed.**
+Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarlett/native/xmem/README.md#retail-write-back-page-pool) with the graphics device. A [GPU test](scarlett/native/test-page-pool.c) verified all six backing heaps after the title address was reused. Retail now creates its COPY queue; the [queue test](scarlett/native/test-d3d12-bootstrap.c) verified all 1,024 copied words after a Direct-queue fence released the transfer. The next observed retail stop is a read from address `0x68` at title RVA `+0xb5a5f8`. **No retail builder dispatch or presented frame has been observed.**
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
