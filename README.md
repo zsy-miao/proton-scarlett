@@ -15,7 +15,7 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 **AMD (`1002:164e`, RADV 26.3.0):** Retail gets through the four indexed Compute queues, command-list pools, and frame-event registration. It reserves a 185 MiB descriptor arena, allocates 2,960 physical pages and maps the first 752 pages (47 MiB) with write-combining. The next map requests 1,600 pages (100 MiB) with a different CPU cache policy (`0x2004`). It fails with `ERROR_INVALID_ADDRESS`, and the caller stops at `+0x19f4f58`. **No retail frame has been presented.**
 
-The [scheduler test](scarlett/native/frame-descriptor-init.md) verified that an unpresented token times out and a real DXGI present wakes the waiter for that token. The private recorder also captured synthetic red and green frames on RADV using headless Sway and Xwayland.
+The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 

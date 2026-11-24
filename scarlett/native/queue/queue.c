@@ -4,6 +4,8 @@
 #include <stddef.h>
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 #include "bootstrap_guard.h"
+#include "present.h"
+#include "../frame.h"
 #endif
 
 struct adapter {
@@ -19,11 +21,23 @@ struct adapter {
         D3D12_COMMAND_LIST_TYPE allocator_type;
         D3D12_INDIRECT_ARGUMENT_TYPE signature_type;
     };
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+    struct {
+        SRWLOCK lock;
+        IUnknown *owner;
+        IDXGISwapChain3 *chain;
+        IUnknown *keys[2];
+        ID3D12Resource *buffers[2];
+        UINT width, height;
+    } display;
+#endif
 };
 
 struct qtable {
     struct xs_queue_prefix prefix;
-    void *other[16];
+    void *other[13];
+    HRESULT (WINAPI *present)(IUnknown *, UINT, const void *, const void *);
+    void *other108[2];
     void (WINAPI *execute)(IUnknown *, UINT, IUnknown *const *, UINT64, UINT);
 };
 struct ftable {
@@ -33,6 +47,7 @@ struct ftable {
 static const struct qtable qt;
 static const struct ftable ft;
 _Static_assert(offsetof(struct qtable, execute) == 0x118, "x64 queue submit");
+_Static_assert(offsetof(struct qtable, present) == 0x100, "x64 PresentX");
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 struct atable {
     IUnknownVtbl prefix;
@@ -68,7 +83,17 @@ static ULONG WINAPI release(IUnknown *iface)
         else if (iface->lpVtbl == &at.prefix) ID3D12CommandAllocator_Release(a->host.allocator);
         else if (iface->lpVtbl == &st.prefix) ID3D12CommandSignature_Release(a->host.signature);
 #endif
-        else ID3D12CommandQueue_Release(a->host.queue);
+        else {
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+            for (unsigned j=0;j<2;++j) if (a->display.keys[j]) {
+                IUnknown_Release(a->display.keys[j]);
+                ID3D12Resource_Release(a->display.buffers[j]);
+            }
+            if (a->display.chain) IDXGISwapChain3_Release(a->display.chain);
+            if (a->display.owner) IUnknown_Release(a->display.owner);
+#endif
+            ID3D12CommandQueue_Release(a->host.queue);
+        }
         HeapFree(GetProcessHeap(), 0, a);
     }
     return refs;
@@ -209,6 +234,7 @@ static HRESULT WINAPI frequency(IUnknown *queue, UINT64 *out)
 
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 #include "startup_list.h"
+#include "present_impl.h"
 #endif
 
 static const struct qtable qt = {
@@ -219,7 +245,8 @@ static const struct qtable qt = {
 #endif
     },
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
-    .other = { [0 ... 15] = (void *)xs_stop }, .execute = startup_submit,
+    .other = { [0 ... 12] = (void *)xs_stop }, .present = queue_present,
+    .other108 = { (void *)xs_stop, (void *)xs_stop }, .execute = startup_submit,
 #endif
 };
 static const struct ftable ft = {
@@ -255,7 +282,7 @@ static HRESULT create(ID3D12Device *host, const D3D12_COMMAND_QUEUE_DESC *desc, 
     if (!out) return E_POINTER;
     *out = NULL;
     if (!host) return E_INVALIDARG;
-    a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
+    a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*a));
     if (!a) return E_OUTOFMEMORY;
     hr = desc ? ID3D12Device_CreateCommandQueue(host, desc, &IID_ID3D12CommandQueue, (void **)&a->host.queue) :
             ID3D12Device_CreateFence(host, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&a->host.fence);

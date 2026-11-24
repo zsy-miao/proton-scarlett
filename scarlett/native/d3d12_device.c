@@ -5,6 +5,7 @@
 #include <d3d12.h>
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 #include "queue/queue.h"
+#include "queue/present.h"
 #include "queue/bootstrap_guard.h"
 #include "frame.h"
 #include <stddef.h>
@@ -111,7 +112,7 @@ static HRESULT WINAPI bootstrap_queue(IUnknown *iface, const D3D12_COMMAND_QUEUE
     if (!IsEqualIID(iid, &IID_ID3D12CommandQueue)) return E_NOINTERFACE;
     if (d->Type != D3D12_COMMAND_LIST_TYPE_DIRECT || d->Priority != D3D12_COMMAND_QUEUE_PRIORITY_NORMAL ||
             d->Flags != D3D12_COMMAND_QUEUE_FLAG_NONE || d->NodeMask != 1) return E_NOTIMPL;
-    hr = xs_direct_queue(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, &queue);
+    hr = xs_console_direct_queue(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, iface, &queue);
     *out = queue;
     return hr;
 }
