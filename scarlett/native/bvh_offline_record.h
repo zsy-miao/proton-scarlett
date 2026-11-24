@@ -25,7 +25,7 @@ HRESULT xs_record_bvh_offline(IUnknown *pipeline,ID3D12GraphicsCommandList *list
         dst->bytes<80 || dst->bytes>UINT32_MAX || (dst->bytes&3) ||
         !pipeline || pipeline->lpVtbl!=&bp_methods.unknown) return E_INVALIDARG;
     struct bvh_pipeline *p=CONTAINING_RECORD(pipeline,struct bvh_pipeline,iface);
-    if (!p->offline || !list) return E_INVALIDARG;
+    if (p->kind!=BVH_OFFLINE || !list) return E_INVALIDARG;
     /* Guard host work as well as shader extents. No truncation or partial submit. */
     struct offline_cmd cmd[256];
     UINT hd[20],total=0;
@@ -114,7 +114,7 @@ HRESULT xs_record_bvh_offline(IUnknown *pipeline,ID3D12GraphicsCommandList *list
         qsort(spans,end-spans,sizeof *spans,offline_span_cmp);
         for (struct offline_span *s=spans+1;s<end;s++) if (s->begin<s[-1].end) goto done;
     }
-    hr=bvh_record_target(pipeline,TRUE,list,dst,dst->guest_base,(UINT)dst->bytes,out);
+    hr=bvh_record_target(pipeline,BVH_OFFLINE,list,dst,dst->guest_base,(UINT)dst->bytes,out);
     if (SUCCEEDED(hr)) for (UINT i=0;i<total;i++) {
         ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list,1,40,&nodes[i],0);
         ID3D12GraphicsCommandList_Dispatch(list,1,1,1);
