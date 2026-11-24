@@ -98,6 +98,14 @@ bridge can pass this successful create result for the current process and
 lifetime to the graphics bootstrap. Nothing in the resource call identifies
 that HWND. Do not use a foreground-window search or create a competing window.
 
+**Retail observation (RADV, private 800×600 Sway output):** Wine's `+win`
+trace showed the title thread creating `sgaWindowClass`, caption `Americas`,
+with a requested outer size of 3840×2160. `NtUserCreateWindowEx` returned
+`0x10082` in that run and `show_window` used the same handle. A separately
+created `Default IME` window had a different handle. All this precedes the
+174 MiB placed-buffer request; neither the HWND value nor the requested
+window size establishes a swapchain index, image size or rendered frame.
+
 ## Decision at future initialization
 
 Correlate the returned HWND with device/queue creation; record primary vs.
