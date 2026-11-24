@@ -63,3 +63,16 @@ sed -n '/^const unsigned char bvh_init_dxil/,$p' /tmp/bvh-init.h | sed '1s/^/sta
 Retail next calls the same device slot with `XDXR WriteOfflinePartition`,
 DLL shader RVA `+c77e0`, size `0x1ec4`. This second request occurs inside
 the constructor, before any observed dispatch of the first pipeline.
+
+`WriteOfflinePartition` uses addresses differently from the first shader:
+each 16-byte command at `t0` supplies a partition ID, a node count, and
+a read-only address for the 128-byte source nodes. Stores go through `u0`.
+The parent-link address can lie below the parent-table anchor. With an
+anchor at byte 4096, the tested internal child updated byte 4056. Bounds
+checks must use the destination allocation rather than assuming all
+links follow the anchor.
+
+A scratch translation using known live host addresses passed fenced
+readback on RADV and RTX 3070 for 0, 2 and 33 commands. All 1,280 words
+of the destination and both unchanged inputs were checked. Retail still
+requires a pipeline and a checked binding for the guest source addresses.

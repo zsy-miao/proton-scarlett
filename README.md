@@ -17,6 +17,8 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 Each [primary texture](scarlett/native/color-allocation.md) consumes a 33,226,752-byte slice through the game's allocator hook, leaving 640 KiB unused. A [GPU test](scarlett/native/test-allocation-info.cpp) verified that rendering and shader writes changed the original arena bytes and that the memory stayed live until the last texture reference was released.
 
+A scratch translation of `WriteOfflinePartition` passed GPU readback on RADV and RTX 3070 for 0, 2 and 33 commands. Its embedded addresses point to source nodes; the shader writes through a separate destination buffer. The installed build still rejects this pipeline.
+
 Both retail display textures were created on the thread that owns the game window. A [separate presentation test](scarlett/native/queue/present.md) opened DXGI on a window captured by the same Wine hook and verified two displayed frames.
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.

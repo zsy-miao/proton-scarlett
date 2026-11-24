@@ -499,6 +499,21 @@ static HRESULT WINAPI device_query(IUnknown *iface, REFIID iid, void **out)
 
 static const IUnknownVtbl device_vtbl = { device_query, device_addref, device_release };
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+static HRESULT WINAPI builder_pipeline_call(IUnknown *device,const void *desc,UINT64 x,UINT64 y,REFIID iid,void **out)
+{
+    HRESULT hr=bootstrap_bvh_pipeline(device,desc,x,y,iid,out);
+    struct { IUnknown *root; const void *shader; SIZE_T size; } w;
+    HMODULE builder=GetModuleHandleW(L"XboxBvhBuilder.dll"),module;
+    if (hr==E_NOTIMPL && builder && copy_in(&w,desc,sizeof w) &&
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                (const char *)w.shader,&module) && module==builder) {
+        char text[144];
+        snprintf(text,sizeof text,"scarlett: device +0x1f0 unsupported: XboxBvhBuilder.dll shader +%llx, %zu bytes\n",
+                (unsigned long long)((UINT_PTR)w.shader-(UINT_PTR)builder),w.size);
+        OutputDebugStringA(text);
+    }
+    return hr;
+}
 static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
@@ -509,7 +524,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 12] = xs_stop }, .bvh_pipeline = bootstrap_bvh_pipeline,
+    .gap188 = { [0 ... 12] = xs_stop }, .bvh_pipeline = builder_pipeline_call,
     .gap1f8 = { [0 ... 6] = xs_stop },
 #ifdef SCARLETT_STAGED_PLACED
     .address_srv = write_address_srv,
