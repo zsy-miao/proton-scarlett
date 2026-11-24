@@ -11,7 +11,7 @@ Retail build `1.0.2.1` initializes the fork's [Gaming Runtime provider](scarlett
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 
-The 64 KiB request additionally requires uncached GPU access. The [64 KiB probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. It also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
+The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 
