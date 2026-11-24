@@ -42,11 +42,17 @@ remain intact. RADV renders the same fixture in an ordinary RT-capable heap;
 this is a reference test, not successful guest placement on RADV.
 
 Unchanged retail reached a further, GPU-specific boundary:
-* RTX: `+428` succeeds; device `+90` rejects a view of the same wrapper,
+* RTX: `+428` succeeds; device `+90` writes a view of the same wrapper,
   format 28/dimension 6 (Texture2DMS), mapping `0x1688`, return `164f01`.
+  The next stop is the `+c8` depth query, also returning to `344188`.
 * RADV: the caller tolerates the color placement failure and reaches `+c8`
   for 4× format 19 (R32G8X24_TYPELESS), flags 2, return `344188`.
-No retail draw or resolve was observed.
+No retail draw or resolve was observed. On RTX the fixture binds the visible
+slot written through `+90` for all four Texture2DMS loads. It releases the
+wrapper and direct texture references, checks the exact slice is still busy,
+then overwrites the slot after the fence and checks that placement succeeds
+again. Malformed records, a mismatched 2D view, an unregistered resource,
+a misaligned slot, a truncated prefix and a modified slot tag are refused.
 
 ## Reproduce
 

@@ -127,7 +127,8 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     SIZE_T size=kind==RTV || kind==CBV || (object && kind==UAV)?16:(object && kind==SRV)?32:40;
     if (kind!=CBV && kind!=SRV && kind!=UAV && kind!=RTV) return E_INVALIDARG;
     if (!copy_in(words,input,size)) return E_POINTER;
-    if (object && (kind==UAV || kind==SRV) && words[1]!=D3D12_SRV_DIMENSION_TEXTURE2D &&
+    BOOL ms_srv=object && kind==SRV && words[1]==D3D12_SRV_DIMENSION_TEXTURE2DMS;
+    if (object && (kind==UAV || kind==SRV) && !ms_srv && words[1]!=D3D12_SRV_DIMENSION_TEXTURE2D &&
         !copy_in(words,input,sizeof words)) return E_POINTER;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *old_placed=NULL;
@@ -167,6 +168,12 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
                words[1]==D3D12_UAV_DIMENSION_TEXTURE2D && !words[2] && !words[3]) {
         uav.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
         uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
+    } else if (ms_srv) {
+        if (words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM || words[2]!=0x1688 ||
+                memcmp(words+3,(DWORD[5]){0},5*sizeof(DWORD))) return E_NOTIMPL;
+        srv.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DMS;
+        srv.Shader4ComponentMapping=words[2];
     } else if (kind==SRV && words[0]==DXGI_FORMAT_R8G8B8A8_UNORM &&
                words[1]==D3D12_SRV_DIMENSION_TEXTURE2D && words[2]==0x1688 &&
                !words[4] && words[5]==1 && !words[6] && !words[7]) {
@@ -184,9 +191,9 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     HRESULT hr=E_INVALIDARG;
     ID3D12Resource *resource=wc,*old=NULL;
     AcquireSRWLockExclusive(&d->descriptor_lock);
-    if (object && (kind==RTV || kind==UAV || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
+    if (object && (kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !c->msaa) { resource=c->host; break; }
+            if (&c->iface==object && c->msaa==ms_srv) { resource=c->host; break; }
         if (!resource) goto done;
     } else if (object) {
         for (struct xs_buffer_binding *b=d->buffers;b;b=b->next) if (b->identity==object) {

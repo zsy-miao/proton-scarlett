@@ -10,6 +10,12 @@ using Microsoft::WRL::ComPtr;
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_msaa_allocation_info1(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *,D3D12_RESOURCE_ALLOCATION_INFO1 *);
 extern "C" ID3D12Resource *test_msaa_host(IUnknown *);
+extern "C" ID3D12Resource *test_msaa_slot(IUnknown *,SIZE_T);
+extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
+extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
+using MakeHeap=HRESULT(WINAPI*)(IUnknown *,const void *,REFIID,void **);
+using Start=SIZE_T(WINAPI*)(IUnknown *);
+using Srv=void(WINAPI*)(IUnknown *,IUnknown *,const void *,SIZE_T);
 using Query=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *);
 using Rich=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO1 *);
 using Place=HRESULT(WINAPI*)(IUnknown *,UINT64,const void *,UINT,const void *,REFIID,void **);
@@ -52,9 +58,25 @@ int main() {
 #else
     CK(created==DXGI_ERROR_UNSUPPORTED && !guest);
 #endif
+    ComPtr<IUnknown> slots; SIZE_T slot=0;
+    ID3D12DescriptorHeap *bank=nullptr;D3D12_GPU_DESCRIPTOR_HANDLE gpu={};
     ComPtr<ID3D12Resource> original;
     if (imported) {
-        original.Attach(test_msaa_host((IUnknown*)guest));CK(original);((IUnknown*)guest)->Release();
+        auto obj=(IUnknown*)guest;original.Attach(test_msaa_host(obj));CK(original);
+        UINT hd[]={0,4,1,1}; HR(((MakeHeap)vt[0x70/8])(g.Get(),hd,__uuidof(ID3D12DescriptorHeap),(void**)slots.GetAddressOf()));
+        slot=((Start)(*(void***)slots.Get())[0x48/8])(slots.Get())+32;
+        DWORD ms[]={28,6,0x1688,0,0,0,0,0};
+        BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page&&VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
+        auto end=page+4096-sizeof ms;memcpy(end,ms,sizeof ms);
+        ((Srv)vt[0x90/8])(g.Get(),obj,end,slot);UINT64 before=*(UINT64*)slot;
+        for(unsigned j=0;j<8;j++){ms[j]^=1; CK(FAILED(xs_write_view(g.Get(),0x90,obj,ms,slot)));ms[j]^=1;}
+        DWORD single[10]={28,4,0x1688,0,0,1};CK(FAILED(xs_write_view(g.Get(),0x90,obj,single,slot)));
+        CK(FAILED(xs_write_view(g.Get(),0x90,g.Get(),ms,slot)) && FAILED(xs_write_view(g.Get(),0x90,obj,ms,slot+1)));
+        CK(FAILED(xs_write_view(g.Get(),0x90,obj,end+1,slot)) && *(UINT64*)slot==before && VirtualFree(page,0,MEM_RELEASE));
+        *(UINT64*)slot^=1;CK(FAILED(xs_resolve_view(slots.Get(),slot,0x90,&bank,&gpu)) && !bank && !gpu.ptr);*(UINT64*)slot^=1;
+        HR(xs_resolve_view(slots.Get(),slot,0x90,&bank,&gpu));CK(bank&&gpu.ptr);
+        obj->Release(); original.Reset(); // Slot is now the only owner of the imported image.
+
         CK(FAILED(place(g.Get(),(UINT_PTR)wc+off,&rd,6,&clear,__uuidof(ID3D12Resource),&guest)) && !guest);
     }
     for(UINT i=0;i<span+32;i++) CK((wc+off-16)[i]==0xa7);
@@ -68,7 +90,9 @@ int main() {
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.VisibleNodeMask=hp.CreationNodeMask=1;
     D3D12_HEAP_DESC hd={};hd.Alignment=span;hd.SizeInBytes=3*span;hd.Properties=hp;hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
     ComPtr<ID3D12Heap>heap;HR(d->CreateHeap(&hd,IID_PPV_ARGS(&heap)));ComPtr<ID3D12Resource> rt[3],resolved,rb,report;
-    for(UINT i=0;i<3;i++) if (i==1 && imported) rt[i]=original; else HR(d->CreatePlacedResource(heap.Get(),i*span,&rd,D3D12_RESOURCE_STATE_RENDER_TARGET,&clear,IID_PPV_ARGS(&rt[i])));
+    for(UINT i=0;i<3;i++) if (i==1 && imported) {
+        original.Attach(test_msaa_slot(slots.Get(),slot));CK(original); rt[i]=original;original.Reset();
+    } else HR(d->CreatePlacedResource(heap.Get(),i*span,&rd,D3D12_RESOURCE_STATE_RENDER_TARGET,&clear,IID_PPV_ARGS(&rt[i])));
     heap.Reset();auto single=rd;single.SampleDesc.Count=1;single.Flags=D3D12_RESOURCE_FLAG_NONE;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&single,D3D12_RESOURCE_STATE_RESOLVE_DEST,nullptr,IID_PPV_ARGS(&resolved)));
     D3D12_RESOURCE_DESC buf={};buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;buf.Height=buf.DepthOrArraySize=buf.MipLevels=buf.SampleDesc.Count=1;buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;buf.Width=16;buf.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -77,7 +101,7 @@ int main() {
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));
     D3D12_DESCRIPTOR_HEAP_DESC dd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,3,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};ComPtr<ID3D12DescriptorHeap>rh,sh;HR(d->CreateDescriptorHeap(&dd,IID_PPV_ARGS(&rh)));
     auto h=rh->GetCPUDescriptorHandleForHeapStart();D3D12_CPU_DESCRIPTOR_HANDLE handles[3];for(UINT i=0;i<3;i++){handles[i]=h;d->CreateRenderTargetView(rt[i].Get(),nullptr,h);h.ptr+=d->GetDescriptorHandleIncrementSize(dd.Type);}
-    dd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};HR(d->CreateDescriptorHeap(&dd,IID_PPV_ARGS(&sh)));d->CreateShaderResourceView(rt[1].Get(),nullptr,sh->GetCPUDescriptorHandleForHeapStart());
+    if (!imported) { dd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};HR(d->CreateDescriptorHeap(&dd,IID_PPV_ARGS(&sh)));d->CreateShaderResourceView(rt[1].Get(),nullptr,sh->GetCPUDescriptorHandleForHeapStart());bank=sh.Get();gpu=sh->GetGPUDescriptorHandleForHeapStart(); }
     D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};D3D12_ROOT_PARAMETER par[2]={};par[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;par[0].DescriptorTable={1,&range};par[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;
     D3D12_ROOT_SIGNATURE_DESC rs={2,par,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_NONE};ComPtr<ID3DBlob>blob;HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));ComPtr<ID3D12RootSignature> root;HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
     BYTE vs[8192],ps[8192],cs[8192];D3D12_GRAPHICS_PIPELINE_STATE_DESC gp={};gp.pRootSignature=root.Get();gp.VS={vs,load("vs.dxil",vs)};gp.PS={ps,load("ps.dxil",ps)};gp.SampleMask=~0u;gp.RasterizerState.FillMode=D3D12_FILL_MODE_SOLID;gp.RasterizerState.CullMode=D3D12_CULL_MODE_NONE;gp.RasterizerState.DepthClipEnable=TRUE;gp.RasterizerState.MultisampleEnable=TRUE;gp.BlendState.RenderTarget[0].RenderTargetWriteMask=15;gp.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;gp.NumRenderTargets=1;gp.RTVFormats[0]=rd.Format;gp.SampleDesc=rd.SampleDesc;
@@ -86,14 +110,14 @@ int main() {
     auto transition=[&](ID3D12Resource *r,D3D12_RESOURCE_STATES x,D3D12_RESOURCE_STATES y){D3D12_RESOURCE_BARRIER b={};b.Transition={r,0,x,y};l->ResourceBarrier(1,&b);};
     float guards[][4]={{1,0,0,1},{0,0,0,0},{0,1,0,1}};for(UINT i=0;i<3;i++)l->ClearRenderTargetView(handles[i],guards[i],0,nullptr);
     D3D12_VIEWPORT vp={0,0,1,1,0,1};D3D12_RECT rect={0,0,1,1};l->RSSetViewports(1,&vp);l->RSSetScissorRects(1,&rect);l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);l->SetGraphicsRootSignature(root.Get());l->OMSetRenderTargets(1,handles+1,FALSE,nullptr);l->DrawInstanced(3,1,0,0);
-    transition(rt[1].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);l->SetPipelineState(compute.Get());l->SetComputeRootSignature(root.Get());ID3D12DescriptorHeap *heaps[]={sh.Get()};l->SetDescriptorHeaps(1,heaps);l->SetComputeRootDescriptorTable(0,sh->GetGPUDescriptorHandleForHeapStart());l->SetComputeRootUnorderedAccessView(1,report->GetGPUVirtualAddress());l->Dispatch(1,1,1);transition(report.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);l->CopyBufferRegion(rb.Get(),0,report.Get(),0,16);
+    transition(rt[1].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);l->SetPipelineState(compute.Get());l->SetComputeRootSignature(root.Get());ID3D12DescriptorHeap *heaps[]={bank};l->SetDescriptorHeaps(1,heaps);l->SetComputeRootDescriptorTable(0,gpu);l->SetComputeRootUnorderedAccessView(1,report->GetGPUVirtualAddress());l->Dispatch(1,1,1);transition(report.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);l->CopyBufferRegion(rb.Get(),0,report.Get(),0,16);
     for(UINT i=0;i<3;i++){
         if(i)transition(resolved.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_RESOLVE_DEST);
         transition(rt[i].Get(),i==1?D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE:D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
         l->ResolveSubresource(resolved.Get(),0,rt[i].Get(),0,rd.Format);transition(resolved.Get(),D3D12_RESOURCE_STATE_RESOLVE_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
         D3D12_TEXTURE_COPY_LOCATION src={},dst={};src.pResource=resolved.Get();dst.pResource=rb.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint={512ull*(i+1),{rd.Format,1,1,1,256}};l->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
     }
-    HR(l->Close());ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence>f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));HR(q->Signal(f.Get(),1));HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(f->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);CloseHandle(e);HR(d->GetDeviceRemovedReason());
+    HR(l->Close());if (imported) rt[1].Reset();ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence>f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));HR(q->Signal(f.Get(),1));HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(f->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);CloseHandle(e);HR(d->GetDeviceRemovedReason());
     DWORD *m;HR(rb->Map(0,nullptr,(void**)&m));for(UINT s=0;s<4;s++) CK(m[s]==((4+4*s)|((12+8*s)<<8)|((128+12*s)<<16)|((240-16*s)<<24)));
     CK(m[128]==0xff0000ff && m[256]==0xd892180a && m[384]==0xff00ff00);printf("PASS native 4x samples=%08lx,%08lx,%08lx,%08lx resolve=%08lx, adjacent red/green placements intact\n",m[0],m[1],m[2],m[3],m[256]);rb->Unmap(0,nullptr);
     BYTE *base=(BYTE*)alias.base; UINT changed=0;
@@ -106,6 +130,12 @@ int main() {
             CK(word==((4+4*s)|((12+8*s)<<8)|((128+12*s)<<16)|((240-16*s)<<24)));
             printf("PASS original WC sample %u at slice +%#x = %08lx\n",s,offsets[s],word);
         }
+        // Test the slot's final Release explicitly, independently of queue/allocator lifetime.
+        l.Reset();a.Reset();rh.Reset();q.Reset();void *again=nullptr;
+        CK(FAILED(place(g.Get(),(UINT_PTR)base+off,&rd,6,&clear,__uuidof(ID3D12Resource),&again)) && !again);
+        DWORD null_srv[10]={42,4,0x1688}; HR(xs_write_view(g.Get(),0x90,nullptr,null_srv,slot));
+        HR(place(g.Get(),(UINT_PTR)base+off,&rd,6,&clear,__uuidof(ID3D12Resource),&again));CK(again);((IUnknown*)again)->Release();
+        puts("PASS +90 Texture2DMS SRV kept the WC import alive until slot overwrite after the fence; exact slice reusable");
     }
     for(UINT i=0;i<16;i++)CK(base[off-16+i]==0xa7 && base[off+span+i]==0xa7);
     for(UINT i=0;i<span;i++)CK(replacement[i]==0xad);
