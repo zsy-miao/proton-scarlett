@@ -1,4 +1,27 @@
-# 1280×720 RGBA16_FLOAT allocation probe
+# RGBA16_FLOAT allocation queries and 1440p placement
+
+The 720p float target remains query-only. With core patch `0031`, the exact
+1440p `+428` accepts state 3 and an all-+0 optimized clear, starts in desktop
+UAV state and binds the optimal RT+UAV image to its original WC bytes. RADV
+retains the original native heap; RTX reimports the same tagged section. SRV
+`+90`, RTV `+a0` and null-counter UAV `+98` were written for the returned
+resource. They are not evidence of a retail draw, clear or shader read.
+
+On the combined A8/BGRA backend, A8 was at `+0xf000000` on both. With A8
+then float on RTX, float used `+0xf800000` (span `0x1e00000`), then BGRA
+used `+0x11600000`, `+0x12600000`. With both BGRA first on RADV, they used
+`+0xf880000`, `+0x10890000`; float followed at `+0x118a0000` (span
+`0x1ce0000`, VkImage size `0x1cde000`). These are pool-relative offsets,
+not fixed VAs. Candidate starts are restricted to the contiguous permutations;
+overlap checks use the entire host reservation and the original allocation
+identity across formats. The earlier RTX float-first slot is also retained.
+
+`scarlett/tests/wc-float1440.sh radv|nvidia STAGED-TOOL` exercises the
+three orders, rejection of live overlaps in both directions, fenced view
+reads and writes, raw backing, adjacent guards, and exact-VA replacement.
+Use `scarlett/tests/wc-a8.sh GPU STAGED-TOOL a8|bgra` for sibling coverage.
+
+## Earlier sizing-only experiments
 
 RTX retail device `+c8` (return `+344188`) requests one 2D 1280×720
 R16G16B16A16_FLOAT texture, node 1, depth/mips/samples 1, quality 0,

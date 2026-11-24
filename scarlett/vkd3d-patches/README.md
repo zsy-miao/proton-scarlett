@@ -93,3 +93,7 @@ and `scarlett/tests/wc-a8.sh nvidia TOOL`.
 
 `0030` adds the two 2048² BGRA8 targets to the same memory paths. Apply it
 after `0029` and run `scarlett/tests/wc-a8.sh GPU TOOL bgra` for each adapter.
+
+`0031` adds the 1440p floating-point target after `0030`. Run
+`scarlett/tests/wc-float1440.sh GPU TOOL` to check the different allocation
+orders, cross-format overlap rejection, original backing and descriptor views.

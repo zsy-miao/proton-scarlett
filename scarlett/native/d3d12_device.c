@@ -257,9 +257,10 @@ static BOOL depth1024_desc(const D3D12_RESOURCE_DESC *r)
 static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
 {
     return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment &&
-        r->DepthOrArraySize==1 && r->MipLevels==1 && r->SampleDesc.Count==1 && !r->SampleDesc.Quality &&
-        ((r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
-         (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048)) && !r->Layout && (UINT)r->Flags==0x300001;
+        r->DepthOrArraySize==1 && r->MipLevels==1 && r->SampleDesc.Count==1 && !r->SampleDesc.Quality && !r->Layout &&
+        ((r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT && r->Width==2560 && r->Height==1440 && (UINT)r->Flags==0x300005) ||
+         ((UINT)r->Flags==0x300001 && ((r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
+         (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048))));
 }
 /* Both public slots consume the same descriptor. Require the per-resource and
  * aggregate results from the host to agree for this one-resource query. */
@@ -277,12 +278,12 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     BOOL a8=rd->Format==DXGI_FORMAT_A8_UNORM, bgra=rd->Format==DXGI_FORMAT_B8G8R8A8_UNORM;
     BOOL fp=rd->Format==DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (fp) {
-        /* Exact sizing probes only; no guest layout or placement translation. */
+        /* The half-size probe is query-only. */
         if (rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout || rd->DepthOrArraySize!=1 ||
             rd->MipLevels!=1 || rd->SampleDesc.Count!=1 || rd->SampleDesc.Quality) return E_NOTIMPL;
         if (rd->Width==1280 && rd->Height==720 && (UINT)rd->Flags==0xc00001 && !detail)
             rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        else if (rd->Width==2560 && rd->Height==1440 && (UINT)rd->Flags==0x300005)
+        else if (single_desc(rd))
             rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         else return E_NOTIMPL;
     } else if (a8 || bgra) {
@@ -523,33 +524,33 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,
     if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
     if (!IsEqualIID(&id,&IID_ID3D12Resource)) return E_NOINTERFACE;
     BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS,a8=format==DXGI_FORMAT_A8_UNORM,bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM;
+    BOOL fp=format==DXGI_FORMAT_R16G16B16A16_FLOAT,single=fp || a8 || bgra;
     D3D12_CLEAR_VALUE cv={0};
     if (!copy_in(&cv,clear,depth ? offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+sizeof cv.DepthStencil.Stencil : sizeof cv)) return E_POINTER;
-    if (state!=6) return E_NOTIMPL;
+    if (state!=(fp?3u:6u)) return E_NOTIMPL;
     if (depth) {
         if (cv.Format!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || cv.DepthStencil.Depth!=0 || cv.DepthStencil.Stencil) return E_NOTIMPL;
-    } else if (cv.Format!=format || memcmp(cv.Color,(a8 || bgra)?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
+    } else if (cv.Format!=format || memcmp(cv.Color,single?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
-    UINT span=bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    UINT span=fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     ID3D12Heap *native=NULL;UINT off=0;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&native,NULL,&off);
     if(hr==S_FALSE) {
-        if (bgra) span=0x1000000; else if (a8) span=0x800000;
+        if (fp) span=0x1e00000; else if (bgra) span=0x1000000; else if (a8) span=0x800000;
         hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
     }
     else if(SUCCEEDED(hr))i=(struct scarlett_section_info){span,(void *)(va-off),WC_POOL_BYTES,off,NULL};
     if (FAILED(hr)) return hr;
     if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset>i.view_size-span ||
-        (bgra ? (native ? (i.offset!=0xf880000 && i.offset!=0x10890000) : (i.offset!=0xf800000 && i.offset!=0x10800000)) :
-         a8 ? i.offset!=0xf000000 : i.offset%span)) hr=E_INVALIDARG;
+        (single ? i.offset%0x10000 : i.offset%span)) hr=E_INVALIDARG;
     else {
         HRESULT (WINAPI *import)(ID3D12Device *,HANDLE,SIZE_T,SIZE_T,ID3D12Resource **)=
-            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),bgra?"ScarlettBgraImageV1":a8?"ScarlettA8ImageV1":depth?"ScarlettMsaaDepthV1":"ScarlettMsaaColorV1");
+            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),fp?"ScarlettFloat1440V1":bgra?"ScarlettBgraImageV1":a8?"ScarlettA8ImageV1":depth?"ScarlettMsaaDepthV1":"ScarlettMsaaColorV1");
         struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r) hr=E_OUTOFMEMORY;
         else {
-            if(native && (a8 || bgra)) {
-                HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),bgra?"ScarlettNativeBgraImageV1":"ScarlettNativeA8ImageV1");
+            if(native && single) {
+                HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),fp?"ScarlettNativeFloat1440V1":bgra?"ScarlettNativeBgraImageV1":"ScarlettNativeA8ImageV1");
                 hr=place?place(d->host,native,off,&r->host):DXGI_ERROR_UNSUPPORTED;
             }else if(native){
                 HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,BOOL,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettNativeImageV1");
@@ -557,7 +558,7 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,
             }else hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
             if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
             else {
-                r->iface.lpVtbl=&color_vtbl.unknown; r->single_format=(a8 || bgra)?format:DXGI_FORMAT_UNKNOWN; r->msaa=!a8 && !bgra; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
+                r->iface.lpVtbl=&color_vtbl.unknown; r->single_format=single?format:DXGI_FORMAT_UNKNOWN; r->msaa=!single; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
                 AcquireSRWLockExclusive(&d->descriptor_lock); r->next=d->colors; d->colors=r; ReleaseSRWLockExclusive(&d->descriptor_lock);
                 *out=&r->iface;
             }

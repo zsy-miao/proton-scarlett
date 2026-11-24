@@ -138,7 +138,8 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         if (placed!=S_FALSE) return placed;
     }
 #endif
-    BOOL single_color=words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
+    BOOL fp=words[0]==DXGI_FORMAT_R16G16B16A16_FLOAT;
+    BOOL single_color=fp || words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
     if (wc) {
         srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
@@ -175,9 +176,9 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         }
     } else if (!object) {
         if (memcmp(words,(DWORD[4]){0},16)) return E_NOTIMPL;
-    } else if (kind==UAV && words[0]==DXGI_FORMAT_R8G8B8A8_UNORM &&
+    } else if (kind==UAV && (fp || words[0]==DXGI_FORMAT_R8G8B8A8_UNORM) &&
                words[1]==D3D12_UAV_DIMENSION_TEXTURE2D && !words[2] && !words[3]) {
-        uav.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+        uav.Format=words[0];
         uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
     } else if (ms_srv) {
         if ((words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM && words[0]!=DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) || words[2]!=0x1688 ||
