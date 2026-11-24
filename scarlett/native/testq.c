@@ -50,6 +50,16 @@ out:
 }
 #endif
 #ifdef TEST_ORDERED_PRESENT
+/* Observe the real private chain without touching any frame-clock record. */
+HRESULT test_displayed_count(IUnknown *q,UINT *count)
+{
+    struct adapter *a=CONTAINING_RECORD(q,struct adapter,iface);
+    if (!a->display.wsi || !bridge_window(a)) return E_INVALIDARG;
+    DXGI_FRAME_STATISTICS stats;
+    HRESULT hr=IDXGISwapChain3_GetFrameStatistics(a->display.chain,&stats);
+    if(hr==S_OK)*count=stats.PresentCount;
+    return hr;
+}
 UINT test_ring_index(IUnknown *q)
 {
     return IDXGISwapChain3_GetCurrentBackBufferIndex(CONTAINING_RECORD(q,struct adapter,iface)->display.chain);

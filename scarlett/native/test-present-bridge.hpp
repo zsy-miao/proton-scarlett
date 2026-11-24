@@ -3,6 +3,7 @@
 #include "test-ordered-batch.hpp"
 extern "C" HRESULT test_replace_end(IUnknown *, ID3D12Fence *, ID3D12Fence *);
 extern "C" UINT test_ring_index(IUnknown *);
+extern "C" HRESULT test_displayed_count(IUnknown *,UINT *);
 #endif
 extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
 extern "C" HRESULT test_bridge_count(IUnknown *,UINT *);
@@ -63,8 +64,10 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     using List=HRESULT(WINAPI*)(IUnknown*,const void*,IUnknown*,IUnknown*,REFIID,void**);
     using Present=HRESULT(WINAPI*)(IUnknown*,UINT,const void*,const void*);
     auto fw=SLOT(dev,0x280,Wait);auto set=SLOT(dev,0x270,Interval);
+#ifndef TEST_ORDERED_PRESENT
     HR(set(dev,nullptr,33333,3,0));
     HR(SLOT(dev,0x278,Schedule)(dev,0,0,nullptr,0));HR(SLOT(dev,0x278,Schedule)(dev,2,0,nullptr,0));
+#endif
     ComPtr<IUnknown> sync,alloc,foreign;
 #ifndef TEST_ORDERED_PRESENT
     auto sched=SLOT(dev,0x278,Schedule);
@@ -81,7 +84,29 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     const auto generation=test_generation(q.Get());CK(generation);
     const UINT ring=test_ring_index(q.Get());CK(ring<2);
     UINT64 token=0;IUnknown *sync_id=sync.Get();
-    HR(fw(dev,0,1000,nullptr,0,&token));CK(token==1);
+    // Open a 95 ms early-poll window after all slow setup. Use the token for a real flip.
+    HR(set(dev,nullptr,33333,3,0));
+    HR(SLOT(dev,0x278,Schedule)(dev,2,0,nullptr,0));
+    HR(SLOT(dev,0x278,Schedule)(dev,0,95000,nullptr,0));
+    CK(fw(dev,0,0,nullptr,0,&token)==DXGI_ERROR_WAIT_TIMEOUT && token==0);
+    CK(fw(dev,0,0,nullptr,2,&token)==S_FALSE && token==1);
+    const UINT64 first_token=token;
+    printf("PASS early origin poll flags=2 hr=S_FALSE token=1\n");
+    auto displayed=[&](UINT wanted) {
+        UINT id=0;
+        ULONGLONG deadline=GetTickCount64()+5000;
+        do {
+            HRESULT hr=test_displayed_count(q.Get(),&id);
+            if(hr!=S_OK || id>wanted) {
+                fprintf(stderr,"Frame feedback expected=%u got=%u hr=%08lx\n",wanted,id,(unsigned long)hr);
+                return false;
+            }
+            if(id==wanted)return true;
+            Sleep(1);
+        } while(GetTickCount64()<deadline);
+        fprintf(stderr,"Frame feedback timeout expected=%u got=%u\n",wanted,id);
+        return false;
+    };
     for(UINT y=0;y<oh;y++)for(UINT x=0;x<ow;x++)upload[y*ow+x]=x<ow/2?0xff0000ff:0xffff0000;
     InterlockedExchange64((volatile LONG64*)ctrl,0);ctrl[2]=ctrl[3]=~0u;ticks[0]=ticks[1]=0;MemoryBarrier();
     HR(test_tagged(q.Get(),1,&sync_id,token,0));HR(test_tagged(q.Get(),1,batches,token,3));
@@ -96,11 +121,12 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
         while(hr==DXGI_ERROR_WAS_STILL_DRAWING && GetTickCount64()<deadline);
         return hr;
     };
-    CK(flip(keys[0])==S_OK && fw(dev,2,5000,nullptr,0,&token)==S_OK);
+    CK(flip(keys[0])==S_OK && displayed(1));
     HR(test_bridge_count(q.Get(),&count));CK(count==1 && ticks[0]>ticks[1]);
     CK(test_ring_index(q.Get())==1-ring);
     printf("PASS singleton token=1 count=1 generation=%zu\n",generation);Sleep(1600);
     HR(fw(dev,0,1000,nullptr,0,&token));CK(token==2);
+    const UINT64 second_token=token;
     HR(test_tagged(q.Get(),1,&sync_id,token,0));
     for(UINT y=0;y<oh;y++)for(UINT x=0;x<ow;x++)upload[y*ow+x]=x<ow/2?0xff00ff00:0xffff00ff;
     MemoryBarrier();
@@ -223,7 +249,7 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     puts("PASS split flags-3: rejection drained clean; sync done; prefix, head timestamp, post visible with tail blocked; tail pixels and one batch end before flip");
 #endif
     CK(test_generation(q.Get())==generation && flip(keys[1])==S_OK);
-    CK(fw(dev,2,5000,nullptr,0,&token)==S_OK && present(q.Get(),token,keys[1])==DXGI_ERROR_INVALID_CALL);
+    CK(displayed(2) && present(q.Get(),token,keys[1])==DXGI_ERROR_INVALID_CALL);
     HR(test_bridge_count(q.Get(),&count));CK(count==2);CloseHandle(retired);
     printf("PASS ordered token=2 count=2 producer_end=%p generation=%zu wrong-key/end rejected\n",end.Get(),generation);
     Sleep(1600);CK(test_ring_index(q.Get())==ring);
@@ -240,8 +266,15 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     ULONGLONG until=GetTickCount64()+5000;while(ctrl[3]!=0x29a5ee15 && GetTickCount64()<until)Sleep(1);
     CK(ctrl[2]==0 && ctrl[3]==0x29a5ee15 && ticks[1] && !ticks[0]);
     HR(test_bridge_count(q.Get(),&count));CK(count==2 && fw(dev,2,0,nullptr,0,&token)==DXGI_ERROR_WAIT_TIMEOUT);
+    UINT64 old=first_token;
+    CK(fw(dev,2,0,nullptr,0,&old)==S_OK && old==first_token);
+    printf("PASS older wait token=1 raw_displayed=2 before_flip=3 generation=%zu\n",generation);
     InterlockedExchange64((volatile LONG64*)ctrl,1);
-    CK(test_generation(q.Get())==generation && flip(keys[0])==S_OK && fw(dev,2,5000,nullptr,0,&token)==S_OK);
+    CK(test_generation(q.Get())==generation && flip(keys[0])==S_OK && displayed(3));
+    old=second_token;
+    CK(fw(dev,2,0,nullptr,0,&old)==S_OK && old==second_token);
+    printf("PASS older wait token=2 raw_displayed=3 after_flip=3 generation=%zu\n",generation);
+    CK(fw(dev,2,0,nullptr,0,&token)==S_OK);
     CK(ticks[0]>ticks[1] && present(q.Get(),token,keys[0])==DXGI_ERROR_INVALID_CALL);
     HR(test_bridge_count(q.Get(),&count));CK(count==3 && test_ring_index(q.Get())==1-ring);
     printf("PASS recycled singleton token=3 count=3 key=%p ring=%u generation=%zu\n",keys[0],ring,generation);

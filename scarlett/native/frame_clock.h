@@ -109,11 +109,26 @@ HRESULT xs_frame_submission_query(IUnknown *owner,UINT64 token,ID3D12CommandQueu
     return hr;
 }
 #endif
-static void frame_refresh(struct frame_record *r)
+/* Preserve exact feedback even if the sample was requested for another token.
+ * A disjoint sample ends the current statistics sequence on this chain. */
+static void frame_observe(struct frame_clock *f,IDXGISwapChain *chain,HRESULT hr,UINT id)
+{
+    for (unsigned i=0; i<ARRAYSIZE(f->history); ++i) {
+        struct frame_record *old=&f->history[i];
+        if (old->chain!=chain || (hr!=DXGI_ERROR_FRAME_STATISTICS_DISJOINT &&
+                (hr!=S_OK || old->present_id!=id))) continue;
+        old->status=hr;
+        IDXGISwapChain_Release(old->chain);
+        old->chain=NULL;
+    }
+}
+static void frame_refresh(struct frame_clock *f,struct frame_record *r)
 {
     if (!r->chain) return;
     DXGI_FRAME_STATISTICS stats;
     HRESULT hr = IDXGISwapChain_GetFrameStatistics(r->chain, &stats);
+    frame_observe(f,r->chain,hr,hr==S_OK?stats.PresentCount:0);
+    if (!r->chain) return;
     if (hr == S_OK) {
         LONG delta = (LONG)(stats.PresentCount-r->present_id);
         if (delta < 0) return;
@@ -155,12 +170,13 @@ static HRESULT frame_present_after(IUnknown *iface,UINT64 token,IDXGISwapChain *
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
     if (producer) f->bridge_presenting=TRUE;
 #endif
-    ReleaseSRWLockExclusive(&f->lock);
     UINT before=0, id=0;
     DXGI_FRAME_STATISTICS baseline;
     /* The first GetFrameStatistics on a new chain reports DISJOINT. Establish
      * that boundary before submitting this frame, not while waiting for it. */
     hr = IDXGISwapChain_GetFrameStatistics(chain, &baseline);
+    frame_observe(f,chain,hr,hr==S_OK?baseline.PresentCount:0);
+    ReleaseSRWLockExclusive(&f->lock);
     if (hr == S_OK || hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
         hr = IDXGISwapChain_GetLastPresentCount(chain, &before);
     if (hr == S_OK && prepare) hr=prepare(context);
@@ -228,28 +244,29 @@ static HRESULT WINAPI bootstrap_frame_wait(IUnknown *iface, UINT type, DWORD tim
         if (type == 2) {
             struct frame_record *r = frame_find(f, wanted);
             if (!(f->registered & 4) || !r) break;
-            frame_refresh(r);
+            frame_refresh(f,r);
             if (r->status != S_FALSE && r->status != E_PENDING) { hr = r->status; break; }
             if (r->chain) sleep_ms = 1; /* Poll the display's counter, never infer completion from time. */
         } else {
             if (!(f->registered & 1)) break;
             LONGLONG now = frame_now();
-            if (now >= f->due) {
+            BOOL early=now < f->due;
+            if (!early || flags==2) {
                 struct frame_record *r = &f->history[f->cursor % ARRAYSIZE(f->history)];
-                frame_refresh(r);
+                frame_refresh(f,r);
                 if (r->presenting || r->chain) { hr = DXGI_ERROR_WAS_STILL_DRAWING; break; }
-                LONGLONG origin = now - (now - f->due) % f->step;
+                LONGLONG origin = early ? now : now - (now - f->due) % f->step;
                 drop_submissions(r);
                 *r = (struct frame_record){.token=InterlockedIncrement64(&frame_serial), .origin=origin,
                         .target=origin+f->period*f->step, .status=S_FALSE};
-                f->due = origin+f->step;
+                if (!early) f->due = origin+f->step;
                 f->cursor++;
                 WakeAllConditionVariable(&f->change); /* Evicted token waits must see invalidation. */
                 *token = r->token;
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
                 fprintf(stderr,"ISSUE tid=%lu clock=%p epoch=%u token=%llu registered=%x step=%lld origin=%lld target=%lld due=%lld\n",GetCurrentThreadId(),f,f->epoch,r->token,f->registered,f->step,r->origin,r->target,f->due);
 #endif
-                hr = S_OK;
+                hr = early ? S_FALSE : S_OK;
                 break;
             }
             sleep_ms = (DWORD)(((f->due-now)*1000 + f->freq-1)/f->freq);

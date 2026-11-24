@@ -32,8 +32,11 @@ missed ticks. They are not claimed to be phase-locked to a physical display.
 `period` sets the frame's target time (`origin + period * interval`), not the
 distance between successive origins. Registration is per-device. Reconfiguration
 invalidates history and wakes old waiters. The most recent 16 tokens are kept.
-The observed origin poll `(0,0,NULL,2)` is nonblocking; if no origin is due it
-returns `DXGI_ERROR_WAIT_TIMEOUT`, rather than fabricating a second token.
+The origin poll `(0,0,NULL,2)` is nonblocking. An early flagged poll returns
+`S_FALSE` and a fresh token without moving the next scheduled origin. An
+unflagged early zero-time poll returns `DXGI_ERROR_WAIT_TIMEOUT` and no token.
+This distinction agrees with [XCL (GPL-2.0-only)](https://github.com/ivall/xcl/blob/c4d37bec1bb4286eb373aea963404a23f13401fa/crates/xcl/src/hle/d3d12x/frame.rs#L322-L397)
+and [VIctory (GPL-3.0-or-later)](https://github.com/Marvisak/VIctory/blob/ffe310eb2098e52169f4c44db5ffdabf43a72622/crates/victory-gpu/src/frame.rs#L122-L174).
 
 **Type 2 policy:** the public name and exact Xbox signal point remain unknown.
 For `(2,0,NULL,0)` registration succeeds; `(2,timeout,NULL,0,&token)` can

@@ -16,6 +16,9 @@ def need(pattern):
 route = {"radv": "1002:164e path=wb-section", "nvidia": "10de:2484 path=cpu-control"}[sys.argv[2]]
 need(rf"^TAIL adapter={route}$")
 generation = need(r"PASS singleton token=1 count=1 generation=(\d+)").group(1)
+need(r"^PASS early origin poll flags=2 hr=S_FALSE token=1$")
+need(rf"^PASS older wait token=1 raw_displayed=2 before_flip=3 generation={generation}$")
+need(rf"^PASS older wait token=2 raw_displayed=3 after_flip=3 generation={generation}$")
 end = need(rf"PASS ordered token=2 count=2 producer_end=([0-9a-f]+) generation={generation} wrong-key/end rejected").group(1)
 need(rf"WSI lease: primary=\w+ token=2 serial=\d+ fence={end} entry=1")
 # Use the clock's actual producer/batch identities. Its earlier submit printf can
