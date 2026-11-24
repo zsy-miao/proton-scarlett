@@ -138,8 +138,10 @@ The regular D3D12 texture layout needs `0x2010000` per image and does not
 fit twice. From the repository root, run
 `glslangValidator -V scarlett/tests/display-arena.comp -o display-arena.spv`
 and `cc -O2 scarlett/tests/display-arena.c -lvulkan -o /tmp/display-arena`,
-then run `/tmp/display-arena` from the same directory with `VK_DRIVER_FILES` set to the RADV ICD. Retail still needs
-the two real image allocations bound to the slices its allocator supplies.
+then run `/tmp/display-arena` from the same directory with `VK_DRIVER_FILES`
+set to the RADV ICD. The installed `+0xc8` and `+0x3f8` now query that
+layout and bind each image to its retained XMem slice. Retail returns from
+the ring initializer at `2479430`, past the unmodified capacity check.
 
 `24784d5` registers ANSI `sgaWindowClass` (class name `677b672`; window
 procedure `247a660` tail-calls `DefWindowProcA`). `247853a` calls

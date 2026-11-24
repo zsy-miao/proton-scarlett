@@ -16,14 +16,15 @@ capability bits; `4ecca2b`/`4ecca7e` select and add `0x300000` on a
 format/options-dependent path. The low `0x5` translates to render-target
 and unordered-access capability. The individual console high bits have
 no established desktop meaning. For this exact size query the translator
-asks the host about an RT+UAV texture using its native layout. This does
+uses `ScarlettPrimaryImageInfoV1` to query the RT+UAV linear external-memory
+image that the factory actually imports. This does
 not assert binary layout compatibility or authorize use of raw guest tiles.
 Only the 52-byte prefix ending at flags is consumed.
 
 `test-allocation-info.cpp` calls the public slot with a guarded input and
-checks both qwords against the native query. It creates a real heap of
-exactly that size/alignment, places the matching texture at offset zero,
-clears it, and verifies the bottom-right texel after a GPU fence.
+checks the returned `0x1fb0000` size and `0x10000` alignment on qualified
+RADV. The ordinary desktop optimal-image allocation-info result is not
+used for this pair of calls.
 
 ### Committed offscreen color (`+0x3f8`)
 
@@ -36,8 +37,13 @@ uses desktop UAV as its initial working state; it does not cast guest 3
 to desktop resource-state bits. Both allocation query and creation use
 the same translated RT+UAV description.
 
-Each call creates an independent offscreen texture and returns a title COM
-identity. `xs_display_wrap` requires a verified `GetBuffer(index)` identity;
+Each call requests the queried number of bytes synchronously via
+`XMemAlloc(size,0x30808000)`. The hook supplies one of two distinct slices
+from a single 64 MiB arena. XMem pins the original base; `ScarlettPrimaryImageV1`
+imports the slice as a real offscreen texture. There is no committed-image
+fallback. Each wrapper calls `XMemFree` on its returned slice at final title
+Release, while the backend owns an independent IUnknown pin on the whole arena
+until after Vulkan image/memory destruction. `xs_display_wrap` requires a verified `GetBuffer(index)` identity;
 this call has no swapchain or index. The first known texture-view builder
 at `16474f9`–`1647531` supplies mip 0 and plane 0, then `1647610` calls
 device `+0x98` with null counter. Only the first four DWORDs are active:

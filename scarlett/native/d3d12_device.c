@@ -211,6 +211,22 @@ static HRESULT color_description(const void *wire,D3D12_RESOURCE_DESC *out)
     return S_OK;
 }
 
+static HRESULT primary_info(ID3D12Device *device,D3D12_RESOURCE_ALLOCATION_INFO *out)
+{
+    HMODULE core=GetModuleHandleW(L"d3d12core.dll"); /* held by the live host device */
+    HRESULT (WINAPI *info)(ID3D12Device *,D3D12_RESOURCE_ALLOCATION_INFO *)=
+        core?(void *)GetProcAddress(core,"ScarlettPrimaryImageInfoV1"):NULL;
+    if (!info) return E_NOTIMPL;
+    D3D12_RESOURCE_ALLOCATION_INFO i={0};
+    HRESULT hr=info(device,&i);
+    if (FAILED(hr)) return hr;
+    /* Two whole slots must fit the 64 MiB arena with less than 2 MiB slack. */
+    if (i.Alignment!=65536 || i.SizeInBytes<3840ull*2160*4 || i.SizeInBytes>(32u<<20) ||
+        i.SizeInBytes%i.Alignment || (64u<<20)-2*i.SizeInBytes>=(2u<<20)) return E_NOTIMPL;
+    *out=i;
+    return S_OK;
+}
+
 /* 344182: console sret precedes This; the desktop C vtable takes This first. */
 HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void *wire,
         D3D12_RESOURCE_ALLOCATION_INFO *out)
@@ -221,15 +237,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (!iface || node!=1 || count!=1) return E_INVALIDARG;
     HRESULT hr=color_description(wire,&rd);
     if (FAILED(hr)) return hr;
-    ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    D3D12_RESOURCE_ALLOCATION_INFO info;
-    host->lpVtbl->GetResourceAllocationInfo(host,&info,node,count,&rd);
-    /* The caller narrows both outputs to DWORDs and divides size by four. */
-    if (!info.Alignment || info.Alignment>UINT_MAX || (info.Alignment & (info.Alignment-1)) ||
-        info.SizeInBytes<rd.Width*rd.Height*4 || info.SizeInBytes>UINT_MAX || (info.SizeInBytes%4))
-        return E_FAIL;
-    *out=info;
-    return S_OK;
+    return primary_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,out);
 }
 
 static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO *out,
@@ -348,9 +356,34 @@ static HRESULT WINAPI bootstrap_committed(IUnknown *iface, const void *props, UI
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r) return E_OUTOFMEMORY;
-    hr=ID3D12Device_CreateCommittedResource(d->host,&hp,D3D12_HEAP_FLAG_NONE,&rd,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,&cv,&IID_ID3D12Resource,(void **)&r->host);
-    if (FAILED(hr)) { HeapFree(GetProcessHeap(),0,r); return hr; }
+    D3D12_RESOURCE_ALLOCATION_INFO info;
+    struct color_lease *lease=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *lease);
+    if (!lease) { HeapFree(GetProcessHeap(),0,r); return E_OUTOFMEMORY; }
+    lease->iface.lpVtbl=&lease_vtbl;
+    lease->refs=1;
+    HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+    HRESULT (WINAPI *import)(ID3D12Device *,void *,SIZE_T,SIZE_T,IUnknown *,ID3D12Resource **)=
+        core?(void *)GetProcAddress(core,"ScarlettPrimaryImageV1"):NULL;
+    hr=E_NOTIMPL;
+    if (!import || !GetModuleHandleExW(0,L"xmem.dll",&lease->xm)) goto failed;
+    void *(WINAPI *alloc)(SIZE_T,UINT64)=(void *)GetProcAddress(lease->xm,"XMemAlloc");
+    r->xfree=(void *)GetProcAddress(lease->xm,"XMemFree");
+    __typeof__(&ScarlettRetainDisplayBackingV1) pin=(void *)GetProcAddress(lease->xm,"ScarlettRetainDisplayBackingV1");
+    lease->unpin=(void *)GetProcAddress(lease->xm,"ScarlettReleaseDisplayBackingV1");
+    if (!alloc || !r->xfree || !pin || !lease->unpin) goto failed;
+    hr=primary_info(d->host,&info);
+    if (FAILED(hr)) goto failed;
+    r->slice=alloc(info.SizeInBytes,XS_DISPLAY_ATTR);
+    if (!r->slice) { hr=E_OUTOFMEMORY; goto failed; }
+    struct XsDisplayBacking mapping;
+    hr=pin(r->slice,info.SizeInBytes,&mapping);
+    if (FAILED(hr)) goto failed;
+    lease->base=mapping.base;
+    if (mapping.size!=(64u<<20) || (mapping.offset && mapping.offset!=info.SizeInBytes) ||
+        (UINT_PTR)r->slice-(UINT_PTR)mapping.base!=mapping.offset) { hr=E_INVALIDARG; goto failed; }
+    hr=import(d->host,mapping.base,mapping.size,mapping.offset,&lease->iface,&r->host);
+    if (FAILED(hr) || !r->host) { if (SUCCEEDED(hr)) hr=E_FAIL; goto failed; }
+    lease_release(&lease->iface); /* imported image now owns the pin and module reference */
     r->iface.lpVtbl=&color_vtbl.unknown;
     r->refs=1; r->owner=d;
     IUnknown_AddRef(iface);
@@ -359,6 +392,12 @@ static HRESULT WINAPI bootstrap_committed(IUnknown *iface, const void *props, UI
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     *out=&r->iface;
     return S_OK;
+failed:
+    if (r->slice) r->xfree(r->slice,XS_DISPLAY_ATTR);
+    if (r->host) ID3D12Resource_Release(r->host);
+    lease_release(&lease->iface);
+    HeapFree(GetProcessHeap(),0,r);
+    return hr;
 }
 
 struct bootstrap_vtbl {

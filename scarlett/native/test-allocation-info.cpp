@@ -1,5 +1,6 @@
 #include <d3d12.h>
 #include <cstdio>
+#include <cstdlib>
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
@@ -11,8 +12,47 @@ extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap *
 #define CK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); return 1; } } while(0)
 #define HR(x) CK(SUCCEEDED(x))
 
+static void *(WINAPI *allocateDefault)(SIZE_T,UINT64);
+static void (WINAPI *freeDefault)(void *,UINT64);
+static BYTE *arena;
+static SIZE_T slice,used;
+static UINT taken,given;
+static BYTE foreign;
+enum Fault { Normal, Foreign, Duplicate };
+static Fault fault;
+static void *WINAPI take(SIZE_T n,UINT64 attr)
+{
+    if (attr!=0x30808000) return allocateDefault(n,attr);
+    if (n!=slice) std::abort();
+    if (fault==Foreign) return &foreign;
+    if (fault==Duplicate) return arena;
+    if (!arena) {
+        arena=(BYTE *)allocateDefault(64u<<20,attr);
+        if (!arena) std::abort();
+        memset(arena,0xa5,64u<<20);
+    }
+    SIZE_T old=used; used+=(n+65535)&~(SIZE_T)65535;
+    if (used>(64u<<20) || ++taken>2) std::abort();
+    return arena+old;
+}
+static void WINAPI give(void *ptr,UINT64 attr)
+{
+    if (attr!=0x30808000) { freeDefault(ptr,attr); return; }
+    if (fault!=Normal) {
+        if (ptr!=(fault==Foreign?&foreign:arena)) std::abort();
+        fault=Normal; return;
+    }
+    if (++given>2 || ptr!=arena+(2-given)*slice) std::abort();
+    if (ptr==arena) freeDefault(ptr,attr);
+}
+extern "C" { __declspec(dllexport) struct {decltype(&take) a;decltype(&give) f;} __XMemAllocationHooks__={take,give}; }
+
 int main()
 {
+    HMODULE xm=LoadLibraryW(L"xmem.dll"); CK(xm);
+    allocateDefault=(decltype(allocateDefault))(void *)GetProcAddress(xm,"XMemAllocDefault");
+    freeDefault=(decltype(freeDefault))(void *)GetProcAddress(xm,"XMemFreeDefault");
+    CK(allocateDefault && freeDefault);
     DWORD params[20]={}; params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     const IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> dev; HR(D3D12XboxCreateDevice(nullptr,params,boot,(void **)dev.GetAddressOf()));
@@ -40,29 +80,26 @@ int main()
     D3D12_RESOURCE_DESC tex={}; tex.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     tex.Width=3840; tex.Height=2160; tex.DepthOrArraySize=tex.MipLevels=tex.SampleDesc.Count=1;
     tex.Format=DXGI_FORMAT_R8G8B8A8_UNORM; tex.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    auto ref=d->GetResourceAllocationInfo(1,1,&tex);
-    CK(ref.SizeInBytes==got.info.SizeInBytes && ref.Alignment==got.info.Alignment);
-    D3D12_HEAP_DESC hd={}; hd.SizeInBytes=got.info.SizeInBytes; hd.Alignment=got.info.Alignment;
-    hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT; hd.Properties.CreationNodeMask=hd.Properties.VisibleNodeMask=1;
-    hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
-    ComPtr<ID3D12Heap> h; ComPtr<ID3D12Resource> rt,rb;
-    HR(d->CreateHeap(&hd,IID_PPV_ARGS(&h)));
-    HR(d->CreatePlacedResource(h.Get(),0,&tex,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&rt)));
-    rt.Reset(); h.Reset();
+    slice=got.info.SizeInBytes;
+    CK(slice==0x1fb0000 && got.info.Alignment==65536);
+    D3D12_HEAP_PROPERTIES props={}; props.Type=D3D12_HEAP_TYPE_DEFAULT; props.CreationNodeMask=props.VisibleNodeMask=1;
+    ComPtr<ID3D12Resource> rt,rb;
     using Make=HRESULT(WINAPI *)(IUnknown *,const void *,UINT,const void *,UINT,const void *,const void *,UINT,const void *,REFIID,void **);
     auto make=SLOT(dev.Get(),0x3f8,Make);
     D3D12_CLEAR_VALUE cv={}; cv.Format=tex.Format;
     auto create=[&](IUnknown **o,UINT flags,UINT state,UINT extension,REFIID iid){
-        return make(dev.Get(),&hd.Properties,flags,wire,state,&cv,nullptr,extension,nullptr,iid,(void **)o);
+        return make(dev.Get(),&props,flags,wire,state,&cv,nullptr,extension,nullptr,iid,(void **)o);
     };
     IUnknown *surface=dev.Get(),*qi;
     CK(FAILED(create(&surface,8,6,0,IID_ID3D12Resource)) && !surface);
     CK(FAILED(create(&surface,0,3,0,IID_ID3D12Resource)) && !surface);
     CK(FAILED(create(&surface,8,3,1,IID_ID3D12Resource)) && !surface);
     CK(create(&surface,8,3,0,IID_IUnknown)==E_NOINTERFACE && !surface);
-    hd.Properties.VisibleNodeMask=2; CK(FAILED(create(&surface,8,3,0,IID_ID3D12Resource)) && !surface); hd.Properties.VisibleNodeMask=1;
+    props.VisibleNodeMask=2; CK(FAILED(create(&surface,8,3,0,IID_ID3D12Resource)) && !surface); props.VisibleNodeMask=1;
     cv.Color[3]=1; CK(FAILED(create(&surface,8,3,0,IID_ID3D12Resource)) && !surface); cv.Color[3]=0;
+    fault=Foreign; CK(FAILED(create(&surface,8,3,0,IID_ID3D12Resource)) && !surface && fault==Normal && !taken);
     HR(create(&surface,8,3,0,IID_ID3D12Resource));
+    fault=Duplicate; CK(FAILED(create(&qi,8,3,0,IID_ID3D12Resource)) && !qi && fault==Normal && taken==1 && !given);
     HR(surface->QueryInterface(IID_ID3D12Resource,(void **)&qi)); CK(qi==surface && qi->Release()==1);
     HR(surface->QueryInterface(IID_IUnknown,(void **)&qi)); CK(qi==surface && qi->Release()==1);
     CK(surface->QueryInterface(IID_ID3D12Resource1,(void **)&qi)==E_NOINTERFACE && !qi);
@@ -70,7 +107,6 @@ int main()
     using Start=SIZE_T(WINAPI *)(IUnknown *);
     using UAV=void(WINAPI *)(IUnknown *,IUnknown *,IUnknown *,const void *,SIZE_T);
     DWORD heapDesc[]={0,2,1,1},view[]={28,4,0,0}; ComPtr<IUnknown> heap;
-    HMODULE xm=LoadLibraryW(L"xmem.dll"); CK(xm);
     HR(SLOT(dev.Get(),0x70,Heap)(dev.Get(),heapDesc,IID_ID3D12DescriptorHeap,(void **)heap.GetAddressOf()));
     SIZE_T slot=SLOT(heap.Get(),0x48,Start)(heap.Get())+32;
     CK(FAILED(xs_write_view(dev.Get(),0x98,(IUnknown *)1,view,slot)));
@@ -100,7 +136,8 @@ int main()
     writer(dev.Get(),other,rw,dest); writer(dev.Get(),other,rw,dest+4095*32);
     writer(dev.Get(),surface,rw,dest); // overwrite; the last slot still refers to other
     CK(*(UINT64 *)(dest+16)==0xa0cafe);
-    CK(other->Release()==0 && surface->Release()==0);
+    CK(taken==2 && !given && (64u<<20)-used==0xa0000);
+    CK(other->Release()==0 && given==1 && surface->Release()==0 && given==2);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv={},lastRTV={};
     *(UINT64 *)dest^=1; CK(FAILED(xs_resolve_color_rtv(views.Get(),dest,&rtv,rt.GetAddressOf())) && !rt && !rtv.ptr); *(UINT64 *)dest^=1;
     HR(xs_resolve_color_rtv(views.Get(),dest,&rtv,rt.GetAddressOf()));
@@ -116,7 +153,7 @@ int main()
     d->CreateUnorderedAccessView(rt.Get(),nullptr,nullptr,cpu);
     D3D12_RESOURCE_DESC buf={}; buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER; buf.Width=512;
     buf.Height=buf.DepthOrArraySize=buf.MipLevels=buf.SampleDesc.Count=1; buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    auto hp=hd.Properties; hp.Type=D3D12_HEAP_TYPE_READBACK;
+    auto hp=props; hp.Type=D3D12_HEAP_TYPE_READBACK;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));
     D3D12_COMMAND_QUEUE_DESC qd={}; ComPtr<ID3D12CommandQueue> q; ComPtr<ID3D12CommandAllocator> a;
     ComPtr<ID3D12GraphicsCommandList> l; ComPtr<ID3D12Fence> f;
@@ -138,6 +175,9 @@ int main()
     HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(event);
     HR(f->SetEventOnCompletion(1,event)); CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0); CloseHandle(event);
     DWORD *pixel; HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[0]==0xff00ff00 && pixel[1]==0xff0000ff); rb->Unmap(0,nullptr);
+    auto words=(const volatile UINT *)arena;
+    CK(words[3840*2160-2]==0xff00ff00 && words[3840*2160-1]==0xff0000ff);
+    CK(arena[used]==0xa5 && arena[(64u<<20)-1]==0xa5);
     // Transition before dropping the last direct reference. Only the SRV record
     // will retain this texture when the sampling dispatch is submitted.
     HR(a->Reset()); HR(l->Reset(a.Get(),nullptr));
@@ -176,9 +216,13 @@ int main()
     HANDLE sampled=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(sampled);
     HR(f->SetEventOnCompletion(2,sampled)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
     HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff); rb->Unmap(0,nullptr);
-    heap.Reset(); FreeLibrary(xm);
+    l.Reset(); a.Reset(); heap.Reset();
+    MEMORY_BASIC_INFORMATION m;
+    CK(VirtualQuery(arena,&m,sizeof m) && m.State==MEM_FREE);
+    FreeLibrary(xm);
     puts("PASS public +90 color SRV: checked slot, two live primary identities, point-sampled green/red after both wrappers and UAV view released");
     puts("PASS public +a0: type-2 heap, overwritten slot and independent final slot retained two distinct +3f8 textures; real RTV clear/readback after title Release");
     std::printf("PASS +c8 size=%llu alignment=%llu; +3f8 committed identity -> +98 UAV -> checked RTV; fenced last pixels ff00ff00 ff0000ff after wrapper release\n",
-            (unsigned long long)ref.SizeInBytes,(unsigned long long)ref.Alignment);
+            (unsigned long long)got.info.SizeInBytes,(unsigned long long)got.info.Alignment);
+    puts("PASS real hook arena: two reverse public frees at wrapper destruction; imported image writes visible in original bytes; final descriptor/host release unmapped the arena");
 }
