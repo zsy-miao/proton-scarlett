@@ -17,6 +17,7 @@ Requires x86-64 MinGW GCC/G++, the [Windows SDK v0 input header](native/gameinpu
 
 The first committed retail graphics pool requires the fork's [x64 Wine memory patch and build steps](wine-patches/README.md). Installing the PE DLLs alone leaves this call unsupported.
 The 2,199 MiB pool additionally requires the [paired Wine and vkd3d-proton patches](vkd3d-patches/README.md).
+Run `./scarlett/tests/graphics-pools.sh` on the qualified RTX 3070 host to exercise all three pool sizes through the installed tool, including GPU completion after the title address is reused.
 
 ## What the first graphics test covers
 
