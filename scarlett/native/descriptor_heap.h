@@ -1,5 +1,11 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
-struct descriptor_record { UINT64 serial, kind; ID3D12Resource *resource; };
+struct descriptor_record {
+    UINT64 serial, kind;
+    ID3D12Resource *resource;
+#ifdef SCARLETT_STAGED_PLACED
+    IUnknown *placed; /* exactly first=0, 174 MiB / 4 RAW dwords */
+#endif
+};
 struct desc_heap {
     IUnknown iface;
     LONG refs;
@@ -40,8 +46,12 @@ static ULONG WINAPI desc_release(IUnknown *i)
             ReleaseSRWLockExclusive(&owner->descriptor_lock);
         }
         if (h->records) {
-            for (UINT n=0;n<h->count;n++)
+            for (UINT n=0;n<h->count;n++) {
                 if (h->records[n].resource) ID3D12Resource_Release(h->records[n].resource);
+#ifdef SCARLETT_STAGED_PLACED
+                if (h->records[n].placed) IUnknown_Release(h->records[n].placed);
+#endif
+            }
             HeapFree(GetProcessHeap(),0,h->records);
         }
         ID3D12DescriptorHeap_Release(h->host);

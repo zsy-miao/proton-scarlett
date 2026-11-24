@@ -60,6 +60,50 @@ static BOOL copy_in(void *out,const void *in,SIZE_T size)
     SIZE_T n;
     return in && ReadProcessMemory(GetCurrentProcess(),in,out,size,&n) && size==n;
 }
+
+#ifdef SCARLETT_STAGED_PLACED
+/* S_FALSE means this is not a placed identity. Never install a dummy host view. */
+static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,const DWORD *w,SIZE_T dest)
+{
+    HRESULT hr=S_FALSE;
+    struct descriptor_record old={0};
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    struct placed_backing *p=d->placed;
+    while (p && &p->title->iface!=object) p=p->next;
+    if (!p) goto done;
+    hr=E_NOTIMPL;
+    if (w[0]!=DXGI_FORMAT_R32_TYPELESS || w[1]!=1 || w[8]!=1) goto done;
+    if (kind==SRV) {
+        if (w[2]!=0x1688 || w[4] || w[5] || w[6]!=PLACED_WIDTH/4 || w[7]) goto done;
+    } else if (kind==UAV) {
+        if (w[2] || w[3] || w[4]!=PLACED_WIDTH/4 || w[5] || w[6] || w[7]) goto done;
+    } else goto done;
+    hr=E_INVALIDARG;
+    struct desc_heap *h=NULL;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    for (struct desc_heap *it=d->heaps;it;it=it->next) {
+        if (FAILED(xs_descriptor_slot(&it->iface,dest,&cpu,NULL))) continue;
+        if (h) goto done;
+        h=it;
+    }
+    if (!h) goto done;
+    struct descriptor_record *r=h->records+(dest-h->start)/h->stride;
+    UINT64 tag[2]={++d->descriptor_serial,0x5853444553430000ull|kind};
+    SIZE_T n;
+    if (!WriteProcessMemory(GetCurrentProcess(),(void *)dest,tag,sizeof tag,&n) || n!=sizeof tag) {
+        hr=E_POINTER; goto done;
+    }
+    old=*r;
+    IUnknown_AddRef(object);
+    *r=(struct descriptor_record){.serial=tag[0],.kind=kind,.placed=object};
+    hr=S_OK;
+done:
+    ReleaseSRWLockExclusive(&d->descriptor_lock);
+    if (old.placed) IUnknown_Release(old.placed);
+    if (old.resource) ID3D12Resource_Release(old.resource);
+    return hr;
+}
+#endif
 /* Hold the owner lock until the host write finishes. Ambiguous overlapping title ranges fail. */
 HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *input,SIZE_T dest)
 {
@@ -71,6 +115,13 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     SIZE_T size=kind==CBV?16:40;
     if (kind!=CBV && kind!=SRV && kind!=UAV) return E_INVALIDARG;
     if (!copy_in(words,input,size)) return E_POINTER;
+#ifdef SCARLETT_STAGED_PLACED
+    IUnknown *old_placed=NULL;
+    if (object && kind!=CBV) {
+        HRESULT placed=placed_write(d,kind,object,words,dest);
+        if (placed!=S_FALSE) return placed;
+    }
+#endif
     if (!object && kind!=CBV) {
         if (words[0]!=42 || words[2]!=(kind==SRV?0x1688u:0u) ||
             memcmp(words+3,(DWORD[7]){0},28)) return E_NOTIMPL;
@@ -126,12 +177,18 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     else if (kind==UAV) ID3D12Device_CreateUnorderedAccessView(d->host,NULL,NULL,&uav,cpu);
     else ID3D12Device_CreateConstantBufferView(d->host,&cbv,cpu);
     old=r->resource;
+#ifdef SCARLETT_STAGED_PLACED
+    old_placed=r->placed;
+#endif
     if (resource) ID3D12Resource_AddRef(resource);
-    *r=(struct descriptor_record){tag[0],kind,resource};
+    *r=(struct descriptor_record){.serial=tag[0],.kind=kind,.resource=resource};
     hr=S_OK;
 done:
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     if (old) ID3D12Resource_Release(old);
+#ifdef SCARLETT_STAGED_PLACED
+    if (old_placed) IUnknown_Release(old_placed);
+#endif
     return hr;
 }
 
@@ -144,6 +201,9 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
     struct desc_heap *h=CONTAINING_RECORD(heap,struct desc_heap,iface);
     if (!h->records || (kind!=CBV && kind!=SRV && kind!=UAV)) return E_INVALIDARG;
     struct xbox_device *d=h->owner;
+#ifdef SCARLETT_STAGED_PLACED
+    IUnknown *old_placed=NULL;
+#endif
     AcquireSRWLockExclusive(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     HRESULT hr=xs_descriptor_slot(heap,slot,&cpu,gpu);
@@ -156,13 +216,22 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
                 D3D12_CONSTANT_BUFFER_VIEW_DESC zero={0};
                 ID3D12Device_CreateConstantBufferView(d->host,&zero,cpu);
                 if (r->resource) ID3D12Resource_Release(r->resource);
-                *r=(struct descriptor_record){0,CBV,NULL};
+#ifdef SCARLETT_STAGED_PLACED
+                old_placed=r->placed;
+#endif
+                *r=(struct descriptor_record){.kind=CBV};
             }
         } else if (!r->serial || r->kind!=kind || bits[0]!=r->serial || bits[1]!=(0x5853444553430000ull|kind))
-            hr=E_INVALIDARG;
+             hr=E_INVALIDARG;
+#ifdef SCARLETT_STAGED_PLACED
+        else if (r->placed) hr=E_NOTIMPL; /* no single desktop descriptor */
+#endif
         if (SUCCEEDED(hr)) *host=h->host; /* borrowed */
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
+#ifdef SCARLETT_STAGED_PLACED
+    if (old_placed) IUnknown_Release(old_placed);
+#endif
     if (FAILED(hr)) gpu->ptr=0;
     return hr;
 }
@@ -178,3 +247,53 @@ static void WINAPI write_uav(IUnknown *d,IUnknown *r,IUnknown *counter,const voi
 {
     if (counter || FAILED(xs_write_view(d,UAV,r,desc,dest))) xs_stop();
 }
+
+#ifdef SCARLETT_STAGED_PLACED
+/* Private recorder: open same-device copy list and readback destination owned
+ * by the caller. Return one title reference for the caller's retirement fence. */
+HRESULT xs_placed_copy_readback(IUnknown *heap,SIZE_T slot,UINT64 at,UINT64 bytes,
+        ID3D12GraphicsCommandList *list,ID3D12Resource *dst,UINT64 offset,IUnknown **hold)
+{
+    if (!hold) return E_POINTER;
+    *hold=NULL;
+    if (!heap || heap->lpVtbl!=&desc_vtbl.unknown || !list || !dst || !bytes) return E_INVALIDARG;
+    struct desc_heap *h=CONTAINING_RECORD(heap,struct desc_heap,iface);
+    if (!h->records || ID3D12GraphicsCommandList_GetType(list)!=D3D12_COMMAND_LIST_TYPE_COPY) return E_INVALIDARG;
+    D3D12_RESOURCE_DESC desc;
+    D3D12_HEAP_PROPERTIES hp;
+    D3D12_HEAP_FLAGS flags;
+    dst->lpVtbl->GetDesc(dst,&desc);
+    if (desc.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || offset>desc.Width || bytes>desc.Width-offset ||
+        FAILED(ID3D12Resource_GetHeapProperties(dst,&hp,&flags)) || hp.Type!=D3D12_HEAP_TYPE_READBACK)
+        return E_INVALIDARG;
+    struct xbox_device *d=h->owner;
+    ID3D12Device *ld=NULL,*dd=NULL;
+    HRESULT hr=ID3D12GraphicsCommandList_GetDevice(list,&IID_ID3D12Device,(void **)&ld);
+    if (SUCCEEDED(hr)) hr=ID3D12Resource_GetDevice(dst,&IID_ID3D12Device,(void **)&dd);
+    BOOL same=SUCCEEDED(hr) && ld==d->host && dd==d->host;
+    if (ld) ID3D12Device_Release(ld);
+    if (dd) ID3D12Device_Release(dd);
+    if (!same) return E_INVALIDARG;
+    IUnknown *id=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    if (SUCCEEDED(xs_descriptor_slot(heap,slot,&cpu,NULL))) {
+        UINT64 tag[2];
+        struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
+        if (r->placed && r->kind==SRV && copy_in(tag,(void *)slot,sizeof tag) &&
+            tag[0]==r->serial && tag[1]==(0x5853444553430000ull|SRV)) {
+            id=r->placed;
+            IUnknown_AddRef(id);
+        }
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if (!id) return E_INVALIDARG;
+    struct placed_backing *p=CONTAINING_RECORD(id,struct placed_identity,iface)->private;
+    struct XsDataOperand op;
+    hr=p->data(p->capture,at,bytes,&op);
+    if (FAILED(hr)) { IUnknown_Release(id); return hr; }
+    ID3D12GraphicsCommandList_CopyBufferRegion(list,dst,offset,op.resource,op.offset,op.bytes);
+    *hold=id;
+    return S_OK;
+}
+#endif

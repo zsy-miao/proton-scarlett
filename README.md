@@ -19,6 +19,8 @@ A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines f
 
 A [RADV shader test](scarlett/native/xmem/placed_capture.md) read and wrote every 32-bit word in the 147 MiB writable portion of that buffer. After the original allocation was freed and its addresses were reused, a second dispatch updated only the original pages. Binding the title's full-width shader views, including read-only shader access to the first 27 MiB, remains unverified.
 
+An experimental build with the [placed-resource factory](scarlett/native/placed-arena.md) enabled passed the `+0x428` call in retail. It then stopped at `+0x156c251` reading address `0x30`, before presentation. The default build still rejects the placement while full-width shader binding is incomplete.
+
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 
 An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent a 700 ms virtual A press to a synthetic game window on RADV. The installed GameInput provider reported neutral → A → released, and the recorded window changed blue → green → blue. Separate polling tests cover the movement and camera sticks. Retail input has not yet been exercised.

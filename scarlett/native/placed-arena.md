@@ -71,7 +71,45 @@ No such whole-view consumer exists on this baseline. The range test exercises
 the operand translation, not the startup descriptor/command-list ABI;
 the production factory should continue to fail with null output.
 
-### Reproducing the shader access test
+### Reproducing the staged factory test
+
+**Staged resource test (`SCARLETT_STAGED_PLACED`):** the actual `+0x428`
+factory accepts only the tuple above and captures the three original extents
+atomically. Its title identity implements IUnknown; QI for the resource IID
+returns that same pointer. Device slots `+0x90/+0x98` store only the exact
+full-width raw SRV/UAV metadata. For the UAV, `6eb991`–`6eb9e5` puts
+first/count/stride/counter/RAW at `+8/+16/+20/+24/+32`. The slot's title
+bytes contain a serial and kind; the descriptor record retains the wrapper.
+The generic desktop resolver refuses both kinds. A private copy recorder
+can consume the SRV's WC/WB subrange on an open copy list into same-device
+readback memory. It returns one owned reference per recorded command for
+the caller to release after queue retirement. No padding byte is a key.
+
+This flag is **off** in the installer and normal builds. A retail shader
+consumer still needs to resolve the logical slot at bind time, translate
+multi-extent accesses with protected-code-store semantics, and retain those
+bindings through fence retirement. The fixture recorder is not a guest
+command-list ABI and does not qualify pitched copies or code-source access.
+
+Build from the repository root with a matched RADV tool containing this
+revision's XMem, using a fresh synthetic game directory:
+
+```sh
+s=$PWD/scarlett/native
+w=$(mktemp -d); mkdir "$w/game"
+cflags="-std=c11 -Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP"
+x86_64-w64-mingw32-gcc $cflags -c "$s/queue/queue.c" -o "$w/queue.o"
+x86_64-w64-mingw32-gcc $cflags -DSCARLETT_STAGED_PLACED -c "$s/d3d12_device.c" -o "$w/device.o"
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
+    "$s/test-placed-factory.cpp" "$w/device.o" "$w/queue.o" \
+    "$tool/scarlett/xmem.dll" -ld3d12 -o "$w/game/game_scarlett_master.exe"
+TMPDIR="$w" SCARLETT_TEST_GPU=radv ./scarlett/test-launch-nixos.sh "$w/game" "$tool"
+```
+
+For the default-build negative control, omit `-DSCARLETT_STAGED_PLACED` when
+compiling the device and add `-DTEST_DEFAULT_PLACED` when compiling the test.
+
+### Separate shader access fixture
 
 The [shader](../tests/placed-arena/logical.hlsl) selects among three
 fixture-owned buffers by logical offset. It gets only a read descriptor for

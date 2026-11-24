@@ -45,6 +45,9 @@ struct xbox_device {
     SRWLOCK descriptor_lock;
     struct desc_heap *heaps;
     struct xs_buffer_binding *buffers;
+#ifdef SCARLETT_STAGED_PLACED
+    struct placed_backing *placed; /* weak, guarded by descriptor_lock */
+#endif
     UINT64 descriptor_serial;
     struct frame_clock clock;
 #endif
@@ -53,6 +56,9 @@ struct xbox_device {
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline descriptor flag");
 #include "descriptor_heap.h"
+#ifdef SCARLETT_STAGED_PLACED
+#include "placed_resource.h"
+#endif
 #include "descriptor_writer.h"
 #endif
 
@@ -267,8 +273,12 @@ static HRESULT resource_gap(UINT slot, UINT64 address, const void *wire, UINT st
 static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const void *desc, UINT state,
         const void *clear, REFIID iid, void **out)
 {
+#ifdef SCARLETT_STAGED_PLACED
+    return placed_create(CONTAINING_RECORD(iface,struct xbox_device,iface),address,desc,state,clear,iid,out);
+#else
     (void)iface; (void)iid;
     return resource_gap(0x428,address,desc,state,0,clear,out);
+#endif
 }
 static HRESULT WINAPI bootstrap_committed(IUnknown *iface, const void *props, UINT flags, const void *desc,
         UINT state, const void *clear, const void *extra1, UINT extra2, const void *extra3, REFIID iid, void **out)
