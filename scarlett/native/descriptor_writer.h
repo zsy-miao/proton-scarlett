@@ -436,8 +436,10 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
-        if (is_cube1(&rd)) {
-            UINT kind=rd.DepthOrArraySize==CUBE_PAIR_FACES?CUBE_PAIR_VIEW:w[1]==D3D12_SRV_DIMENSION_TEXTURE2DARRAY?ARRAY6_VIEW:CUBE1_VIEW;
+        if (is_layered_texel(&rd)) {
+            UINT layers=rd.DepthOrArraySize,kind=ARRAY_VIEW_BASE+layers;
+            if (layers==CUBE_PAIR_FACES) kind=CUBE_PAIR_VIEW;
+            else if (layers==CUBE1_FACES && w[1]==D3D12_SRV_DIMENSION_TEXTURECUBE) kind=CUBE1_VIEW;
             return write_wc_address_view(device,kind,w,dest);
         }
         if (is_r8(&rd)) return write_wc_address_view(device,R8_VIEW,w,dest);

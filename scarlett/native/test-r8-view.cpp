@@ -1,4 +1,7 @@
 #include <d3d12.h>
+#ifdef TEST_NATIVE_POOL
+#include "xmem/native_pool.h"
+#endif
 #include <cstdint>
 #include <wrl/client.h>
 #include <cstdio>
@@ -31,7 +34,7 @@ using Copy=HRESULT(WINAPI*)(void*,void*,UINT,UINT,const void*,UINT,UINT);
 static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UINT;
 #elif defined(TEST_R32_FLOAT)
 static constexpr DWORD format=DXGI_FORMAT_R32_FLOAT;
-#elif defined(TEST_RGBA1) || defined(TEST_VOLUME1) || defined(TEST_CUBE1) || defined(TEST_ARRAY6) || defined(TEST_CUBE_PAIR)
+#elif defined(TEST_RGBA1) || defined(TEST_VOLUME1) || defined(TEST_CUBE1) || defined(TEST_ARRAY6) || defined(TEST_CUBE_PAIR) || defined(TEST_ARRAY2)
 static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UNORM;
 #else
 static constexpr DWORD format=DXGI_FORMAT_R8_UNORM;
@@ -43,15 +46,17 @@ static constexpr bool volume=false;
 #endif
 #ifdef TEST_CUBE_PAIR
 static constexpr UINT layers=12;
+#elif defined(TEST_ARRAY2)
+static constexpr UINT layers=2;
 #elif defined(TEST_CUBE1) || defined(TEST_ARRAY6)
 static constexpr UINT layers=6;
 #else
 static constexpr UINT layers=1;
 #endif
-#ifdef TEST_ARRAY6
-static constexpr bool array6=true;
+#if defined(TEST_ARRAY2) || defined(TEST_ARRAY6)
+static constexpr bool arrayView=true;
 #else
-static constexpr bool array6=false;
+static constexpr bool arrayView=false;
 #endif
 static constexpr bool rgba1=format!=DXGI_FORMAT_R8_UNORM;
 static constexpr bool integer=format==DXGI_FORMAT_R8G8B8A8_UINT, scalar=format==DXGI_FORMAT_R32_FLOAT;
@@ -76,6 +81,14 @@ int main(){
     desc[2]=4096;
     void **c=nullptr;HR(XGCreateTextureComputer(desc,(void**)&c));auto v=*(void***)c;auto copy=(Copy)v[8];
     ComPtr<ID3D12Device3>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
+#ifdef TEST_NATIVE_POOL
+    using Take=HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*);
+    auto take=(Take)(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"ScarlettAcquireNativePoolV1");CK(take);
+    UINT start=0;ComPtr<ID3D12Resource> proof;UINT64 incarnation=0;
+    CK(!native_pool_ctl(0x53430103,b,&incarnation,sizeof incarnation) && incarnation);
+    CK(take(d.Get(),b+span-tile,tile,nullptr,&proof,&start)==S_OK && start==span-tile && proof && proof->GetDesc().Width==span);
+    proof.Reset();CK(take(d.Get(),b+span-tile,tile+1,nullptr,&proof,&start)==E_INVALIDARG && !proof);
+#endif
     DWORD params[20]={}; params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     const IID id={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> guest,src,dst;
@@ -87,13 +100,23 @@ int main(){
     if (rgba1) {
         using Query=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *);
         auto query=SLOT(guest.Get(),0xc8,Query);
+#ifdef TEST_NATIVE_POOL
+        D3D12_RESOURCE_DESC host={};memcpy(&host,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof host.Flags);
+        host.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;host.Flags=D3D12_RESOURCE_FLAG_NONE;
+        auto native=d->GetResourceAllocationInfo(1,1,&host);
+        printf("native unknown layers=%u bytes=%llu alignment=%llu\n",layers,native.SizeInBytes,native.Alignment);
+        CK(native.Alignment==4096 && native.SizeInBytes==4096);
+        constexpr UINT small=4096;
+#else
+        constexpr UINT small=layers==12?8192:4096;
+#endif
         for (UINT layout:{0u,0x105u}) {
             D3D12_RESOURCE_ALLOCATION_INFO result={}; desc[11]=layout;
             if (volume && !layout) {
                 CK(xs_color_allocation_info(guest.Get(),1,1,desc,&result)==E_NOTIMPL && !result.SizeInBytes && !result.Alignment);
                 continue;
             }
-            CK(query(&result,guest.Get(),1,1,desc)==&result && result.SizeInBytes==(layout?tile:layers==12?8192:4096) && result.Alignment==4096);
+            CK(query(&result,guest.Get(),1,1,desc)==&result && result.SizeInBytes==(layout?tile:small) && result.Alignment==4096);
         }
         for (UINT j:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
             D3D12_RESOURCE_ALLOCATION_INFO bad={7,8}; void *unused=desc;
@@ -103,8 +126,8 @@ int main(){
             desc[j]^=1;
         }
     }
-    constexpr DWORD dimension=layers==12?10u:array6?5u:layers==6?9u:volume?8u:4u;
-    desc[2]=0; DWORD w[16]={format,dimension,0x1688,0,0,1,0,layers==12?2u:array6?6u:0u,0,0,0,0,0,0,0,3};
+    constexpr DWORD dimension=layers==12?10u:arrayView?5u:layers==6?9u:volume?8u:4u;
+    desc[2]=0; DWORD w[16]={format,dimension,0x1688,0,0,1,0,layers==12?2u:arrayView?layers:0u,0,0,0,0,0,0,0,3};
     auto address=[&](BYTE *p){memcpy(w+10,&p,sizeof p);};
     address(b+span-tile); HR(xs_write_address_srv(guest.Get(),desc,w,from));
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
@@ -143,7 +166,7 @@ int main(){
     D3D12_ROOT_SIGNATURE_DESC rs={2,p,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
     ComPtr<ID3DBlob> blob;HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
     ComPtr<ID3D12RootSignature> root;HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
-    FILE *f=fopen(layers==12?"cube-pair.dxil":array6?"array6.dxil":layers==6?"cube1.dxil":volume?"volume1.dxil":integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
+    FILE *f=fopen(layers==12?"cube-pair.dxil":layers==2?"array2.dxil":arrayView?"array6.dxil":layers==6?"cube1.dxil":volume?"volume1.dxil":integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd={};pd.pRootSignature=root.Get();pd.CS={dxil,n};
     ComPtr<ID3D12PipelineState> ps;HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&ps)));
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
@@ -186,6 +209,14 @@ int main(){
             if (!pass) {
                 memset(b+span-tile,0xbd,tile); HR(copy(c,b+span-tile,0,0,&color,4,4));
                 CK(*(DWORD*)(b+span-tile)==color); for(UINT j=4;j<tile;j++) CK(b[span-tile+j]==0xbd);
+#ifdef TEST_NATIVE_POOL
+                if(layers>1){
+                    DWORD last=pattern(pass,layers-1);HR(copy(c,b+span-tile,0,layers-1,&last,4,4));
+                    CK(FAILED(copy(c,b+span-tile+4096,0,0,&last,4,4)));
+                    CK(*(DWORD*)(b+span-tile)==color && *(DWORD*)(b+span-4096)==last);
+                    for(UINT j=4;j<tile;j++)if(j<tile-4096 || j>=tile-4092)CK(b[span-tile+j]==0xbd);
+                }
+#endif
             }
             if(layers>1) CK(FAILED(copy(c,b+span-tile+4096,0,0,&color,4,4)));
             for(UINT face=0;face<layers;face++) {
@@ -203,6 +234,13 @@ int main(){
             CK(VirtualFree(b,0,MEM_RELEASE));
             CK(VirtualAlloc(b,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==b);memset(b,0xad,65536);MemoryBarrier();
         }
+#ifdef TEST_NATIVE_POOL
+        if(pass){
+            DWORD stale=pattern(0);CK(FAILED(copy(c,b+offset,0,layers-1,&stale,4,4)));
+            CK(take(d.Get(),b+offset,tile,nullptr,&proof,&start)==S_FALSE && !proof);
+            CK(WaitForSingleObject(ev,0)==WAIT_TIMEOUT);
+        }
+#endif
         HR(gate->Signal(pass+1));CK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
         DWORD *map;HR(read->Map(0,nullptr,(void**)&map));for(unsigned i=0;i<N;i++){
             DWORD bits=map[pass*N+i]; unsigned want=rgba1 ? (pattern(pass,i/4)>>((i%4)*8))&255 : pass?i>>8:i&255;
@@ -215,7 +253,7 @@ int main(){
                 if(!std::isfinite(value)||fabs(value-want/255.f)>1e-7){fprintf(stderr,"pass %u index %u got %g expected %u/255\n",pass,i,value,want);ExitProcess(1);}
             }
         }read->Unmap(0,nullptr);xs_drop_texture_use(hold);
-        if (layers>1) printf("PASS %s pass %u: %u distinct faces and %u channels after gated writes\n",layers==12?"TextureCubeArray":array6?"Texture2DArray":"TextureCube",pass,layers,N);
+        if (layers>1) printf("PASS %s pass %u: %u distinct faces and %u channels after gated writes\n",layers==12?"TextureCubeArray":arrayView?"Texture2DArray":"TextureCube",pass,layers,N);
         else if (rgba1) printf("PASS format %lu pass %u: all four shader results for original WC word %#010lx\n",format,pass,pattern(pass));
         else printf("PASS pass %u: all 32768 %c coordinates as R8_UNORM; checked gate held before CPU producer\n",pass,pass?'Y':'X');
     }

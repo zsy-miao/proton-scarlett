@@ -274,3 +274,26 @@ adjacent placements at 0x1000, 0x3000 and 0x5000 preserve all 36 subresources.
 The shader fixture checks all twelve directions/cube indices (48 channels)
 for two gated patterns, including exact VA reuse. Retail evidence covers
 creation/copy/view writes; sampling was exercised by the fixture.
+
+On the retained RADV pool, the native twelve-layer size is 4096 bytes at
+4096-byte alignment. The guest layout is still 49152 bytes. Add
+`-DTEST_NATIVE_POOL` to the allocation and view fixtures for the AMD path;
+the view fixture also checks the last valid layer and clipped writes.
+
+### Two 1×1 RGBA8_UNORM layers (RTX 3070)
+
+The small UNKNOWN-layout query returned 4096/4096; the explicit `0x105`
+layout returned 8192/4096. An independent reference computer confirmed
+that the two words start at offsets 0 and 4096. Retail copied `ffff8080`
+from stack DWORDs to each layer of WC offset `e604000`, plane 0, pitches
+4/4, then wrote a `+230` Texture2DArray SRV (base layer 0, count 2,
+one mip). Two- and six-layer array views use the same descriptor and refresh
+path, retaining their checked layer count when a slot is copied.
+
+Use `-DTEST_ARRAY2` for the allocation and view fixtures and for the shader
+`test-six-face.hlsl` (`array2.dxil`). Native small placements at 0x1000,
+0x2000, 0x3000 preserve all six subresources. The shader fixture tests two
+distinct layer words per pass, after gated writes, including descriptor
+heap release and title VA reuse. The next retail `+c8` at return `+344145`
+was a 256-wide Texture1D, one layer/mip/sample, format 29 (RGBA8_UNORM_SRGB),
+requested alignment 4096, layout 0 and flags `0x300000`.

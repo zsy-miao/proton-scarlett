@@ -20,13 +20,20 @@ int main()
     DWORD w[]={3,0,4096,0,256,0,128,0x10001,61,1,0,0,0x300000};
 #if defined(TEST_CUBE_PAIR)
     constexpr UINT layers=12;
+#elif defined(TEST_ARRAY2)
+    constexpr UINT layers=2;
 #elif defined(TEST_CUBE1)
     constexpr UINT layers=6;
 #else
     constexpr UINT layers=1;
 #endif
     if(layers>1){w[4]=w[6]=1;w[7]=0x10000+layers;w[8]=28;}
-    constexpr UINT nativeBytes=layers==12?8192:layers==6?4096:32768,guestBytes=layers>1?layers*4096:32768;
+    constexpr UINT guestBytes=layers>1?layers*4096:32768;
+#ifdef TEST_NATIVE_POOL
+    constexpr UINT nativeBytes=layers>1?4096:32768;
+#else
+    constexpr UINT nativeBytes=layers==12?8192:layers>1?4096:32768;
+#endif
     SYSTEM_INFO sys; GetSystemInfo(&sys);
     auto pages=(BYTE *)VirtualAlloc(nullptr,2*sys.dwPageSize,MEM_RESERVE,PAGE_NOACCESS);
     CK(pages && VirtualAlloc(pages,sys.dwPageSize,MEM_COMMIT,PAGE_READWRITE)==pages);

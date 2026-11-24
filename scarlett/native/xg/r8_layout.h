@@ -30,9 +30,9 @@ static inline BOOL is_texel32(const D3D12_RESOURCE_DESC *d)
 
 /* Independent 2D array slices, one 4KB_S tile per face at this extent. */
 enum { CUBE1_FACES=6, CUBE_PAIR_FACES=2*CUBE1_FACES };
-static inline BOOL is_cube1(const D3D12_RESOURCE_DESC *d)
+static inline BOOL is_layered_texel(const D3D12_RESOURCE_DESC *d)
 {
     return d->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && d->Width==1 && d->Height==1 &&
-        (d->DepthOrArraySize==CUBE1_FACES || d->DepthOrArraySize==CUBE_PAIR_FACES) && d->MipLevels==1 && d->Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
+        (d->DepthOrArraySize==2 || d->DepthOrArraySize==CUBE1_FACES || d->DepthOrArraySize==CUBE_PAIR_FACES) && d->MipLevels==1 && d->Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
         d->SampleDesc.Count==1 && !d->SampleDesc.Quality && (UINT)d->Flags==0x300000;
 }

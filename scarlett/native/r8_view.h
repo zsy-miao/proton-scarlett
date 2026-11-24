@@ -22,14 +22,15 @@ static BOOL valid_address_record(const struct descriptor_record *r,SIZE_T slot,U
 
 static UINT view_layers(UINT kind)
 {
-    return kind==CUBE_PAIR_VIEW?CUBE_PAIR_FACES:kind==CUBE1_VIEW || kind==ARRAY6_VIEW?CUBE1_FACES:1;
+    UINT layers=array_view_layers(kind);
+    return layers?layers:kind==CUBE_PAIR_VIEW?CUBE_PAIR_FACES:kind==CUBE1_VIEW?CUBE1_FACES:1;
 }
 static D3D12_SHADER_RESOURCE_VIEW_DESC texture_srv(UINT kind)
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC v={.Format=refresh_format(kind),.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
     if (kind==CUBE1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE; v.TextureCube.MipLevels=1; }
     else if (kind==CUBE_PAIR_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBEARRAY; v.TextureCubeArray.MipLevels=1; v.TextureCubeArray.NumCubes=2; }
-    else if (kind==ARRAY6_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=CUBE1_FACES; }
+    else if (array_view_layers(kind)) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=array_view_layers(kind); }
     else if (kind==VOLUME1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; v.Texture3D.MipLevels=1; }
     else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=1; }
     return v;
@@ -61,7 +62,7 @@ static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,S
     static const DWORD raw[]={39,1,0x1688,0,0,0,38,0,1,0};
     BOOL tex=refresh_required(kind);
     D3D12_SHADER_RESOURCE_VIEW_DESC srv=texture_srv(kind);
-    DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==CUBE_PAIR_VIEW?2:kind==ARRAY6_VIEW?CUBE1_FACES:0,0,0};
+    DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==CUBE_PAIR_VIEW?2:array_view_layers(kind),0,0};
     if (memcmp(w,tex?texture:raw,sizeof texture) || w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
     UINT alignment=tex ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;

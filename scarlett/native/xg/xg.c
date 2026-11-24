@@ -15,7 +15,7 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
 {
     if (!d || !out) return E_POINTER;
     /* Project recommendation for the runtime-created texture copied by copy_texture. */
-    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && (is_r8(d) || is_texel32(d) || is_cube1(d))) {
+    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && (is_r8(d) || is_texel32(d) || is_layered_texel(d))) {
         *out=(D3D12_TEXTURE_LAYOUT)R8_LAYOUT;
         return S_OK;
     }
@@ -142,11 +142,11 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     D3D12_RESOURCE_DESC desc={0};
     SIZE_T n=offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof desc.Flags,got;
     if (!d || !ReadProcessMemory(GetCurrentProcess(),d,&desc,n,&got) || got!=n) return E_POINTER;
-    BOOL cube=is_cube1(&desc),texel32=cube || is_texel32(&desc);
+    BOOL layered=is_layered_texel(&desc),texel32=layered || is_texel32(&desc);
     if ((!texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
-    *c=(struct computer){&methods,1,texel32,cube?desc.DepthOrArraySize:1};
+    *c=(struct computer){&methods,1,texel32,layered?desc.DepthOrArraySize:1};
     *out=c;
     return S_OK;
 }
