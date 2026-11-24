@@ -99,8 +99,22 @@ With the primary SRV and RTV writers installed, retail returned two distinct
 `+0x3f8` resource identities. At the post-loop breakpoint `247af2d`, the
 iteration counter was 2. The title evaluated `[rsp+78] - [rsp+70] +
 [image+75e6ff0]` as `0x4000000 - 0 + 0`, above its unsigned limit of
-`0x1fffff`. The observed value alone does not establish what the title
-counts or whether it should equal host texture allocation bytes.
+`0x1fffff`. The value is **unused space**: `247ad2f..64` registers
+`{cursor, capacity}` with the display allocation callback `56a2a60`.
+That callback acquires the arena from the next allocator and returns
+successive 64 KiB-aligned slices. A live trace at both creations confirmed
+the next allocator was `4deb540`. The host committed textures do not call
+this hook, so the entire 64 MiB is still available at the assertion.
+
+The [native Vulkan test](../../tests/display-arena.c) imported one 64 MiB
+host allocation on RADV `1002:164e`. Two linear RGBA8 textures fit in it
+at offsets `0` and `0x1fb0000`. Fenced red and green clears reached every
+pixel in the original allocation; the last `0xa0000` bytes stayed untouched.
+The regular D3D12 texture layout needs `0x2010000` per image and does not
+fit twice. To reproduce the linear test with Vulkan headers and loader:
+`cc -O2 scarlett/tests/display-arena.c -lvulkan -o /tmp/display-arena`,
+then run it with `VK_DRIVER_FILES` set to the RADV ICD. Retail still needs
+the two real image allocations bound to the slices its allocator supplies.
 
 `24784d5` registers ANSI `sgaWindowClass` (class name `677b672`; window
 procedure `247a660` tail-calls `DefWindowProcA`). `247853a` calls
