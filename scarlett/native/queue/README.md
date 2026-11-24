@@ -221,8 +221,11 @@ Microsoft's [PipelinedPostprocess sample](https://github.com/microsoft/Xbox-GDK-
 passes a `D3D12_COMPARISON_FUNC` in the second argument and a wait flag in
 the fourth. In that [comparison enum](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_comparison_func),
 7 is `GREATER_EQUAL`: the cell must reach or exceed the reference when the
-command executes. The sample uses `D3D12XBOX_WAIT_FLAG_NONE`. It does not
-define the effect of retail's flag `1`. A second title call site
+command executes. The sample uses `D3D12XBOX_WAIT_FLAG_NONE`. Microsoft's
+[Xbox topic directory](https://docs.xbox.com/nda/nda-topic-directory) describes
+`D3D12XBOX_WAIT_FLAGS` for Series consoles as “Flags for selecting the engine
+used to perform a wait.” The public entry does not map `1` to an engine.
+A second title call site
 (`+0x248ff7c`) uses flag `0`; it does not show the two flags are interchangeable.
 
 On RADV the initial publication stores a 64-bit `1` in the same control
