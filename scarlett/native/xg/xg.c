@@ -155,6 +155,39 @@ static const struct { __typeof__(&add_ref) retain; __typeof__(&release) drop;
     __typeof__(&atlas_layout) layout; xs_stop_fn rest[9];
 } atlas_methods={add_ref,release,atlas_layout,{[0 ... 8]=xs_stop}};
 
+static HRESULT WINAPI copy_seven(struct computer *c,void *dst,UINT plane,UINT mip,const void *src,UINT row,UINT slice)
+{
+    static const UINT base[]={0x4900,0x2500,0x1300,0xa00,0x500,0x200,0};
+    const SIZE_T span=0xd900;
+    MEMORY_BASIC_INFORMATION si;
+    (void)c;
+    if (!src || !dst)return E_POINTER;
+    if (plane || mip>=ARRAYSIZE(base) || row!=(512u>>mip) || slice!=row*(72u>>mip) ||
+            ((UINT_PTR)dst&4095))return E_INVALIDARG;
+    if (!VirtualQuery(src,&si,sizeof si) || si.Type!=MEM_MAPPED || si.State!=MEM_COMMIT ||
+            (si.Protect & (PAGE_GUARD|PAGE_NOACCESS)) || si.RegionSize-((UINT_PTR)src-(UINT_PTR)si.BaseAddress)<slice)
+        return E_INVALIDARG;
+
+    struct {UINT64 id;BYTE data[];} *snap=HeapAlloc(GetProcessHeap(),0,sizeof *snap+slice);
+    if (!snap)return E_OUTOFMEMORY;
+    void *alias=NULL;BYTE *out=NULL;SIZE_T got;
+    BOOL native=!native_pool_ctl(0x53430103,dst,&snap->id,sizeof snap->id);
+    HRESULT hr=native?S_OK:texture_alias(dst,span,TRUE,&alias,&out,NULL);
+    if (SUCCEEDED(hr)){
+        if (!ReadProcessMemory(GetCurrentProcess(),src,snap->data,slice,&got) || got!=slice) hr=E_POINTER;
+        else if(native){
+            LONG st=native_pool_ctl(0x53430108,dst,snap,sizeof *snap+slice);
+            if(st<0)hr=HRESULT_FROM_NT(st);
+        }else{
+            for(UINT y=0;y<(72u>>mip);y++)memcpy(out+base[mip]+y*(mip?256:512),snap->data+y*row,row);
+            MemoryBarrier();
+        }
+    }
+    if(alias)VirtualFree(alias,0,MEM_RELEASE);
+    HeapFree(GetProcessHeap(),0,snap);return hr;
+}
+static const __typeof__(methods) seven_methods={add_ref,release,{[0 ... 5]=xs_stop},copy_seven,{[0 ... 2]=xs_stop}};
+
 __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     const D3D12_RESOURCE_DESC *d, void **out)
 {
@@ -166,11 +199,16 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     BOOL layered=is_layered_texel(&desc),texel32=layered || is_texel32(&desc);
     BOOL row=is_srgb_row(&desc);
     BOOL atlas=atlas_desc(&desc);
-    if (!atlas && ((!row && !texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=(row?SRGB_ROW_LAYOUT:R8_LAYOUT) || desc.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
+    BOOL seven=desc.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !desc.Alignment &&
+        desc.Width==128 && desc.Height==72 && desc.MipLevels==7 && desc.DepthOrArraySize==1 &&
+        desc.Format==DXGI_FORMAT_R32_FLOAT && desc.SampleDesc.Count==1 && !desc.SampleDesc.Quality &&
+        (UINT)desc.Layout==0x100 && (UINT)desc.Flags==0x300000;
+    if (!seven && !atlas && ((!row && !texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=(row?SRGB_ROW_LAYOUT:R8_LAYOUT) || desc.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
     *c=(struct computer){&methods,1,row?SRGB_ROW_BYTES:texel32?4:0,layered?desc.DepthOrArraySize:1};
     if(atlas){c->vt=&atlas_methods;c->stack_bytes=(UINT)desc.Width;}
+    if(seven)c->vt=&seven_methods;
     *out=c;
     return S_OK;
 }

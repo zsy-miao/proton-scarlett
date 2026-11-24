@@ -1,0 +1,44 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6970,22 +6970,36 @@
+             server_leave_uninterrupted_section(&virtual_mutex,&sigset);return status;
+         }
+         case 0x53430103: /* capture the current native pool incarnation */
++        case 0x53430108: /* Write one tightly packed mip into the original native WC chain. */
+         case 0x53430104: /* bounded XG-style write: generation followed by staged bytes */
+         {
+             struct file_view *v;sigset_t sigset;UINT64 id=0;void *tmp=NULL;
+             SIZE_T bytes=len>sizeof(id)?len-sizeof(id):0;
+-            if(process!=NtCurrentProcess() || is_wow64() || !buffer || res_len || (info_class==0x53430104 && ((UINT_PTR)addr&4095)))return STATUS_INVALID_PARAMETER;
++            static const unsigned int base[]={0x4900,0x2500,0x1300,0xa00,0x500,0x200,0};
++            unsigned int m=0,row=0,height=0;BOOL mip=info_class==0x53430108;
++            if(process!=NtCurrentProcess() || is_wow64() || !buffer || res_len || (info_class!=0x53430103 && ((UINT_PTR)addr&4095)))return STATUS_INVALID_PARAMETER;
+             if(info_class==0x53430103) {if(len!=sizeof(id))return STATUS_INVALID_PARAMETER;}
+-            else if(bytes!=4 && bytes!=1024 && bytes!=32768)return STATUS_INVALID_PARAMETER;
+-            else if(!(tmp=malloc(bytes)))return STATUS_NO_MEMORY;
++            if(mip){
++                for (; m<ARRAY_SIZE(base); m++) {
++                    row=512u>>m;height=72u>>m;
++                    if (bytes==row*height) break;
++                }
++                if(m==ARRAY_SIZE(base))return STATUS_INVALID_PARAMETER;
++            }
++            if(info_class!=0x53430103 && !mip && bytes!=4 && bytes!=1024 && bytes!=32768)return STATUS_INVALID_PARAMETER;
++            if(bytes && !(tmp=malloc(bytes)))return STATUS_NO_MEMORY;
+             server_enter_uninterrupted_section(&virtual_mutex,&sigset);
+             status=STATUS_NOT_MAPPED_VIEW;
+-            if ((v=find_view(addr,bytes?bytes:1)) && v->native_wc_cookie) {
++            if ((v=find_view(addr,mip?0xd900:bytes?bytes:1)) && v->native_wc_cookie) {
+                 if(!tmp)status=virtual_uninterrupted_write_memory(buffer,&v->scarlett_cpu_id,sizeof(id));
+                 else if(virtual_uninterrupted_read_memory(buffer,&id,sizeof(id))!=sizeof(id))status=STATUS_ACCESS_VIOLATION;
+                 else if(id!=v->scarlett_cpu_id)status=STATUS_NOT_MAPPED_VIEW;
+                 else if(virtual_uninterrupted_read_memory((char*)buffer+sizeof(id),tmp,bytes)!=bytes)status=STATUS_ACCESS_VIOLATION;
+-                else {memcpy((char*)addr,tmp,bytes);__sync_synchronize();status=STATUS_SUCCESS;}
++                else {
++                    if(mip){for(unsigned int y=0;y<height;y++)memcpy((char*)addr+base[m]+y*(m?256:512),(char*)tmp+y*row,row);}
++                    else memcpy((char*)addr,tmp,bytes);
++                    __sync_synchronize();status=STATUS_SUCCESS;
++                }
+             }
+             server_leave_uninterrupted_section(&virtual_mutex,&sigset);free(tmp);return status;
+         }

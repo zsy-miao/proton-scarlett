@@ -394,3 +394,16 @@ Five retail launches: three RTX diagnostics and two matched ordinary
 runs. Separate runs: one reference layout check and two passing fixtures.
 AMD issued tokens 1 and 2 and stopped at `+32820`; RTX issued only token
 1 before the title breakpoint at `+5707b8c`. Each presented token 1 once.
+
+RTX subsequently copied all seven R32 mips into the original pool at
+offset `0x1c3eb000`. Device `+428` received the same address, state 6
+and no clear value; it returned `E_NOTIMPL` and no resource. Both GPUs
+passed fenced readback of every copied row, padding byte and end guard.
+
+Four retail launches: one RTX diagnostic, two matched staged ordinary
+runs and a separate RTX run through the installed `bdc4efab` baseline.
+The two fixtures ran before ordinary verification. AMD stopped at
+`+32820`. Staged RTX first hit a null texture computer at `+16f71ea`
+for the separate 1D A8 texture; installed RTX hit the same instruction
+first for the R32 chain. Each ordinary run issued tokens 1 and 2 and
+presented only token 1.

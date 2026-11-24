@@ -1,5 +1,10 @@
 # Scarlett section lifetime ABI v1 (native x64)
 
+Apply `0018-wine-linear-seven-copy.patch` after `0017` for the seven-level
+128×72 R32 texture copy. Stage the rebuilt `ntdll.so` with `xg_xs.dll`.
+The native writer checks the WC pool generation and the entire chain
+extent before writing one mip's visible rows. RTX uses a section alias.
+
 For the 1024² and 2048² linear A8 atlas maps, apply `0017-wine-atlas-map-pin.patch`
 after `0016` and stage the rebuilt `ntdll.so` with the matching `xg_xs.dll`
 and `d3d12_xs.dll`. Native Map pins the pool generation until Unmap; on RTX
