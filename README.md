@@ -23,6 +23,8 @@ Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarle
 
 Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) through device `+0x2b0`. Its clear shader pair reads positions and colors from the `t0, space3` buffer. On both RADV and RTX, three offscreen draws matched all 384 expected pixels, including untouched background pixels. AMD retail then creates a point-filtered wrap sampler and copies it into visible slot 1. Both [allocation queries for a 256×128 `R8_UNORM` texture](scarlett/native/r8-allocation.md) return 32 KiB at 4 KiB alignment. The title next calls `XGCreateTextureComputer` and dereferences its null result at `+0x16f71ea`. **No retail draw submission, builder dispatch or presented frame has been observed.**
 
+In a [controlled draw test](scarlett/tests/clear-fallback/README.md), the original title routine recorded a clear through nine graphics calls. AMD and RTX 3070 both rendered the expected color in all 256 pixels inside the scissor rectangle. All 1,344 pixels outside it and all 1,600 pixels on a second target stayed unchanged.
+
 The [texture computer](scarlett/native/xg/README.md) can copy a 256×128 R8 texture when the caller specifies `4KB_S`. On AMD and RTX 3070, two coordinate patterns verified every byte in the original destination allocation and preserved its guards. Retail asks for an automatic layout, which is still unresolved.
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
