@@ -22,6 +22,8 @@ Run `./scarlett/tests/graphics-pools.sh` on the qualified RTX 3070 host to exerc
 
 The NixOS harness defaults to NVIDIA. To run the queue and fence test on the host's AMD adapter instead, use `SCARLETT_TEST_GPU=radv ./scarlett/tests/queue-fence.sh`. The Proton log identifies the selected adapter and driver.
 
+`tests/present-capture.cpp` (under `scarlett/`) presents red and green DXGI back buffers. The private Xvfb recorder captured both colors on NVIDIA. With RADV 26.3.0, creating the swapchain on Xvfb failed because the surface did not support presentation. Offscreen GPU tests do not check this display path.
+
 ## What the first graphics test covers
 
 The runtime also includes an original [xmem.dll](native/xmem/README.md) supporting ordinary
