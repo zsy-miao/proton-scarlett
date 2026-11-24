@@ -205,7 +205,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     AcquireSRWLockExclusive(&d->descriptor_lock);
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+            if (&c->iface==object && !c->tiled_r32 && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
                 c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }

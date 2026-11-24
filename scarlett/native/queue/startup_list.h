@@ -335,23 +335,7 @@ static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT f
     batch_step(sl(i),(sl(i)->primary_released?B_TAIL_STAMP:B_HEAD_STAMP));
 }
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
-/* Page provenance alone doesn't identify the device that owns this list. */
-static BOOL wait_device_matches(ID3D12Device *device)
-{
-    HRESULT (WINAPI *create)(REFIID,void **)=(void *)GetProcAddress(GetModuleHandleW(L"dxgi.dll"),"CreateDXGIFactory1");
-    IDXGIFactory4 *factory;
-    IDXGIAdapter1 *adapter;
-    DXGI_ADAPTER_DESC1 desc;
-    LUID luid;
-    if (!create || FAILED(create(&IID_IDXGIFactory4,(void **)&factory))) return FALSE;
-    device->lpVtbl->GetAdapterLuid(device,&luid);
-    HRESULT hr=IDXGIFactory4_EnumAdapterByLuid(factory,luid,&IID_IDXGIAdapter1,(void **)&adapter);
-    IDXGIFactory4_Release(factory);
-    if (FAILED(hr)) return FALSE;
-    hr=IDXGIAdapter1_GetDesc1(adapter,&desc);
-    IDXGIAdapter1_Release(adapter);
-    return SUCCEEDED(hr) && desc.VendorId==0x10de && desc.DeviceId==0x2484;
-}
+#include "rtx3070.h"
 /* shortcut: only an untouched tail of the RTX marker/timestamp/post split.
  * Any new pooled recorder must invalidate post_boundary before appending work. */
 static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UINT64 ref,UINT flags)
@@ -389,7 +373,7 @@ static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UI
         !p || p->parent!=m || p->value!=0x29a5ee15) return E_NOTIMPL;
     if (FAILED(scarlett_query_section(0x53430015,(void *)addr,8,&id)) ||
         id.base!=(void *)addr || id.view_size!=65536 || id.offset!=m->generation) return E_INVALIDARG;
-    if (!wait_device_matches(s->device)) return E_NOTIMPL;
+    if (!xs_is_rtx3070(s->device)) return E_NOTIMPL;
     p->threshold=ref; p->counter=m->alias; s->post_boundary=FALSE;
     return S_OK;
 }

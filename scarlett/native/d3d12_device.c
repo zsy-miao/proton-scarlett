@@ -256,14 +256,18 @@ static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
          ((UINT)r->Flags==0x300001 && ((r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
          (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048))));
 }
+static BOOL tiled_r32_desc(const D3D12_RESOURCE_DESC *rd)
+{
+    return rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==1280 && rd->Height==720 &&
+        rd->DepthOrArraySize==1 && rd->MipLevels==1 && rd->Format==DXGI_FORMAT_R32_UINT && rd->SampleDesc.Count==1 &&
+        !rd->SampleDesc.Quality && (UINT)rd->Layout==0x102 && (UINT)rd->Flags==0x300004;
+}
 /* Both public slots consume the same descriptor. Require the per-resource and
  * aggregate results from the host to agree for this one-resource query. */
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
 {
-    if (rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==1280 && rd->Height==720 &&
-        rd->DepthOrArraySize==1 && rd->MipLevels==1 && rd->Format==DXGI_FORMAT_R32_UINT && rd->SampleDesc.Count==1 &&
-        !rd->SampleDesc.Quality && (UINT)rd->Layout==0x102 && (UINT)rd->Flags==0x300004) {
+    if (tiled_r32_desc(rd)) {
         /* 160 x 90 complete 256-byte guest tiles. */
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){0x384000,256};
         if(detail)*detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=256,.SizeInBytes=0x384000};
@@ -582,13 +586,19 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,
     return hr;
 }
 #endif
+#ifdef SCARLETT_STAGED_PLACED
+#include "queue/rtx3070.h"
+#include "tiled_r32.h"
+#endif
 static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const void *desc, UINT state,
         const void *clear, REFIID iid, void **out)
 {
 #ifdef SCARLETT_STAGED_PLACED
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_RESOURCE_DESC rd={0};
-    if (copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) && (msaa_desc(&rd) || single_desc(&rd)))
+    BOOL read=copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags);
+    if (read && tiled_r32_desc(&rd)) return create_tiled_r32(d,address,state,clear,iid,out);
+    if (read && (msaa_desc(&rd) || single_desc(&rd)))
         return create_target(d,address,rd.Format,state,clear,iid,out);
     return placed_create(d,address,desc,state,clear,iid,out);
 #else

@@ -97,3 +97,7 @@ after `0029` and run `scarlett/tests/wc-a8.sh GPU TOOL bgra` for each adapter.
 `0031` adds the 1440p floating-point target after `0030`. Run
 `scarlett/tests/wc-float1440.sh GPU TOOL` to check the different allocation
 orders, cross-format overlap rejection, original backing and descriptor views.
+
+`0032` reserves the tiled R32 buffer in the original pool. Apply it after
+`0031`; run `scarlett/tests/rtx-r32-tile.sh TOOL radv` and repeat with
+`nvidia` to verify original tiled words and release after GPU retirement.

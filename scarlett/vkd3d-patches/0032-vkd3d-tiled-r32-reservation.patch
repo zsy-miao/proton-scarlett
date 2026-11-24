@@ -1,0 +1,173 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index eaa7546..1ec899d 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettTiledR32BufferV1 @38
+     ScarlettFloat1440V1 @36
+     ScarlettNativeFloat1440V1 @37
+     ScarlettA8ImageV1 @32
+diff --git a/libs/vkd3d/scarlett_primary_image.h b/libs/vkd3d/scarlett_primary_image.h
+index 24bb1d7..d8ca6fb 100644
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -12,6 +12,21 @@ struct scarlett_slice
+ static pthread_mutex_t scarlett_slice_lock = PTHREAD_MUTEX_INITIALIZER;
+ static struct scarlett_slice *scarlett_slices;
+ 
++/* Section imports may have different Win32 handles for the same allocation.
++ * Native pool images and buffers instead retain the very same heap identity. */
++static HRESULT scarlett_reserve_wc_slice(struct scarlett_slice *s)
++{
++    BOOL (WINAPI *same)(HANDLE,HANDLE)=NULL;
++    struct scarlett_slice *it;
++    if (s->wc_section && !(same=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles"))) return E_NOTIMPL;
++    pthread_mutex_lock(&scarlett_slice_lock);
++    for (it=scarlett_slices;it;it=it->next)
++        if (s->start<it->end && it->start<s->end && (s->wc_section ? it->wc_section && same(it->wc_section,s->wc_section) : it->lease==s->lease)) break;
++    if (!it){s->next=scarlett_slices;scarlett_slices=s;}
++    pthread_mutex_unlock(&scarlett_slice_lock);
++    return it?DXGI_ERROR_INVALID_CALL:S_OK;
++}
++
+ static void scarlett_remove_slice(struct scarlett_slice *s)
+ {
+     struct scarlett_slice **p;
+@@ -182,11 +197,28 @@ static bool scarlett_single_offset(DXGI_FORMAT format, SIZE_T off, bool native)
+         case DXGI_FORMAT_R16G16B16A16_FLOAT:
+             return (!native && off==base) || off==first || off==first+bgra || off==first+2*bgra;
+         case DXGI_FORMAT_B8G8R8A8_UNORM:
+-            return off==first || off==first+bgra || off==first+full || off==first+full+bgra;
++            /* A later BGRA rounds up to 64KiB after one or two guest-aligned R32 slots. */
++            for (unsigned int n=0;n<=2;n++) {
++                SIZE_T after=first+full+align(n*0x384000u,0x10000);
++                if (off==after || off==after+bgra) return true;
++            }
++            return off==first || off==first+bgra;
+         default: return false;
+     }
+ }
+ 
++static bool scarlett_r32_offset(SIZE_T off,bool native)
++{
++    const SIZE_T bgra=native?0x1010000:0x1000000;
++    const SIZE_T first=0xf000000+(native?0x880000+0x1ce0000:0x800000+0x1e00000);
++    unsigned int n;
++    /* Earlier RTX float-first trace, without the A8/BGRA allocations. */
++    if (!native && (off==0x10e00000 || off==0x11184000)) return true;
++    for(n=0;n<=2;n++)
++        if(off==first+n*bgra || off==first+n*bgra+0x384000 || (n && off==first+n*bgra+0x390000)) return true;
++    return false;
++}
++
+ /* Re-import the exact tagged WC DMA-BUF for a 4-sample image. The existing
+  * buffer heap itself cannot back it (type 3 vs. image bits 0x3 on RTX). */
+ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE_T size, SIZE_T off,
+@@ -221,8 +253,7 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+     const struct vkd3d_vk_device_procs *vk_procs;
+     struct d3d12_device *d;
+     struct d3d12_resource *r;
+-    struct scarlett_slice *s,*it;
+-    BOOL (WINAPI *same)(HANDLE,HANDLE);
++    struct scarlett_slice *s;
+     const VkPhysicalDeviceProperties *p;
+     VkImage im;
+     HRESULT hr;
+@@ -244,8 +275,6 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+         !(fp.imageFormatProperties.sampleCounts & ci.samples) ||
+         (xp.externalMemoryProperties.externalMemoryFeatures & (VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT |
+         VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))!=VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) return DXGI_ERROR_UNSUPPORTED;
+-    same=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+-    if (!same) return E_NOTIMPL;
+     if ((vr=VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,&im)))<0) return hresult_from_vk_result(vr);
+     ri.image=im;VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&ri,&mr));
+     if (dd.requiresDedicatedAllocation || mr.memoryRequirements.size!=((bgra || full)?span:a8?0x7f8000:512) ||
+@@ -255,11 +284,7 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+         hr=HRESULT_FROM_WIN32(GetLastError());vkd3d_free(s);goto image_fail;
+     }
+     s->start=off;s->end=off+span;
+-    pthread_mutex_lock(&scarlett_slice_lock);
+-    for (it=scarlett_slices;it;it=it->next) if (it->wc_section && s->start<it->end && it->start<s->end && same(it->wc_section,section)) break;
+-    if (!it) {s->next=scarlett_slices;scarlett_slices=s;}
+-    pthread_mutex_unlock(&scarlett_slice_lock);
+-    if (it) {CloseHandle(s->wc_section);vkd3d_free(s);hr=DXGI_ERROR_INVALID_CALL;goto image_fail;}
++    if (FAILED(hr=scarlett_reserve_wc_slice(s))) {CloseHandle(s->wc_section);vkd3d_free(s);goto image_fail;}
+     if ((vr=VK_CALL(vkAllocateMemory(d->vk_device,&ai,NULL,&s->memory)))<0) {s->memory=VK_NULL_HANDLE;hr=hresult_from_vk_result(vr);goto slice_fail;}
+     bi.image=im;bi.memory=s->memory;
+     if ((vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi)))<0) {hr=hresult_from_vk_result(vr);goto slice_fail;}
+@@ -329,7 +354,7 @@ static HRESULT native_pool_image(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T
+     struct d3d12_device *d=impl_from_ID3D12Device(iface);
+     struct d3d12_heap *heap=impl_from_ID3D12Heap(h);
+     const struct vkd3d_vk_device_procs *vk_procs=&d->vk_procs;
+-    VkImage im;VkResult vr;HRESULT hr;struct d3d12_resource *r;struct scarlett_slice *s,*it;
++    VkImage im;VkResult vr;HRESULT hr;struct d3d12_resource *r;struct scarlett_slice *s;
+     VkImageCreateInfo ci={VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,NULL,VK_IMAGE_CREATE_ALIAS_BIT,VK_IMAGE_TYPE_2D,
+         depth?VK_FORMAT_D32_SFLOAT_S8_UINT:VK_FORMAT_R8G8B8A8_UNORM,{1,1,1},1,1,VK_SAMPLE_COUNT_4_BIT,VK_IMAGE_TILING_OPTIMAL,
+         (depth?VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT:VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+@@ -357,9 +382,7 @@ static HRESULT native_pool_image(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T
+     if(dd.requiresDedicatedAllocation || !mr.memoryRequirements.alignment || off%mr.memoryRequirements.alignment || mr.memoryRequirements.size>span || !(mr.memoryRequirements.memoryTypeBits&4)) goto fail;
+     if(!(s=vkd3d_calloc(1,sizeof *s))){hr=E_OUTOFMEMORY;goto fail;}
+     s->start=off;s->end=off+span;s->lease=(IUnknown*)h;IUnknown_AddRef(s->lease);
+-    pthread_mutex_lock(&scarlett_slice_lock);for(it=scarlett_slices;it;it=it->next)if(it->lease==s->lease && it->start<s->end && s->start<it->end)break;
+-    if(!it){s->next=scarlett_slices;scarlett_slices=s;}pthread_mutex_unlock(&scarlett_slice_lock);
+-    if(it){IUnknown_Release(s->lease);vkd3d_free(s);hr=DXGI_ERROR_INVALID_CALL;goto fail;}
++    if(FAILED(hr=scarlett_reserve_wc_slice(s))){IUnknown_Release(s->lease);vkd3d_free(s);goto fail;}
+     bi.image=im;bi.memory=heap->allocation.device_allocation.vk_memory;
+     if((vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi)))<0){hr=hresult_from_vk_result(vr);goto fail_slice;}
+     if(FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,&rd,&hp,0,full?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:depth?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET,&cv,0,NULL,&r)))goto fail_slice;
+@@ -377,3 +400,52 @@ HRESULT WINAPI ScarlettNativeBgraImageV1(d3d12_device_iface *iface,ID3D12Heap *h
+ {return native_pool_image(iface,h,off,FALSE,DXGI_FORMAT_B8G8R8A8_UNORM,out);}
+ HRESULT WINAPI ScarlettNativeFloat1440V1(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,ID3D12Resource **out)
+ {return native_pool_image(iface,h,off,FALSE,DXGI_FORMAT_R16G16B16A16_FLOAT,out);}
++
++HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**);
++HRESULT WINAPI ScarlettTiledR32BufferV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    const SIZE_T span=0x384000;
++    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_BUFFER,0,span,1,1,1,DXGI_FORMAT_UNKNOWN,{1,0},D3D12_TEXTURE_LAYOUT_ROW_MAJOR,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
++    struct d3d12_device *d;
++    struct d3d12_heap *heap;
++    struct d3d12_resource *r;
++    struct scarlett_slice *s;
++    ID3D12Heap *imported=NULL;
++    HRESULT hr;
++    if(!out)return E_POINTER;
++    *out=NULL;
++    if(!iface || !!native==!!section || size!=0x89700000 || !scarlett_r32_offset(off,!!native))return E_INVALIDARG;
++    d=impl_from_ID3D12Device(iface);
++    if(FAILED(hr=ID3D12Device_GetDeviceRemovedReason((ID3D12Device*)iface)))return hr;
++    if(native){
++        heap=impl_from_ID3D12Heap(native);
++        if(!heap->scarlett_native_pool || heap->device!=d)return E_INVALIDARG;
++    }else{
++        if(d->device_info.properties2.properties.vendorID!=0x10de)return DXGI_ERROR_UNSUPPORTED;
++        if(FAILED(hr=ScarlettWcHeapV1(iface,size,section,NULL,&imported)))return hr;
++        heap=impl_from_ID3D12Heap(imported);
++    }
++    hr=DXGI_ERROR_UNSUPPORTED;
++    if(heap->desc.SizeInBytes!=size || heap->allocation.offset || !heap->allocation.device_allocation.vk_memory ||
++            heap->allocation.device_allocation.size!=size || heap->allocation.device_allocation.vk_memory_type!=(native?2u:3u))goto done;
++    if(!(s=vkd3d_calloc(1,sizeof(*s)))){hr=E_OUTOFMEMORY;goto done;}
++    s->start=off;s->end=off+span;
++    if(native){s->lease=(IUnknown*)native;IUnknown_AddRef(s->lease);}
++    else if(!DuplicateHandle(GetCurrentProcess(),section,GetCurrentProcess(),&s->wc_section,0,FALSE,DUPLICATE_SAME_ACCESS)){
++        hr=HRESULT_FROM_WIN32(GetLastError());vkd3d_free(s);goto done;
++    }
++    if(FAILED(hr=scarlett_reserve_wc_slice(s))){
++        if(s->wc_section)CloseHandle(s->wc_section);
++        if(s->lease)IUnknown_Release(s->lease);
++        vkd3d_free(s);goto done;
++    }
++    hr=d3d12_resource_create_placed(d,&rd,heap,off,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,NULL,0,NULL,&r);
++    if(FAILED(hr)){scarlett_remove_slice(s);goto done;}
++    /* Final internal resource destruction, not last title Release, drops the lease. */
++    r->flags|=SCARLETT_PRIMARY | VKD3D_RESOURCE_RETAINED_GPU_REFERENCE;
++    pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;pthread_mutex_unlock(&scarlett_slice_lock);
++    *out=(ID3D12Resource*)&r->ID3D12Resource_iface;
++done:
++    if(imported)ID3D12Heap_Release(imported);
++    return hr;
++}
