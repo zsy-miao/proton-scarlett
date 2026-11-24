@@ -199,6 +199,14 @@ this token: its submit-side effect is unverified. Token-zero submission and
 GPU retirement alone do not advance the presentation count or complete the
 issued frame.
 
+The title's statistics helper reads an **older** token from a four-entry
+history ring before the current sync-list submission. The read therefore
+doesn't tell us what tagging this submission changes. In `test-present-x.c`,
+both GPUs kept the present count unchanged and the issued token pending
+while an untagged sync list was gated **and after its fence retired**. Two
+subsequent presents each advanced the count once and completed their own
+token. A foreign or reconfigured frame clock rejected the old token.
+
 ### Control counter at list `+0x250`
 
 The RTX trace recorded `(cell, 7, snapshot, 1)`. The CPU increments a
@@ -213,3 +221,11 @@ site establishes how the native consumer behaves when the cell is below
 or above the snapshot, or what changing the flag does. The provider still
 stops here: testing equality while recording would discard the dependency
 on the cell's value when the list executes or is replayed.
+
+On RADV the initial publication stores a 64-bit `1` in the same control
+section as the two markers, at offset zero. This proves the storage width,
+not which bits operation 7 compares. A discriminating native trace would
+show whether a command *following* the operation executes with the cell
+below, equal to and above the target, including values that differ only in
+the high 32 bits. The suffix is the observation point; merely seeing the
+recording call return does not answer the question.

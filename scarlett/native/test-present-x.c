@@ -1,6 +1,7 @@
 #define COBJMACROS
 #define INITGUID
 #include "queue/present.h"
+#include "queue/queue.h"
 #include <stdio.h>
 
 HRESULT WINAPI D3D12XboxCreateDevice(void *, const void *, REFIID, void **);
@@ -16,8 +17,9 @@ typedef HRESULT (WINAPI *Present)(IUnknown *,UINT,const void *,const void *);
 #define H 120
 
 /* Copy a solid RGBA image onto the very buffer registered by the display factory. */
-static int paint(ID3D12CommandQueue *q, ID3D12Resource *buffer, DWORD rgba)
+static int paint(IUnknown *owner,IUnknown *queue, IDXGISwapChain3 *chain, UINT64 token, ID3D12Resource *buffer, DWORD rgba)
 {
+    ID3D12CommandQueue *q=xs_display_queue(queue);
     ID3D12Device *d;
     HR(ID3D12CommandQueue_GetDevice(q,&IID_ID3D12Device,(void **)&d),S_OK);
     ID3D12Resource *upload;
@@ -31,10 +33,10 @@ static int paint(ID3D12CommandQueue *q, ID3D12Resource *buffer, DWORD rgba)
     HR(ID3D12Resource_Map(upload,0,NULL,(void **)&pixels),S_OK);
     for (UINT i=0;i<pitch*H/4;++i) pixels[i]=rgba;
     ID3D12Resource_Unmap(upload,0,NULL);
-    ID3D12CommandAllocator *alloc;
-    ID3D12GraphicsCommandList *list;
-    HR(ID3D12Device_CreateCommandAllocator(d,D3D12_COMMAND_LIST_TYPE_DIRECT,&IID_ID3D12CommandAllocator,(void **)&alloc),S_OK);
-    HR(ID3D12Device_CreateCommandList(d,0,D3D12_COMMAND_LIST_TYPE_DIRECT,alloc,NULL,&IID_ID3D12GraphicsCommandList,(void **)&list),S_OK);
+    IUnknown *alloc,*recording;
+    HR(xs_allocator(d,D3D12_COMMAND_LIST_TYPE_DIRECT,&alloc),S_OK);
+    HR(xs_startup_list(d,D3D12_COMMAND_LIST_TYPE_DIRECT,alloc,FALSE,&recording),S_OK);
+    ID3D12GraphicsCommandList *list=(ID3D12GraphicsCommandList *)xs_list_host(recording);
     D3D12_RESOURCE_BARRIER bar={.Transition={buffer,0,D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_COPY_DEST}};
     ID3D12GraphicsCommandList_ResourceBarrier(list,1,&bar);
     D3D12_TEXTURE_COPY_LOCATION dst={.pResource=buffer,.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
@@ -44,17 +46,27 @@ static int paint(ID3D12CommandQueue *q, ID3D12Resource *buffer, DWORD rgba)
     bar.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;
     bar.Transition.StateAfter=D3D12_RESOURCE_STATE_PRESENT;
     ID3D12GraphicsCommandList_ResourceBarrier(list,1,&bar);
-    HR(ID3D12GraphicsCommandList_Close(list),S_OK);
-    ID3D12CommandList *batch[]={(ID3D12CommandList *)list};
-    ID3D12CommandQueue_ExecuteCommandLists(q,1,batch);
+    typedef HRESULT(WINAPI *Close)(IUnknown *);
+    typedef void(WINAPI *Submit)(IUnknown *,UINT,IUnknown *const *,UINT64,UINT);
+    HR(SLOT(recording,0x48,Close)(recording),S_OK);
+    ID3D12Fence *gate; UINT before,after;
+    HR(ID3D12Device_CreateFence(d,0,0,&IID_ID3D12Fence,(void **)&gate),S_OK);
+    HR(IDXGISwapChain3_GetLastPresentCount(chain,&before),S_OK);
+    HR(ID3D12CommandQueue_Wait(q,gate,1),S_OK);
+    SLOT(queue,0x118,Submit)(queue,1,&recording,0,0);
     ID3D12Fence *done;
     HR(ID3D12Device_CreateFence(d,0,0,&IID_ID3D12Fence,(void **)&done),S_OK);
     HANDLE event=CreateEventW(NULL,FALSE,FALSE,NULL); CHECK(event);
     HR(ID3D12CommandQueue_Signal(q,done,1),S_OK);
     HR(ID3D12Fence_SetEventOnCompletion(done,1,event),S_OK);
+    CHECK(WaitForSingleObject(event,30)==WAIT_TIMEOUT);
+    HR(SLOT(owner,0x280,Wait)(owner,2,0,NULL,0,&token),DXGI_ERROR_WAIT_TIMEOUT);
+    HR(ID3D12Fence_Signal(gate,1),S_OK);
     CHECK(WaitForSingleObject(event,5000)==WAIT_OBJECT_0);
-    CloseHandle(event); ID3D12Fence_Release(done); ID3D12GraphicsCommandList_Release(list);
-    ID3D12CommandAllocator_Release(alloc); ID3D12Resource_Release(upload); ID3D12Device_Release(d);
+    HR(SLOT(owner,0x280,Wait)(owner,2,0,NULL,0,&token),DXGI_ERROR_WAIT_TIMEOUT);
+    HR(IDXGISwapChain3_GetLastPresentCount(chain,&after),S_OK); CHECK(after==before);
+    ID3D12Fence_Release(gate); CloseHandle(event); ID3D12Fence_Release(done); IUnknown_Release(recording);
+    IUnknown_Release(alloc); ID3D12Resource_Release(upload); ID3D12Device_Release(d);
     return 0;
 }
 
@@ -85,6 +97,12 @@ int main(void)
     UINT64 token[2];
     HR(wait(d,0,1000,NULL,0,&token[0]),S_OK);
     HR(wait(d,0,1000,NULL,0,&token[1]),S_OK);
+    IUnknown *foreign;
+    HR(D3D12XboxCreateDevice(NULL,device_params,&id,(void **)&foreign),S_OK);
+    HR(SLOT(foreign,0x270,Interval)(foreign,NULL,16667,1,0),S_OK);
+    HR(SLOT(foreign,0x278,Schedule)(foreign,2,0,NULL,0),S_OK);
+    HR(wait(foreign,2,0,NULL,0,&token[0]),DXGI_ERROR_INVALID_CALL);
+    IUnknown_Release(foreign);
     RECT rect={0,0,W,H};
     float dst[]={0,0,1,1};
     IUnknown *key=(IUnknown *)(UINT_PTR)1;
@@ -109,7 +127,6 @@ int main(void)
     for (UINT i=0;i<2;++i)
         HR(IDXGISwapChain3_GetBuffer(chain,i,&IID_ID3D12Resource,(void **)&buf[i]),S_OK);
     IUnknown *keys[2];
-    ID3D12CommandQueue *hostq=xs_display_queue(q);
     for (UINT i=0;i<2;++i) {
         HR(xs_display_wrap(q,i,buf[1-i],&keys[i]),E_INVALIDARG); CHECK(!keys[i]);
         HR(xs_display_wrap(q,i,buf[i],&keys[i]),S_OK);
@@ -139,7 +156,7 @@ int main(void)
         key=(IUnknown *)keys[index];
         if (i) HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL); /* spent token, correct key */
         wire[0]=token[i];
-        CHECK(!paint(hostq,xs_surface_host(keys[index]),i ? 0xff00ff00 : 0xff0000ff));
+        CHECK(!paint(d,q,chain,token[i],xs_surface_host(keys[index]),i ? 0xff00ff00 : 0xff0000ff));
         HR(present(q,1,wire,opts),S_OK);
         HR(wait(d,2,5000,NULL,0,&token[i]),S_OK);
         HR(IDXGISwapChain3_GetLastPresentCount(chain,&after),S_OK); CHECK(after==before+i+1);
@@ -150,8 +167,12 @@ int main(void)
         while (GetTickCount64()<end);
     }
     for (UINT i=0;i<2;++i) IUnknown_Release(keys[i]);
+    HR(SLOT(d,0x270,Interval)(d,NULL,16667,1,0),S_OK);
+    HR(SLOT(d,0x278,Schedule)(d,2,0,NULL,0),S_OK);
+    HR(wait(d,2,0,NULL,0,&token[0]),DXGI_ERROR_INVALID_CALL);
+    puts("PASS q118 frame ownership: foreign guest clock and reconfigured issuing clock reject the token");
     IDXGISwapChain3_Release(chain); IDXGIFactory2_Release(factory);
     IUnknown_Release(q); IUnknown_Release(d); DestroyWindow(window);
-    puts("PASS PresentX: rejected inputs preserve count/token; mapped red then green, two exact completions");
+    puts("PASS q118 zero-token sync-list submit: gated and retired work both leave issued token pending and present count unchanged; two +100 flips complete only exact tokens");
     return 0;
 }
