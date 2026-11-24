@@ -336,7 +336,7 @@ static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64
     }
 #endif
     if (s->stamp) return E_NOTIMPL;
-    return record_timestamp(s->device,s->host,addr,&s->stamp);
+    return record_timestamp(s->device,s->host,addr,s->marker && s->marker->value==1,&s->stamp);
 }
 static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
 {
@@ -351,7 +351,8 @@ static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UI
 {
     struct prefix_marker *m=s->marker,*p=s->post;
     if (!s->reservation || !s->pool_owner || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        s->closed || FAILED(s->error) || s->host_exposed || s->primary || !m || m->value || !s->stamp ||
+        s->closed || FAILED(s->error) || s->host_exposed || s->primary || !m || !s->stamp ||
+        (m->value && !(m->value==1 && s->stamp->second_bank)) ||
         op!=7 || flags!=1) return E_NOTIMPL;
     if (!addr || (addr&7)) return E_INVALIDARG;
     struct scarlett_section_info id;

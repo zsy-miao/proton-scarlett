@@ -1,6 +1,7 @@
 /* The title passes a CPU address into the marked system pool, not a GPU VA. */
 struct system_timestamp {
     LONG refs;
+    BOOL second_bank;
     void *mapping;
     ID3D12Heap *retained;
     ID3D12Resource *dst;
@@ -24,20 +25,21 @@ static void drop_timestamp(struct system_timestamp *t)
 #endif
     HeapFree(GetProcessHeap(),0,t);
 }
-static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list,UINT64 addr,struct system_timestamp **out)
+static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list,UINT64 addr,BOOL second_prefix,struct system_timestamp **out)
 {
     struct scarlett_section_info i;
     HRESULT hr=scarlett_acquire_section((void *)addr,8,&i);
     BOOL wb=FAILED(hr);
     if (wb && FAILED(hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i))) return hr;
     const UINT window=65536;
-    if (!i.section || i.view_size!=0x49400000 || i.offset!=addr-(UINT_PTR)i.base || i.offset>i.view_size-8 || (wb && i.offset!=0x4196218 && i.offset!=0x4196698 && i.offset!=0x41964a8)) {
+    BOOL second=second_prefix && i.offset==0x419aa38;
+    if (!i.section || i.view_size!=0x49400000 || i.offset!=addr-(UINT_PTR)i.base || i.offset>i.view_size-8 || (wb && !second && i.offset!=0x4196218 && i.offset!=0x4196698 && i.offset!=0x41964a8)) {
         if (i.section) CloseHandle(i.section);
         return E_INVALIDARG;
     }
     struct system_timestamp *t=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *t);
     if (!t) {CloseHandle(i.section);return E_OUTOFMEMORY;}
-    t->refs=1;
+    t->refs=1;t->second_bank=second;
     ID3D12Heap *heap=NULL;
     if (wb) {
         HRESULT (WINAPI *open)(ID3D12Device *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **)=(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWbHeapV1");

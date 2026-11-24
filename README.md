@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs displayed the startup image. The RTX 3070 received a second frame token, but neither GPU presented a second frame. |
-| What's blocking it? | Both GPUs now accept the next command-list marker. AMD stops while recording a timestamp; the RTX 3070 stops while recording a wait. |
+| What's blocking it? | AMD still stops while recording a timestamp. The RTX 3070 now passes the wait and stops when the game asks how much memory a 2048×2048 alpha texture needs. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

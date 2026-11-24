@@ -397,3 +397,16 @@ Four retail launches (two diagnostic, two ordinary). Both ordinary runs
 presented token 1. AMD then stopped at timestamp `+240` (`+2482b37`);
 RTX issued token 2 and stopped at wait `+250` (`+2484b12`). Neither
 presented token 2.
+
+For the second marker pair, a RADV diagnostic observed timestamp offset
+`0x419aa38` in the write-back pool. The RTX wait used offset zero of the
+original control page, operation 7, reference 1 and flags 1. On both
+GPUs the fixture verified that the timestamp and post marker completed
+while the suffix fence stayed pending. After address reuse, only reaching
+or exceeding the unsigned 64-bit threshold on the original cell released it.
+
+Four retail launches (two diagnostic, two ordinary). The final RADV run
+again stopped at `+2482b37`; its rejected destination was not captured.
+RTX passed the wait and reached `+344188`, sizing a 2048×2048 `A8_UNORM`
+texture with layout `0x100` and flags `0x300000`. Both presented token 1;
+only RTX issued token 2, and neither presented it.
