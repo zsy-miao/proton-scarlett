@@ -468,6 +468,20 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, extended) == 0x180, "bootstrap x64 ABI");
 static const struct bootstrap_vtbl bootstrap_vtbl;
 
+/* Borrowed host root; caller holds the device and root live through use. */
+ID3D12RootSignature *xs_bvh_root_host(IUnknown *device,IUnknown *i)
+{
+    const IUnknownVtbl *v;
+    if (!copy_in(&v,device,sizeof v) || v!=&bootstrap_vtbl.unknown) return NULL;
+    struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct bvh_root *r=d->bvh_roots;
+    while (r && &r->iface!=i) r=r->next;
+    ID3D12RootSignature *host=r ? r->host : NULL;
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    return host;
+}
+
 static HRESULT bootstrap_params(const void *params)
 {
     DWORD w[20];

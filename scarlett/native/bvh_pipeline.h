@@ -11,7 +11,7 @@ enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_I
     BVH_BITONIC_PRE, BVH_BITONIC_OUTER, BVH_BITONIC_INNER, BVH_BITONIC_PRE64, BVH_BITONIC_OUTER64, BVH_BITONIC_INNER64,
     BVH_RADIX_RESET, BVH_RADIX_COUNT, BVH_RADIX_ALLOC,
     BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096,
-    BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS };
+    BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS, BVH_LOAD_PASS, BVH_SPLIT_PASS };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -44,6 +44,9 @@ static const struct bvh_candidate {
         0x1e,0xb3,0xb8,0xed,0xeb,0xd3,0x8d,0x0d,0xc2,0xce,0xe9,0xaa,0xe4,0x89,0xa0,0x45},L"XDXR RearrangeTriangles",4,{0}},
     [BVH_REARRANGE_BVHS]={0x1794,{0x29,0x63,0x30,0x83,0x51,0x53,0x15,0xf9,0x22,0x33,0xce,0x4b,0x7c,0xf0,0x56,0xec,
         0x7a,0x0e,0x0a,0xdb,0xf0,0xdb,0xd5,0x70,0xe4,0x18,0xec,0xed,0x3c,0xa9,0xf8,0xf4},L"XDXR RearrangeBVHs",4,{0}},
+    [BVH_SPLIT_PASS]={0x88f4,{0x5c,0x3d,0x3c,0x4a,0x41,0xf3,0x20,0xfb,0x73,0x50,0xd3,0xbf,0x23,0x84,0x95,0x50,
+        0x78,0x6f,0xb8,0x9b,0x87,0x09,0xd6,0x25,0x12,0xf7,0x3e,0xad,0xf2,0x08,0x8e,0xee},L"XDXR SplitInstancesPass",8,{0}},
+    [BVH_LOAD_PASS]={0x1230c,{0xd4,0x8a,0xbe,0x6c,0x23,0x4f,0xae,0x56,0xa4,0xbb,0x39,0x80,0xcd,0x83,0x98,0xa5,0x4a,0xf3,0x0f,0x8b,0x58,0xda,0xbc,0xb9,0x0c,0x60,0x07,0x7b,0x6c,0x4a,0xa8,0xed},L"XDXR LoadInstancesPass",10,{0}},
     [BVH_HEADERS]={0x1488,{0x7b,0xdd,0x8b,0x5b,0xf4,0x76,0xe7,0xf2,0x09,0x51,0xa9,0x2c,0x55,0x6d,0x6f,0x39,
         0x4d,0x4e,0xf9,0xbd,0x4c,0xa3,0x39,0x69,0x69,0x29,0x8d,0x3e,0xe1,0xd8,0xdd,0x7d},L"XDXR InitHeaders",1,{0}},
     [BVH_BEGIN_PASS]={0x1118,{0x9b,0xa6,0x1b,0x8f,0x5b,0x27,0x54,0x1f,0x62,0xe4,0x92,0x2d,0x1c,0x97,0xa2,0x0c,
@@ -151,7 +154,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     if (!IsEqualIID(&id,&IID_ID3D12PipelineState)) return E_NOINTERFACE;
     if (x || y) return E_NOTIMPL;
     if (!copy_in(&w,desc,sizeof w)) return E_POINTER;
-    BYTE code[0x752c];
+    BYTE code[0x1230c];
     enum bvh_kind kind=BVH_INIT;
     while (kind<ARRAYSIZE(bvh_candidates) && w.n!=bvh_candidates[kind].bytes) ++kind;
     if (kind==ARRAYSIZE(bvh_candidates) || w.n>sizeof code || memcmp(w.tail,(BYTE[32]){0},sizeof w.tail)) return E_NOTIMPL;
@@ -167,7 +170,8 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     BOOL prefix=kind>=BVH_PREFIX64 && kind<=BVH_PREFIX4096;
     BOOL original_radix=kind==BVH_RADIX_RESET || kind==BVH_RADIX_COUNT;
     BOOL rearrange=kind==BVH_REARRANGE_TRIANGLES || kind==BVH_REARRANGE_BVHS;
-    int required_root=rearrange ? ROOT_REARRANGE : prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
+    int required_root=kind==BVH_SPLIT_PASS ? ROOT_SPLIT_INSTANCES : kind==BVH_LOAD_PASS ? ROOT_LOAD_INSTANCES :
+            rearrange ? ROOT_REARRANGE : prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
             bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY;
     AcquireSRWLockShared(&d->descriptor_lock);
     struct bvh_root *r=d->bvh_roots;
@@ -194,6 +198,25 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         rp[2]=rp[1];
         for (UINT i=0;i<2;i++) rp[i]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0}};
         rs.NumParameters=3;
+    }
+    if (kind==BVH_SPLIT_PASS) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedSplitPassV1")) return E_NOTIMPL;
+        ranges[0].NumDescriptors=4;
+        rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,6}};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
+        rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
+        rs.NumParameters=5;
+    }
+    if (kind==BVH_LOAD_PASS) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedLoadPassV1")) return E_NOTIMPL;
+        for (UINT i=0;i<3;i++) rp[i]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0}};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,10}};
+        rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,6}};
+        rp[5]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
+        rp[6]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
+        rs.NumParameters=7;
     }
     if (rearrange) {
         HMODULE core=GetModuleHandleW(L"d3d12core.dll");

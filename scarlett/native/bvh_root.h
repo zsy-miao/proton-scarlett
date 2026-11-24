@@ -1,10 +1,49 @@
+enum bvh_root_kind {
+    ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC, ROOT_RADIX, ROOT_PREFIX, ROOT_REARRANGE,
+    ROOT_COPY, ROOT_DECOMPRESS, ROOT_APEX, ROOT_BVH4, ROOT_HIERARCHY, ROOT_LOAD_INSTANCES,
+    ROOT_LOAD_PRIMITIVES, ROOT_POSTBUILD, ROOT_SPLIT_INSTANCES, ROOT_TREELET
+};
+
+/* Root parameter index is part of the ABI; register order need not be ascending. */
+#define T(r) {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={r,0,0}}
+#define U(r) {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={r,0,0}}
+#define C(r,n) {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={r,0,n}}
+#define SCHEMA(name,...) {L"XDXR " name,sizeof((D3D12_ROOT_PARAMETER1[]){__VA_ARGS__})/sizeof(D3D12_ROOT_PARAMETER1), \
+        (const D3D12_ROOT_PARAMETER1[]){__VA_ARGS__}}
+static const struct {
+    const WCHAR *name;
+    UINT count;
+    const D3D12_ROOT_PARAMETER1 *params;
+} root_schemas[]={
+    [ROOT_UTILITY]=SCHEMA(L"UtilityShaders",T(0),U(0),C(0,16)),
+    [ROOT_MORTON]=SCHEMA(L"MortonCodesCalculator",C(0,8),U(0),U(1),U(2),U(3),U(4)),
+    [ROOT_BITONIC]=SCHEMA(L"BitonicSort",C(1,2),C(0,2),U(0),U(1)),
+    [ROOT_RADIX]=SCHEMA(L"RadixSortCountAndAlloc",U(0),U(1),U(2),U(3),U(4),U(5),C(0,3)),
+    [ROOT_PREFIX]=SCHEMA(L"RadixSortPrefixSum",U(0),U(1),C(0,1)),
+    [ROOT_REARRANGE]=SCHEMA(L"RearrangeElementsPass",U(0),U(1),U(2),U(3),U(4),U(5),U(6),C(0,4)),
+    [ROOT_COPY]=SCHEMA(L"CopyShaders",U(0),U(1),C(0,16)),
+    [ROOT_DECOMPRESS]=SCHEMA(L"BVHDecompressor",C(0,19),U(0),U(1),T(0)),
+    [ROOT_APEX]=SCHEMA(L"ApexPointMapComputer",U(0),U(1),C(0,6)),
+    [ROOT_BVH4]=SCHEMA(L"BVH4Builder",U(0),U(1),U(2),U(3),U(4),U(5),U(6),U(7),C(0,3)),
+    [ROOT_HIERARCHY]=SCHEMA(L"ConstructHierarchyPass",U(1),U(2),U(0),C(0,3)),
+    [ROOT_LOAD_INSTANCES]=SCHEMA(L"LoadInstancesPass",U(0),U(1),U(2),C(0,10)),
+    [ROOT_LOAD_PRIMITIVES]=SCHEMA(L"LoadPrimitivesPass",U(0),U(1),U(2),U(3),U(4),T(0),T(1),T(2),C(0,14)),
+    [ROOT_POSTBUILD]=SCHEMA(L"PostBuildInfoQuery",U(0),U(1),U(2),C(0,4)),
+    [ROOT_SPLIT_INSTANCES]=SCHEMA(L"SplitInstancesPass",U(0),U(1),U(2),U(3),C(0,8)),
+    [ROOT_TREELET]=SCHEMA(L"TreeletReorder",U(0),U(1),U(2),U(3),U(4),U(5),C(0,5)),
+};
+#undef SCHEMA
+#undef C
+#undef U
+#undef T
+
 /* The title sees only the console wrapper. */
 struct bvh_root {
     IUnknown iface;
     LONG refs;
     struct xbox_device *owner;
     ID3D12RootSignature *host;
-    enum { ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC, ROOT_RADIX, ROOT_PREFIX, ROOT_REARRANGE } kind;
+    enum bvh_root_kind kind;
     struct bvh_root *next;
 };
 static ULONG WINAPI root_addref(IUnknown *i)
@@ -38,13 +77,11 @@ static HRESULT WINAPI root_query(IUnknown *i,REFIID iid,void **out)
 }
 static HRESULT WINAPI root_name(IUnknown *i,const WCHAR *name)
 {
-    /* The supplied helper passes exactly this literal immediately after success. */
     struct bvh_root *r=CONTAINING_RECORD(i,struct bvh_root,iface);
-    const WCHAR *expected=r->kind==ROOT_REARRANGE?L"XDXR RearrangeElementsPass":r->kind==ROOT_RADIX?L"XDXR RadixSortCountAndAlloc":
-            r->kind==ROOT_PREFIX?L"XDXR RadixSortPrefixSum":r->kind==ROOT_MORTON?L"XDXR MortonCodesCalculator":
-            r->kind==ROOT_BITONIC?L"XDXR BitonicSort":L"XDXR UtilityShaders";
-    WCHAR copy[ARRAYSIZE(L"XDXR RadixSortCountAndAlloc")];
+    const WCHAR *expected=root_schemas[r->kind].name;
+    WCHAR copy[32];
     SIZE_T bytes=(wcslen(expected)+1)*sizeof(WCHAR);
+    if (bytes>sizeof copy) return E_NOTIMPL;
     if (!copy_in(copy,name,bytes)) return E_POINTER;
     if (memcmp(copy,expected,bytes)) return E_NOTIMPL;
     return ID3D12RootSignature_SetName(r->host,expected);
@@ -57,69 +94,33 @@ static const struct root_methods {
 } root_methods={{root_query,root_addref,root_release},{xs_stop,xs_stop,xs_stop},root_name,xs_stop};
 _Static_assert(offsetof(struct root_methods,name)==0x30,"root SetName slot");
 
-/* Borrowed for a checked translator; caller holds a live wrapper through use. */
-ID3D12RootSignature *xs_bvh_root_host(IUnknown *device,IUnknown *i)
-{
-    const IUnknownVtbl *v;
-    if (!copy_in(&v,i,sizeof v) || v!=&root_methods.unknown) return NULL;
-    struct bvh_root *r=CONTAINING_RECORD(i,struct bvh_root,iface);
-    return &r->owner->iface==device ? r->host : NULL;
-}
-
 static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob,SIZE_T n,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
     *out=NULL;
     if (!iid || !blob || !n) return E_INVALIDARG;
-    if (!IsEqualIID(iid,&IID_ID3D12RootSignature)) return E_NOINTERFACE;
-    BYTE wire[260];
-    if (node!=1 || (n!=140 && n!=164 && n!=212 && n!=236 && n!=260)) return E_NOTIMPL;
+    IID id;
+    if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
+    if (!IsEqualIID(&id,&IID_ID3D12RootSignature)) return E_NOINTERFACE;
+    /* Canonical single-chunk DXBC: 68 fixed bytes, 24 per v1.1 descriptor/constant. */
+    BYTE wire[68+9*24];
+    if (node!=1 || n<68+3*24 || n>sizeof wire || (n-68)%24) return E_NOTIMPL;
     if (!copy_in(wire,blob,n)) return E_POINTER;
-    D3D12_ROOT_PARAMETER1 p[8]={
-        {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV},
-        {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV},
-        {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,16}},
-    };
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1,
-        .Desc_1_1={3,p,0,NULL,(D3D12_ROOT_SIGNATURE_FLAGS)0x03000000}};
-    int kind=ROOT_UTILITY;
-    if (n==236 || n==260) {
-        UINT uavs=n==236?6:7;
-        kind=n==236?ROOT_RADIX:ROOT_REARRANGE;
-        desc.Desc_1_1.NumParameters=uavs+1;
-        for (UINT i=0;i<uavs;i++)
-            p[i]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0,0}};
-        p[uavs]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,n==236?3u:4u}};
-    } else if (n==212) {
-        kind=ROOT_MORTON;
-        desc.Desc_1_1.NumParameters=6;
-        p[0]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,8}};
-        for (UINT i=1;i<6;i++)
-            p[i]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i-1,0,0}};
-    } else if (n==164) {
-        kind=ROOT_BITONIC;
-        desc.Desc_1_1.NumParameters=4;
-        for (UINT i=0;i<2;i++) {
-            p[i]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={1-i,0,2}};
-            p[i+2]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0,0}};
-        }
-    }
     ID3DBlob *serialized=NULL;
-    HRESULT hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
-    if (FAILED(hr)) return hr;
-    BOOL match=n==ID3D10Blob_GetBufferSize(serialized) && !memcmp(wire,ID3D10Blob_GetBufferPointer(serialized),n);
-    ID3D10Blob_Release(serialized);
-    if (!match && n==140) {
-        kind=ROOT_PREFIX;
-        p[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;
-        p[1].Descriptor.ShaderRegister=1;
-        p[2].Constants.Num32BitValues=1;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1};
+    HRESULT hr;
+    enum bvh_root_kind kind;
+    for (kind=0;kind<ARRAYSIZE(root_schemas);++kind) {
+        if (root_schemas[kind].count!=(n-68)/24) continue;
+        desc.Desc_1_1=(D3D12_ROOT_SIGNATURE_DESC1){root_schemas[kind].count,root_schemas[kind].params,
+                0,NULL,(D3D12_ROOT_SIGNATURE_FLAGS)0x03000000};
         hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
         if (FAILED(hr)) return hr;
-        match=n==ID3D10Blob_GetBufferSize(serialized) && !memcmp(wire,ID3D10Blob_GetBufferPointer(serialized),n);
+        BOOL match=n==ID3D10Blob_GetBufferSize(serialized) && !memcmp(wire,ID3D10Blob_GetBufferPointer(serialized),n);
         ID3D10Blob_Release(serialized);
+        if (match) break;
     }
-    if (!match) return E_NOTIMPL;
+    if (kind==ARRAYSIZE(root_schemas)) return E_NOTIMPL;
     desc.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
     if (FAILED(hr)) return hr;

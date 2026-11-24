@@ -11,6 +11,7 @@ s=$(realpath "$(dirname "$0")/../native")
 w=$(mktemp -d "${TMPDIR:-/tmp}/scarlett-builder.XXXXXXXX")
 trap 'rm -rf -- "$w"' EXIT
 mkdir "$w/game"
+cp -- "$builder" "$w/game/private-builder-image.bin"
 for src in test-bvh-radix-device queue/queue; do
     x86_64-w64-mingw32-gcc -std=c11 -Os -Wall -Wextra -Werror \
         -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED -c "$s/$src.c" -o "$w/${src##*/}.o"
@@ -41,7 +42,7 @@ prefix1024 0x9be80 0x1644
 prefix2048 0x9a830 0x1644
 prefix4096 0x99160 0x16cc
 SLICES
-for fixture in pipeline partitions instances load-instances reset copy-update copycounters beginpass headers radix prefix radix-alloc; do
+for fixture in root-registry pipeline partitions instances load-instances reset copy-update copycounters beginpass headers radix prefix radix-alloc; do
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
         "$s/test-bvh-$fixture.cpp" "$w/test-bvh-radix-device.o" "$w/queue.o" -ld3d12 \
         -o "$w/game/game_scarlett_master.exe"

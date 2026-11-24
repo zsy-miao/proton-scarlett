@@ -1,0 +1,166 @@
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -490,6 +490,7 @@
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS = 54,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON = 55,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC = 56,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS = 57,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ = 58,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -936,7 +936,7 @@
+ /* Useful to check if the implementation recognizes a particular capability for ABI compatibility. */
+ dxil_spv_bool dxil_spv_converter_supports_option(dxil_spv_option cap)
+ {
+-	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
++	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
+ 	     cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS)
+ 		cap = DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE;
+ 	return Converter::recognizes_option(static_cast<Option>(cap)) ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+@@ -1013,6 +1013,7 @@
+ 	}
+ 
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC:
+@@ -1021,6 +1022,7 @@
+ 	{
+ 		auto *in = reinterpret_cast<const dxil_spv_option_bounded_xbox_range *>(option);
+ 		OptionBoundedXboxRange helper;
++		helper.load_pass = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS;
+ 		helper.bitonic = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC;
+ 		helper.morton = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON;
+ 		helper.scalar_read = helper.bitonic || helper.morton || option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ;
+@@ -1028,7 +1030,7 @@
+ 		helper.range_descriptor = in->range_descriptor;
+ 		helper.centroid_descriptor_plus_one = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS ?
+ 		    reinterpret_cast<const dxil_spv_option_bounded_xbox_begin_pass *>(option)->centroid_descriptor + 1 : 0;
+-		helper.atomic_descriptor = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES ?
++		helper.atomic_descriptor = helper.load_pass || option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES ?
+ 		    reinterpret_cast<const dxil_spv_option_bounded_xbox_load_instances *>(option)->atomic_descriptor : ~0u;
+ 		helper.read_only = in->read_only == DXIL_SPV_TRUE;
+ 		converter->options.emplace_back(duplicate(helper));
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -359,7 +359,7 @@
+ 	OptionBoundedXboxRange() : OptionBase(Option::BoundedXboxRange) {}
+ 	unsigned range_word, range_descriptor, atomic_descriptor;
+ 	unsigned centroid_descriptor_plus_one;
+-	bool read_only, morton = false, bitonic = false, scalar_read = false;
++	bool read_only, load_pass = false, morton = false, bitonic = false, scalar_read = false;
+ };
+ 
+ struct OptionPhysicalStorageBuffer : OptionBase
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -472,9 +472,9 @@
+ 	unsigned xbox_range_word = ~0u, xbox_range_descriptor = ~0u;
+ 	unsigned xbox_atomic_descriptor = ~0u;
+ 	unsigned xbox_centroid_descriptor_plus_one = 0;
+-	spv::Id xbox_helpers[6] = {};
++	spv::Id xbox_helpers[8] = {};
+ 	bool xbox_radix_count = false;
+-	bool xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
++	bool xbox_load_pass = false, xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
+ 	bool root_constant_arrayed = false;
+ 	bool xbox_scalar_read = false;
+ 	unsigned patch_location_offset = ~0u;
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6325,6 +6325,9 @@
+ 	if (fn->getName() == "xbox.Min3_F32") return 8;
+ 	if (fn->getName() == "xbox.Max3_F32") return 9;
+ 	if (fn->getName() == "xbox.Med3_F32") return 10;
++	if (fn->getName() == "xbox.global_atomic_add") return 355;
++	if (fn->getName() == "xbox.global_atomic_sub") return 367;
++	if (fn->getName() == "xbox.global_load_dwordx2_with_cache") return 357;
+ 	if (fn->getName() == "xbox.global_atomic_fmin") return 368;
+ 	if (fn->getName() == "xbox.global_atomic_fmax") return 369;
+ 	if (fn->getName() == "xbox.global_load_dword_with_cache") return 356;
+@@ -6388,8 +6391,10 @@
+ static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
+ {
+ 	if (opnum == 25 || opnum == 50) return emit_radix_count_wave(impl, call, opnum);
+-	const bool atomic = opnum >= 368;
+-	const bool read = opnum < 360 || opnum == 364;
++	const bool counter = opnum == 355 || opnum == 367;
++	if ((counter || opnum == 357) && !impl.xbox_load_pass) return false;
++	const bool atomic = counter || opnum >= 368;
++	const bool read = !counter && (opnum < 360 || opnum == 364);
+ 	if (opnum == 364 && !impl.xbox_scalar_read) return false;
+ 	if (opnum == 23)
+ 	{
+@@ -6445,7 +6450,7 @@
+ 	    !impl.root_constant_id || desc >= impl.root_descriptor_count ||
+ 	    impl.root_constant_num_words < 3 || word > impl.root_constant_num_words - 3 ||
+ 	    (!boxes && !atomic && read != impl.xbox_read_only) || call.getNumOperands() != (atomic ? 3u : read ? 4u : 5u) ||
+-	    (!read && call.getType()->getTypeID() != (atomic ? f32 : llvm::Type::TypeID::VoidTyID)))
++	    (!read && (counter ? !integer(call.getType(), 32) : call.getType()->getTypeID() != (atomic ? f32 : llvm::Type::TypeID::VoidTyID))))
+ 		return false;
+ 	auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 	if (!opcode || !integer(opcode->getType(), 32) || opcode->getUniqueInteger().getZExtValue() != opnum ||
+@@ -6453,7 +6458,7 @@
+ 	for (unsigned i = read ? 2 : 3; i < call.getNumOperands(); i++)
+ 		if (!llvm::isa<llvm::UndefValue>(call.getOperand(i)) || !integer(call.getOperand(i)->getType(), 32)) return false;
+ 	auto *payload = read ? call.getType() : call.getOperand(2)->getType();
+-	if (n == 1 && (atomic ? payload->getTypeID() != f32 : !integer(payload, 32))) return false;
++	if (n == 1 && (atomic && !counter ? payload->getTypeID() != f32 : !integer(payload, 32))) return false;
+ 	if (n > 1)
+ 	{
+ 		auto *s = llvm::dyn_cast<llvm::StructType>(payload);
+@@ -6461,7 +6466,7 @@
+ 		for (unsigned i = 0; i < n; i++) if (!integer(s->getElementType(i), 32)) return false;
+ 	}
+ 	auto &b = impl.builder();
+-	auto &helper = impl.xbox_helpers[atomic ? 4u + opnum - 368u : n - 1];
++	auto &helper = impl.xbox_helpers[counter ? 6u + (opnum == 367) : atomic ? 4u + opnum - 368u : n - 1];
+ 	auto payload_id = impl.get_type_id(payload);
+ 	if (read && n > 1) impl.llvm_composite_meta[&call].forced_composite = true;
+ 	if (!helper)
+@@ -6508,6 +6513,8 @@
+ 			physical = b.createOp(spv::OpSelect, u64, {centroid_ok, centroid, physical});
+ 			ok = b.createBinOp(spv::OpLogicalOr, bit, ok, centroid_ok);
+ 		}
++		// A rejected reservation must take the rollback path (old + amount == UINT_MAX).
++		auto rejected = counter ? b.createUnaryOp(spv::OpNot, u32, fn->getParamId(1)) : b.makeNullConstant(payload_id);
+ 		spv::Builder::If guard(ok, 0, b);
+ 		auto type = n == 1 ? u32 : b.makeVectorType(u32, n);
+ 		auto ptr = b.createUnaryOp(spv::OpConvertUToPtr, b.makePointer(spv::StorageClassPhysicalStorageBuffer, type),
+@@ -6530,7 +6537,10 @@
+ 			for (unsigned i = 0; i < n; i++) parts.push_back(b.createCompositeExtract(data, u32, i));
+ 			data = b.createCompositeConstruct(read ? payload_id : type, parts);
+ 		}
+-		if (atomic)
++		if (counter)
++			data = b.createOp(opnum == 355 ? spv::OpAtomicIAdd : spv::OpAtomicISub, u32,
++			        {ptr, b.makeUintConstant(spv::ScopeDevice), b.makeUintConstant(0), data});
++		else if (atomic)
+ 		{
+ 			// For non-NaN IEEE floats the input sign selects the integer ordering.
+ 			auto v = b.createUnaryOp(spv::OpBitcast, u32, data);
+@@ -6553,7 +6563,7 @@
+ 		auto taken = b.getBuildPoint()->getId();
+ 		guard.makeEndIf();
+ 		b.makeReturn(true, (read || atomic) ? b.createOp(spv::OpPhi, payload_id,
+-		             {data, taken, b.makeNullConstant(payload_id), entry->getId()}) : 0);
++		             {data, taken, rejected, entry->getId()}) : 0);
+ 		b.setBuildPoint(saved);
+ 		helper = fn->getId();
+ 	}
+@@ -9492,6 +9502,7 @@
+ 		xbox_centroid_descriptor_plus_one = static_cast<const OptionBoundedXboxRange &>(cap).centroid_descriptor_plus_one;
+ 		xbox_atomic_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).atomic_descriptor;
+ 		xbox_scalar_read = static_cast<const OptionBoundedXboxRange &>(cap).scalar_read;
++		xbox_load_pass = static_cast<const OptionBoundedXboxRange &>(cap).load_pass;
+ 		xbox_bitonic = static_cast<const OptionBoundedXboxRange &>(cap).bitonic;
+ 		xbox_morton = static_cast<const OptionBoundedXboxRange &>(cap).morton;
+ 		xbox_read_only = static_cast<const OptionBoundedXboxRange &>(cap).read_only;

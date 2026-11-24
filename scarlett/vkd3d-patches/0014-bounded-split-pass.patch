@@ -1,0 +1,34 @@
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1320,4 +1320,5 @@
+ void WINAPI DLLEXPORT ScarlettBoundedBitonicV1(void) {}
+ void WINAPI DLLEXPORT ScarlettRadixCountV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedLoadPassV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedSplitPassV1(void) {}
+ DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettBoundedSplitPassV1
+     ScarlettBoundedLoadPassV1
+     ScarlettRadixCountV1
+     ScarlettBoundedInstanceReadsV1
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1376,7 +1376,9 @@
+ 
+     /* The adapter checks the full shader digest before constructing the private root. */
+     boxes = dxbc->size == 0x1118 && hash == UINT64_C(0x5d9580eb7cfa9a7f);
+-    load_pass = dxbc->size == 0x1230c && hash == UINT64_C(0xb34bd46ce654ee73);
++    /* Both exact shaders use the same checked wave-reservation ABI. */
++    load_pass = (dxbc->size == 0x1230c && hash == UINT64_C(0xb34bd46ce654ee73)) ||
++            (dxbc->size == 0x88f4 && hash == UINT64_C(0x520024d8d479f209));
+     instances = load_pass || (dxbc->size == 0x752c && hash == UINT64_C(0x942b4594697cfcb6));
+     morton = (dxbc->size == 0x33a0 && hash == UINT64_C(0xfe5914f3eaa74d93)) ||
+             (dxbc->size == 0x33fc && hash == UINT64_C(0x6dcc62ed085e60b8));

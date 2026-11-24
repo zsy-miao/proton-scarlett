@@ -1,6 +1,7 @@
 #include <d3d12.h>
 #include <cstdio>
 #include <cstdint>
+#include <cstddef>
 #include <wrl/client.h>
 #include "bvh_record.h"
 using Microsoft::WRL::ComPtr;
@@ -64,7 +65,32 @@ static int run(bool index)
     xs_bvh_hold *h=nullptr;
     --dr.bytes; CK(xs_record_bvh_reset(ps.Get(),list.Get(),&dr,33,0xab234567,&h)==E_INVALIDARG && !h); ++dr.bytes;
     const UINT first=0xffffffc0u;
-    HR(xs_record_bvh_reset(ps.Get(),list.Get(),&dr,33,first,&h));
+    const UINT count=33;
+    auto reset=[&](){return xs_record_bvh_reset(ps.Get(),list.Get(),&dr,count,first,&h);};
+    if (index) HR(reset());
+    else {
+        // XboxBvhBuilder.dll +2093a..+20990: cursor < dispatch limit, four DWORDs, cursor += 16.
+        UINT words[5]={};
+        struct Cursor { BYTE pad[0x18]; UINT *write; UINT64 unused; UINT *limit; };
+        static_assert(offsetof(Cursor,write)==0x18 && offsetof(Cursor,limit)==0x28);
+        Cursor guest={{},words,0,words+1}; // last permitted packet start is words[0]
+        CK(guest.write < guest.limit);
+        const UINT direct[]={0x4002c400,2,1,1};
+        memcpy(guest.write,direct,sizeof direct); guest.write+=4;
+        auto record=[&]() -> HRESULT {
+            // Read only owned storage, and only after qualifying the entire written span.
+            if (guest.write!=words+4 || words[0]!=0x4002c400 ||
+                    words[1]!=(count+31)/32 || words[2]!=1 || words[3]!=1) return E_INVALIDARG;
+            return reset();
+        };
+        for (UINT i=0;i<4;++i) {
+            words[i]=i ? direct[i]+1 : 0x4002e800;
+            CK(record()==E_INVALIDARG && !h); words[i]=direct[i];
+        }
+        --guest.write; CK(record()==E_INVALIDARG && !h);
+        guest.write+=2; CK(record()==E_INVALIDARG && !h); // valid prefix plus trailing word
+        --guest.write; HR(record());
+    }
     for(UINT i=8;i<8+33*4;i++) expected[i]=first+(index?i-8:0);
     ps.Reset(); root.Reset();
     transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -76,7 +102,7 @@ static int run(bool index)
     CloseHandle(event); CK(fence->GetCompletedValue()==1); xs_drop_bvh_hold(h);
     HR(rb->Map(0,nullptr,(void **)&mapped)); CK(!memcmp(mapped,expected,sizeof expected)); rb->Unmap(0,nullptr);
     printf("PASS synthetic +1f0 %s: unaltered bytecode, two workgroups, short range rejected, all 192 fenced DWORDs\n",
-            index?"ResetToIndexBuffer":"ResetCounters");
+            index?"ResetToIndexBuffer":"ResetCounters via guest direct packet");
     return 0;
 }
 int main() { return run(false) || run(true); }

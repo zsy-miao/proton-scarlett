@@ -10,12 +10,18 @@ device `+0x80` with `(This, UINT nodeMask, const void *data, SIZE_T bytes,
 REFIID iid, void **out)`. On success it invokes root `+0x30` with the name
 `XDXR UtilityShaders`. The helper releases its own serialized blob.
 
-The evidenced input is node 1, `IID_ID3D12RootSignature`, one 140-byte DXBC
+The first evidenced input is node 1, `IID_ID3D12RootSignature`, one 140-byte DXBC
 RTS0 (SHA-256 `8cb102b5bdc14649e4945275bc672894443646b915e89fbc3b8a981a9ec81a4b`).
 Match independent serialization of v1.1 SRV t0 / UAV u0 / 16 DWORDs b0,
-space 0, visibility ALL, no root-descriptor flags or samplers. Only for this
-match, serialize the same bindings with desktop signature flags zero. The
-meaning of the two console flag bits in other signatures is unverified.
+space 0, visibility ALL, no root-descriptor flags or samplers.
+
+The [root registry](bvh_root.h) covers all 16 distinct layouts in the pinned
+builder. `+0x80` compares the complete canonical wire before serializing the
+same ordered parameters with desktop flags zero. `test-bvh-root-registry.cpp`
+checks the public slot against all 52 embedded RTS0 chunks and the matching
+constructor name literals, including a correctly serialized but misordered
+`ConstructHierarchyPass` rejection. Root creation alone does not establish
+that the associated shaders can compile or dispatch on the host.
 
 The synthetic `test-bvh-root.cpp` links the adapter objects like
 `test-allocation-info.cpp`. Compile `test-bvh-root.hlsl` with `dxc -T cs_6_0
