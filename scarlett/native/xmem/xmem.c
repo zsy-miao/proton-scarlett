@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include "pages.h"
+#include "display_alloc.h"
 
 #if !defined(__x86_64__) || !defined(_WIN64)
 #error This DLL implements only the Windows x64 ABI.
@@ -41,6 +42,7 @@ typedef struct {
 
 __declspec(dllexport) PVOID WINAPI XMemAllocDefault(SIZE_T size, ULONGLONG attributes)
 {
+    if (attributes==DISPLAY_ATTR) return allocate_display(size);
     /* XALLOC_ATTRIBUTES: ObjectType[13:0], AllocatorId[23:16], Alignment[28:24]. */
     unsigned exponent = (unsigned)((attributes >> 24) & 31);
     if ((attributes & ~0x1fff3fffULL) || exponent > 17 || exponent == 1 || exponent == 3) {
@@ -67,6 +69,7 @@ __declspec(dllexport) VOID WINAPI XMemFreeDefault(PVOID address, ULONGLONG attri
 {
     if (!address)
         return;
+    if (free_display(address,attributes)) return;
     Block *block = (Block *)address - 1;
     if (block->attributes != attributes) {
         SetLastError(ERROR_INVALID_PARAMETER);

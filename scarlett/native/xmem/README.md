@@ -14,6 +14,25 @@ console SDK, external compatibility runtime, or ordinal compatibility contract.
 | `XMemVirtualAlloc`, graphics reserve+commit | Type `0x20003000`, flags `0x183`, protection `0x22004`: a live GPU-importable shared section on patched Wine. Size must be a positive multiple of 2 MiB; a requested base must also be aligned to 2 MiB and free. Release with `VirtualFree(base, 0, MEM_RELEASE)`. |
 | [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | 64 KiB page runs with CPU section backing (`0`) or a WC graphics heap (`0x280`). See limits below. |
 
+The graphics default allocator also accepts exactly `(64 MiB, 0x30808000)`.
+The full word is a compatibility candidate informed by xcl `f4ce27ceb6`;
+the title's interceptor establishes only `(attrs & 0x00ffc000)==0x00808000`.
+This request creates one 4 MiB **VA**-aligned, cached read/write allocation
+using ordinary committed memory. The title's own allocation hook rounds and
+returns slices; its free hook absorbs interior frees and forwards the base.
+No physical page size is promised.
+
+For a host image import, `ScarlettRetainDisplayBackingV1(slice,bytes,&info)`
+checks that the range is inside one live default allocation, returns its
+original base, size and offset, and takes one reference. This is an arena
+bounds check, not proof the title issued a particular suballocation. Check
+image bounds/alignment and GPU memory compatibility independently. Keep
+XMem loaded and pair each success with `ScarlettReleaseDisplayBackingV1(info.base)`
+after destroying the import on GPU retirement. Owner free immediately denies
+new retains; existing imports keep the CPU bytes until their last release.
+`test-display-alloc.c` exercises those rules with a synthetic retail-style
+hook pair and two requests of `0x1fa4000` bytes.
+
 Unsupported virtual allocation flags, types, or protections return `NULL` and set
 `ERROR_NOT_SUPPORTED` (this DLL's diagnostic). This includes other graphics commits,
 tools memory, tags, and other special page sizes or protection modifiers.

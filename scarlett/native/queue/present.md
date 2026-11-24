@@ -114,7 +114,19 @@ The ring rebuild's free hook at `248d980` absorbs interior-slice frees
 and forwards the base to `XMemFreeDefault`. A reference trace needs only
 the first `(size, attributes)` pair at `56a2a60` and the resulting arena's
 alignment and memory protection. That allocation does not occur in the
-current retail run.
+ordinary committed-resource path.
+
+Both [VIctory](https://github.com/Marvisak/VIctory/blob/d2a4bae1f49533ef5cb512fd1b1ba1513f2e1989/crates/victory-gpu/src/resource.rs#L594-L627)
+and [xcl](https://github.com/ivall/xcl/blob/f4ce27ceb6d1b0576d0c659b713b674778bf1968/crates/xcl/src/hle/kernelx.rs#L611-L622)
+use `0x30808000` for this display request. VIctory models a tiled
+`0x1fe0000`-byte slice here. Both runtimes allocate a separate host texture;
+the attribute word is useful reference behavior, not a console trace or
+proof of pixel coherence. Our diagnostic requested the measured linear
+size (`0x1fb0000`) via public `XMemAlloc`. The unmodified retail callback
+forwarded `(0x4000000, 0x30808000)` to the default allocator. With the
+project's exact-match default installed, the first slice equaled the base
+of a committed RW, 4 MiB-aligned arena. The diagnostic stopped there
+before image creation.
 
 The [native Vulkan test](../../tests/display-arena.c) imported one 64 MiB
 host allocation on RADV `1002:164e`. Two linear RGBA8 textures fit in it
