@@ -22,6 +22,12 @@ DXC rejects the former (missing VS `b0`, PS `s14`) and accepts the latter.
 The group's pending request had no published PSO at the sample. This
 doesn't identify the shader stream eventually supplied to the worker.
 
+A later AMD diagnostic matched the worker, selection and return on the
+same request, group, root and device. Both full shader hashes matched the
+table above. The 688-byte stream specified one RGBA8 UNORM target, no
+depth target, one sample, and per-vertex POSITION, COLOR and TEXCOORD
+at offsets 0, 12 and 16. The factory returned `E_NOTIMPL` and no PSO.
+
 A CPU replay found one way these roots can alias. The two colour shaders
 and the two textured shaders all have inner lookup key `0x00010001`.
 With the colour root already in the cache, all four retrieved that
@@ -79,6 +85,48 @@ The sealed source is `src17`, **not** its newer `src18`. The current primary is 
 The CPU test runs both DXC-generated entry point bodies; only DX operations, vertex fetch, raster interpolation and sampling are supplied by the fixture. It compares clip positions, varyings, all 64 destination pixels and all three unmodified images against an analytic oracle. Rebinding `src18` or writing `dst40` must fail comparison. The sampler shim requires exact wrap texel centres at 1:1 scale on a single mip; this does not qualify minification or hardware anisotropy. The PE paints all four independent RTVs, samples sealed `src17`, draws a test triangle strip, fences and checks all four readbacks. It uses no retail code or data.
 
 Before retail integration require the parent **and** pass/digests, independently resolve source and destination resource/view/subresource generations including source mip and destination ring, verify no alias, and retain both through completion. Validate object SRV stride/range, CBV extent, fetch, rectangle handling, sampler, view formats, blend and viewport against the actual draw. Test IA/topology, descriptor placement and role numbers are synthetic; there is no general rectangle, table or barrier implementation here.
+
+### Three-vertex topology-17 fixture
+
+Set `IM96_RECT=1` and `XMEM_DLL` when running `build.sh` for the separate
+three-vertex PE. The `+126275..+1262ac` producer derives width and height
+from view dimensions shifted by the mip selector, each clamped to at least 1.
+`+1262f6..+126375` selects `0x11`, count 3, stride 24. In increasing address
+order `+1263ad..+1263e6` writes `(0,0,0)`, `(0,h,0)`, `(w,h,0)`, RGBA8
+`ffffffff` each, with UVs `(0,0)`, `(0,1)`, `(1,1)`; see also the second-VB
+shape in `native/queue/test-clear4-bind.c`. The second setter recorded
+slot 0, 4080/24, topology 17. Neither that setter nor the producer identifies
+the final clip positions, W, or first vertex on the retail draw.
+
+The test uses the unchanged VS71 and PS86, exact private table, synthetic
+4×4 dimensions and two-stage transform. A separate post-VS GS requires
+finite TL/BL/BR clip positions with constant depth and equal positive W.
+At W=2 the missing TR takes BR.x and TL.y; each smooth UV/colour lane
+continues by the horizontal difference BR−BL from TL. Both triangles
+start at TL with the same winding. Unsupported shapes emit nothing. There
+is no inference from the mode-15 position guard or just the topology
+number. The colour word is unpacked by IA before interpolation.
+
+The producer-shaped case uses the last legal three-record window at
+fixture index 167; a second case has four colour gradients. A 4×4 binary
+RGBA8 pattern distinguishes all 16 texel centres at 1:1 scale. The PE
+checks every RGBA32F pixel of four targets after the fence: 16 texture
+results and 48 guards in each valid case, all 64 unchanged for reversed
+order and unequal W. It retains the existing table-generation and padding
+checks. `rect-cpu.py` executes DXC's VS and GS bodies and inspects the two
+emitted triangles in each valid case and the empty streams in both rejects.
+No host fixture dimensions, projection or readbacks identify retail pixels.
+On both adapters the equal-W cases matched all 16 shaded pixels and 48
+guards; all 128 guard pixels in the two rejection cases remained intact.
+
+Behavioural sources: AMD PAL [hardware enum](https://github.com/GPUOpen-Drivers/pal/blob/c5e800072a32f68b6ccc4422936d96167c6e0728/src/core/hw/gfxip/gfx9/chip/gfx9_plus_merged_enum.h)
+and [RectList API](https://github.com/GPUOpen-Drivers/pal/blob/c5e800072a32f68b6ccc4422936d96167c6e0728/inc/core/palCmdBuffer.h)
+(MIT; API ordinal 5 is distinct from hardware 17);
+[VIctory](https://github.com/Marvisak/VIctory/blob/ffe310eb2098e52169f4c44db5ffdabf43a72622/crates/victory-gpu/src/primitive.rs#L1-L17)
+(GPL-3.0-or-later; second vertex is the elbow for this ordering);
+[XCL](https://github.com/ivall/XCL/blob/c4d37bec1bb4286eb373aea963404a23f13401fa/crates/xcl/src/gpu/recomp/emit.rs#L4725-L4747)
+(GPL-2.0-only; post-VS equal-W smooth outputs, other orders possible).
+No upstream implementation copied.
 
 ### Attribution
 

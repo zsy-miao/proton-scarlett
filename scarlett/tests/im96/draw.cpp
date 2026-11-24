@@ -41,7 +41,12 @@ int main() {
         auto b=file(name,size); auto r=create(D3D12_HEAP_TYPE_UPLOAD,size,D3D12_RESOURCE_STATE_GENERIC_READ);
         void*p; HR(r->Map(0,nullptr,&p)); memcpy(p,b.data(),size); r->Unmap(0,nullptr); return r;
     };
-    auto object=upload("object.bin",64),camera=upload("camera.bin",512),vb=upload("vertices.bin",96);
+    auto object=upload("object.bin",64),camera=upload("camera.bin",512);
+#ifdef TEST_IM96_RECT
+    auto vb=upload("rect-vb.bin",4080);
+#else
+    auto vb=upload("vertices.bin",96);
+#endif
     auto heap=[&](D3D12_DESCRIPTOR_HEAP_TYPE t,UINT n,bool visible){
         D3D12_DESCRIPTOR_HEAP_DESC h={t,n,visible?D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE:D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
         ComPtr<ID3D12DescriptorHeap> r; HR(d->CreateDescriptorHeap(&h,IID_PPV_ARGS(&r))); return r;
@@ -80,21 +85,31 @@ int main() {
     rt.BlendOp=rt.BlendOpAlpha=D3D12_BLEND_OP_ADD; rt.LogicOp=D3D12_LOGIC_OP_NOOP; rt.RenderTargetWriteMask=15;
     pd.RasterizerState.FillMode=D3D12_FILL_MODE_SOLID; pd.RasterizerState.CullMode=D3D12_CULL_MODE_NONE; pd.RasterizerState.DepthClipEnable=TRUE;
     pd.SampleMask=~0u; pd.SampleDesc.Count=pd.NumRenderTargets=1; pd.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; pd.RTVFormats[0]=rgba;
+#ifdef TEST_IM96_RECT
+    auto gs=file("rect.dxil");pd.GS={gs.data(),gs.size()};
+#endif
     ComPtr<ID3D12PipelineState>pso; HR(d->CreateGraphicsPipelineState(&pd,IID_PPV_ARGS(&pso)));
     D3D12_COMMAND_QUEUE_DESC qd={}; ComPtr<ID3D12CommandQueue>q; HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q)));
     ComPtr<ID3D12CommandAllocator>a; HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
     ComPtr<ID3D12GraphicsCommandList>l; HR(d->CreateCommandList(0,qd.Type,a.Get(),pso.Get(),IID_PPV_ARGS(&l)));
     auto barrier=[&](ID3D12Resource*r,D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after){
         D3D12_RESOURCE_BARRIER b={}; b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; b.Transition={r,0,before,after}; l->ResourceBarrier(1,&b);};
-    const char* names[]={"src17.bin","src18.bin","dst40.bin","dst41.bin"}; ComPtr<ID3D12Resource>image[4],rb[4];
+#ifdef TEST_IM96_RECT
+    const char* names[]={"rect0.bin","rect1.bin","rect2.bin","rect3.bin"};
+    constexpr UINT input_count=0;
+#else
+    const char* names[]={"src17.bin","src18.bin","dst40.bin","dst41.bin"};
+    constexpr UINT input_count=2;
+#endif
+    ComPtr<ID3D12Resource>image[4],rb[4];
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[4];
     for(UINT i=0;i<4;++i){
         image[i]=create(D3D12_HEAP_TYPE_DEFAULT,0,D3D12_RESOURCE_STATE_RENDER_TARGET);
         auto r=slot(rtv.Get(),i); d->CreateRenderTargetView(image[i].Get(),nullptr,r);
-        auto data=file(names[i],1024);
+        auto data=file(input_count?names[i]:"dst41.bin",1024);
         for(LONG y=0;y<8;++y)for(LONG x=0;x<8;++x){float c[4]; memcpy(c,data.data()+(8*y+x)*16,16);
             D3D12_RECT rect={x,y,x+1,y+1}; l->ClearRenderTargetView(r,c,1,&rect);}
-        if(i<2){barrier(image[i].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if(i<input_count){barrier(image[i].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             d->CreateShaderResourceView(image[i].Get(),nullptr,slot(srv.Get(),i?successor:1));}
     }
     auto current=slot(rtv.Get(),3); l->OMSetRenderTargets(1,&current,FALSE,nullptr);
@@ -109,12 +124,21 @@ int main() {
     for(UINT i=0;i<2;++i) l->SetGraphicsRootDescriptorTable(i,srv->GetGPUDescriptorHandleForHeapStart());
     l->SetGraphicsRootConstantBufferView(2,camera->GetGPUVirtualAddress());
 #endif
-    D3D12_VERTEX_BUFFER_VIEW view={vb->GetGPUVirtualAddress(),96,24}; l->IASetVertexBuffers(0,1,&view);
+    D3D12_VERTEX_BUFFER_VIEW view={vb->GetGPUVirtualAddress(),UINT(vb->GetDesc().Width),24}; l->IASetVertexBuffers(0,1,&view);
+#ifdef TEST_IM96_RECT
+    l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    const UINT first[]={167,1,4,7};
+    for(UINT i=0;i<4;i++){
+        auto target=slot(rtv.Get(),i);l->OMSetRenderTargets(1,&target,FALSE,nullptr);
+        l->DrawInstanced(3,1,first[i],0);
+    }
+#else
     l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP); l->DrawInstanced(4,1,0,0);
+#endif
     for(UINT i=0;i<4;++i){
         auto desc=image[i]->GetDesc(); UINT64 bytes; d->GetCopyableFootprints(&desc,0,1,0,&fp[i],nullptr,nullptr,&bytes);
         rb[i]=create(D3D12_HEAP_TYPE_READBACK,bytes,D3D12_RESOURCE_STATE_COPY_DEST);
-        barrier(image[i].Get(),i<2?D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE:D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);
+        barrier(image[i].Get(),i<input_count?D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE:D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);
         D3D12_TEXTURE_COPY_LOCATION from={},to={}; from.pResource=image[i].Get(); from.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         to.pResource=rb[i].Get(); to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; to.PlacedFootprint=fp[i]; l->CopyTextureRegion(&to,0,0,0,&from,nullptr);
     }
@@ -131,9 +155,9 @@ int main() {
     CK(WaitForSingleObject(event,0)==WAIT_TIMEOUT);used.replace();HR(gate->Signal(1));
 #endif
     CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0); CloseHandle(event); HR(d->GetDeviceRemovedReason()); CK(f->GetCompletedValue()==1);
-    for(UINT i=0;i<4;++i){auto gold=file(i==3?"expected.bin":names[i],1024);
+    for(UINT i=0;i<4;++i){auto gold=file(input_count && i==3?"expected.bin":names[i],1024);
         BYTE*p; HR(rb[i]->Map(0,nullptr,(void**)&p)); for(UINT y=0;y<8;++y)for(UINT x=0;x<8;++x){
-#ifdef TEST_IM96_USED
+#if defined(TEST_IM96_USED) && !defined(TEST_IM96_RECT)
             if(i==3 && x>=2 && x<6 && y>=2 && y<6){
                 float u=(x-2+.5f)/4,v=(y-2+.5f)/4;const float c[]={u,0,1-u,1-v};memcpy(gold.data()+(y*8+x)*16,c,16);
             }
@@ -141,7 +165,11 @@ int main() {
             if(memcmp(p+fp[i].Offset+y*fp[i].Footprint.RowPitch+x*16,gold.data()+(y*8+x)*16,16)){
                 fprintf(stderr,"FAIL %s at (%u,%u)\n",names[i],x,y); return 1;}}
         rb[i]->Unmap(0,nullptr);}
+#ifdef TEST_IM96_RECT
+    puts("PASS im96 rect3: producer UV/white + varying RGBA, 16 shaded and 48 guards each; wrong order and unequal W left 128 guards intact");
+#else
     puts("PASS im96 src17 -> dst41: 16 shaded, 48 border, src17/src18/dst40 intact");
+#endif
 #ifdef TEST_IM96_USED
     used.verify();
 #endif

@@ -32,6 +32,12 @@ flags=(-Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_P
     -DSCARLETT_EXPERIMENTAL_TAGGED_BATCH -DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
     -DSCARLETT_EXPERIMENTAL_DIRECT_WAIT -DSCARLETT_EXPERIMENTAL_BRIDGE)
 extra=()
+if [[ ${IM96_RECT:-0} == 1 ]]; then
+    : "${XMEM_DLL:?rectangle fixture requires the private used table}"
+    flags+=(-DTEST_IM96_RECT)
+    "${DXC:-dxc}" -WX -Ges -Gis -O3 -Qstrip_debug -Qstrip_reflect -T gs_6_0 -E gs -Fo "$g/rect.dxil" "$s/rect.hlsl"
+    "${DXC:-dxc}" -dumpbin -verifyrootsignature "$g/exact.rs" "$g/rect.dxil"
+fi
 if [[ -n ${XMEM_DLL:-} ]]; then
     flags+=(-DTEST_IM96_USED)
     extra+=("$(realpath -e "$XMEM_DLL")")
@@ -44,3 +50,7 @@ x86_64-w64-mingw32-g++ "${flags[@]}" -std=c++17 -static -Wl,--no-insert-timestam
     "${extra[@]}" -ld3d12 -ldxgi -ldxguid -o "$g/game_scarlett_master.exe"
 python3 -IB "$s/fixture.py" "$g"
 python3 -IB "$s/cpu.py" "$g"
+if [[ ${IM96_RECT:-0} == 1 ]]; then
+    python3 -B "$s/rect.py" "$g"
+    python3 -IB "$s/rect-cpu.py" "$g"
+fi

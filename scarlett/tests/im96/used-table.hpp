@@ -42,7 +42,10 @@ struct UsedTable{
         checks=buf(576,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
         D3D12_HEAP_PROPERTIES h={};h.Type=D3D12_HEAP_TYPE_DEFAULT;h.CreationNodeMask=h.VisibleNodeMask=1;
         D3D12_RESOURCE_DESC td={};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=td.Height=8;
-        td.MipLevels=2;td.DepthOrArraySize=td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+         td.MipLevels=2;td.DepthOrArraySize=td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+#ifdef TEST_IM96_RECT
+        td.Width=td.Height=4;
+#endif
         HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&td,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&texture)));
         texture_key.Attach(test_texture(u.owner,texture.Get(),FALSE));CK(texture_key);
         HR(xs_write_view(u.owner,0x90,texture_key.Get(),srv_words,u.tex_slot));u.tex_serial=*(UINT64*)u.tex_slot;u.image=texture.Get();
@@ -52,7 +55,14 @@ struct UsedTable{
         D3D12_RENDER_TARGET_VIEW_DESC rv={};rv.Format=td.Format;rv.ViewDimension=D3D12_RTV_DIMENSION_TEXTURE2D;
         for(UINT mip=0;mip<2;mip++){
             rv.Texture2D.MipSlice=mip;d->CreateRenderTargetView(texture.Get(),&rv,at);
-            const float c[]={mip?0.f:1.f,mip?1.f:0.f,mip?0.f:1.f,1};l->ClearRenderTargetView(at,c,0,nullptr);
+             const float c[]={mip?0.f:1.f,mip?1.f:0.f,mip?0.f:1.f,1};l->ClearRenderTargetView(at,c,0,nullptr);
+#ifdef TEST_IM96_RECT
+            if(!mip)for(LONG y=0;y<4;y++)for(LONG x=0;x<4;x++){
+                D3D12_RECT rect={x,y,x+1,y+1};
+                const float code[]={float(x&1),float(x>>1),float(y&1),float(y>>1)};
+                l->ClearRenderTargetView(at,code,1,&rect);
+            }
+#endif
             at.ptr+=d->GetDescriptorHandleIncrementSize(hh.Type);
         }
         D3D12_RESOURCE_BARRIER image={};image.Transition={texture.Get(),D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
