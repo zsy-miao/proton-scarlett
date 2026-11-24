@@ -410,3 +410,11 @@ again stopped at `+2482b37`; its rejected destination was not captured.
 RTX passed the wait and reached `+344188`, sizing a 2048×2048 `A8_UNORM`
 texture with layout `0x100` and flags `0x300000`. Both presented token 1;
 only RTX issued token 2, and neither presented it.
+
+The subsequent RADV rejection was qword index 1 in the active kind-2
+timestamp record. Checking that record and its array resolves the location
+when the pool address changes. Relocated-record tests reject a wrong
+owner, stride or index. With this change and the linear A8 sizing rule,
+both ordinary runs issued tokens 1 and 2, presented only 1, and stopped
+at device `+360` (return `+abfe0d`) for the 1024×1024 A8 atlas.
+This batch used four diagnostic and two ordinary retail launches.

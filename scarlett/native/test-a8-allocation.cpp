@@ -2,6 +2,7 @@
 #include <wrl/client.h>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 using Microsoft::WRL::ComPtr;
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *);
@@ -42,6 +43,19 @@ int main() {
             FAILED(xs_msaa_allocation_info1(dev.Get(),node,cnt,p,&bad,&extra.one));};
     CK(deny(0,1,prefix) && deny(1,2,prefix) && deny(1,1,prefix+1));
     for(UINT k=0;k<13;k++)if(k!=1){wire[k]^=1;CK(deny(1,1,wire));wire[k]^=1;}
+    if(!bgra){
+        const auto rtInfo=g.info;
+        for(UINT side : {1024u,2048u}){
+            DWORD atlas[]={3,0,0,0,side,0,side,0x10001,65,1,0,0x100,0x300000};memcpy(prefix,atlas,sizeof atlas);
+            CK(query(&g.info,dev.Get(),1,1,prefix)==&g.info && g.info.SizeInBytes==side*side && g.info.Alignment==256 && g.before==1 && g.after==2);
+            if(side==2048){extra.one.Offset=~0ull;CK(query1(&g.info,dev.Get(),1,1,prefix,&extra.one)==&g.info && !extra.one.Offset && extra.one.SizeInBytes==side*side && extra.one.Alignment==256 && extra.a==1 && extra.b==2);}
+            else CK(FAILED(xs_msaa_allocation_info1(dev.Get(),1,1,prefix,&g.info,&extra.one)));
+            for(UINT j=0;j<13;j++)if(j!=1){((DWORD*)prefix)[j]^=1;CK(deny(1,1,prefix));((DWORD*)prefix)[j]^=1;}
+            CK(deny(0,1,prefix) && deny(1,2,prefix) && deny(1,1,prefix+1));
+        }
+        puts("PASS A8 linear atlas: guarded aggregate/detail and field negatives");
+        g.info=rtInfo;
+    }
     CK(VirtualFree(pages,0,MEM_RELEASE));
     // One ordinary desktop placed RT at a nonzero offset, using exactly the reported remaining extent.
     D3D12_HEAP_DESC hd={};hd.SizeInBytes=g.info.Alignment+g.info.SizeInBytes;hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT;

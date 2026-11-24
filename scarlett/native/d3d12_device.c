@@ -344,6 +344,15 @@ static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail,const struct page_group *group)
 {
+    if (rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==rd->Height &&
+        (rd->Width==2048 || (!detail && rd->Width==1024)) && rd->MipLevels==1 && rd->DepthOrArraySize==1 &&
+        rd->Format==DXGI_FORMAT_A8_UNORM && rd->SampleDesc.Count==1 && !rd->SampleDesc.Quality &&
+        (UINT)rd->Layout==0x100 && (UINT)rd->Flags==0x300000) {
+        UINT64 size=rd->Width*rd->Height;
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){size,256};
+        if(detail)*detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=256,.SizeInBytes=size};
+        return S_OK;
+    }
     UINT bytes=small_tile_bytes(rd,!detail);
     if (bytes) {
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){bytes,256};

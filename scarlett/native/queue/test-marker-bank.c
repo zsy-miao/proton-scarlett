@@ -21,6 +21,17 @@ static int check(UINT offset,UINT value,BOOL native)
     else {HRESULT(WINAPI *cpu)(ID3D12Device*,SIZE_T,void**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");CK(cpu);HR(cpu(d,bytes,(void**)&page));HR(scarlett_query_section(0x53430120,page+offset,4,&alias));}
     CK(alias.base!=page && alias.view_size==bytes);memset(page,0xa7,bytes);
     BYTE *sys=alloc(NULL,span,0x20003000,0x183,0x22004);CK(sys);UINT64 addr=(UINT_PTR)(page+offset),ts=(UINT_PTR)(sys+head);
+    if(value){
+        /* Relocate the owner and its qword array inside a real pool; only slot 1 belongs to this caller. */
+        UINT_PTR records[4]={0};DWORD *r=(DWORD*)(sys+0x1000);records[2]=(UINT_PTR)r;
+        struct scarlett_section_info pool={.base=sys,.view_size=span};r[2]=0x800;r[3]=8;r[14]=0x20001;
+        for(UINT move=0;move<2;move++){
+            UINT64 array=(UINT_PTR)(sys+0x419aa30+move*0x480),used=array+0x4010;
+            memcpy(r+18,&used,8);memcpy(r+20,&array,8);memcpy(r+22,&array,8);
+            CK(indexed_stamp(array+8,&pool,2,1,records) && !indexed_stamp(array,&pool,2,1,records) && !indexed_stamp(array+8,&pool,1,1,records));
+            CK(!indexed_stamp(array+16,&pool,2,2,records));r[3]^=1;CK(!indexed_stamp(array+8,&pool,2,1,records));r[3]^=1;
+        }
+    }
     volatile UINT64 *tick=(volatile UINT64*)(sys+head);*tick=0;MemoryBarrier();
     HR(xs_allocator(d,0,&a));HR(xs_allocator(d,0,&b));HR(xs_device_list(d,0,a,TRUE,owner,&list));HR(xs_direct_queue(d,&q));HR(xs_shared_fence(d,&gate));HR(xs_shared_fence(d,&done));struct startup_list *s=sl(list);
     for(UINT pass=0;pass<2;pass++){

@@ -25,6 +25,24 @@ static void drop_timestamp(struct system_timestamp *t)
 #endif
     HeapFree(GetProcessHeap(),0,t);
 }
+/* +a1c309 selects one of four live records; +2482b16 indexes its qword array. */
+static BOOL indexed_stamp(UINT64 addr,const struct scarlett_section_info *pool,UINT bank,UINT index,const UINT_PTR *records)
+{
+    UINT_PTR owner;DWORD w[24];SIZE_T n;
+    if(bank>=4 || index!=1 || !ReadProcessMemory(GetCurrentProcess(),records+bank,&owner,sizeof owner,&n) || n!=sizeof owner ||
+       pool->view_size!=0x49400000 || owner<(UINT_PTR)pool->base || owner-(UINT_PTR)pool->base>pool->view_size-sizeof w ||
+       !ReadProcessMemory(GetCurrentProcess(),(void*)owner,w,sizeof w,&n) || n!=sizeof w) return FALSE;
+    UINT64 array,mirror,used;memcpy(&array,w+22,8);memcpy(&mirror,w+20,8);memcpy(&used,w+18,8);
+    return w[2]==0x800 && w[3]==8 && (w[14]>>16)==2 && array==mirror && array>=(UINT_PTR)pool->base &&
+        array-(UINT_PTR)pool->base<=pool->view_size-0x4010-0x800 && used==array+0x4010 && addr==array+index*8;
+}
+static BOOL active_stamp(UINT64 addr,const struct scarlett_section_info *pool)
+{
+    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL);UINT bank,index;SIZE_T n;
+    return ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a0c),&bank,4,&n) && n==4 &&
+        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0x75dedb0),&index,4,&n) && n==4 &&
+        indexed_stamp(addr,pool,bank,index,(const UINT_PTR*)(exe+0xa943a18));
+}
 static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list,UINT64 addr,BOOL second_prefix,struct system_timestamp **out)
 {
     struct scarlett_section_info i;
@@ -32,7 +50,7 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     BOOL wb=FAILED(hr);
     if (wb && FAILED(hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i))) return hr;
     const UINT window=65536;
-    BOOL second=second_prefix && i.offset==0x419aa38;
+    BOOL second=second_prefix && (i.offset==0x419aa38 || (i.section && i.view_size==0x49400000 && active_stamp(addr,&i)));
     if (!i.section || i.view_size!=0x49400000 || i.offset!=addr-(UINT_PTR)i.base || i.offset>i.view_size-8 || (wb && !second && i.offset!=0x4196218 && i.offset!=0x4196698 && i.offset!=0x41964a8)) {
         if (i.section) CloseHandle(i.section);
         return E_INVALIDARG;
