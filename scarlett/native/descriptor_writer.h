@@ -435,6 +435,7 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     DWORD w[16];
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
+    if (!rd.Alignment && (UINT)rd.Layout==SRGB_ROW_LAYOUT && is_srgb_row(&rd)) return write_wc_address_view(device,SRGB_ROW_VIEW,w,dest);
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
         if (is_layered_texel(&rd)) {
             UINT layers=rd.DepthOrArraySize,kind=ARRAY_VIEW_BASE+layers;

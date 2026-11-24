@@ -1,0 +1,13 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 38540c6..7a97025 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6934,7 +6934,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+             SIZE_T bytes=len>sizeof(id)?len-sizeof(id):0;
+             if(process!=NtCurrentProcess() || is_wow64() || !buffer || res_len || (info_class==0x53430104 && ((UINT_PTR)addr&4095)))return STATUS_INVALID_PARAMETER;
+             if(info_class==0x53430103) {if(len!=sizeof(id))return STATUS_INVALID_PARAMETER;}
+-            else if(bytes!=4 && bytes!=32768)return STATUS_INVALID_PARAMETER;
++            else if(bytes!=4 && bytes!=1024 && bytes!=32768)return STATUS_INVALID_PARAMETER;
+             else if(!(tmp=malloc(bytes)))return STATUS_NO_MEMORY;
+             server_enter_uninterrupted_section(&virtual_mutex,&sigset);
+             status=STATUS_NOT_MAPPED_VIEW;

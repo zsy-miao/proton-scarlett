@@ -1,5 +1,5 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
-enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
+enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, SRGB_ROW_VIEW=0x236, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
 static UINT array_view_layers(UINT kind)
 {
     UINT layers=kind-ARRAY_VIEW_BASE;
@@ -7,6 +7,7 @@ static UINT array_view_layers(UINT kind)
 }
 static DXGI_FORMAT refresh_format(UINT kind)
 {
+    if (kind==SRGB_ROW_VIEW) return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     if (kind==VOLUME1_VIEW || kind==CUBE1_VIEW || array_view_layers(kind) || kind==CUBE_PAIR_VIEW) return DXGI_FORMAT_R8G8B8A8_UNORM;
     DXGI_FORMAT format=(DXGI_FORMAT)(kind-TEXEL32_BASE);
     return kind==R8_VIEW ? DXGI_FORMAT_R8_UNORM : texel32_format(format) ? format : DXGI_FORMAT_UNKNOWN;

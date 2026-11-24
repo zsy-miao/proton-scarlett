@@ -28,11 +28,16 @@ int main()
     constexpr UINT layers=1;
 #endif
     if(layers>1){w[4]=w[6]=1;w[7]=0x10000+layers;w[8]=28;}
-    constexpr UINT guestBytes=layers>1?layers*4096:32768;
-#ifdef TEST_NATIVE_POOL
-    constexpr UINT nativeBytes=layers>1?4096:32768;
+#ifdef TEST_SRGB_ROW
+    constexpr bool row=true;w[0]=2;w[6]=1;w[8]=29;
 #else
-    constexpr UINT nativeBytes=layers==12?8192:layers>1?4096:32768;
+    constexpr bool row=false;
+#endif
+    constexpr UINT guestBytes=row?4096:layers>1?layers*4096:32768;
+#ifdef TEST_NATIVE_POOL
+    constexpr UINT nativeBytes=row || layers>1?4096:32768;
+#else
+    constexpr UINT nativeBytes=row || layers==12?8192:layers>1?4096:32768;
 #endif
     SYSTEM_INFO sys; GetSystemInfo(&sys);
     auto pages=(BYTE *)VirtualAlloc(nullptr,2*sys.dwPageSize,MEM_RESERVE,PAGE_NOACCESS);
@@ -44,7 +49,7 @@ int main()
     for (DWORD align:{0u,4096u}) {
         w[2]=align; memcpy(prefix,w,sizeof w); rd.Alignment=align;
         auto native=d->GetResourceAllocationInfo(1,1,&rd);
-        if (layers>1 && !align) {CK(native.Alignment==65536 && native.SizeInBytes==65536);continue;}
+        if ((row || layers>1) && !align) {CK(native.Alignment==65536 && native.SizeInBytes==65536);continue;}
         CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
         CK(!memcmp(&got.info,&native,sizeof native));
         CK(native.Alignment==(align?4096u:65536u) && native.SizeInBytes==(align?nativeBytes:65536u));
@@ -59,7 +64,7 @@ int main()
         w[k]^=1; CK(deny(1,1,w)); w[k]^=1;
     }
     CK(deny(0,1,prefix) && deny(1,2,prefix) && deny(1,1,prefix+1));
-    w[11]=0x105; memcpy(prefix,w,sizeof w);
+    w[11]=row?0x100:0x105; memcpy(prefix,w,sizeof w);
     CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
     CK(got.info.SizeInBytes==guestBytes && got.info.Alignment==4096);
     for (UINT k:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
@@ -79,7 +84,7 @@ int main()
 
     // Three adjacent small placements, none at a 64 KiB boundary. Seed the guards
     // first, then write the middle texture and check all three after the fence.
-    constexpr UINT face=layers>1?512:32768,bytes=layers*face,total=3*bytes;
+    constexpr UINT face=row?1024:layers>1?512:32768,bytes=layers*face,total=3*bytes;
     D3D12_HEAP_DESC hd={}; hd.SizeInBytes=2*65536; hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT;
     hd.Properties.CreationNodeMask=hd.Properties.VisibleNodeMask=1;
     hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
@@ -103,7 +108,7 @@ int main()
     HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q))); HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
     HR(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l)));
     D3D12_TEXTURE_COPY_LOCATION loc[3]={},linear={}; linear.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    linear.PlacedFootprint.Footprint={rd.Format,(UINT)rd.Width,rd.Height,1,256}; linear.pResource=upload.Get();
+    linear.PlacedFootprint.Footprint={rd.Format,(UINT)rd.Width,rd.Height,1,row?1024u:256u}; linear.pResource=upload.Get();
     for (UINT j:{0u,2u,1u}) {
         loc[j].pResource=image[j].Get(); loc[j].Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         for(UINT k=0;k<layers;k++) {linear.PlacedFootprint.Offset=j*bytes+k*face;loc[j].SubresourceIndex=k;

@@ -254,7 +254,7 @@ static HRESULT msaa_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
 static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
-    if (msaa_desc(out) || is_layered_texel(out)) return S_OK;
+    if (is_srgb_row(out) || msaa_desc(out) || is_layered_texel(out)) return S_OK;
     if (is_volume1(out) && (UINT)out->Layout==R8_LAYOUT && out->Alignment==R8_ALIGNMENT) return S_OK;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
         out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
@@ -297,11 +297,12 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (msaa_desc(&rd)) return msaa_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL layered=is_layered_texel(&rd),texel32=layered || is_texel32(&rd);
-    if (texel32 && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
-    if ((!texel32 && !is_r8(&rd)) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
-    if ((UINT)rd.Layout==R8_LAYOUT && rd.Alignment==R8_ALIGNMENT) {
+    BOOL row=is_srgb_row(&rd);
+    if ((row || texel32) && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
+    if ((!row && !texel32 && !is_r8(&rd)) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
+    if ((UINT)rd.Layout==(row?SRGB_ROW_LAYOUT:R8_LAYOUT) && rd.Alignment==R8_ALIGNMENT) {
         /* Runtime R8 occupies eight tiles; the single RGBA8 texel occupies one. */
-        *out=(D3D12_RESOURCE_ALLOCATION_INFO){layered?rd.DepthOrArraySize*R8_ALIGNMENT:texel32?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){layered?rd.DepthOrArraySize*R8_ALIGNMENT:(row || texel32)?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
         return S_OK;
     }
     if (rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;
@@ -309,8 +310,8 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     host->lpVtbl->GetResourceAllocationInfo(host,out,node,1,&rd);
     /* +34414d compares Alignment only. Never let a failed probe masquerade as small. */
     if (out->Alignment!=(rd.Alignment ? rd.Alignment : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) ||
-        (out->SizeInBytes!=(texel32 ? R8_ALIGNMENT : rd.Alignment ? R8_BYTES : 65536) &&
-         !(layered && rd.DepthOrArraySize==CUBE_PAIR_FACES && out->SizeInBytes==8192))) {
+        (out->SizeInBytes!=((row || texel32) ? R8_ALIGNMENT : rd.Alignment ? R8_BYTES : 65536) &&
+         !((row || (layered && rd.DepthOrArraySize==CUBE_PAIR_FACES)) && out->SizeInBytes==8192))) {
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){UINT64_MAX,D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT};
         return S_FALSE;
     }

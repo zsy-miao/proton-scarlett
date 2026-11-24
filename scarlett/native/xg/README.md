@@ -297,3 +297,28 @@ distinct layer words per pass, after gated writes, including descriptor
 heap release and title VA reuse. The next retail `+c8` at return `+344145`
 was a 256-wide Texture1D, one layer/mip/sample, format 29 (RGBA8_UNORM_SRGB),
 requested alignment 4096, layout 0 and flags `0x300000`.
+
+### 256-texel sRGB Texture1D
+
+The UNKNOWN-layout small host query returned 8192/4096 on RTX and
+4096/4096 on RADV. Wine `0014` permits the 1024-byte generation-checked
+write into the retained AMD pool. Independent XG
+reference copies at explicit linear `0x100` placed every DWORD at `4*x`
+(1024 bytes, alignment 256); the reference refused `0x105`. The guest
+allocation query rounds that row to one requested 4096-byte slot. `+40`
+snapshots exactly 1024 bytes on the calling thread's stack, plane and
+subresource zero, row/slice pitches both 1024. It validates the whole WC
+slot, copies the row, and preserves the remaining 3072 bytes. Retail used
+WC offset `e606000` and `+230` with format 29, Texture1D, mapping `1688`
+(hex), one mip. The visible descriptor copy retains the marked WC buffer;
+refresh copies one 1024-byte footprint on the consuming queue. Both native
+texture and SRV are R8G8B8A8_UNORM_SRGB, so sampling decodes RGB but not A.
+
+Build allocation and view fixtures with `-DTEST_SRGB_ROW`; compile
+`test-srgb-row.hlsl` as `srgb-row.dxil` (`-E main -T cs_6_0`). Two queue-gated
+patterns cover all 256 codes on each channel. RGB must lie within half an
+encoded step of the IEC sRGB transfer curve; alpha is checked against linear
+UNORM. The test wipes the stack source, releases/overwrites the title slots,
+and reuses the original title VA before releasing the final gate. Retail
+passed the texture copy and SRV write; next it rejected a 2048-byte buffer
+address SRV (UNKNOWN format, 1 element of stride 2048), `+230`, return `4ecc821`.

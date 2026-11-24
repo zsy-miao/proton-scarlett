@@ -31,6 +31,7 @@ static D3D12_SHADER_RESOURCE_VIEW_DESC texture_srv(UINT kind)
     if (kind==CUBE1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE; v.TextureCube.MipLevels=1; }
     else if (kind==CUBE_PAIR_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBEARRAY; v.TextureCubeArray.MipLevels=1; v.TextureCubeArray.NumCubes=2; }
     else if (array_view_layers(kind)) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=array_view_layers(kind); }
+    else if (kind==SRGB_ROW_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE1D; v.Texture1D.MipLevels=1; }
     else if (kind==VOLUME1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; v.Texture3D.MipLevels=1; }
     else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=1; }
     return v;
@@ -146,16 +147,16 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
-    BOOL texel32=texel32_format(format);
+    BOOL texel32=texel32_format(format),row=kind==SRGB_ROW_VIEW;
     if (!u->source) { hr=E_INVALIDARG; goto fail; }
     D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=R8_BYTES,.Height=1,.MipLevels=1,
         .DepthOrArraySize=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
-    if (!texel32) {
+    if (!texel32 && !row) {
         hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->rows);
         if (FAILED(hr)) goto fail;
     }
-    rd.Dimension=kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
+    rd.Dimension=row?D3D12_RESOURCE_DIMENSION_TEXTURE1D:kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=(row || texel32)?1:128;
     rd.DepthOrArraySize=view_layers(kind); rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
     if (FAILED(hr)) goto fail;
@@ -169,15 +170,15 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     /* Each 16-byte row segment is contiguous in both layouts. All reads execute
      * on the consuming queue, including writes ordered after list submission. */
     r8_transition(l,u->source,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
-    if (!texel32) {
+    if (!texel32 && !row) {
         for (UINT y=0;y<128;y++) for (UINT x=0;x<256;x+=16) {
             UINT tiled=((y/64)*4+x/64)*4096+(y%32)*16+(x&16)*32+(y&32)*32+(x&32)*64;
             ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,y*256+x,u->source,(UINT64)offset+tiled,16);
         }
         r8_transition(l,u->rows,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
     }
-    D3D12_TEXTURE_COPY_LOCATION from={.pResource=texel32?u->source:u->rows,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-        .PlacedFootprint={texel32?offset:0,{rd.Format,(UINT)rd.Width,rd.Height,1,256}}};
+    D3D12_TEXTURE_COPY_LOCATION from={.pResource=u->rows?u->rows:u->source,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .PlacedFootprint={u->rows?0:offset,{rd.Format,(UINT)rd.Width,rd.Height,1,row?SRGB_ROW_BYTES:256}}};
     D3D12_TEXTURE_COPY_LOCATION to={.pResource=u->texture,.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
     for (UINT layer=0;layer<rd.DepthOrArraySize;layer++) {
         to.SubresourceIndex=layer;

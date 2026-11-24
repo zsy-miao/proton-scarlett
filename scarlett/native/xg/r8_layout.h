@@ -36,3 +36,10 @@ static inline BOOL is_layered_texel(const D3D12_RESOURCE_DESC *d)
         (d->DepthOrArraySize==2 || d->DepthOrArraySize==CUBE1_FACES || d->DepthOrArraySize==CUBE_PAIR_FACES) && d->MipLevels==1 && d->Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
         d->SampleDesc.Count==1 && !d->SampleDesc.Quality && (UINT)d->Flags==0x300000;
 }
+
+enum { SRGB_ROW_LAYOUT=0x100, SRGB_ROW_WIDTH=256, SRGB_ROW_BYTES=4*SRGB_ROW_WIDTH };
+static inline BOOL is_srgb_row(const D3D12_RESOURCE_DESC *d)
+{
+    return d->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE1D && runtime_texture(d) && d->Width==SRGB_ROW_WIDTH &&
+        d->Height==1 && d->Format==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+}
