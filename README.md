@@ -13,6 +13,8 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
+On the test host's AMD integrated GPU (`1002:164e`), a native Vulkan test retained CPU write-combining and GPU-uncached access after exporting and reimporting the buffer on that **same GPU**. Importing it on the RTX 3070 did not preserve the GPU cache policy. The installed Proton fork separately passed the root-signature and queue/fence tests on RADV; the retail allocator has not yet passed on AMD.
+
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 
 The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.

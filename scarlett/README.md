@@ -19,6 +19,8 @@ The first committed retail graphics pool requires the fork's [x64 Wine memory pa
 The 2,199 MiB pool additionally requires the [paired Wine and vkd3d-proton patches](vkd3d-patches/README.md).
 Run `./scarlett/tests/graphics-pools.sh` on the qualified RTX 3070 host to exercise all three pool sizes through the installed tool, including GPU completion after the title address is reused.
 
+The NixOS harness defaults to NVIDIA. To run the queue and fence test on the host's AMD adapter instead, use `SCARLETT_TEST_GPU=radv ./scarlett/tests/queue-fence.sh`. The Proton log identifies the selected adapter and driver.
+
 ## What the first graphics test covers
 
 The runtime also includes an original [xmem.dll](native/xmem/README.md) supporting ordinary
