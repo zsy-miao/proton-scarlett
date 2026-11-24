@@ -51,14 +51,23 @@ static BOOL is_r8(const D3D12_RESOURCE_DESC *d)
 
 /* Acquire the original section, then map by HANDLE; the title VA can be released
  * or reused without redirecting the copy. Never use either alias past this call. */
-static HRESULT r8_alias(const void *at,BOOL wc,void **mapping,BYTE **slot)
+static HRESULT r8_alias(const void *at,BOOL wc,void **mapping,BYTE **slot,BOOL *system)
 {
     struct scarlett_section_info held,view;
     HRESULT hr=scarlett_query_section(wc?0x53430005:0x5343000c,at,R8_BYTES,&held);
+    if (FAILED(hr) && !wc) {
+        hr=scarlett_acquire_section(at,R8_BYTES,&held);
+        if (SUCCEEDED(hr)) *system=TRUE;
+    }
     if (FAILED(hr)) return hr;
     if (held.view_size!=(wc?0x89700000u:0x49400000u) || held.offset>held.view_size-R8_BYTES ||
         (UINT_PTR)at-(UINT_PTR)held.base!=held.offset || (wc && held.offset%4096)) hr=E_INVALIDARG;
-    else {
+    else if (!wc && *system) {
+        SIZE_T start=held.offset & ~(SIZE_T)65535, delta=held.offset-start;
+        *mapping=MapViewOfFile(held.section,FILE_MAP_READ,0,(DWORD)start,delta+R8_BYTES);
+        if (*mapping) *slot=(BYTE *)*mapping+delta;
+        else hr=HRESULT_FROM_WIN32(GetLastError());
+    } else {
         hr=scarlett_query_section_handle(wc?0x53430004:0x5343000b,NULL,held.view_size,&view,held.section);
         if (SUCCEEDED(hr)) {
             *mapping=view.base;
@@ -75,9 +84,10 @@ static HRESULT WINAPI copy_r8(struct computer *c,void *dst,UINT plane,UINT sub,c
     if (!dst || !src) return E_POINTER;
     if (plane || sub || row!=256 || slice!=R8_BYTES) return E_INVALIDARG;
     BYTE *in=NULL,*out=NULL; void *wb=NULL,*wc=NULL;
-    HRESULT hr=r8_alias(src,FALSE,&wb,&in);
+    BOOL system=FALSE;
+    HRESULT hr=r8_alias(src,FALSE,&wb,&in,&system);
     if (FAILED(hr)) return hr;
-    hr=r8_alias(dst,TRUE,&wc,&out);
+    hr=r8_alias(dst,TRUE,&wc,&out,NULL);
     if (SUCCEEDED(hr)) {
         /* Each 4KB_S tile contains 16-byte row segments; write WC bytes in order. */
         for (UINT i=0;i<R8_BYTES;i+=16) {
@@ -88,7 +98,8 @@ static HRESULT WINAPI copy_r8(struct computer *c,void *dst,UINT plane,UINT sub,c
         MemoryBarrier();
         VirtualFree(wc,0,MEM_RELEASE);
     }
-    VirtualFree(wb,0,MEM_RELEASE);
+    if (system) UnmapViewOfFile(wb);
+    else VirtualFree(wb,0,MEM_RELEASE);
     return hr;
 }
 static const struct {

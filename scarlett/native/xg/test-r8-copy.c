@@ -29,6 +29,8 @@ int main(void)
     BYTE *s=src+0x2390,*t=dst+8192;
     copy_fn copy=(copy_fn)vt[8];
     memset(dst,0xb6,65536);
+    BYTE *ordinary=VirtualAlloc(NULL,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+    CK(ordinary && FAILED(copy(c,t,0,0,ordinary,256,32768)) && VirtualFree(ordinary,0,MEM_RELEASE));
     CK(FAILED(copy(c,t,1,0,s,256,32768)) && FAILED(copy(c,t,0,1,s,256,32768)));
     CK(FAILED(copy(c,t,0,0,s,255,32768)) && FAILED(copy(c,t,0,0,s,256,32767)));
     CK(FAILED(copy(c,t+1,0,0,s,256,32768)) && FAILED(copy(c,s,0,0,t,256,32768)));
@@ -36,6 +38,7 @@ int main(void)
     CK(FAILED(copy(c,dst+0x89700000-28672,0,0,s,256,32768)));
     for (UINT i=0;i<65536;i++) CK(dst[i]==0xb6);
     for (UINT pass=0;pass<2;pass++) {
+        if (pass) s=src+0x49400000-32768; /* last valid span in the acquired backing */
         for (UINT i=0;i<32768;i++) s[i]=(BYTE)(i>>(8*pass));
         CK(copy(c,t,0,0,s,256,32768)==S_OK);
         for (UINT y=0;y<128;y++) for (UINT x=0;x<256;x++) {

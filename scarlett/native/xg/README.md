@@ -18,7 +18,9 @@ a bounded span in the marked 1172 MiB WB source pool and a 4096-aligned
 bounded span in the marked 2199 MiB WC destination pool. It acquires
 handles, creates private aliases by handle, writes the original backing in
 16-byte 4KB_S segments, orders the writes and drops both aliases before
-return. There is no title-VA cache or shadow image.
+return. On RTX 3070 the WB source pool is a marked Wine system section.
+The converter maps the source range read-only from its retained section
+handle. Ordinary allocations do not qualify.
 
 **R8 selection boundary.** The title chooses between an explicit mode and
 a suggestion at `4eccb28`: for a mode byte other than `ff`, it stores
@@ -101,7 +103,7 @@ ordinal API, console SDK or external console compatibility layer is required.
 
 For the R8 copy test, link `test-r8-copy.c` against the same import
 library, name the executable `game_scarlett_master.exe`, and run with
-`test-launch-nixos.sh` on AMD using the scratch XMem and XG DLLs.
+`test-launch-nixos.sh` on AMD or RTX 3070 using the matching XMem and XG DLLs.
 Two coordinate passes distinguish every destination byte; neighboring
 guards, wrong pools, short ranges, misalignment, pitches and descriptor
 mutations are negative controls.
