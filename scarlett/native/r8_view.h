@@ -184,6 +184,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
+    UINT atlas=kind==ATLAS1K_VIEW?1024:kind==ATLAS2K_VIEW?2048:0;
     BOOL texel32=texel32_format(format),row=kind==SRGB_ROW_VIEW;
     if (!u->source) { hr=E_INVALIDARG; goto fail; }
     D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
@@ -195,7 +196,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     }
     if (kind==STRUCT_VIEW) rd.Width=(UINT64)elements*stride;
     else {
-        rd.Dimension=row?D3D12_RESOURCE_DIMENSION_TEXTURE1D:kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=(row || texel32)?1:128;
+        rd.Dimension=row?D3D12_RESOURCE_DIMENSION_TEXTURE1D:kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=atlas?atlas:texel32?1:256; rd.Height=atlas?atlas:(row || texel32)?1:128;
         rd.DepthOrArraySize=view_layers(kind); rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     }
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
@@ -222,7 +223,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         ID3D12GraphicsCommandList_CopyBufferRegion(l,u->texture,0,u->source,offset,rd.Width);
     } else {
         D3D12_TEXTURE_COPY_LOCATION from={.pResource=u->rows?u->rows:u->source,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-            .PlacedFootprint={u->rows?0:offset,{rd.Format,(UINT)rd.Width,rd.Height,1,row?SRGB_ROW_BYTES:256}}};
+            .PlacedFootprint={u->rows?0:offset,{rd.Format,(UINT)rd.Width,rd.Height,1,atlas?atlas:row?SRGB_ROW_BYTES:256}}};
         D3D12_TEXTURE_COPY_LOCATION to={.pResource=u->texture,.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
         for (UINT layer=0;layer<rd.DepthOrArraySize;layer++) {
             to.SubresourceIndex=layer;

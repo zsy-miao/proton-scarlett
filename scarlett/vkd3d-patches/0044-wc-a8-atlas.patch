@@ -1,0 +1,109 @@
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -472,10 +472,10 @@
+ }
+ 
+ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**);
+-static HRESULT scarlett_wc_buffer(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,SIZE_T span,ID3D12Resource **out)
++static HRESULT scarlett_wc_buffer(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,SIZE_T span,ID3D12Resource **out, bool sampled)
+ {
+     const bool r11=span==0x4b1400;
+-    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_BUFFER,0,span,1,1,1,DXGI_FORMAT_UNKNOWN,{1,0},D3D12_TEXTURE_LAYOUT_ROW_MAJOR,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
++    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_BUFFER,0,span,1,1,1,DXGI_FORMAT_UNKNOWN,{1,0},D3D12_TEXTURE_LAYOUT_ROW_MAJOR,sampled?D3D12_RESOURCE_FLAG_NONE:D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+     struct d3d12_device *d;
+     struct d3d12_heap *heap;
+     struct d3d12_resource *r;
+@@ -509,7 +509,7 @@
+         if(s->lease)IUnknown_Release(s->lease);
+         vkd3d_free(s);goto done;
+     }
+-    hr=d3d12_resource_create_placed(d,&rd,heap,off,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,NULL,0,NULL,&r);
++    hr=d3d12_resource_create_placed(d,&rd,heap,off,sampled?D3D12_RESOURCE_STATE_COMMON:D3D12_RESOURCE_STATE_UNORDERED_ACCESS,NULL,0,NULL,&r);
+     if(FAILED(hr)){scarlett_remove_slice(s);goto done;}
+     /* Final internal resource destruction, not last title Release, drops the lease. */
+     r->flags|=SCARLETT_PRIMARY | VKD3D_RESOURCE_RETAINED_GPU_REFERENCE;
+@@ -525,14 +525,14 @@
+     if(!out)return E_POINTER;
+     *out=NULL;
+     if(!scarlett_r32_offset(off,!!native))return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,0x384000,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0x384000,out,false);
+ }
+ HRESULT WINAPI ScarlettTiledR11FiveV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+ {
+     if(!out)return E_POINTER;
+     *out=NULL;
+     if(native ? off!=0x13c88000 : off%0x4000)return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,0x4b1400,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0x4b1400,out,false);
+ }
+ 
+ HRESULT WINAPI ScarlettRowBufferV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+@@ -540,7 +540,7 @@
+     if (!out) return E_POINTER;
+     *out=NULL;
+     if (off!=0xe650000) return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,0x70800,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0x70800,out,false);
+ }
+ 
+ HRESULT WINAPI ScarlettTiledRG160V1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+@@ -548,7 +548,7 @@
+     if (!out) return E_POINTER;
+     *out=NULL;
+     if (off!=(native?0x15440000:0x15fd0000)) return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,0x1cc00,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0x1cc00,out,false);
+ }
+ 
+ HRESULT WINAPI ScarlettTiledFloat160V1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+@@ -556,7 +556,7 @@
+     if (!out) return E_POINTER;
+     *out=NULL;
+     if (off!=0xe6c0800) return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,0xf000,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0xf000,out,false);
+ }
+ 
+ HRESULT WINAPI ScarlettTiledUint160V1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+@@ -564,7 +564,7 @@
+     if (!out) return E_POINTER;
+     *out=NULL;
+     if (off!=(native?0x1545cc00:0x15fecc00)) return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,0xf000,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,0xf000,out,false);
+ }
+ 
+ HRESULT WINAPI ScarlettRow16V1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+@@ -572,5 +572,19 @@
+     if (!out) return E_POINTER;
+     *out=NULL;
+     if (off!=0xe5c6fc0) return E_INVALIDARG;
+-    return scarlett_wc_buffer(iface,native,section,size,off,16,out);
++    return scarlett_wc_buffer(iface,native,section,size,off,16,out,false);
+ }
++
++static HRESULT scarlett_atlas(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,SIZE_T span,ID3D12Resource **out)
++{
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (off!=(native?0x19d70000:0x1bfa0000)) return E_INVALIDARG;
++    return scarlett_wc_buffer(iface,native,section,size,off,span,out,true);
++}
++
++HRESULT WINAPI ScarlettAtlas1kV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{return scarlett_atlas(iface,native,section,size,off,0x100000,out);}
++
++HRESULT WINAPI ScarlettAtlas2kV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{return scarlett_atlas(iface,native,section,size,off,0x400000,out);}
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,8 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettAtlas1kV1 @49
++    ScarlettAtlas2kV1 @50
+     ScarlettRow16V1 @48
+     ScarlettDepth4kImageV1 @47
+     ScarlettTiledUint160V1 @46

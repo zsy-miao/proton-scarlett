@@ -9,7 +9,13 @@ extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3
 extern "C" HRESULT xs_msaa_allocation_info1(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *,D3D12_RESOURCE_ALLOCATION_INFO1 *);
 #define CK(x) do{if(!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);return 1;}}while(0)
 #define HR(x) CK(SUCCEEDED(x))
+#ifdef TEST_ATLAS
+#include "test-a8-atlas.hpp"
+#endif
 int main() {
+#ifdef TEST_ATLAS
+    HMODULE xm=LoadLibraryW(L"xmem.dll");CK(xm);BYTE *firstPool=atlasPool();CK(firstPool);
+#endif
     DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     const IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> dev;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)dev.GetAddressOf()));
@@ -48,14 +54,16 @@ int main() {
         for(UINT side : {1024u,2048u}){
             DWORD atlas[]={3,0,0,0,side,0,side,0x10001,65,1,0,0x100,0x300000};memcpy(prefix,atlas,sizeof atlas);
             CK(query(&g.info,dev.Get(),1,1,prefix)==&g.info && g.info.SizeInBytes==side*side && g.info.Alignment==256 && g.before==1 && g.after==2);
-            if(side==2048){extra.one.Offset=~0ull;CK(query1(&g.info,dev.Get(),1,1,prefix,&extra.one)==&g.info && !extra.one.Offset && extra.one.SizeInBytes==side*side && extra.one.Alignment==256 && extra.a==1 && extra.b==2);}
-            else CK(FAILED(xs_msaa_allocation_info1(dev.Get(),1,1,prefix,&g.info,&extra.one)));
+            {extra.one.Offset=~0ull;CK(query1(&g.info,dev.Get(),1,1,prefix,&extra.one)==&g.info && !extra.one.Offset && extra.one.SizeInBytes==side*side && extra.one.Alignment==256 && extra.a==1 && extra.b==2);}
             for(UINT j=0;j<13;j++)if(j!=1){((DWORD*)prefix)[j]^=1;CK(deny(1,1,prefix));((DWORD*)prefix)[j]^=1;}
             CK(deny(0,1,prefix) && deny(1,2,prefix) && deny(1,1,prefix+1));
         }
         puts("PASS A8 linear atlas: guarded aggregate/detail and field negatives");
         g.info=rtInfo;
     }
+#ifdef TEST_ATLAS
+    for(UINT side : {1024u,2048u}) CK(!checkAtlas(dev.Get(),d.Get(),side,side==1024?firstPool:atlasPool()));
+#endif
     CK(VirtualFree(pages,0,MEM_RELEASE));
     // One ordinary desktop placed RT at a nonzero offset, using exactly the reported remaining extent.
     D3D12_HEAP_DESC hd={};hd.SizeInBytes=g.info.Alignment+g.info.SizeInBytes;hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT;

@@ -159,3 +159,15 @@ larger structured row. Behavioral reference only: Marvisak/VIctory
 `ffe310eb`, `crates/victory-gpu/src/resource.rs::create_at_address`
 returns an identity backed by the title-supplied address. This patch
 uses the project's own WC import and reservation; no upstream code copied.
+
+`0044` retains the original linear `A8_UNORM` atlas at WC `+0x19d70000`
+on RADV and `+0x1bfa0000` on RTX. The 2048² atlas and 1024² fallback
+use the same start; a live overlapping placement is rejected. Retail
+diagnostics observed one SRV on each returned object. The `TEST_ATLAS`
+variant of `test-a8-allocation.cpp` uses `test-a8-atlas.hlsl` to check
+every texel through a copied SRV after address reuse on both adapters.
+
+Seven retail launches (five diagnostic, two ordinary). The final RADV
+run stopped at pooled list `+418` (return `+156099a`), with tokens 1 and
+2 issued. The final RTX run stopped earlier at `+5707b8c`, with token 1
+issued. Both presented only token 1.

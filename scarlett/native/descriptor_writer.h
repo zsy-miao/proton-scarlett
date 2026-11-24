@@ -75,6 +75,7 @@ static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
 }
 
 #ifdef SCARLETT_STAGED_PLACED
+static HRESULT write_atlas_srv(struct xbox_device*,IUnknown*,SIZE_T);
 static ID3D12Resource *row_host_locked(struct xbox_device*,IUnknown*,UINT);
 static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T,UINT,UINT);
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
@@ -146,6 +147,10 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         const DWORD sw[]={words[0],4,0x1688,0,0,1,0,0},uw[]={words[0],4,0,0};
         if (kind==SRV ? memcmp(words,sw,sizeof sw) : memcmp(words,uw,sizeof uw)) return E_NOTIMPL;
         return write_tile_record(d,object,base+(kind==UAV),0,dest,0,0);
+    }
+    const DWORD atlas_srv[]={DXGI_FORMAT_A8_UNORM,4,0x1688,0,0,1,0,0};
+    if(object && kind==SRV && !memcmp(words,atlas_srv,sizeof atlas_srv)){
+        HRESULT hr=write_atlas_srv(d,object,dest);if(hr!=S_FALSE)return hr;
     }
     IUnknown *old_placed=NULL;
     if (object && (kind==SRV || kind==UAV)) {

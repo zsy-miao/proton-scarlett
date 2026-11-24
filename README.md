@@ -8,8 +8,8 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
-| How far does it get? | AMD and RTX both displayed the startup image and issued a second frame token. Neither displayed a second frame. |
-| What's blocking it? | Both GPUs report the sizes of the 2048×2048 and 1024×1024 alpha textures. Startup stops when the game asks for the detailed memory layout of the smaller one. |
+| How far does it get? | Both GPUs display the startup image. In the latest runs AMD issued a second frame token; neither displayed a second frame. |
+| What's blocking it? | AMD stops at a graphics command after the alpha atlas setup. The latest RTX run stopped earlier, before it reached the atlas. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
