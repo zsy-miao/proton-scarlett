@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
+extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *);
 extern "C" HRESULT xs_resolve_color_rtv(IUnknown *,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE *,ID3D12Resource **);
@@ -287,6 +288,16 @@ int main()
     CK(FAILED(alias));
     printf("AMD guest prefix: original=%p offset=%zu originalWord=%08x cpuAliasHr=%08lx\n",ctrl,off,(UINT)original[2],(DWORD)alias);fflush(stdout);
     SLOT(pooled.Get(),0x238,Marker)(pooled.Get(),ctrl+2,0,0,0);
+#ifndef TEST_WB_OFFSET
+#define TEST_WB_OFFSET 0x4196218
+#endif
+    const UINT span=0x49400000,offset=TEST_WB_OFFSET,local=offset%65536; auto wbPool=(BYTE*)reserve(nullptr,span,0x20003000,0x183,0x22004);CK(wbPool);
+    scarlett_section_info backing; HR(scarlett_query_section(0x5343000c,wbPool+offset,8,&backing)); CK(backing.offset==offset && backing.view_size==span);
+    scarlett_section_info copy; HR(scarlett_query_section_handle(0x5343000b,nullptr,span,&copy,backing.section));CK(CloseHandle(backing.section));
+    BYTE *aliasWin=(BYTE*)copy.base+(offset-local);memset(aliasWin,0xce,65536); MemoryBarrier();
+    auto ticks=(volatile UINT64*)(aliasWin+local);CK(*(volatile UINT64*)(wbPool+offset)==0xcecececececececeull);
+    using Stamp=void(WINAPI*)(IUnknown*,void*,UINT64,UINT64,UINT);printf("AMD240 fixture marker recorded, WB offset=%x before=%llx\n",offset,*ticks);fflush(stdout);
+    SLOT(pooled.Get(),0x240,Stamp)(pooled.Get(),wbPool+offset,0,0,1);
     CK(original[2]==0x76100002); // A synchronous CPU store is not a recorded command.
 #endif
 
@@ -324,9 +335,18 @@ int main()
     for(UINT j=0;j<16384;j++)ctrl[j]=0x89500000+j;
     MemoryBarrier();CK(original[2]==0x76100002);
 #endif
+#ifdef TEST_RADV_MARKER
+    CK(VirtualFree(wbPool,0,MEM_RELEASE)); BYTE *reuse=wbPool+offset-local;
+    CK(VirtualAlloc(reuse,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==reuse);memset(reuse,0x49,65536);MemoryBarrier();
+    CK(*ticks==0xcecececececececeull);UINT64 t0,t1,cpuTicks,hz;auto hq=test_host_queue(gq.Get());HR(hq->GetTimestampFrequency(&hz));HR(hq->GetClockCalibration(&t0,&cpuTicks));
+#endif
     HR(xs_cpu_signal(gate.Get(),1)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
     HR(rb->Map(0,nullptr,(void **)&pixel));
 #ifdef TEST_RADV_MARKER
+    HR(hq->GetClockCalibration(&t1,&cpuTicks)); CK(*ticks>=t0 && *ticks<=t1 && *ticks!=0xcecececececececeull);
+    for(UINT j=0;j<65536;j++){CK(reuse[j]==0x49);if(j<local || j>=local+8)CK(aliasWin[j]==0xce);}
+    printf("PASS WB +240 after native +238: ticks=%llu calibration=%llu..%llu hz=%llu; only original qword changed after gate, full original guards and replacement intact\n",*ticks,t0,t1,hz);
+    CK(VirtualFree(copy.base,0,MEM_RELEASE)&&VirtualFree(reuse,0,MEM_RELEASE));
     for(UINT j=0;j<16384;j++)CK(original[j]==(j==2?0:0x76100000+j) && ctrl[j]==0x89500000+j);
     CK(VirtualFree(ctrl,0,MEM_RELEASE));puts("PASS AMD public +238: prefilled original marker cleared only after gate, neighboring words and exact VA replacement intact after guest list reset/release");
     CK(pixel[12]==0x76100001 && pixel[13]==0 && pixel[14]==0x76100003);puts("PASS suffix GPU copy saw guarded marker zero in recording order");

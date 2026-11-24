@@ -168,6 +168,14 @@ interval; the discarded slot and the reused CPU mapping were unchanged.
 
 RTX retail recorded the timestamp before requesting a second `+0x238` on
 the same list. That marker cannot be moved before the timestamp. Another
-thread reached queue `+0x118` with token 1 and flags 0. Neither observation
-establishes retail execution. The AMD integration run still stopped at the
-timestamp call.
+thread reached queue `+0x118` with token 1 and flags 0. AMD reaches the same
+two requests after recording the timestamp into its original write-back pool.
+Neither retail run submitted the timestamp-bearing list before stopping.
+
+On RADV the two observed timestamp offsets are `0x4196218` and `0x4196698`.
+The fixture holds the queue, reuses the CPU address, and checks the original
+eight bytes against the queue's 100 MHz clock calibration. Every other byte
+in the 64 KiB window and the replacement mapping must stay unchanged. Build
+`test-allocation-info.cpp` with `TEST_RADV_MARKER` and `TEST_WB_OFFSET` set
+to either offset; link `testq.c` instead of `queue.o` to inspect the queue
+clock in this fixture.
