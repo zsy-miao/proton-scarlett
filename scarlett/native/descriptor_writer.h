@@ -319,6 +319,16 @@ static void WINAPI write_dsv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T des
     if (FAILED(xs_write_view(d,DSV,r,desc,dest))) xs_stop();
 }
 
+/* The owner lock protects the descriptor record, native slot and heap through the caller's use. */
+static ID3D12Resource *attachment_locked(struct desc_heap *h,SIZE_T slot,UINT kind,D3D12_CPU_DESCRIPTOR_HANDLE *cpu)
+{
+    if (!h->records || FAILED(descriptor_slot(&h->iface,slot,cpu,NULL))) return NULL;
+    struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
+    UINT64 tag[2];
+    return r->kind==kind && copy_in(tag,(void *)slot,sizeof tag) && tag[0]==r->serial &&
+            tag[1]==(0x5853444553430000ull|kind) ? r->resource : NULL;
+}
+
 /* Caller keeps heap and returned texture live through retirement, and
  * synchronizes descriptor rewrites as with xs_resolve_view. */
 static HRESULT resolve_attachment(IUnknown *heap,SIZE_T slot,UINT kind,D3D12_CPU_DESCRIPTOR_HANDLE *handle,ID3D12Resource **out)
@@ -333,18 +343,30 @@ static HRESULT resolve_attachment(IUnknown *heap,SIZE_T slot,UINT kind,D3D12_CPU
     struct xbox_device *d=h->owner;
     AcquireSRWLockShared(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-    if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
-        struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
-        UINT64 tag[2];
-        if (r->resource && r->kind==kind && copy_in(tag,(void *)slot,sizeof tag) &&
-            tag[0]==r->serial && tag[1]==(0x5853444553430000ull|kind)) {
-            *handle=cpu;
-            *out=r->resource;
-            ID3D12Resource_AddRef(*out);
-        }
+    if ((*out=attachment_locked(h,slot,kind,&cpu))) {
+        *handle=cpu;
+        ID3D12Resource_AddRef(*out);
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
     return *out ? S_OK : E_INVALIDARG;
+}
+/* Non-shader-visible RTVs are consumed at record time; serialize that read with all rewrites.
+ * The +490 recording and its submission fence already own the destination image. */
+HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary)
+{
+    if (!owner || !list || !primary) return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    HRESULT hr=E_INVALIDARG;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for (struct desc_heap *h=d->rtv_heaps;h;h=h->next) {
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+        if (attachment_locked(h,slot,RTV,&cpu)!=primary) continue;
+        ID3D12GraphicsCommandList7_ClearRenderTargetView(list,cpu,(const FLOAT[4]){0},0,NULL);
+        hr=S_OK;
+        break;
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    return hr;
 }
 HRESULT xs_resolve_color_rtv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *handle,ID3D12Resource **out)
 {

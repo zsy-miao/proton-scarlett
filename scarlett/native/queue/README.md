@@ -314,3 +314,22 @@ and destruction of the host texture after the queue retires. This fixture
 needs neither the experimental control wait nor a tagged submission.
 In staged retail runs with both experiments enabled, both GPUs next requested
 a full render-target clear at `+0x1a0` (return `+0x50a62de`) before submission.
+
+### Primary clear at pooled list `+0x1a0`
+
+On AMD and RTX the call returning to `+0x50a62de` selects a tagged RTV for the image
+just transitioned at `+0x490`, four positive zero floats, zero rectangles
+and a null rectangle pointer. The adapter records exactly that first clear
+on the open direct list. It holds the owning device's descriptor lock from
+slot validation through `ClearRenderTargetView`; the slot may then be
+rewritten or released. [RTVs are consumed during recording](https://learn.microsoft.com/en-us/windows/win32/direct3d12/non-shader-visible-descriptor-heaps).
+The retained primary, rather than the mutable descriptor, lives through the
+submission fence.
+
+Add `-DTEST_PRIMARY_CLEAR` to the primary-barrier fixture build above. It
+rewrites the guest RTV to the sibling immediately after recording the guest
+clear, resets/releases the list and drops the guest heap behind a queue
+gate. GPU readback checks both complete 3840×2160 textures; the backing
+check also covers slice padding and unused space. Retail next records a
+second `+0x490` for the same image with sync `0x40→0`, access
+`0x8→0x80000000` and layout `2→0x1f`. That layout is unqualified.

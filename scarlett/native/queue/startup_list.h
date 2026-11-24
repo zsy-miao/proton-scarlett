@@ -9,6 +9,7 @@ struct startup_list {
     IUnknown *allocator,*pool_owner,*heaps[2];
     D3D12_COMMAND_LIST_TYPE type;
     HRESULT error;
+    BOOL primary_cleared;
     ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
@@ -121,6 +122,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     IUnknown_AddRef(alloc);
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
+    s->primary_cleared=FALSE;
     if (s->primary) { ID3D12Resource_Release(s->primary); s->primary=NULL; }
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
@@ -394,6 +396,21 @@ static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER
 {
     if (FAILED(record_primary_barrier(sl(i),count,groups))) xs_stop();
 }
+/* shortcut: first full transparent-black clear after this recording's primary transition. */
+static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
+{
+    if (!s->primary || s->closed || FAILED(s->error) || s->host_exposed || s->primary_cleared || count || rects) return E_NOTIMPL;
+    UINT bits[4]; SIZE_T n;
+    if (!ReadProcessMemory(GetCurrentProcess(),color,bits,sizeof bits,&n) || n!=sizeof bits) return E_POINTER;
+    if (bits[0] || bits[1] || bits[2] || bits[3]) return E_NOTIMPL;
+    HRESULT hr=xs_clear_primary_rtv(s->pool_owner,s->host,slot,s->primary);
+    if (SUCCEEDED(hr)) s->primary_cleared=TRUE;
+    return hr;
+}
+static void WINAPI sl_primary_clear(IUnknown *i,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
+{
+    if (FAILED(record_primary_clear(sl(i),slot,color,count,rects))) xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
@@ -401,7 +418,9 @@ static const struct {
     __typeof__(&sl_close) close;
     xs_stop_fn gap50[22];
     __typeof__(&sl_bind) bind;
-    xs_stop_fn gap108[38];
+    xs_stop_fn gap108[19];
+    __typeof__(&sl_primary_clear) clear;
+    xs_stop_fn gap1a8[18];
     __typeof__(&sl_marker) marker;
     __typeof__(&sl_timestamp) timestamp;
     xs_stop_fn gap248;
@@ -411,9 +430,10 @@ static const struct {
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 63]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 63]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),wait64)==0x250,"pooled wait ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),clear)==0x1a0,"pooled clear ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),barrier)==0x490, "pooled barrier ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
