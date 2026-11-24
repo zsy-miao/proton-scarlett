@@ -80,3 +80,14 @@ The private recorder validates the batch before recording and snapshots
 source nodes from a resolved upload-buffer range. The public-slot test
 also verifies the write at byte 4056. Retail passes creation and next
 requests `WritePartitions` (RVA `+c6260`, 5,504 bytes).
+
+### ResetCounters: verified ahead of retail
+
+`ResetCounterValues` (builder RVA `+b82e0`, 4,072 bytes) compiles directly
+with the pinned desktop backend. The factory submits the unmodified shader
+after checking its digest and root identity. It writes four identical DWORDs
+per counter using `u0` and `b0`. The private recorder bounds the destination
+to `16 * count` bytes. `test-bvh-reset.cpp` takes `private-reset.bin` and
+checks 33 counters across two workgroups, including untouched words on both
+sides and rejection of a range one byte too short. This is a fixture result;
+retail still stops earlier at `WriteInstances`.

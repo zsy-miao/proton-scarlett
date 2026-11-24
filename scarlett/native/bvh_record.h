@@ -21,6 +21,8 @@ HRESULT xs_record_bvh_offline(IUnknown *pipeline,ID3D12GraphicsCommandList *list
 HRESULT xs_record_bvh_partitions(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
     const struct xs_bvh_range *dst,const void *header80,const struct xs_bvh_range *source,
     const void *commands,SIZE_T command_bytes,UINT num_commands,struct xs_bvh_hold **out);
+HRESULT xs_record_bvh_reset(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
+    const struct xs_bvh_range *dst,UINT count,UINT value,struct xs_bvh_hold **out);
 void xs_drop_bvh_hold(struct xs_bvh_hold *hold);
 #ifdef __cplusplus
 }

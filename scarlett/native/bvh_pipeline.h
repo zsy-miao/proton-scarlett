@@ -5,7 +5,7 @@
 #include "bvh_offline_dxil.h"
 #include "bvh_partitions_dxil.h"
 
-enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS };
+enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -22,6 +22,9 @@ static const struct bvh_candidate {
     [BVH_PARTITIONS]={0x1580,{0x2a,0xf6,0xb2,0xe1,0x61,0xe1,0xbe,0xa2,0xc9,0x3c,0x43,0xb4,0x0d,0xc7,0xb1,0x6f,
         0x77,0xb8,0x13,0x23,0x83,0x92,0x1f,0x31,0xa4,0xaf,0x0e,0xbd,0x34,0x5c,0x11,0x96},
         L"XDXR WritePartitions",36,{bvh_partitions_dxil,sizeof bvh_partitions_dxil}},
+    [BVH_RESET_COUNTERS]={0xfe8,{0xe2,0x30,0x9a,0x6f,0x2c,0x95,0xd0,0x97,0xe5,0x00,0xd4,0xc3,0x8e,0x20,0x58,0x81,
+        0xa0,0xc2,0x43,0x3f,0x17,0x54,0xf9,0x7b,0xae,0xf0,0x6e,0x17,0x5e,0xd2,0xb0,0x2e},
+        L"XDXR ResetCounters",3,{NULL,0}},
 };
 
 struct bvh_pipeline {
@@ -116,6 +119,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     ID3D10Blob_Release(blob);
     if (SUCCEEDED(hr)) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pd={.pRootSignature=p->root,.CS=candidate->cs};
+        if (kind==BVH_RESET_COUNTERS) pd.CS=(D3D12_SHADER_BYTECODE){code,w.n};
         hr=ID3D12Device_CreateComputePipelineState(d->host,&pd,&IID_ID3D12PipelineState,(void **)&p->host);
     }
     if (FAILED(hr)) {
@@ -199,3 +203,19 @@ HRESULT xs_record_bvh_init(IUnknown *pipeline,ID3D12GraphicsCommandList *list,co
 }
 #include "bvh_offline_record.h"
 #include "bvh_partitions_record.h"
+
+HRESULT xs_record_bvh_reset(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
+        const struct xs_bvh_range *dst,UINT count,UINT value,struct xs_bvh_hold **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!dst || !count) return E_INVALIDARG;
+    if (count>32u*D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION) return E_NOTIMPL;
+    HRESULT hr=bvh_record_target(pipeline,BVH_RESET_COUNTERS,list,dst,dst->guest_base,16*count,out);
+    if (SUCCEEDED(hr)) {
+        UINT constants[]={count,count,value};
+        ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list,1,3,constants,0);
+        ID3D12GraphicsCommandList_Dispatch(list,(count+31)/32,1,1);
+    }
+    return hr;
+}
