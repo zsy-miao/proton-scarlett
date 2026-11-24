@@ -15,7 +15,9 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 **AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder completes 53 pipeline creations for 52 distinct shaders, including all four [decompression stages](scarlett/native/bvh-decompress.md). The postbuild size query is created twice. Retail creates the occlusion query heap, its 19,680-byte readback buffer and the [CPU-only heap of 3,128 descriptors](scarlett/native/frame-descriptor-init.md).
 
-Retail now creates both `R16_UINT` views in the write-combined pool: 3,072 elements at its base and 378 elements at byte offset `0x1800`. A [RADV GPU test](scarlett/native/test-pool-srv.hpp) read every element after the CPU address was freed and reused; the six reads into the second resource's padding returned zero. Retail next stops at device `+0x1e8` (title return RVA `+0x12b981e`). **No retail builder dispatch or presented frame has been observed.**
+Retail creates both `R16_UINT` views in the write-combined pool: 3,072 elements at its base and 378 elements at byte offset `0x1800`. A [RADV GPU test](scarlett/native/test-pool-srv.hpp) read every element after the CPU address was freed and reused; the six reads into the second resource's padding returned zero.
+
+Retail creates its first trilinear wrap sampler and copies it to the shader-visible heap. The [sampler test](scarlett/native/color-allocation.md#primary-texture-srv-0x90) verified the filtered color at the wrap boundary after the CPU sampler heap was released. Retail next hits a title breakpoint at `+0x19f5291`. **No retail builder dispatch or presented frame has been observed.**
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 

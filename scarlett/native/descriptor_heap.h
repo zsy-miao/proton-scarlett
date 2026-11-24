@@ -12,13 +12,18 @@ struct desc_heap {
     ID3D12DescriptorHeap *host, *tail;
     SIZE_T start;
     UINT count, stride, host_stride;
-    BOOL visible,rtv;
+    BOOL visible,rtv,sampler;
     struct xbox_device *owner;
     struct desc_heap *next;
     struct descriptor_record *records; /* type 0 and RTV */
     HMODULE xmem;
     void (WINAPI *xfree)(void *,UINT64);
+    UINT64 sampler_serial[];
 };
+static struct desc_heap **heap_list(struct xbox_device *owner,struct desc_heap *h)
+{
+    return h->sampler ? &owner->sampler_heaps : h->rtv ? &owner->rtv_heaps : &owner->heaps;
+}
 enum { DESC_ATTR = (0x80 << 16) | 4 };
 enum { DESC_BANK = D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1, DESC_STARTUP_COUNT = 0x130000 };
 static const struct desc_table {
@@ -41,7 +46,7 @@ static ULONG WINAPI desc_release(IUnknown *i)
         struct xbox_device *owner = h->owner;
         if (owner) {
             AcquireSRWLockExclusive(&owner->descriptor_lock);
-            struct desc_heap **p = h->rtv ? &owner->rtv_heaps : &owner->heaps;
+            struct desc_heap **p = heap_list(owner,h);
             while (*p != h) p = &(*p)->next;
             *p = h->next;
             ReleaseSRWLockExclusive(&owner->descriptor_lock);
@@ -111,9 +116,12 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
         (d.Type == 1 && d.NumDescriptors == 128 && (UINT)d.Flags <= 1) ||
         (d.Type == 2 && d.NumDescriptors == 4096 && !d.Flags) ||
         (d.Type == 3 && d.NumDescriptors == 2048 && !d.Flags))) return E_NOTIMPL;
-    struct desc_heap *h = HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *h);
+    BOOL sampler=d.Type==D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+    struct desc_heap *h = HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *h +
+            (sampler ? sizeof(UINT64)*d.NumDescriptors : 0));
     if (!h) return E_OUTOFMEMORY;
     h->count = d.NumDescriptors;
+    h->sampler=sampler;
     if (d.Type == 0 && d.NumDescriptors == DESC_STARTUP_COUNT) d.NumDescriptors = DESC_BANK;
     HRESULT hr = ID3D12Device_CreateDescriptorHeap(host,&d,&IID_ID3D12DescriptorHeap,(void **)&h->host);
     if (FAILED(hr)) { HeapFree(GetProcessHeap(),0,h); return hr; }
@@ -145,11 +153,11 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
         h->start = (SIZE_T)alloc(size,DESC_ATTR);
     } else h->start = (SIZE_T)VirtualAlloc(NULL,size,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
     if (!h->start) { desc_release(&h->iface); return E_OUTOFMEMORY; }
-    if (h->records) {
+    if (h->records || h->sampler) {
         h->owner = CONTAINING_RECORD(device,struct xbox_device,iface);
         IUnknown_AddRef(device);
         AcquireSRWLockExclusive(&h->owner->descriptor_lock);
-        struct desc_heap **head=h->rtv ? &h->owner->rtv_heaps : &h->owner->heaps;
+        struct desc_heap **head=heap_list(h->owner,h);
         h->next = *head;
         *head = h;
         ReleaseSRWLockExclusive(&h->owner->descriptor_lock);

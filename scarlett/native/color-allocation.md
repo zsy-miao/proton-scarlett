@@ -78,9 +78,12 @@ dxc -WX -T cs_6_0 -E main -Qstrip_debug -Fo "$game/test-color-sample.dxil" \
 The public-slot test creates two color wrappers, writes the SRV for the
 first, releases both, renders different colors into adjacent texels, and
 retires that work. It then removes the UAV descriptor and direct resource
-reference. The checked SRV resolves to its own bank; a point-sampling
-dispatch reads back the green and red texels with only the SRV retaining
-the source.
+reference. The fixture then calls the retail sampler writer (device `+0x1e8`)
+with the startup preset: linear min/mag/mip filtering, wrap U/V/W, LOD 0–12.
+Device `+0xc0` copies one sampler from the CPU-only heap to the visible heap.
+After releasing the source heap, the fixture resolves the checked destination,
+samples the green and red texel centers and samples the wrap boundary. Fenced
+readback returns `ff00ff00`, `ff0000ff`, and the red/green midpoint `ff008080`.
 
 ### Primary texture RTV (`+0xa0`)
 

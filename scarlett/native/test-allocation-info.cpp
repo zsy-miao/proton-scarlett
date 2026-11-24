@@ -8,6 +8,7 @@ extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3
 extern "C" HRESULT xs_resolve_color_rtv(IUnknown *,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE *,ID3D12Resource **);
 extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
 extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
+extern "C" HRESULT xs_resolve_sampler(IUnknown *,SIZE_T,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
 #define SLOT(o,n,T) ((T)((*reinterpret_cast<void***>(o))[n/8]))
 #define CK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); return 1; } } while(0)
 #define HR(x) CK(SUCCEEDED(x))
@@ -191,12 +192,32 @@ int main()
     *(UINT64 *)sampleSlot^=1;
     HR(xs_resolve_view(heap.Get(),sampleSlot,0x90,&bank,&gpu));
     D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};
-    D3D12_ROOT_PARAMETER rp[2]={}; rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    D3D12_ROOT_PARAMETER rp[3]={}; rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rp[0].DescriptorTable={1,&range}; rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;
-    D3D12_STATIC_SAMPLER_DESC sampler={}; sampler.Filter=D3D12_FILTER_MIN_MAG_MIP_POINT;
-    sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxAnisotropy=1; sampler.ComparisonFunc=D3D12_COMPARISON_FUNC_ALWAYS;
-    D3D12_ROOT_SIGNATURE_DESC rs={2,rp,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    D3D12_DESCRIPTOR_RANGE samRange={D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,1,0,0,0};
+    rp[2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; rp[2].DescriptorTable={1,&samRange};
+    D3D12_ROOT_SIGNATURE_DESC rs={3,rp,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    ComPtr<IUnknown> cpuSam,visibleSam;
+    UINT shape[4]={1,128,0,1};
+    auto mkHeap=SLOT(dev.Get(),0x70,Heap);
+    HR(mkHeap(dev.Get(),shape,IID_ID3D12DescriptorHeap,(void **)cpuSam.GetAddressOf()));
+    shape[2]=1; HR(mkHeap(dev.Get(),shape,IID_ID3D12DescriptorHeap,(void **)visibleSam.GetAddressOf()));
+    SIZE_T cpuSlot=SLOT(cpuSam.Get(),0x48,Start)(cpuSam.Get())+16*127;
+    SIZE_T visibleSlot=SLOT(visibleSam.Get(),0x48,Start)(visibleSam.Get())+16*127;
+    DWORD record[23]={0,1,1,2,2,0,1,1,1,0,0x41400000,0,0,1,0,0,1};
+    using Writer=void(WINAPI *)(IUnknown *,const void *,SIZE_T);
+    using Copy=void(WINAPI *)(IUnknown *,UINT,SIZE_T,SIZE_T,UINT);
+    SLOT(dev.Get(),0x1e8,Writer)(dev.Get(),record,cpuSlot);
+    SLOT(dev.Get(),0xc0,Copy)(dev.Get(),1,visibleSlot,cpuSlot,1);
+    CK(*(UINT64 *)cpuSlot && !memcmp((void *)cpuSlot,(void *)visibleSlot,16));
+    ID3D12DescriptorHeap *samBank; D3D12_GPU_DESCRIPTOR_HANDLE samGPU;
+    CK(FAILED(xs_resolve_sampler(cpuSam.Get(),cpuSlot,&samBank,&samGPU)));
+    cpuSam.Reset();
+    CK(FAILED(xs_resolve_sampler(visibleSam.Get(),visibleSlot-16,&samBank,&samGPU)));
+    *(UINT64 *)visibleSlot^=1;
+    CK(FAILED(xs_resolve_sampler(visibleSam.Get(),visibleSlot,&samBank,&samGPU)) && !samBank && !samGPU.ptr);
+    *(UINT64 *)visibleSlot^=1;
+    HR(xs_resolve_sampler(visibleSam.Get(),visibleSlot,&samBank,&samGPU));
     ComPtr<ID3DBlob> blob; ComPtr<ID3D12RootSignature> root;
     HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
     HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
@@ -204,23 +225,25 @@ int main()
     size_t size=fread(code,1,sizeof code,file); CK(size && size<sizeof code && feof(file)); fclose(file);
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd={}; pd.pRootSignature=root.Get(); pd.CS={code,size};
     ComPtr<ID3D12PipelineState> ps; HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&ps)));
-    hp.Type=D3D12_HEAP_TYPE_DEFAULT; buf.Width=8; buf.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    hp.Type=D3D12_HEAP_TYPE_DEFAULT; buf.Width=12; buf.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ComPtr<ID3D12Resource> samples;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&samples)));
-    l->SetDescriptorHeaps(1,&bank); l->SetComputeRootSignature(root.Get()); l->SetPipelineState(ps.Get());
+    ID3D12DescriptorHeap *banks[]={bank,samBank};
+    l->SetDescriptorHeaps(2,banks); l->SetComputeRootSignature(root.Get()); l->SetPipelineState(ps.Get());
+    l->SetComputeRootDescriptorTable(2,samGPU);
     l->SetComputeRootDescriptorTable(0,gpu); l->SetComputeRootUnorderedAccessView(1,samples->GetGPUVirtualAddress());
     l->Dispatch(1,1,1);
     b.Transition={samples.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE};
-    l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb.Get(),16,samples.Get(),0,8);
+    l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb.Get(),16,samples.Get(),0,12);
     HR(l->Close()); q->ExecuteCommandLists(1,batch); HR(q->Signal(f.Get(),2));
     HANDLE sampled=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(sampled);
     HR(f->SetEventOnCompletion(2,sampled)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
-    HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff); rb->Unmap(0,nullptr);
+    HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff && pixel[6]==0xff008080); rb->Unmap(0,nullptr);
     l.Reset(); a.Reset(); heap.Reset();
     MEMORY_BASIC_INFORMATION m;
     CK(VirtualQuery(arena,&m,sizeof m) && m.State==MEM_FREE);
     FreeLibrary(xm);
-    puts("PASS public +90 color SRV: checked slot, two live primary identities, point-sampled green/red after both wrappers and UAV view released");
+    puts("PASS +1e8/+c0: sampled green/red and linear-wrap midpoint ff008080 after CPU sampler heap release");
     puts("PASS public +a0: type-2 heap, overwritten slot and independent final slot retained two distinct +3f8 textures; real RTV clear/readback after title Release");
     std::printf("PASS +c8 size=%llu alignment=%llu; +3f8 committed identity -> +98 UAV -> checked RTV; fenced last pixels ff00ff00 ff0000ff after wrapper release\n",
             (unsigned long long)got.info.SizeInBytes,(unsigned long long)got.info.Alignment);

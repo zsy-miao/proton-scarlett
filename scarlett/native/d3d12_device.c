@@ -45,6 +45,7 @@ struct xbox_device {
     SRWLOCK descriptor_lock;
     struct desc_heap *heaps;
     struct desc_heap *rtv_heaps;
+    struct desc_heap *sampler_heaps;
     struct xs_buffer_binding *buffers;
     struct bvh_root *bvh_roots; /* live identities under descriptor_lock */
     struct color_resource *colors; /* weak registry under descriptor_lock */
@@ -425,6 +426,74 @@ failed:
     return hr;
 }
 
+/* Sampler title storage is VirtualAlloc-backed, disjoint across live heaps. Caller holds descriptor_lock. */
+static UINT64 *sampler_slot(struct xbox_device *d,SIZE_T slot,BOOL visible,D3D12_CPU_DESCRIPTOR_HANDLE *cpu)
+{
+    for (struct desc_heap *h=d->sampler_heaps;h;h=h->next)
+        if (h->visible==visible && SUCCEEDED(xs_descriptor_slot(&h->iface,slot,cpu,NULL)))
+            return &h->sampler_serial[(slot-h->start)/h->stride];
+    return NULL;
+}
+#define SAMPLER_TAG 0x58534445534301e8ull
+/* Borrowed handles: caller keeps the bound heap live through retirement. */
+HRESULT xs_resolve_sampler(IUnknown *iface,SIZE_T slot,ID3D12DescriptorHeap **bank,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+{
+    if (!bank || !gpu) return E_POINTER;
+    *bank=NULL; gpu->ptr=0;
+    if (!iface || iface->lpVtbl!=&desc_vtbl.unknown) return E_INVALIDARG;
+    struct desc_heap *h=CONTAINING_RECORD(iface,struct desc_heap,iface);
+    if (!h->sampler || !h->visible) return E_INVALIDARG;
+    AcquireSRWLockShared(&h->owner->descriptor_lock);
+    HRESULT hr=xs_descriptor_range(iface,slot,1,bank,NULL,gpu);
+    if (SUCCEEDED(hr)) {
+        UINT64 tag[2],serial=h->sampler_serial[(slot-h->start)/h->stride];
+        if (!serial || !copy_in(tag,(void *)slot,sizeof tag) || tag[0]!=serial || tag[1]!=SAMPLER_TAG) {
+            *bank=NULL; gpu->ptr=0; hr=E_INVALIDARG;
+        }
+    }
+    ReleaseSRWLockShared(&h->owner->descriptor_lock);
+    return hr;
+}
+static void WINAPI sampler_write(IUnknown *iface,const void *desc,SIZE_T dest)
+{
+    /* +1818e06 supplies filter 0x15, wrap UVW, LOD [0,12]; +12b96b0 expands it. */
+    static const DWORD retail[23]={0,1,1,2,2,0,1,1,1,0,0x41400000,0,0,1,0,0,1};
+    DWORD w[23];
+    if (!copy_in(w,desc,sizeof w) || memcmp(w,retail,sizeof w)) xs_stop();
+    D3D12_SAMPLER_DESC s={.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR,.AddressU=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        .AddressV=D3D12_TEXTURE_ADDRESS_MODE_WRAP,.AddressW=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        .MaxAnisotropy=1,.ComparisonFunc=D3D12_COMPARISON_FUNC_NEVER,.MaxLOD=12.0f};
+    struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    UINT64 *serial=sampler_slot(d,dest,FALSE,&cpu);
+    UINT64 tag[2]={++d->descriptor_serial,SAMPLER_TAG};
+    BOOL ok=serial && store_slot_tag(dest,tag);
+    if (ok) {
+        ID3D12Device_CreateSampler(d->host,&s,cpu);
+        *serial=tag[0];
+    }
+    ReleaseSRWLockExclusive(&d->descriptor_lock);
+    if (!ok) xs_stop();
+}
+static void WINAPI sampler_copy(IUnknown *iface,UINT count,SIZE_T dest,SIZE_T src,UINT type)
+{
+    if (count!=1 || type!=D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) xs_stop();
+    struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
+    D3D12_CPU_DESCRIPTOR_HANDLE from,to;
+    UINT64 tag[2];
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    UINT64 *written=sampler_slot(d,src,FALSE,&from),*target=sampler_slot(d,dest,TRUE,&to);
+    BOOL ok=written && target && *written && copy_in(tag,(void *)src,sizeof tag) &&
+        tag[0]==*written && tag[1]==SAMPLER_TAG && store_slot_tag(dest,tag);
+    if (ok) {
+        ID3D12Device_CopyDescriptorsSimple(d->host,1,to,from,D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        *target=*written;
+    }
+    ReleaseSRWLockExclusive(&d->descriptor_lock);
+    if (!ok) xs_stop();
+}
+
 struct bootstrap_vtbl {
     IUnknownVtbl unknown;
     xs_stop_fn gap18[5];
@@ -438,7 +507,8 @@ struct bootstrap_vtbl {
     __typeof__(&write_srv) srv;
     __typeof__(&write_uav) uav;
     __typeof__(&write_rtv) rtv;
-    xs_stop_fn gapa8[4];
+    xs_stop_fn gapa8[3];
+    __typeof__(&sampler_copy) copy_simple;
     __typeof__(&bootstrap_allocation_info) allocation_info;
     __typeof__(&bootstrap_heap) heap;
     __typeof__(&bootstrap_readback) readback;
@@ -450,7 +520,8 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_signature) signature;
     xs_stop_fn gap150[6];
     __typeof__(&bootstrap_extended) extended;
-    xs_stop_fn gap188[13];
+    xs_stop_fn gap188[12];
+    __typeof__(&sampler_write) sampler;
     __typeof__(&bootstrap_bvh_pipeline) bvh_pipeline;
     xs_stop_fn gap1f8[7];
 #ifdef SCARLETT_STAGED_PLACED
@@ -471,6 +542,8 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_placed) placed;
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
+               offsetof(struct bootstrap_vtbl, sampler) == 0x1e8 &&
+               offsetof(struct bootstrap_vtbl, copy_simple) == 0xc0 &&
                offsetof(struct bootstrap_vtbl, readback) == 0xd8 &&
                offsetof(struct bootstrap_vtbl, committed) == 0x3f8 &&
                offsetof(struct bootstrap_vtbl, placed) == 0x428 &&
@@ -579,13 +652,14 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
     .descriptors = descriptor_heap, .stride = descriptor_stride, .root = builder_root_call,
-    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 3] = xs_stop },
+    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 2] = xs_stop },
+    .copy_simple = sampler_copy,
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .readback = bootstrap_readback, .gape0 = { [0 ... 7] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { xs_stop, xs_stop }, .query_heap = bootstrap_query_heap, .gap140 = xs_stop,
     .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 12] = xs_stop }, .bvh_pipeline = builder_pipeline_call,
+    .gap188 = { [0 ... 11] = xs_stop }, .sampler=sampler_write, .bvh_pipeline = builder_pipeline_call,
     .gap1f8 = { [0 ... 6] = xs_stop },
 #ifdef SCARLETT_STAGED_PLACED
     .address_srv = write_address_srv,
