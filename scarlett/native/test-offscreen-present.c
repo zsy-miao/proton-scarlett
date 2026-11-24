@@ -47,15 +47,27 @@ int main(void)
     UINT64 opts[4]={0};
     Present present=SLOT(q,0x100,Present);
     HR(present(q,1,wire,opts),E_NOTIMPL);
+#ifdef TEST_CAPTURE_HWND
+    WNDCLASSA cls={.lpfnWndProc=DefWindowProcA,.hInstance=GetModuleHandleW(NULL),.lpszClassName="sgaWindowClass"};
+    CHECK(RegisterClassA(&cls));
+    HWND window=CreateWindowExA(0,cls.lpszClassName,"Window capture",WS_OVERLAPPEDWINDOW,0,0,800,600,NULL,NULL,cls.hInstance,NULL);
+    CHECK(window); ShowWindow(window,SW_SHOW);
+#else
     WNDCLASSW cls={.lpfnWndProc=DefWindowProcW,.hInstance=GetModuleHandleW(NULL),.lpszClassName=L"PresentXTest"};
     CHECK(RegisterClassW(&cls));
     HWND window=CreateWindowExW(0,cls.lpszClassName,L"PresentX",WS_VISIBLE|WS_POPUP,0,0,800,600,NULL,NULL,cls.hInstance,NULL);
+#endif
     CHECK(window);
     UpdateWindow(window);
     IDXGIFactory2 *factory;
     IDXGISwapChain3 *chain;
     HR(CreateDXGIFactory1(&IID_IDXGIFactory2,(void **)&factory),S_OK);
+#ifdef TEST_CAPTURE_HWND
+    HR(xs_display_open_title(q,factory,W,H,&chain),S_OK);
+    HWND actual=NULL; HR(IDXGISwapChain3_GetHwnd(chain,&actual),S_OK); CHECK(actual==window);
+#else
     HR(xs_display_open(q,factory,window,W,H,&chain),S_OK);
+#endif
     HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL);
     UINT first=IDXGISwapChain3_GetCurrentBackBufferIndex(chain),before,after; CHECK(first<2);
     HR(IDXGISwapChain3_GetLastPresentCount(chain,&before),S_OK);

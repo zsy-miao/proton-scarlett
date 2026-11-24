@@ -120,6 +120,14 @@ created `Default IME` window had a different handle. All this precedes the
 174 MiB placed-buffer request; neither the HWND value nor the requested
 window size establishes a swapchain index, image size or rendered frame.
 
+Wine patch `0008` captures the creator's HWND and a generation number.
+During both retail `+0x3f8` calls, the query returned the same live window
+on the creator thread (HWND `0x10082`, generation 1, thread 468 in this
+run). `test-title-window.c` checks destruction, ambiguity and thread/process
+ownership. `test-offscreen-present.c` with `-DTEST_CAPTURE_HWND` checks
+the actual DXGI swapchain HWND and presents two independently decoded frames.
+Retail has not yet reached the swapchain handoff.
+
 ## Decision at future initialization
 
 Correlate the returned HWND with device/queue creation; record primary vs.

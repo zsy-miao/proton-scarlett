@@ -15,6 +15,8 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 **AMD (`1002:164e`, RADV 26.3.0):** Retail creates the [174 MiB placed buffer](scarlett/native/placed-arena.md), initializes the 1,245,184-slot descriptor heap, and completes both iterations of the [primary display-ring loop](scarlett/native/queue/present.md). The two 3840×2160 RGBA8 textures have distinct identities and support shader and render-target views. Immediately after the loop, the title stops at `+0x247af2d`: a size check sees `0x4000000` (64 MiB) against a maximum of `0x1fffff`. **No retail frame has been presented.**
 
+Both retail display textures were created on the thread that owns the game window. A [separate presentation test](scarlett/native/queue/present.md) opened DXGI on a window captured by the same Wine hook and verified two displayed frames. Retail still stops at the size check above.
+
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.

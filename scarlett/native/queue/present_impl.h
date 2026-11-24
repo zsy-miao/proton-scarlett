@@ -30,8 +30,9 @@ HRESULT xs_console_direct_queue(ID3D12Device *host, IUnknown *owner, IUnknown **
     return hr;
 }
 
-HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
-        UINT width, UINT height, IDXGISwapChain3 **out)
+#include "title_window.h"
+static HRESULT display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
+        UINT width, UINT height, IDXGISwapChain3 **out,const struct xs_title_window *title)
 {
     if (!out) return E_POINTER;
     *out=NULL;
@@ -58,6 +59,11 @@ HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
         }
         if (SUCCEEDED(hr)) {
             static LONG64 serial;
+            struct xs_title_window confirmed;
+            if (title && !xs_title_window_query(&confirmed,title)) {
+                IDXGISwapChain3_Release(a->display.chain); a->display.chain=NULL;
+                ReleaseSRWLockExclusive(&a->display.lock); return DXGI_ERROR_INVALID_CALL;
+            }
             a->display.cookie=(HANDLE)(UINT_PTR)InterlockedIncrement64(&serial);
             if (!SetPropW(window,L"Scarlett.Present.Owner",a->display.cookie)) {
                 IDXGISwapChain3_Release(a->display.chain); a->display.chain=NULL;
@@ -70,6 +76,20 @@ HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
     }
     ReleaseSRWLockExclusive(&a->display.lock);
     return hr;
+}
+
+HRESULT xs_display_open(IUnknown *queue,IDXGIFactory2 *factory,HWND window,UINT width,UINT height,IDXGISwapChain3 **out)
+{
+    return display_open(queue,factory,window,width,height,out,NULL);
+}
+
+HRESULT xs_display_open_title(IUnknown *queue,IDXGIFactory2 *factory,UINT width,UINT height,IDXGISwapChain3 **out)
+{
+    struct xs_title_window title;
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!xs_title_window_query(&title,NULL)) return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+    return display_open(queue,factory,title.hwnd,width,height,out,&title);
 }
 
 /* Private identity only: don't advertise a console resource ABI we cannot service. */

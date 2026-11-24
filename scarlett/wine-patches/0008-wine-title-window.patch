@@ -1,0 +1,127 @@
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -5276,6 +5276,67 @@
+  *
+  * Free a window handle.
+  */
++/* Private native-x64 display provider. Match creation provenance; never pick
++ * a foreground window, a process-global HWND value, or a window by dimensions. */
++struct scarlett_window {
++    struct scarlett_window *next;
++    HWND hwnd;
++    DWORD tid;
++    ULONG_PTR generation;
++};
++static struct scarlett_window *scarlett_windows;
++static ULONG_PTR scarlett_generation;
++static BOOL scarlett_unavailable;
++
++static BOOL scarlett_image(void)
++{
++    static const WCHAR exe[] = {'g','a','m','e','_','s','c','a','r','l','e','t','t','_','m','a','s','t','e','r','.','e','x','e',0};
++    const UNICODE_STRING *path = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++    size_t len = path->Length / sizeof(WCHAR), n = ARRAY_SIZE(exe)-1;
++    return len >= n && (len == n || path->Buffer[len-n-1] == '\\' || path->Buffer[len-n-1] == '/') &&
++           !wcsnicmp( path->Buffer+len-n, exe, n );
++}
++
++static void scarlett_register( HWND hwnd )
++{
++    struct scarlett_window *s;
++    WND *win = get_win_ptr( hwnd );
++    if (!win || win == WND_OTHER_PROCESS || win == WND_DESKTOP) return;
++    s = malloc( sizeof(*s) );
++    if (!s || !++scarlett_generation) { free(s); scarlett_unavailable = TRUE; }
++    else {
++        s->hwnd = win->handle;
++        s->tid = GetCurrentThreadId();
++        s->generation = scarlett_generation;
++        s->next = scarlett_windows;
++        scarlett_windows = s;
++    }
++    release_win_ptr( win );
++}
++
++/* Caller holds user_lock. Also used when a thread exits without DestroyWindow. */
++static void scarlett_forget( HWND hwnd )
++{
++    struct scarlett_window **p, *s;
++    for (p = &scarlett_windows; (s = *p); p = &s->next)
++        if (s->hwnd == hwnd) { *p = s->next; free(s); break; }
++}
++
++static ULONG_PTR scarlett_query( HWND hwnd, ULONG_PTR param, DWORD code )
++{
++    ULONG_PTR result = 0;
++    struct scarlett_window *s;
++    user_lock();
++    if (!scarlett_unavailable && (s = scarlett_windows) && !s->next && s->tid == GetCurrentThreadId())
++    {
++        if (code == 0x53435701 && !hwnd && param == GetCurrentProcessId()) result = s->generation;
++        if (code == 0x53435702 && (!hwnd || hwnd == s->hwnd) && param == s->generation)
++            result = (ULONG_PTR)s->hwnd;
++    }
++    user_unlock();
++    return result;
++}
++
+ static void free_window_handle( HWND hwnd )
+ {
+     WND *win;
+@@ -5284,6 +5345,7 @@
+ 
+     if ((win = get_user_handle_ptr( hwnd, NTUSER_OBJ_WINDOW )) && win != OBJ_OTHER_PROCESS)
+     {
++        scarlett_forget( win->handle );
+         SERVER_START_REQ( destroy_window )
+         {
+             req->handle = wine_server_user_handle( hwnd );
+@@ -5391,6 +5453,9 @@
+     TRACE( "(%p)\n", hwnd );
+ 
+     if (call_hooks( WH_CBT, HCBT_DESTROYWND, (WPARAM)hwnd, 0, 0 )) return FALSE;
++    user_lock();
++    scarlett_forget( hwnd );
++    user_unlock();
+ 
+     if (is_menu_active() == hwnd) NtUserEndMenu();
+ 
+@@ -5491,6 +5556,7 @@
+         BOOL is_child = (win->dwStyle & (WS_CHILD | WS_POPUP)) == WS_CHILD;
+         struct destroy_entry tmp = {0};
+ 
++        scarlett_forget( win->handle );
+         free_dce( win->dce, win->handle, &drawables );
+         set_user_handle_ptr( handle, NULL );
+         free( win->pScroll );
+@@ -5781,6 +5847,13 @@
+     RECT surface_rect;
+     WND *win;
+ 
++    static const WCHAR title_class[] = {'s','g','a','W','i','n','d','o','w','C','l','a','s','s'};
++    BOOL title_window = ansi && !parent && !ex_style && style == WS_OVERLAPPEDWINDOW &&
++                        instance == NtCurrentTeb()->Peb->ImageBaseAddress &&
++                        class_name && class_name->Length == sizeof(title_class) &&
++                        class_name->Buffer && !memcmp( class_name->Buffer,title_class,class_name->Length ) &&
++                        scarlett_image();
++
+     TRACE( "ex_style %#x, class_name %s, version %s, window_name %s, style %#x, x %u, y %u, cx %u, cy %u, "
+            "parent %p, menu %p, class_instance %p, params %p, flags %#x, instance %p, class %s, ansi %u\n",
+            ex_style, debugstr_us(class_name), debugstr_us(version), debugstr_us(window_name), style, x, y, cx, cy,
+@@ -6093,6 +6166,7 @@
+     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+     if (toplevel && toplevel != hwnd) update_window_state( toplevel );
+ 
++    if (title_window && toplevel == hwnd) scarlett_register( hwnd );
+     return hwnd;
+ 
+ failed:
+@@ -6232,6 +6306,8 @@
+ {
+     switch (code)
+     {
++    case 0x53435701: case 0x53435702:
++        return scarlett_query( hwnd, param, code );
+     case NtUserCallHwndParam_ClientToScreen:
+         return client_to_screen( hwnd, (POINT *)param );
+ 
