@@ -741,3 +741,17 @@ had a provider serial. A private fixture with supplied descriptor
 identities passed on both GPUs. Binding that inline entry in ordinary
 retail still requires preserving the active heap slot and its original
 backing through completion.
+
+A later RTX diagnostic with a failure-only depth probe reached the same
+clear and recorder stop as ordinary AMD (`+325c0`). Its first process
+breakpoint was `+1d52fa1` on another thread. The depth failure did not
+recur, so its cause remains open. The game issued tokens 1 and 2 and
+presented token 1 once. Two earlier attempts to load the diagnostic
+failed before the probe ran.
+
+Separately, the [mode-5 transfer fixture](../../tests/im-transfer/README.md)
+passed all four cases on AMD and RTX. The ordered two-list fixture wrote
+the expected red/green primary pixels on both, rejected a bad second list
+without submitting the first, and held its command memory until the fence
+completed. Neither fixture flipped the display. A token-2 retail rendering
+batch that writes the current primary has yet to be observed.
