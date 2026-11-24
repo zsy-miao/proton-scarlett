@@ -248,6 +248,12 @@ static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
          (r->Format==DXGI_FORMAT_R32G8X24_TYPELESS && r->Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL));
 }
 
+static BOOL depth1024_desc(const D3D12_RESOURCE_DESC *r)
+{
+    return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && r->Width==1024 && r->Height==1024 &&
+        r->DepthOrArraySize==1 && r->MipLevels==1 && r->SampleDesc.Count==1 && !r->SampleDesc.Quality &&
+        !r->Alignment && !r->Layout && r->Format==DXGI_FORMAT_R32G8X24_TYPELESS && r->Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+}
 static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
 {
     return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment &&
@@ -283,7 +289,7 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         /* read_texture_desc validated the 2D shape. Only the low RT flag is translated. */
         if (!single_desc(rd)) return E_NOTIMPL;
         rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    } else if (!msaa_desc(rd)) return E_NOTIMPL;
+    } else if (!msaa_desc(rd) && (detail || !depth1024_desc(rd))) return E_NOTIMPL;
     ID3D12Device4 *d=NULL;
     HRESULT hr=ID3D12Device_QueryInterface(host,&IID_ID3D12Device4,(void **)&d);
     if (FAILED(hr)) return hr;
@@ -295,6 +301,8 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     if (fp) {
         if (info.Alignment!=65536 || (rd->Width==1280 ? info.SizeInBytes!=0x780000 && info.SizeInBytes!=0x790000 :
             info.SizeInBytes!=0x1e00000 && info.SizeInBytes!=0x1ce0000)) return E_NOTIMPL;
+    } else if (depth1024_desc(rd)) {
+        if (info.Alignment!=65536 || info.SizeInBytes!=0x800000) return E_NOTIMPL;
     } else if (bgra) {
         if (info.Alignment!=65536 || (info.SizeInBytes!=0x1000000 && info.SizeInBytes!=0x1010000)) return E_NOTIMPL;
     } else if (a8) {
@@ -348,7 +356,8 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    if ((rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) || rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
+    if ((rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) || depth1024_desc(&rd) ||
+        rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
         rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL layered=is_layered_texel(&rd),texel32=layered || is_texel32(&rd);
