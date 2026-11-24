@@ -36,6 +36,7 @@ typedef struct PageView {
     struct Arena *arena;
 } PageView;
 
+typedef struct { BYTE *at; SIZE_T bytes,offset; } ScatterExtent;
 typedef struct Arena {
     struct Arena *next;
     PVOID base;
@@ -47,8 +48,7 @@ typedef struct Arena {
     PageRun *tile_run;
     unsigned tile_mapped;
     BOOL scatter; /* marked 24 GiB CPU reservation */
-    PVOID scatter_at;
-    SIZE_T scatter_bytes, scatter_offset;
+    ScatterExtent extent[2]; /* sorted by VA, same run and section */
     unsigned scatter_part;
 } Arena;
 
@@ -126,6 +126,14 @@ static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc, BOOL tile)
                        PAGE_NOACCESS, NULL, 0);
     PVOID result = a->base;
     DWORD err = GetLastError();
+    /* A raw VA release may have punched a hole in a still-live scatter arena.
+     * Do not put another XMem generation (and its write-watch marker) there. */
+    for (Arena *old=arenas; result && old;old=old->next) {
+        if (old->scatter && old->views &&
+            (UINT_PTR)result<(UINT_PTR)old->base+old->size && (UINT_PTR)old->base<(UINT_PTR)result+size) {
+            VirtualFree(result,0,MEM_RELEASE); result=NULL; err=ERROR_INVALID_ADDRESS;
+        }
+    }
     a->scatter = !wc && !tile && size==(24ull<<30);
     if ((tile || a->scatter) && result && !occupy_descriptor(result,size)) {
         err = GetLastError();
@@ -189,7 +197,7 @@ done:
 static const struct { ULONG_PTR pages; DWORD policy; } layout[] = {
     {752,0x2404},{1600,0x2004},{160,0x1004},{16,0x1404},{432,0x8404}
 };
-static void restore_scatter_arena(Arena *a,BOOL split);
+static void restore_gap(BYTE *at,SIZE_T bytes,BOOL split);
 
 /* Internal only: pin the live code view's dedicated backing before unmap/free can race. */
 HRESULT xmem_pin_code_source(const void *addr, SIZE_T bytes, HANDLE *section, SIZE_T *size, SIZE_T *offset)
@@ -425,7 +433,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
     DWORD err = ERROR_INVALID_ADDRESS;
     AcquireSRWLockExclusive(&page_lock);
     for (Arena *a = arenas; a; a = a->next) {
-        if (a->scatter_at && (UINT_PTR)addr-(UINT_PTR)a->base<a->size) goto done;
+        if (a->scatter && a->views && (UINT_PTR)addr-(UINT_PTR)a->base<a->size) goto done;
         if (!a->tile || (UINT_PTR)addr-(UINT_PTR)a->base >= a->size) continue;
         if (addr == a->base && size == a->size) err = map_tile(a,pages);
         goto done;
@@ -491,7 +499,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
                 }
                 if ((split || arena->descriptor) && !VirtualFree(addr, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
                     err = GetLastError();
-                    if (arena->scatter) restore_scatter_arena(arena,FALSE);
+                    if (arena->scatter) restore_gap(arena->base,arena->size,FALSE);
                     HeapFree(GetProcessHeap(), 0, v);
                     break;
                 }
@@ -501,7 +509,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
                 if (!mapped) {
                     err = GetLastError();
                     if (arena->descriptor && !occupy_descriptor(addr, size)) err = GetLastError();
-                    if (arena->scatter) restore_scatter_arena(arena,split);
+                    if (arena->scatter) restore_gap(arena->base,arena->size,split);
                     else if (split)
                         VirtualFree(start.AllocationBase, start.RegionSize,
                                     MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS);

@@ -56,6 +56,7 @@ static int check(UINT offset,UINT value,BOOL native)
         HR(xs_bind_pool_heaps(list,2,pair));if(native && value)CK(FAILED(pool_timestamp(s,ts+8,0,0,1)));
         pool_vtbl.timestamp(list,ts,0,0,1);
         pool_vtbl.depth_order(list,0);
+        CK(unbind_index(s,(const D3D12_INDEX_BUFFER_VIEW *)1)==E_NOTIMPL);pool_vtbl.index(list,NULL);CK(s->depth_zero_pending && !xs_list_host(list));
         HRESULT (*write_post)(struct startup_list*,UINT64,UINT,UINT64,UINT)=native?record_native_post:split_after_timestamp;
         CK(FAILED(write_post(s,addr+8,post,0,0)) && FAILED(write_post(s,addr+4,post,1,0)));
         if(value)CK(FAILED(write_post(s,addr+4,post^1,0,0)));
@@ -75,7 +76,7 @@ static int check(UINT offset,UINT value,BOOL native)
             ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,4,upload,12,4);
         }else CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
         HR(sl_close(list));CK(!atlas_sync_valid(s,0xc280,0x20000,0,range));
-        CK(FAILED(record_depth_order(s,0)) && FAILED(sl_reset(list,b,NULL,1)) && s->depth_zero_pending);
+        CK(FAILED(unbind_index(s,NULL)) && FAILED(record_depth_order(s,0)) && FAILED(sl_reset(list,b,NULL,1)) && s->depth_zero_pending);
         if(!pass)HR(sl_reset(list,b,NULL,0));
     }
     __atomic_store_n((UINT64*)alias.base,low,__ATOMIC_RELEASE);

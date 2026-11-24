@@ -1,9 +1,9 @@
 #include "test-clear-common.hpp"
-static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb) {
+static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb,bool with_ds=false) {
     constexpr UINT W=16,H=8;
-    auto resource=[&](D3D12_HEAP_TYPE t,D3D12_RESOURCE_STATES st) {
+    auto resource=[&](D3D12_HEAP_TYPE t,D3D12_RESOURCE_STATES st,UINT64 bytes=4096) {
         D3D12_HEAP_PROPERTIES hp={};hp.Type=t;hp.CreationNodeMask=hp.VisibleNodeMask=1;
-        D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=4096;
+        D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=bytes;
         rd.Height=rd.DepthOrArraySize=rd.MipLevels=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         if(t==D3D12_HEAP_TYPE_DEFAULT){rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;rd.Format=srgb?DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:DXGI_FORMAT_R8G8B8A8_UNORM;
             rd.Width=W;rd.Height=H;rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;}
@@ -24,6 +24,7 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
     for (int i=0;i<6;++i) {
         float x=(i>=3?8.f:0.f)+(i%3==1?7.25f:1.f),y=i%3==2?7.25f:1.f;
         float pos[]={2*x/W-1,1-2*y/H,.5f};
+        if(with_ds){pos[0]=i%3==1?3.f:-1.f;pos[1]=i%3==2?-3.f:1.f;}
         memcpy(data+128+28*i,pos,12);memcpy(data+512+36*i,attrs[i],16);
     }
     src->Unmap(0,nullptr);
@@ -35,12 +36,33 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
     ComPtr<ID3D12GraphicsCommandList>l;HR(d->CreateCommandList(1,qd.Type,a.Get(),pso,IID_PPV_ARGS(&l)));
     D3D12_VIEWPORT vp={0,0,W,H,0,1};D3D12_RECT sc={0,0,W,H};l->RSSetViewports(1,&vp);l->RSSetScissorRects(1,&sc);
     const float guard[]={1,0,1,1};l->ClearRenderTargetView(handle,guard,0,nullptr);
-    l->OMSetRenderTargets(1,&handle,FALSE,nullptr);l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    l->SetGraphicsRootSignature(r);l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress()+256);l->DrawInstanced(6,1,0,0);
+    ComPtr<ID3D12DescriptorHeap> dsheap;ComPtr<ID3D12Resource> ds,dsrb;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsh={};D3D12_PLACED_SUBRESOURCE_FOOTPRINT planes[2]={};
+    if(with_ds){
+        auto rd=rt->GetDesc();rd.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
+        HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_DEPTH_WRITE,nullptr,IID_PPV_ARGS(&ds)));
+        hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV;HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&dsheap)));
+        dsh=dsheap->GetCPUDescriptorHandleForHeapStart();d->CreateDepthStencilView(ds.Get(),nullptr,dsh);
+        D3D12_CLEAR_FLAGS both=D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL;
+        l->ClearDepthStencilView(dsh,both,.25f,0x59,0,nullptr);
+        D3D12_RECT right={W/2,0,W,H};l->ClearDepthStencilView(dsh,both,.75f,0xa6,1,&right);
+        UINT64 bytes;d->GetCopyableFootprints(&rd,0,2,0,planes,nullptr,nullptr,&bytes);
+        CK(planes[0].Footprint.Format==DXGI_FORMAT_R32_TYPELESS && planes[1].Footprint.Format==DXGI_FORMAT_R8_TYPELESS);
+        dsrb=resource(D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST,bytes);
+    }
+    l->OMSetRenderTargets(1,&handle,FALSE,with_ds?&dsh:nullptr);l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    l->SetGraphicsRootSignature(r);l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress()+256);l->DrawInstanced(with_ds?3:6,1,0,0);
     D3D12_RESOURCE_BARRIER b={};b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION dst={},from={};from.pResource=rt.Get();dst.pResource=rb.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     auto desc=rt->GetDesc();d->GetCopyableFootprints(&desc,0,1,0,&dst.PlacedFootprint,nullptr,nullptr,nullptr);
-    l->CopyTextureRegion(&dst,0,0,0,&from,nullptr);HR(l->Close());
+    l->CopyTextureRegion(&dst,0,0,0,&from,nullptr);
+    if(with_ds){
+        b.Transition={ds.Get(),D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_DEPTH_WRITE,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
+        D3D12_TEXTURE_COPY_LOCATION read=dst;read.pResource=dsrb.Get();from.pResource=ds.Get();
+        for(UINT plane=0;plane<2;++plane){read.PlacedFootprint=planes[plane];from.SubresourceIndex=plane;l->CopyTextureRegion(&read,0,0,0,&from,nullptr);}
+    }
+    HR(l->Close());
     ID3D12CommandList*ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence>fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
     HANDLE evt=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(evt);HR(q->Signal(fence.Get(),1));HR(fence->SetEventOnCompletion(1,evt));
     CK(WaitForSingleObject(evt,10000)==WAIT_OBJECT_0 && fence->GetCompletedValue()==1);CloseHandle(evt);
@@ -51,13 +73,22 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
         // .2176492 map to UNORM 76 and 55, whereas a direct/nearest export gives 77/56.
         BYTE expected[][4]={{255,0,255,255},{76,128,64,255},{255,55,191,0},{0,0,0,0}};
         if(srgb){const BYTE a[]={3,188,137,255},b[]={255,25,225,128};memcpy(expected[1],a,4);memcpy(expected[2],b,4);}
-        const BYTE *want=expected[!covered?0:mode==1?3:x<8?1:2];
+        if(with_ds)covered=true;
+        const BYTE *want=expected[with_ds?1:!covered?0:mode==1?3:x<8?1:2];
         const BYTE *got=data+dst.PlacedFootprint.Offset+y*dst.PlacedFootprint.Footprint.RowPitch+x*4;
         if(memcmp(got,want,4)){fprintf(stderr,"mode=%d (%u,%u) got %u,%u,%u,%u; expected %u,%u,%u,%u\n",
             mode,x,y,got[0],got[1],got[2],got[3],want[0],want[1],want[2],want[3]);exit(1);}
         colored+=covered;
     }
     rb->Unmap(0,nullptr);printf("PASS mode=%d: %u triangle pixels, %u guards after fence\n",mode,colored,W*H-colored);
+    if(with_ds){
+        HR(dsrb->Map(0,nullptr,(void**)&data));
+        for(UINT y=0;y<H;++y)for(UINT x=0;x<W;++x){
+            float depth;memcpy(&depth,data+planes[0].Offset+y*planes[0].Footprint.RowPitch+4*x,4);
+            CK(depth==(x<W/2?.25f:.75f) && data[planes[1].Offset+y*planes[1].Footprint.RowPitch+x]==(x<W/2?0x59:0xa6));
+        }
+        dsrb->Unmap(0,nullptr);puts("PASS #4: color cleared by full-screen draw; bound depth and stencil unchanged at every pixel");
+    }
 }
 int main(){
     auto d=device(),r=root(d.Get()),other=device(),foreign=root(other.Get());
@@ -75,6 +106,13 @@ int main(){
     auto hp=clear_test_host(p.Get());CK(hp && (void*)hp!=(void*)p.Get());
     ComPtr<IUnknown> identity;HR(p->QueryInterface(IID_ID3D12PipelineState,(void**)identity.GetAddressOf()));CK(identity.Get()==p.Get());
     for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode,false);
+    const auto base_dsv=q[0x2a8/8];
+    q[0x2a8/8]=base_dsv|((UINT64)DXGI_FORMAT_D32_FLOAT<<32);bad(E_NOTIMPL);
+    q[0x2a8/8]=base_dsv|((UINT64)DXGI_FORMAT_D32_FLOAT_S8X24_UINT<<32);
+    q[0x210/8]^=1ull<<32;bad(E_NOTIMPL);q[0x210/8]^=1ull<<32; // DepthEnable at +0x214.
+    q[1]=(UINT_PTR)foreign.Get();bad(E_INVALIDARG);q[1]=(UINT_PTR)r.Get();
+    ComPtr<IUnknown> ds4;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)ds4.GetAddressOf()));
+    hp=clear_test_host(ds4.Get());CK(hp);draw(hd.Get(),host,hp,0,false,true);q[0x2a8/8]=base_dsv;
     q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM_SRGB<<32);
     q[0x2a8/8]^=20ull<<32;bad(E_NOTIMPL);q[0x2a8/8]^=20ull<<32;
     q[1]=(UINT_PTR)foreign.Get();bad(E_INVALIDARG);q[1]=(UINT_PTR)r.Get();

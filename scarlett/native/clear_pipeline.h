@@ -39,8 +39,13 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     /* All tags, lengths, absent stages, input layout and fixed state are pinned. */
     UINT rtv=(UINT)(q[0x280/8]>>32);
     BOOL srgb=rtv==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    /* Prewarm #4 changes only DSVFormat; the linear shader and disabled depth/stencil state are identical. */
+    UINT_PTR dsv_word=q[0x2a8/8];
+    if (rtv==DXGI_FORMAT_R8G8B8A8_UNORM && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+        q[0x2a8/8]=(UINT)dsv_word;
     if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM<<32);
     if (!shader_digest_matches((BYTE *)q,sizeof q,fixed_digest)) return E_NOTIMPL;
+    q[0x2a8/8]=dsv_word;
     if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)rtv<<32);
     if (!copy_in(vs,v,sizeof vs) || !copy_in(ps,s,sizeof ps)) return E_POINTER;
     if (!shader_digest_matches(vs,sizeof vs,vs_digest) || !shader_digest_matches(ps,sizeof ps,ps_digest))

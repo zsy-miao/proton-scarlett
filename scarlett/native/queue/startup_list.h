@@ -566,6 +566,17 @@ static void WINAPI pool_root(IUnknown *i,IUnknown *root)
 {
     if(FAILED(record_graphics_root(sl(i),root)))xs_stop();
 }
+static HRESULT unbind_index(struct startup_list *s,const D3D12_INDEX_BUFFER_VIEW *view)
+{
+    if (!open_direct_state(s) || view) return E_NOTIMPL;
+    ID3D12GraphicsCommandList7_IASetIndexBuffer(s->host,NULL);
+    recorded_direct_state(s);
+    return S_OK;
+}
+static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
+{
+    if (FAILED(unbind_index(sl(i),view))) xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
@@ -575,7 +586,8 @@ static const struct {
     __typeof__(&pool_topology) topology;
     xs_stop_fn gapa8[11];
     __typeof__(&sl_bind) bind;
-    xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[17];
+    xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[12];
+    __typeof__(&pool_index) index; xs_stop_fn gap180[4];
     __typeof__(&sl_primary_clear) clear;
     xs_stop_fn gap1a8[18];
     __typeof__(&sl_marker) marker;
@@ -592,9 +604,10 @@ static const struct {
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 16]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),root)==0x110,"pooled graphics root ABI");
+_Static_assert(offsetof(__typeof__(pool_vtbl),index)==0x178,"index buffer ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),depth_order)==0x258,"pooled depth-order ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),rate)==0x3f0,"pooled shading rate ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),topology)==0xa0,"pooled topology ABI");

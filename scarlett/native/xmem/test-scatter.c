@@ -14,8 +14,10 @@ static BOOL reserved(void *p)
     MEMORY_BASIC_INFORMATION m;
     return VirtualQuery(p,&m,sizeof m)==sizeof m && m.State==MEM_RESERVE;
 }
-int main(void)
+int main(int argc,char **argv)
 {
+    BOOL stale=argc==2 && !strcmp(argv[1],"--stale-gap");
+    CK(argc==1 || stale);
     ULONG_PTR n=TILE_PAGES;
     static ULONG_PTR id[TILE_PAGES];
     SIZE_T size=24ull<<30;
@@ -62,9 +64,83 @@ int main(void)
     CK(!XMemMapPhysicalPages(at,3,NULL) && !XMemMapPhysicalPages(dst,1,id));
     for (SIZE_T i=0;i<3*P;i++) CK(at[i]==0x34);
     for (SIZE_T i=0;i<P;i++) CK((src-P)[i]==0x9a && src[3*P+i]==0x9a);
+    BYTE *other=at+9*P,*src2=src+4*P;
+    void *va2[]={other,other+P};
+    void *overlap[]={at+2*P,at+3*P};
+    CK(!XMemMapPhysicalPagesScatter(overlap,2,id+start+4) && reserved(at+3*P));
+    CK(!XMemMapPhysicalPagesScatter(va2,2,id+start+2) && reserved(other)); /* overlapping source */
+    CK(!XMemMapPhysicalPagesScatter(va2,2,id) && reserved(other)); /* other section */
+    CK(XMemMapPhysicalPagesScatter(va2,2,id+start+4));
+    if (stale) {
+        /* Deliberately invalidate the live arena. Process exit owns cleanup. */
+        BYTE *gap=at+3*P;
+        CK(VirtualFree(gap,0,MEM_RELEASE));
+        CK(!XMemVirtualAlloc(gap,6*P,0x20402000,0x21,PAGE_READWRITE));
+        CK(VirtualAlloc(gap,6*P,MEM_RESERVE,PAGE_NOACCESS)==gap);
+        CK(!XMemMapPhysicalPagesScatter(va,3,NULL) && !XMemMapPhysicalPagesScatter(va2,2,NULL));
+        other[0]=0x6f;
+        CK(src2[0]==0x6f && at[0]==0x34 && reserved(gap) && VirtualFree(gap,0,MEM_RELEASE));
+        puts("PASS stale gap: refused replacement arena and preserved both live aliases");
+        return 0;
+    }
+    struct scarlett_section_info second;
+    CK(SUCCEEDED(scarlett_query_section(0x5343000c,other,2*P,&second)) &&
+       same(second.section,x.section) && second.base==other && second.offset==13*P &&
+       second.view_size==x.view_size && CloseHandle(second.section));
+    CK(!XMemMapPhysicalPagesScatter(va2+1,1,NULL) && !XMemMapPhysicalPagesScatter(va2,2,id+start+4));
+    void *third[]={at+5*P};CK(!XMemMapPhysicalPagesScatter(third,1,id+start+6));
+    for(SIZE_T i=0;i<2*P;++i)other[i]=(BYTE)(17+i);
+    CK(!memcmp(src2,other,2*P));memset(src2,0x71,2*P);
+    for(SIZE_T i=0;i<2*P;i++)CK(other[i]==0x71);
+    for(SIZE_T i=0;i<3*P;i++)CK(at[i]==0x34);
+    for(unsigned j=3;j<9;j++) CK(reserved(at+j*P));
+    /* Remove the higher span first; reinstall in reverse VA order. */
+    CK(XMemMapPhysicalPagesScatter(va2,2,NULL) && reserved(other) && at[0]==0x34);
+    CK(XMemMapPhysicalPagesScatter(va,3,NULL) && reserved(at));
+    /* Measured VA gap, page counts and backing offsets; first/last bytes only. */
+    enum { N1=6720,N2=4136 };static void *span[N1+N2];
+    for(unsigned j=0;j<N1+N2;j++)span[j]=at+((SIZE_T)j+(j<N1?0:1472))*P;
+    CK(XMemMapPhysicalPagesScatter(span,N1,id));
+#ifdef SCATTER_TEST_ROLLBACK
+    /* Fixture DLL fails the first N2 bind after both flanks were marked. */
+    CK(!XMemMapPhysicalPagesScatter(span+N1,N2,id+N1) && GetLastError()==ERROR_GEN_FAILURE);
+    at[0]=0x47;
+    CK(base[0]==0x47 && VirtualQuery(at+N1*P,&m,sizeof m)==sizeof m &&
+       m.AllocationBase==at+N1*P && m.RegionSize==size-(at-dst)-N1*P && m.State==MEM_RESERVE);
+#endif
+    CK(XMemMapPhysicalPagesScatter(span+N1,N2,id+N1));
+    struct scarlett_section_info original;
+    CK(SUCCEEDED(scarlett_query_section(0x5343000c,base,(N1+N2)*P,&original)) &&
+       original.base==base && !original.offset && original.view_size==tile_bytes(0));
+    for(unsigned j=0;j<2;j++) {
+        SIZE_T offset=j?N1*P:0,bytes=j?N2*P:N1*P;
+        BYTE *alias=span[j?N1:0];
+        CK(SUCCEEDED(scarlett_query_section(0x5343000c,alias,bytes,&second)) &&
+           same(second.section,original.section) && second.base==alias && second.offset==offset &&
+           second.view_size==original.view_size && CloseHandle(second.section));
+        alias[0]=(BYTE)(0x51+j);base[offset+bytes-1]=(BYTE)(0x74+j);
+        CK(base[offset]==0x51+j && alias[bytes-1]==0x74+j);
+    }
+    CK(CloseHandle(original.section));
+    CK(VirtualQuery(at+N1*P,&m,sizeof m)==sizeof m && m.AllocationBase==at+N1*P &&
+       m.RegionSize==1472*P && m.State==MEM_RESERVE);
+#ifdef SCATTER_TEST_ROLLBACK
+    /* Fixture DLL fails the first N1 unbind after both flanks were released. */
+    CK(!XMemMapPhysicalPagesScatter(span,N1,NULL) && GetLastError()==ERROR_GEN_FAILURE);
+    CK(at[0]==0x51 && ((BYTE *)span[N1])[0]==0x52 && reserved(at+N1*P));
+#endif
+    CK(XMemMapPhysicalPagesScatter(span,N1,NULL) && ((BYTE *)span[N1])[0]==0x52 &&
+       XMemMapPhysicalPagesScatter(span+N1,N2,NULL));
+    CK(XMemMapPhysicalPagesScatter(va2,2,id+start+4) && XMemMapPhysicalPagesScatter(va,3,id+start));
     CK(XMemMapPhysicalPages(base,n,NULL)==base && !XMemFreePhysicalPages(n,id) && GetLastError()==ERROR_BUSY);
     CK(XMemMapPhysicalPagesScatter(va,3,NULL) && reserved(at));
     CK(!XMemMapPhysicalPagesScatter(va,3,NULL));
+    ULONG_PTR one=1,ordinary;
+    CK(XMemAllocatePhysicalPages(0,&one,&ordinary));
+    CK(!XMemMapPhysicalPages(dst,1,&ordinary) && !XMemFreePhysicalPages(n,id) && GetLastError()==ERROR_BUSY);
+    for(SIZE_T i=0;i<2*P;i++)CK(other[i]==0x71);
+    CK(XMemMapPhysicalPagesScatter(va2,2,NULL) && reserved(other));
+    CK(VirtualQuery(dst,&m,sizeof m)==sizeof m && m.AllocationBase==dst && m.RegionSize==size && m.State==MEM_RESERVE);
     zero[1]=0;
     CK(XMemMapPhysicalPagesScatter(va,3,id+start) && XMemMapPhysicalPagesScatter(va,3,zero));
     CK(VirtualFree(dst,0,MEM_RELEASE));
@@ -72,8 +148,13 @@ int main(void)
     CK(VirtualFree(dst,0,MEM_RELEASE));
     dst=XMemVirtualAlloc(NULL,size,0x20402000,0x21,PAGE_READWRITE);
     CK(dst); for (unsigned j=0;j<3;j++) va[j]=dst+j*P;
+    CK(XMemMapPhysicalPages(dst+4*P,1,&ordinary)==dst+4*P && !XMemMapPhysicalPagesScatter(va,3,id+start));
+    CK(XMemMapPhysicalPages(dst+4*P,1,NULL)==dst+4*P && XMemFreePhysicalPages(1,&ordinary));
+    CK(VirtualFree(dst,0,MEM_RELEASE));
+    dst=XMemVirtualAlloc(NULL,size,0x20402000,0x21,PAGE_READWRITE);
+    CK(dst); for (unsigned j=0;j<3;j++) va[j]=dst+j*P;
     CK(XMemFreePhysicalPages(n,id) && !XMemMapPhysicalPagesScatter(va,3,id+start));
     CK(VirtualFree(dst,0,MEM_RELEASE) && VirtualFree(base,0,MEM_RELEASE) && CloseHandle(x.section) && CloseHandle(y.section));
-    puts("PASS scatter: original WB section and offset, all 196608 alias bytes, neighboring guards, atomic refusal, run busy, unmap and teardown");
+    puts("PASS scatter: two original-section aliases, measured spans and gap, atomic refusal, independent teardown");
     return 0;
 }

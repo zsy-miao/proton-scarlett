@@ -109,6 +109,7 @@ int main(void)
     pool_vtbl.marker(list,addr,0,0,0);pool_vtbl.timestamp(list,dst+16,0,0,1);
     CK(record_depth_order(s,1)==E_NOTIMPL);
     pool_vtbl.depth_order(list,0);
+        CK(unbind_index(s,(const D3D12_INDEX_BUFFER_VIEW *)1)==E_NOTIMPL);pool_vtbl.index(list,NULL);CK(s->depth_zero_pending && !xs_list_host(list));
     pool_vtbl.marker(list,addr+4,0x11111111,0,0);
     CK(s->head && s->depth_zero_pending && !xs_list_host(list));
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
@@ -155,7 +156,7 @@ int main(void)
     ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,s->stamp->dst,delta+40,src,0,8);
     pool_vtbl.depth_order(list,0);
     HR(sl_close(list));volatile DWORD *words=alias.base;
-    CK(!xs_list_host(list) && record_depth_order(s,0)==E_NOTIMPL);
+    CK(!xs_list_host(list) && record_depth_order(s,0)==E_NOTIMPL && FAILED(unbind_index(s,NULL)));
     CK(FAILED(sl_reset(list,b,NULL,1)) && s->depth_zero_pending);
     UINT64 first=0,gpu0,cpu0,gpu1,cpu1; BYTE *reuse=NULL;
     for(UINT pass=1;pass<=2;pass++) {

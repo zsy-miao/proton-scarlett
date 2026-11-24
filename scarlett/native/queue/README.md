@@ -490,3 +490,15 @@ guest list. It survives a recording split or failed reset, prevents a
 native recorder borrow, and clears on successful reset. No guest draw
 with pending depth order is enabled. Both adapters passed the list-state,
 ordering and lifetime tests. AMD reached list `+178`, return `+328be`.
+
+At `+328be` the observed index-buffer view was null. The pooled list now
+records `IASetIndexBuffer(NULL)` and preserves pending depth order. With the
+linear RGBA8/D32-S8 clear pipeline accepted, AMD instead stops earlier at
+`+3278b` while writing its selected pipeline to `list+0x544`. A diagnostic
+matched that pipeline to the subsequent `+c8` bind on the same recorder.
+The cache bytes were all zero; only the object argument identified the
+pipeline. No retail clear draw has been observed.
+
+Six retail launches (four diagnostics and two ordinary runs) and ten
+passing fixtures on the main-based build. AMD stopped at `+3278b`; RTX
+stopped at `+4ecc821`. Both issued tokens 1 and 2 and presented only 1.
