@@ -1,0 +1,13 @@
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index c555fe77a8c1a6be56b5682f84e1020de248e234..6302d0a4391c80648d0a03ca09a51c64a3a57bd0 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7883,7 +7883,7 @@ static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HAND
+         else return DXGI_ERROR_UNSUPPORTED;
+         if (wb) {
+             if (wc_type == 3) return E_NOINTERFACE; /* qualified NVIDIA system-section path */
+-            if (size != 0x49400000 && size != 0x23300000) return DXGI_ERROR_UNSUPPORTED;
++            if (size < 0x23300000 || size > 0x49400000) return DXGI_ERROR_UNSUPPORTED;
+             wc_type = 5;
+         }
+         if (device->memory_properties.memoryTypeCount <= wc_type || device->memory_properties.memoryTypes[wc_type].propertyFlags !=

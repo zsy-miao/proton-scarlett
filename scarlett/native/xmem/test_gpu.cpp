@@ -1,6 +1,9 @@
 /* Synthetic Proton release/alias test. Never submit GPU work against the public VA. */
 #include "gpu_buffer.hpp"
 #include <cstdio>
+#ifdef TEST_RADV_WB_RANGE
+#define TEST_WB563_SECTION
+#endif
 #if defined(TEST_WC_SECTION) || defined(TEST_WB563_SECTION)
 #define TEST_MARKED_SECTION
 #endif
@@ -77,20 +80,13 @@ static void test_wc_race(HANDLE backing, SIZE_T size)
 }
 #endif
 
-int main()
+static int exercise(SIZE_T size)
 {
 #ifdef TEST_WC_UNSUPPORTED
     CHECK(!XMemVirtualAlloc(nullptr,0x89700000,0x20003000,0x283,0x2404));
     CHECK(GetLastError()!=ERROR_SUCCESS);
     puts("PASS WC: unavailable backing rejected");
     return 0;
-#endif
-#ifdef TEST_WC_SECTION
-    const SIZE_T size = 0x89700000;
-#elif defined(TEST_WB563_SECTION)
-    const SIZE_T size = 0x23300000;
-#else
-    const SIZE_T size = 0x49400000;
 #endif
     const SIZE_T align = 2u << 20;
     HMODULE kernel = GetModuleHandleW(L"kernelbase.dll");
@@ -128,7 +124,14 @@ int main()
     scarlett_section_info info;
     CHECK(original.RegionSize == size && original.Protect == PAGE_READWRITE &&
           original.Type == MEM_MAPPED && original.State == MEM_COMMIT);
+#ifdef TEST_RADV_WB_RANGE
+    HR(scarlett_query_section(0x5343000c,title+size/4-1,4,&info));
+    CHECK(info.base == title && info.view_size == size && info.offset == size-4 && info.section);
+    CHECK(CloseHandle(info.section));
+    CHECK(FAILED(scarlett_query_section(0x5343000c,title+size/4-1,5,&info)));
+#else
     CHECK(FAILED(scarlett_query_section(0x53430001,nullptr,size,&info)));
+#endif
     CHECK(FAILED(scarlett_query_section(0x53430002,title+size/4-1,5,&info)));
     CHECK(FAILED(scarlett_query_section(0x53430005,title,4,&info)));
 #endif
@@ -272,4 +275,24 @@ int main()
          "GPU retired on old backing after exact public VA reuse");
 #endif
     return 0;
+}
+
+int main()
+{
+#ifdef TEST_RADV_WB_RANGE
+    const SIZE_T sizes[] = {0x25400000,0x23300000,0x23310000,0x253f0000,0x25410000,
+                            0x30170000,0x3c000000,0x493f0000,0x49400000};
+    const SIZE_T rejected[] = {0x232f0000,0x49410000,0x25400001,0x25401000};
+    for (SIZE_T bytes : sizes) CHECK(exercise(bytes) == 0);
+    for (SIZE_T bytes : rejected)
+        CHECK(!XMemVirtualAlloc(nullptr,bytes,0x20003000,0x183,0x22004));
+    puts("PASS RADV write-back range: nine sizes, final-word acquisition and invalid bounds");
+    return 0;
+#elif defined(TEST_WC_SECTION)
+    return exercise(0x89700000);
+#elif defined(TEST_WB563_SECTION)
+    return exercise(0x23300000);
+#else
+    return exercise(0x49400000);
+#endif
 }

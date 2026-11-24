@@ -1,6 +1,6 @@
 # Write-combined graphics pool
 
-For RADV 26.3.0 on `1002:164e`, also apply Wine patch `0005` and vkd3d patch `0002` after the NVIDIA support patches. Build Wine against recent `libdrm_amdgpu` headers; additionally stage the x64 Windows `kernelbase.dll` alongside the Unix `ntdll.so`, `win32u.so` and x64 `d3d12core.dll` for `install.sh`. Only a qualified AMD control view accepts `VirtualFree(base, 65536, MEM_RELEASE)`. Run `test-control64.cpp` in `scarlett/native/xmem/` with the same build procedure as `test_wc_pages.cpp` and `SCARLETT_TEST_GPU=radv`.
+For RADV 26.3.0 on `1002:164e`, also apply Wine patch `0005` and vkd3d patches `0002` and `0003` after the NVIDIA support patches. Build Wine against recent `libdrm_amdgpu` headers; additionally stage the x64 Windows `kernelbase.dll` alongside the Unix `ntdll.so`, `win32u.so` and x64 `d3d12core.dll` for `install.sh`. Only a qualified AMD control view accepts `VirtualFree(base, 65536, MEM_RELEASE)`. Run `test-control64.cpp` in `scarlett/native/xmem/` with the same build procedure as `test_wc_pages.cpp` and `SCARLETT_TEST_GPU=radv`. For write-back pools, `test_gpu.cpp` with `-DTEST_RADV_WB_RANGE` checks nine sizes from 563 to 1,172 MiB, including the retail 596 MiB request.
 
 The allocator accepts the observed tuple `(NULL, 0x89700000, 0x20003000, 0x283, 0x2404)` on the tested RTX 3070 (PCI `10de:2484`, NVIDIA 595.112.07). The driver reported write-combined system memory. The meaning of flag bit `0x200` and physical page size are unverified.
 
