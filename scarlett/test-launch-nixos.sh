@@ -5,6 +5,9 @@ umask 077
 game=$(realpath "${1:?usage: test-launch-nixos.sh GAME-FOLDER [INSTALLED-TOOL]}")
 tool=$(realpath "${2:-$HOME/.local/share/Steam/compatibilitytools.d/scarlett-proton}")
 test -r "$game/game_scarlett_master.exe" && test -f "$tool/scarlett/d3d12_xs.dll" || exit 1
+# The adapters share system RAM. Take one user-wide lock before starting either sandbox.
+exec 9>"${XDG_RUNTIME_DIR:?}/scarlett-proton-gpu-test.lock"
+flock -n 9 || { echo "Another scarlett GPU test is running; refusing concurrent launch." >&2; exit 1; }
 closure=$(nix-store -qR "$(realpath "$(command -v steam-run)")")
 fhs=$(grep -E '/[^/]+-steam-run-[^/]+-fhsenv-rootfs$' <<<"$closure")
 bwrap=$(grep -E '/[^/]+-bubblewrap-[0-9.]+$' <<<"$closure")/bin/bwrap
