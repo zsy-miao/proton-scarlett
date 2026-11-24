@@ -39,7 +39,8 @@ struct color_resource {
     LONG refs;
     struct xbox_device *owner;
     ID3D12Resource *host;
-    BOOL msaa,depth,a8;
+    BOOL msaa,depth;
+    DXGI_FORMAT single_format;
     void *slice;
     void (WINAPI *xfree)(void *,UINT64);
     struct color_resource *next;

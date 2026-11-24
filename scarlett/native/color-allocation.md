@@ -69,6 +69,19 @@ guarded input, native allocation info and a native placed RT cleared and
 read back at its last two texels. That placement is a fixture; the retail
 owner's byte count is not evidence of host/guest memory layout compatibility.
 
+### BGRA8 placement (`+0x428`)
+
+For the two 2048×2048 B8G8R8A8_UNORM targets, the observed original WC
+offsets are `0xf880000`, `0x10890000` on RADV and `0xf800000`, `0x10800000`
+on the RTX 3070. Both were created in state 6 with a zero typed clear value
+and received separate Texture2D SRVs and RTVs. Backend patch `0030` after
+`0029` retains either the native heap (RADV) or the original section (RTX).
+Run `scarlett/tests/wc-a8.sh radv|nvidia STAGED-TOOL bgra` to test both
+concurrently live images. Each fenced clear checks all 2048² BGRA texels,
+shader RGBA channel order, the full sibling allocation, both outer guards,
+and the exact-VA replacement. Retail next queried a 1024² typeless depth
+target on the same thread.
+
 ### Committed offscreen color (`+0x3f8`)
 
 The `247aeb6` primary ring path uses DEFAULT properties `{1,0,0,1,1}`,

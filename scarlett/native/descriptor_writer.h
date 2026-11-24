@@ -138,6 +138,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         if (placed!=S_FALSE) return placed;
     }
 #endif
+    BOOL single_color=words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
     if (wc) {
         srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
@@ -147,9 +148,9 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
             memcmp(words+2,(DWORD[4]){0},16)) return E_NOTIMPL;
         dsv.Format=words[0]; dsv.ViewDimension=words[1];
     } else if (kind==RTV) {
-        if (!object || (words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM && words[0]!=DXGI_FORMAT_A8_UNORM) || words[2] || words[3]) return E_NOTIMPL;
+        if (!object || (words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM && !single_color) || words[2] || words[3]) return E_NOTIMPL;
         if (words[1]==D3D12_RTV_DIMENSION_TEXTURE2DMS) {
-            if (words[0]==DXGI_FORMAT_A8_UNORM) return E_NOTIMPL;
+            if (single_color) return E_NOTIMPL;
             /* +cc2985 zeros 24 bytes; the MS form has no active union fields. */
             if (!copy_in(words+4,(const BYTE *)input+16,8)) return E_POINTER;
             if (words[4] || words[5]) return E_NOTIMPL;
@@ -184,7 +185,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         srv.Format=words[0];
         srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DMS;
         srv.Shader4ComponentMapping=words[2];
-    } else if (kind==SRV && (words[0]==DXGI_FORMAT_R8G8B8A8_UNORM || (words[0]==DXGI_FORMAT_A8_UNORM && !words[3])) &&
+    } else if (kind==SRV && (words[0]==DXGI_FORMAT_R8G8B8A8_UNORM || (single_color && !words[3])) &&
                words[1]==D3D12_SRV_DIMENSION_TEXTURE2D && words[2]==0x1688 &&
                !words[4] && words[5]==1 && !words[6] && !words[7]) {
         srv.Format=words[0];
@@ -204,7 +205,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
             if (&c->iface==object && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
-                c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->a8==(words[0]==DXGI_FORMAT_A8_UNORM)) {
+                c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }
         if (!resource) goto done;

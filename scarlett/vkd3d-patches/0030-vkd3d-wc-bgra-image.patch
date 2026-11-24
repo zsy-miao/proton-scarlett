@@ -1,0 +1,134 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index 00b8c62..377d8be 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -2,6 +2,8 @@ LIBRARY d3d12core.dll
+ 
+ EXPORTS
+     ScarlettA8ImageV1 @32
++    ScarlettBgraImageV1 @34
++    ScarlettNativeBgraImageV1 @35
+     ScarlettNativeA8ImageV1 @33
+     ScarlettNativePoolV1 @30
+     ScarlettNativeImageV1 @31
+diff --git a/libs/vkd3d/scarlett_primary_image.h b/libs/vkd3d/scarlett_primary_image.h
+index 70966a9..e601188 100644
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -177,7 +177,8 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+         ID3D12Resource **out, DXGI_FORMAT format)
+ {
+     bool depth=format==DXGI_FORMAT_R32G8X24_TYPELESS, a8=format==DXGI_FORMAT_A8_UNORM;
+-    SIZE_T span=a8?0x800000:0x400000;
++    bool bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM, single=a8 || bgra;
++    SIZE_T span=bgra?0x1000000:a8?0x800000:0x400000;
+     /* Private Wine selector: tagged WC pool, with fd compatibility checked on import. */
+     const VkExternalMemoryHandleTypeFlagBits dma = (VkExternalMemoryHandleTypeFlagBits)0x04000000u;
+     VkPhysicalDeviceExternalImageFormatInfo ext={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,NULL,dma};
+@@ -196,9 +197,9 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+     VkImportMemoryWin32HandleInfoKHR imp={VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,NULL,dma,section};
+     VkMemoryAllocateInfo ai={VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,&imp,size,0};
+     VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,NULL,0,0,off};
+-    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,a8?3840:1,a8?2160:1,1,1,format,
+-        {a8?1:4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+-    const D3D12_CLEAR_VALUE cv={.Format=format,.Color={!a8,!a8,!a8,!a8}};
++    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,bgra?2048:a8?3840:1,bgra?2048:a8?2160:1,1,1,format,
++        {single?1:4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
++    const D3D12_CLEAR_VALUE cv={.Format=format,.Color={!single,!single,!single,!single}};
+     const D3D12_CLEAR_VALUE ds_clear={.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.DepthStencil={0.0f,0}};
+     const D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
+     const struct vkd3d_vk_device_procs *vk_procs;
+@@ -212,12 +213,13 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+     VkResult vr;
+     if (!out) return E_POINTER;
+     *out=NULL;
+-    if (!iface || !section || size!=0x89700000u || off%0x400000 || off>size-span || (a8 && off!=0xf000000)) return E_INVALIDARG;
++    if (!iface || !section || size!=0x89700000u || off%0x400000 || off>size-span || (single && (bgra ? (off!=0xf800000 && off!=0x10800000) : off!=0xf000000))) return E_INVALIDARG;
+     d=impl_from_ID3D12Device(iface); vk_procs=&d->vk_procs; p=&d->device_info.properties2.properties;
+-    if(a8) {
+-        if (vkd3d_get_format(d,format,false)->vk_format!=VK_FORMAT_A8_UNORM_KHR) return DXGI_ERROR_UNSUPPORTED;
+-        ci.format=fi.format=VK_FORMAT_A8_UNORM_KHR;
+-        ci.extent=(VkExtent3D){3840,2160,1};ci.samples=VK_SAMPLE_COUNT_1_BIT;
++    if(single) {
++        VkFormat vk_format=bgra?VK_FORMAT_B8G8R8A8_UNORM:VK_FORMAT_A8_UNORM_KHR;
++        if (vkd3d_get_format(d,format,false)->vk_format!=vk_format) return DXGI_ERROR_UNSUPPORTED;
++        ci.format=fi.format=vk_format;
++        ci.extent=(VkExtent3D){rd.Width,rd.Height,1};ci.samples=VK_SAMPLE_COUNT_1_BIT;
+     }
+     if (p->vendorID!=0x10de || p->deviceID!=0x2484 || p->driverVersion!=((595u<<22)|(112u<<14)|(7u<<6)) ||
+         d->device_info.vulkan_1_2_properties.driverID!=VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
+@@ -229,8 +231,8 @@ static HRESULT scarlett_wc_image(d3d12_device_iface *iface, HANDLE section, SIZE
+     if (!same) return E_NOTIMPL;
+     if ((vr=VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,&im)))<0) return hresult_from_vk_result(vr);
+     ri.image=im;VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&ri,&mr));
+-    if (dd.requiresDedicatedAllocation || mr.memoryRequirements.size!=(a8?0x7f8000:512) || mr.memoryRequirements.alignment!=1024 ||
+-        !(mr.memoryRequirements.memoryTypeBits & 1)) {hr=DXGI_ERROR_UNSUPPORTED;goto image_fail;}
++    if (dd.requiresDedicatedAllocation || mr.memoryRequirements.size!=(bgra?span:a8?0x7f8000:512) ||
++        mr.memoryRequirements.alignment!=1024 || !(mr.memoryRequirements.memoryTypeBits & 1)) {hr=DXGI_ERROR_UNSUPPORTED;goto image_fail;}
+     if (!(s=vkd3d_calloc(1,sizeof(*s)))) {hr=E_OUTOFMEMORY;goto image_fail;}
+     if (!DuplicateHandle(GetCurrentProcess(),section,GetCurrentProcess(),&s->wc_section,0,FALSE,DUPLICATE_SAME_ACCESS)) {
+         hr=HRESULT_FROM_WIN32(GetLastError());vkd3d_free(s);goto image_fail;
+@@ -274,6 +276,11 @@ HRESULT WINAPI ScarlettA8ImageV1(d3d12_device_iface *iface,HANDLE section,SIZE_T
+     return scarlett_wc_image(iface,section,size,off,out,DXGI_FORMAT_A8_UNORM);
+ }
+ 
++HRESULT WINAPI ScarlettBgraImageV1(d3d12_device_iface *iface,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    return scarlett_wc_image(iface,section,size,off,out,DXGI_FORMAT_B8G8R8A8_UNORM);
++}
++
+ /* Same-device, non-exported RADV host-visible pool. The validated heap is the image lease. */
+ HRESULT WINAPI ScarlettNativePoolV1(d3d12_device_iface *iface, ID3D12Heap **out, void **base)
+ {
+@@ -297,7 +304,7 @@ HRESULT WINAPI ScarlettNativePoolV1(d3d12_device_iface *iface, ID3D12Heap **out,
+     heap->allocation.flags&=~VKD3D_ALLOCATION_FLAG_CPU_ACCESS;
+     *out=(ID3D12Heap*)&heap->ID3D12Heap_iface;return S_OK;
+ }
+-static HRESULT native_pool_image(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,BOOL depth,bool a8,ID3D12Resource **out)
++static HRESULT native_pool_image(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,BOOL depth,DXGI_FORMAT single,ID3D12Resource **out)
+ {
+     struct d3d12_device *d=impl_from_ID3D12Device(iface);
+     struct d3d12_heap *heap=impl_from_ID3D12Heap(h);
+@@ -309,22 +316,23 @@ static HRESULT native_pool_image(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T
+     VkImageMemoryRequirementsInfo2 ri={VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};VkMemoryDedicatedRequirements dd={VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};VkMemoryRequirements2 mr={VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,&dd};VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,NULL,0,0,off};
+     D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,1,1,1,1,depth?DXGI_FORMAT_R32G8X24_TYPELESS:DXGI_FORMAT_R8G8B8A8_UNORM,{4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth?D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL:D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+     D3D12_CLEAR_VALUE cv={.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.Color={1,1,1,1}};D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
+-    const SIZE_T span=a8?0x880000:0x400000;
++    const bool a8=single==DXGI_FORMAT_A8_UNORM,bgra=single==DXGI_FORMAT_B8G8R8A8_UNORM;
++    const SIZE_T span=bgra?0x1010000:a8?0x880000:0x400000;
+     if(!out)return E_POINTER;
+     *out=NULL;
+-    if(!heap || !heap->scarlett_native_pool || heap->device!=d || heap->desc.SizeInBytes!=0x89700000u || off%0x400000 || off>0x89300000u || heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type!=2)return E_INVALIDARG;
++    if(!heap || !heap->scarlett_native_pool || heap->device!=d || heap->desc.SizeInBytes!=0x89700000u || (!single && off%0x400000) || off>heap->desc.SizeInBytes-span || heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type!=2)return E_INVALIDARG;
+     if(FAILED(hr=ID3D12Device_GetDeviceRemovedReason((ID3D12Device*)iface)))return hr;
+-    if(a8) {
+-        if(off!=0xf000000) return E_INVALIDARG;
+-        rd.Format=DXGI_FORMAT_A8_UNORM;rd.Width=3840;rd.Height=2160;rd.SampleDesc.Count=1;
++    if(single) {
++        if(bgra ? (off!=0xf880000 && off!=0x10890000) : off!=0xf000000) return E_INVALIDARG;
++        rd.Format=single;rd.Width=bgra?2048:3840;rd.Height=bgra?2048:2160;rd.SampleDesc.Count=1;
+         ci.format=vkd3d_get_format(d,rd.Format,false)->vk_format;
+-        ci.samples=VK_SAMPLE_COUNT_1_BIT;ci.extent=(VkExtent3D){3840,2160,1};
++        ci.samples=VK_SAMPLE_COUNT_1_BIT;ci.extent=(VkExtent3D){rd.Width,rd.Height,1};
+         cv=(D3D12_CLEAR_VALUE){.Format=rd.Format};
+     }
+     if(depth)cv=(D3D12_CLEAR_VALUE){.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
+     if ((vr=VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,&im)))<0)return hresult_from_vk_result(vr);
+     ri.image=im;VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&ri,&mr));hr=DXGI_ERROR_UNSUPPORTED;
+-    if (a8 && (mr.memoryRequirements.size!=0x87c000 || mr.memoryRequirements.alignment!=0x10000)) goto fail;
++    if (single && (mr.memoryRequirements.size!=(bgra?0x1010000:0x87c000) || mr.memoryRequirements.alignment!=0x10000)) goto fail;
+     if(dd.requiresDedicatedAllocation || !mr.memoryRequirements.alignment || off%mr.memoryRequirements.alignment || mr.memoryRequirements.size>span || !(mr.memoryRequirements.memoryTypeBits&4)) goto fail;
+     if(!(s=vkd3d_calloc(1,sizeof *s))){hr=E_OUTOFMEMORY;goto fail;}
+     s->start=off;s->end=off+span;s->lease=(IUnknown*)h;IUnknown_AddRef(s->lease);
+@@ -340,6 +348,9 @@ fail_slice:VK_CALL(vkDestroyImage(d->vk_device,im,NULL));scarlett_remove_slice(s
+ fail:VK_CALL(vkDestroyImage(d->vk_device,im,NULL));return hr;
+ }
+ HRESULT WINAPI ScarlettNativeImageV1(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,BOOL depth,ID3D12Resource **out)
+-{return native_pool_image(iface,h,off,depth,false,out);}
++{return native_pool_image(iface,h,off,depth,DXGI_FORMAT_UNKNOWN,out);}
+ HRESULT WINAPI ScarlettNativeA8ImageV1(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,ID3D12Resource **out)
+-{return native_pool_image(iface,h,off,FALSE,true,out);}
++{return native_pool_image(iface,h,off,FALSE,DXGI_FORMAT_A8_UNORM,out);}
++
++HRESULT WINAPI ScarlettNativeBgraImageV1(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,ID3D12Resource **out)
++{return native_pool_image(iface,h,off,FALSE,DXGI_FORMAT_B8G8R8A8_UNORM,out);}

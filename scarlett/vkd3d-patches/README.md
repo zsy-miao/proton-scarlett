@@ -90,3 +90,6 @@ Apply `0029` after `0028` for the 3840×2160 alpha render target. Rebuild the
 x64 `d3d12core.dll` and the graphics provider together. Test the retained
 RADV heap and RTX section imports with `scarlett/tests/wc-a8.sh radv TOOL`
 and `scarlett/tests/wc-a8.sh nvidia TOOL`.
+
+`0030` adds the two 2048² BGRA8 targets to the same memory paths. Apply it
+after `0029` and run `scarlett/tests/wc-a8.sh GPU TOOL bgra` for each adapter.
