@@ -170,7 +170,7 @@ Unmapping all views restores the entire original reservation for
 all aliases (`ERROR_BUSY` otherwise). Use the XMem API, not `UnmapViewOfFile`
 or raw placeholder edits, for active views. The shim reclaims released arena
 bookkeeping on subsequent CPU reservations. Replacing live mappings, partial
-unmaps/frees, arbitrary page lists, 2 MiB clusters and scatter are unsupported.
+unmaps/frees, arbitrary page lists and 2 MiB clusters are unsupported. See the measured scatter subset below.
 
 ### Write-combined physical pages
 
@@ -295,8 +295,8 @@ free hook; callbacks choose whether to delegate to the defaults. Nested public
 calls still dispatch to the hooks. Runtime replacement of the pair through
 the deprecated `XMemSetAllocationHooks` API is unsupported.
 
-Other imports are absent, including `XMemMapPhysicalPagesScatter`,
-`XMemGetWorkingSetStatistics`, and `XMemTransferMemory`. A caller requiring
+Other imports are absent, including `XMemGetWorkingSetStatistics`
+and `XMemTransferMemory`. A caller requiring
 those exports cannot use this DLL as a full replacement.
 
 ## Build and exercise the DLL
@@ -333,3 +333,30 @@ attribute matching, full-width sizes/attributes through a callback, nested
 calls, direct defaults, and binding before `main`. For a Proton test use the same adjacent
 DLL and executable with a disposable `STEAM_COMPAT_DATA_PATH` and
 `WINEDLLOVERRIDES=xmem=n`.
+
+### Scatter mapping into the 24 GiB CPU arena
+
+The [published XMem scatter contract](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpagesscatter.md)
+pairs each address with a 64 KiB page ID; a null ID array unmaps all listed
+addresses, and an individual zero ID requests an unmap at that index.
+On RADV and RTX 3070 the call returning to `+f2cc43` supplied 6,720
+consecutive destination pages, beginning 16 GiB into the 24 GiB CPU arena.
+Every ID was from the existing WB tile run: `0x3800` through `0x1dbf0`,
+stride 16. This maps 420 MiB from offset zero of its first 1 GiB section.
+
+The provider snapshots both arrays, checks the complete span against one live
+arena and one tile section, and replaces a single placeholder with a WB RW
+view of the original section. One outstanding scatter view per arena is
+supported. Exact whole-span unmap (null array or all-zero IDs) drops the run
+reference and restores the marked reservation. Noncontiguous lists, mixed
+map/unmap, cross-section spans, partial unmap and overlapping remap are
+refused. Callers must serialize direct Win32 VA release with XMem operations.
+An existing ordinary page mapping makes an arena ineligible for scatter.
+
+`test-scatter.c` links against the x64 XMem import library; run it using the
+same hardware harness as `test-tile-pages.cpp`. It checks a nonzero offset
+in the second section, same-handle identity, all 196,608 alias bytes and
+both guard pages, inaccessible input arrays, released IDs, busy-free,
+whole-span unmap and VA reuse. Retail proceeds to the unsupported address
+SRV at device `+230`, return `+4ecc821`: a 160-byte buffer with a 38-element
+raw R32_TYPELESS view. No retail sampling of this buffer was measured.

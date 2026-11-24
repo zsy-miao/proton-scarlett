@@ -129,6 +129,6 @@ in-flight status index. Full queues wait for space until another thread
 submits. Closing or releasing the final reference drains the queue and joins
 the worker, including when the title has released the source file or array.
 
-Both unchanged retail runs with this queue passed `+28c95ce` and stopped on
-Wine's unimplemented import `xmem.dll.XMemMapPhysicalPagesScatter`. The
-queue transfer and completion evidence is from the synthetic fixture.
+Both unchanged retail runs with this queue passed `+28c95ce` and reached
+[`XMemMapPhysicalPagesScatter`](../xmem/README.md#scatter-mapping-into-the-24-gib-cpu-arena).
+Queue transfer and completion evidence is from the synthetic fixture.

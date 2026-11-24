@@ -46,6 +46,10 @@ typedef struct Arena {
     BOOL tile;
     PageRun *tile_run;
     unsigned tile_mapped;
+    BOOL scatter; /* marked 24 GiB CPU reservation */
+    PVOID scatter_at;
+    SIZE_T scatter_bytes, scatter_offset;
+    unsigned scatter_part;
 } Arena;
 
 static SRWLOCK page_lock = SRWLOCK_INIT;
@@ -105,7 +109,7 @@ static void discard_released_arenas(void)
         MEMORY_BASIC_INFORMATION m;
         if (!old->views && VirtualQuery(old->base, &m, sizeof m) &&
             (m.State != MEM_RESERVE || m.AllocationBase != old->base || m.RegionSize != old->size ||
-              ((old->descriptor || old->tile) && !descriptor_marker(old->base)))) {
+               ((old->descriptor || old->tile || old->scatter) && !descriptor_marker(old->base)))) {
             *p = old->next;
             HeapFree(GetProcessHeap(), 0, old);
         } else p = &old->next;
@@ -122,7 +126,8 @@ static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc, BOOL tile)
                        PAGE_NOACCESS, NULL, 0);
     PVOID result = a->base;
     DWORD err = GetLastError();
-    if (tile && result && !occupy_descriptor(result,size)) {
+    a->scatter = !wc && !tile && size==(24ull<<30);
+    if ((tile || a->scatter) && result && !occupy_descriptor(result,size)) {
         err = GetLastError();
         VirtualFree(result,0,MEM_RELEASE);
         result = NULL;
@@ -184,6 +189,7 @@ done:
 static const struct { ULONG_PTR pages; DWORD policy; } layout[] = {
     {752,0x2404},{1600,0x2004},{160,0x1004},{16,0x1404},{432,0x8404}
 };
+static void restore_scatter_arena(Arena *a,BOOL split);
 
 /* Internal only: pin the live code view's dedicated backing before unmap/free can race. */
 HRESULT xmem_pin_code_source(const void *addr, SIZE_T bytes, HANDLE *section, SIZE_T *size, SIZE_T *offset)
@@ -419,6 +425,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
     DWORD err = ERROR_INVALID_ADDRESS;
     AcquireSRWLockExclusive(&page_lock);
     for (Arena *a = arenas; a; a = a->next) {
+        if (a->scatter_at && (UINT_PTR)addr-(UINT_PTR)a->base<a->size) goto done;
         if (!a->tile || (UINT_PTR)addr-(UINT_PTR)a->base >= a->size) continue;
         if (addr == a->base && size == a->size) err = map_tile(a,pages);
         goto done;
@@ -478,8 +485,13 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
                 if (!consecutive(pages, n, 1)) { err = ERROR_NOT_SUPPORTED; break; }
                 PageView *v = HeapAlloc(GetProcessHeap(), 0, sizeof *v);
                 if (!v) { err = ERROR_NOT_ENOUGH_MEMORY; break; }
+                if (arena->scatter && (!descriptor_marker(arena->base) ||
+                    !VirtualFree(arena->base,arena->size,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))) {
+                    HeapFree(GetProcessHeap(),0,v); err=ERROR_INVALID_ADDRESS; break;
+                }
                 if ((split || arena->descriptor) && !VirtualFree(addr, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
                     err = GetLastError();
+                    if (arena->scatter) restore_scatter_arena(arena,FALSE);
                     HeapFree(GetProcessHeap(), 0, v);
                     break;
                 }
@@ -489,13 +501,16 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
                 if (!mapped) {
                     err = GetLastError();
                     if (arena->descriptor && !occupy_descriptor(addr, size)) err = GetLastError();
-                    if (split)
+                    if (arena->scatter) restore_scatter_arena(arena,split);
+                    else if (split)
                         VirtualFree(start.AllocationBase, start.RegionSize,
                                     MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS);
                     HeapFree(GetProcessHeap(), 0, v);
                     break;
                 }
                 *v = (PageView){views, r, addr, size, arena};
+                /* Subsequent ordinary page views use the existing unmarked arena lifecycle. */
+                arena->scatter=FALSE;
                 ++arena->views;
                 arena->split |= split;
                 views = v;
@@ -510,3 +525,5 @@ done:
     if (err) SetLastError(err);
     return err ? NULL : addr;
 }
+
+#include "scatter.h"
