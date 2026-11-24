@@ -7,7 +7,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. The memory tests cover CPU page reservation, commitment, release and executable allocation callbacks.
 
-Retail build `1.0.2.1` now executes startup code and calls `d3d12_xs.dll!D3D12ConfigureVirtualMemoryX` (return RVA `+0x1e1cfe5`). The call is unimplemented and Wine stops there. Seven project-built DLLs are installed; their API coverage is partial. No native retail frame has been presented.
+Retail build `1.0.2.1` now executes startup code, configures the graphics address table, and passes both initial address-space reservations. It next stops at a title breakpoint (`+0x1e1d3a7`) during memory initialization. Seven project-built DLLs are installed; their API coverage is partial. No native retail frame has been presented.
 
 The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 

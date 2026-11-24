@@ -18,4 +18,5 @@ check xapu xapu test.c
 check acphal AcpHal test.c
 check xg xg_xs test.c
 check xmem xmem test.c
+check xmem xmem test_pages.c
 for mode in 0 1 2; do check xmem xmem test_alloc.c "-DHOOK_MODE=$mode"; done
