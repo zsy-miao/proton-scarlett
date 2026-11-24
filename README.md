@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Both GPUs record the timestamp and the second progress marker. The game stops at the next command on its control counter. A separate thread also asks to submit work with a frame identifier the queue doesn't handle yet. |
+| What's blocking it? | Both GPUs reach a wait for a 64-bit counter. The counter must reach or pass a target, but one option on that wait is still unknown. A separate thread also submits work with a frame identifier the queue doesn't handle yet. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

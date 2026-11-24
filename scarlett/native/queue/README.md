@@ -216,16 +216,19 @@ At recording time the source, snapshot and original control cell were all
 `1`; the preceding marker at offset 12 still held `0`, although the list
 had recorded `0x29a5ee15` for it. The list had not executed.
 
-A separate call site (`+0x248ff7c`) uses operation 7 with flag 0. Neither
-site establishes how the native consumer behaves when the cell is below
-or above the snapshot, or what changing the flag does. The provider still
-stops here: testing equality while recording would discard the dependency
-on the cell's value when the list executes or is replayed.
+The evidence strongly identifies this slot as `Wait64BitValueX`.
+Microsoft's [PipelinedPostprocess sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/PipelinedPostprocess/PipelinedPostprocess.cpp#L288-L293)
+passes a `D3D12_COMPARISON_FUNC` in the second argument and a wait flag in
+the fourth. In that [comparison enum](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_comparison_func),
+7 is `GREATER_EQUAL`: the cell must reach or exceed the reference when the
+command executes. The sample uses `D3D12XBOX_WAIT_FLAG_NONE`. It does not
+define the effect of retail's flag `1`. A second title call site
+(`+0x248ff7c`) uses flag `0`; it does not show the two flags are interchangeable.
 
 On RADV the initial publication stores a 64-bit `1` in the same control
-section as the two markers, at offset zero. This proves the storage width,
-not which bits operation 7 compares. A discriminating native trace would
-show whether a command *following* the operation executes with the cell
-below, equal to and above the target, including values that differ only in
-the high 32 bits. The suffix is the observation point; merely seeing the
-recording call return does not answer the question.
+section as the two markers, at offset zero. To qualify flag `1`, compare
+native execution with flags `0` and `1`, holding the queue, address and
+reference fixed. Observe work following the wait with the cell below, equal
+to and above the target, including values differing only in the high 32 bits.
+The guard remains: the observed `1 >= 1` while recording does not establish
+that later GPU work may proceed when this list is submitted or replayed.
