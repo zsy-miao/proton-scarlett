@@ -179,3 +179,22 @@ in the 64 KiB window and the replacement mapping must stay unchanged. Build
 `test-allocation-info.cpp` with `TEST_RADV_MARKER` and `TEST_WB_OFFSET` set
 to either offset; link `testq.c` instead of `queue.o` to inspect the queue
 clock in this fixture.
+
+## Marker after the timestamp
+
+The second `+0x238` publishes `0x29a5ee15` at control-page offset 12.
+On RADV it stays in the original native list: GPU readbacks immediately
+before and after the write saw the same timestamp and different marker
+values. On RTX the CPU-only marker separates two native command lists.
+The tail restores the recorded initial heap bindings. The fixture replayed
+the same closed list twice; each time the GPU copies and timestamp preceded
+the second marker, and the final copy and fence followed it. Discarding a
+recording produced no writes.
+
+Both retail runs next requested operation 7 at control-page offset zero
+(`+0x250`, return `+0x2484b12`). A different thread submitted a closed
+Direct sync list at `+0x118`, return `+0x248268f`, with flags zero and the
+frame-origin token issued by its own guest device. Submission still rejects
+this token: its submit-side effect is unverified. Token-zero submission and
+GPU retirement alone do not advance the presentation count or complete the
+issued frame.

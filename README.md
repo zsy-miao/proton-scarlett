@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Both GPUs record a timestamp, then stop at the next progress marker. A separate game thread also asks to submit work to the graphics queue in a way the project doesn't handle yet. |
+| What's blocking it? | Both GPUs record the timestamp and the second progress marker. The game stops at the next command on its control counter. A separate thread also asks to submit work with a frame identifier the queue doesn't handle yet. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -23,7 +23,7 @@ Both GPUs pass the size and alignment queries for the [four-sample color target]
 
 Both adapters handle the six- and [twelve-layer textures](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070). The twelve-layer image takes 4 KiB on AMD and 8 KiB on RTX; its guest layout takes 48 KiB on both. Both also passed two-layer array shader tests and the [256-pixel sRGB row](scarlett/native/xg/README.md#256-texel-srgb-texture1d).
 
-Both retail runs create four [one-element structured-buffer views](scarlett/native/xg/README.md#one-element-structured-wc-buffer) and two views containing three 180-byte records. GPU tests read all 135 words in the three records; all 45 reads from a fourth record returned zero. Both runs pass [allocator callback registration](scarlett/native/queue/README.md#direct-command-allocator-callback-registration-48), [bind the initial heaps](scarlett/native/queue/README.md#initial-pooled-list-heap-binding), and record [the first marker and timestamp](scarlett/native/queue/README.md#timestamp-following-the-first-marker). The next requests on both GPUs are a second marker (`+0x4ed46aa`) and a concurrent token-1 queue submission (`+0x248268f`).
+Both retail runs create four [one-element structured-buffer views](scarlett/native/xg/README.md#one-element-structured-wc-buffer) and two views containing three 180-byte records. GPU tests read all 135 words in the three records; all 45 reads from a fourth record returned zero. Both runs pass [allocator callback registration](scarlett/native/queue/README.md#direct-command-allocator-callback-registration-48), [bind the initial heaps](scarlett/native/queue/README.md#initial-pooled-list-heap-binding), and record [two markers around a GPU timestamp](scarlett/native/queue/README.md#marker-after-the-timestamp). The next requests on both GPUs are pooled-list `+0x250` (title return `+0x2484b12`) and a concurrent token-1 queue submission (`+0x248268f`) on a different list.
 
 On the tested RADV driver, the allocator, texture writes and graphics descriptors now [share one directly mapped pool](scarlett/native/radv-retained-pool.md). AMD retail passes its previous `+0xcc2936` breakpoint. GPU tests read all four color and depth/stencil samples from the original allocation after its CPU address was freed and reused; both guards and the replacement mapping stayed intact.
 

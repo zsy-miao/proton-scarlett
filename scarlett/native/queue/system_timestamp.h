@@ -22,7 +22,7 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     BOOL wb=FAILED(hr);
     if (wb && FAILED(hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i))) return hr;
     const UINT window=65536;
-    if (!i.section || i.view_size!=0x49400000 || i.offset!=addr-(UINT_PTR)i.base || i.offset>i.view_size-8 || (wb && i.offset!=0x4196218 && i.offset!=0x4196698)) {
+    if (!i.section || i.view_size!=0x49400000 || i.offset!=addr-(UINT_PTR)i.base || i.offset>i.view_size-8 || (wb && i.offset!=0x4196218 && i.offset!=0x4196698 && i.offset!=0x41964a8)) {
         if (i.section) CloseHandle(i.section);
         return E_INVALIDARG;
     }

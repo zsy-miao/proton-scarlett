@@ -5,13 +5,19 @@ struct prefix_marker {
     void *alias;
     volatile LONG *word;
     UINT value;
+    SIZE_T generation;
+    struct prefix_marker *parent; /* Post marker shares the prefix alias. */
+    HANDLE control_section;
+    BOOL native_post;
     ID3D12Heap *heap;
     ID3D12Resource *buffer;
 };
 static void drop_marker(struct prefix_marker *m)
 {
     if (m && !InterlockedDecrement(&m->refs)) {
+        drop_marker(m->parent);
         if (m->buffer) ID3D12Resource_Release(m->buffer);
+        if (m->control_section) CloseHandle(m->control_section);
         if (m->heap) ID3D12Heap_Release(m->heap);
         if (m->alias && !VirtualFree(m->alias,65536,MEM_RELEASE)) xs_stop();
         HeapFree(GetProcessHeap(),0,m);

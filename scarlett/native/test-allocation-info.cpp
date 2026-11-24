@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
+extern "C" HRESULT test_post_try(IUnknown*,UINT64,UINT,UINT64,UINT);
+extern "C" void test_post_snapshot(IUnknown*,ID3D12Resource*,UINT,UINT);
 extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *);
@@ -298,6 +300,19 @@ int main()
     auto ticks=(volatile UINT64*)(aliasWin+local);CK(*(volatile UINT64*)(wbPool+offset)==0xcecececececececeull);
     using Stamp=void(WINAPI*)(IUnknown*,void*,UINT64,UINT64,UINT);printf("AMD240 fixture marker recorded, WB offset=%x before=%llx\n",offset,*ticks);fflush(stdout);
     SLOT(pooled.Get(),0x240,Stamp)(pooled.Get(),wbPool+offset,0,0,1);
+    constexpr UINT published=0x29a5ee15;
+    auto post=[&](void *addr,UINT value,UINT64 control,UINT flags){return test_post_try(pooled.Get(),(UINT_PTR)addr,value,control,flags);};
+    UINT *foreignCtrl=(UINT*)reserve(nullptr,65536,0x20401000,0x283,0x42404); CK(foreignCtrl);
+    CK(FAILED(post(foreignCtrl+3,published,0,0)) && VirtualFree(foreignCtrl,65536,MEM_RELEASE));
+    CK(FAILED(post(ctrl+2,published,0,0)) && FAILED(post(ctrl+4,published,0,0)) && FAILED(post(ctrl+3,published,1,0)) && FAILED(post(ctrl+3,published,0,1)));
+#ifdef TEST_POST_SNAPSHOT
+    test_post_snapshot(pooled.Get(),rb.Get(),80,local);
+#endif
+    SLOT(pooled.Get(),0x238,Marker)(pooled.Get(),ctrl+3,published,0,0);
+    CK(original[3]==0x76100003 && FAILED(post(ctrl+3,published,0,0)));
+#ifdef TEST_POST_SNAPSHOT
+    test_post_snapshot(pooled.Get(),rb.Get(),96,local);
+#endif
     CK(original[2]==0x76100002); // A synchronous CPU store is not a recorded command.
 #endif
 
@@ -338,7 +353,7 @@ int main()
 #ifdef TEST_RADV_MARKER
     CK(VirtualFree(wbPool,0,MEM_RELEASE)); BYTE *reuse=wbPool+offset-local;
     CK(VirtualAlloc(reuse,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==reuse);memset(reuse,0x49,65536);MemoryBarrier();
-    CK(*ticks==0xcecececececececeull);UINT64 t0,t1,cpuTicks,hz;auto hq=test_host_queue(gq.Get());HR(hq->GetTimestampFrequency(&hz));HR(hq->GetClockCalibration(&t0,&cpuTicks));
+    CK(original[3]==0x76100003 && *ticks==0xcecececececececeull);UINT64 t0,t1,cpuTicks,hz;auto hq=test_host_queue(gq.Get());HR(hq->GetTimestampFrequency(&hz));HR(hq->GetClockCalibration(&t0,&cpuTicks));
 #endif
     HR(xs_cpu_signal(gate.Get(),1)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
     HR(rb->Map(0,nullptr,(void **)&pixel));
@@ -346,10 +361,15 @@ int main()
     HR(hq->GetClockCalibration(&t1,&cpuTicks)); CK(*ticks>=t0 && *ticks<=t1 && *ticks!=0xcecececececececeull);
     for(UINT j=0;j<65536;j++){CK(reuse[j]==0x49);if(j<local || j>=local+8)CK(aliasWin[j]==0xce);}
     printf("PASS WB +240 after native +238: ticks=%llu calibration=%llu..%llu hz=%llu; only original qword changed after gate, full original guards and replacement intact\n",*ticks,t0,t1,hz);
+#ifdef TEST_POST_SNAPSHOT
+    UINT64 before,after;memcpy(&before,pixel+20,8);memcpy(&after,pixel+24,8);
+    CK(before==*ticks && after==before && pixel[22]==0 && pixel[23]==0x76100003 && pixel[26]==0 && pixel[27]==published);
+    printf("PASS GPU boundaries timestamp=%llu prefix=0 beforePost=%08lx afterPost=%08lx\n",before,pixel[23],pixel[27]);
+#endif
     CK(VirtualFree(copy.base,0,MEM_RELEASE)&&VirtualFree(reuse,0,MEM_RELEASE));
-    for(UINT j=0;j<16384;j++)CK(original[j]==(j==2?0:0x76100000+j) && ctrl[j]==0x89500000+j);
-    CK(VirtualFree(ctrl,0,MEM_RELEASE));puts("PASS AMD public +238: prefilled original marker cleared only after gate, neighboring words and exact VA replacement intact after guest list reset/release");
-    CK(pixel[12]==0x76100001 && pixel[13]==0 && pixel[14]==0x76100003);puts("PASS suffix GPU copy saw guarded marker zero in recording order");
+    for(UINT j=0;j<16384;j++)CK(original[j]==(j==2?0:j==3?published:0x76100000+j) && ctrl[j]==0x89500000+j);
+    CK(VirtualFree(ctrl,0,MEM_RELEASE));puts("PASS native post: original control +8 cleared, +12 published, all other DWORDs and both reused mappings intact after gated reset/release");
+    CK(pixel[12]==0x76100001 && pixel[13]==0 && pixel[14]==published);puts("PASS suffix GPU copy saw guarded marker zero in recording order");
 #endif
     CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff && pixel[6]==0xff008080);
     CK(pixel[7]==0xff00ff00 && pixel[8]==0xff0000ff && pixel[9]==0xff00ff00); rb->Unmap(0,nullptr);
