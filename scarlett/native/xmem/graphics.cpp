@@ -1,6 +1,7 @@
 #include "gpu_buffer.hpp"
-#include <winternl.h>
+#include "placed_capture.h"
 #include <new>
+#include <winternl.h>
 
 extern "C" HRESULT xmem_pin_code_source(const void *, SIZE_T, HANDLE *, SIZE_T *, SIZE_T *);
 struct CodeSource : CodeReadSource {
@@ -27,6 +28,57 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettAcquireCodeReadSourceV1(
     if (SUCCEEDED(hr)) *out = s;
     else delete s;
     return hr;
+}
+
+extern "C" HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3]);
+
+struct XsPlacedCapture {
+    HANDLE code; /* owned, private to xmem; never a data operand */
+    ImportedBuffer data[2];
+    ~XsPlacedCapture() { CloseHandle(code); }
+};
+
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12Device3 *device,
+        const void *base, UINT64 width, XsPlacedCapture **out)
+{
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!device) return E_INVALIDARG;
+    HANDLE parts[3];
+    HRESULT hr = xmem_pin_placed(base,width,parts);
+    if (FAILED(hr)) return hr;
+    auto *p = new(std::nothrow) XsPlacedCapture;
+    if (p) {
+        p->code = parts[0];
+        hr = p->data[0].wc(device,47u<<20,parts[1],nullptr);
+        if (SUCCEEDED(hr)) hr = p->data[1].wc(device,100u<<20,parts[2],nullptr,false,true,true);
+        if (FAILED(hr)) delete p;
+        else *out = p;
+    } else {
+        CloseHandle(parts[0]);
+        hr = E_OUTOFMEMORY;
+    }
+    CloseHandle(parts[1]);
+    CloseHandle(parts[2]);
+    return hr;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedDataV1(const XsPlacedCapture *p,
+        UINT64 at, UINT64 bytes, XsDataOperand *out)
+{
+    if (!out) return E_POINTER;
+    *out = {};
+    constexpr UINT64 first = 27ull<<20, second = 74ull<<20, end = 174ull<<20;
+    if (!p || !bytes || at < first || at >= end) return E_INVALIDARG;
+    bool wb = at >= second;
+    if (bytes > (wb ? end : second) - at) return E_INVALIDARG;
+    *out = {p->data[wb].resource(),at - (wb ? second : first),bytes};
+    return S_OK;
+}
+
+extern "C" __declspec(dllexport) void WINAPI ScarlettReleasePlacedV1(XsPlacedCapture *p)
+{
+    delete p;
 }
 
 static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)

@@ -185,6 +185,42 @@ static BOOL has_descriptor_layout(void)
     return FALSE;
 }
 
+/* DLL-internal. XMemMapPhysicalPages and XMemFreePhysicalPages both take the
+ * exclusive side. Duplicate the run's three original handles before unlocking;
+ * importing by title VA after this point could silently select a different run. */
+HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3])
+{
+    static const unsigned order[] = {4,0,1}; /* code, WC data, WB data */
+    UINT_PTR at = (UINT_PTR)base;
+    if (!at || at % XMEM_PAGE || width != 0xae00000 || width > UINTPTR_MAX - at)
+        return E_INVALIDARG;
+    PageRun *run = NULL;
+    HRESULT hr = HRESULT_FROM_WIN32(ERROR_INVALID_ADDRESS);
+    AcquireSRWLockShared(&page_lock);
+    for (unsigned i = 0; i < ARRAYSIZE(order); ++i) {
+        unsigned j = order[i];
+        PageView *v = views;
+        while (v && (UINT_PTR)v->address != at) v = v->next;
+        if (!v || !v->arena->descriptor || v->arena->base != v->address ||
+            v->arena->policy != layout[j].policy || v->size != layout[j].pages * XMEM_PAGE ||
+            v->run->count != 2960 || !v->run->parts[j] || (run && run != v->run)) goto done;
+        run = v->run;
+        at += v->size;
+    }
+    for (unsigned i = 0; i < ARRAYSIZE(order); ++i) {
+        if (!DuplicateHandle(GetCurrentProcess(),run->parts[order[i]],GetCurrentProcess(),
+                             &parts[i],0,FALSE,DUPLICATE_SAME_ACCESS)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            while (i) CloseHandle(parts[--i]);
+            goto done;
+        }
+    }
+    hr = S_OK;
+done:
+    ReleaseSRWLockShared(&page_lock);
+    return hr;
+}
+
 static void close_run(PageRun *r)
 {
     if (r->section) CloseHandle(r->section);
