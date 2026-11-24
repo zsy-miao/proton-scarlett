@@ -16,22 +16,42 @@ The next query on the same thread was 2560×1440, format 10, flags `0x300005`;
 another thread independently rejected an A8 request. No 720p `+428` placed or
 `+3f8` committed factory call was observed before fail-fast. No retail heap,
 offset, optimized clear, first GPU use, or guest texel layout is qualified.
-Do not return the host allocation unconditionally on this evidence.
+The exact 720p `+c8` query uses the qualified RT host size. In the same run
+`+1edb1c1` requested the full-resolution 2560×1440 texture, guest flags
+`0x300005`. Its allocation stack goes through `+34bff6`, unlike the 720p
+owners. `+360` (return `+abfe0d`) queried this same descriptor with offset
+zero and matching size/alignment. `+428` (return `+193e2db`) then requested
+placement at `0xd5a200000`, offset `0xf000000` into the original WC section
+(base `0xd4b200000`, span `0x89700000`), resource IID, guest state 3 and a
+zero color. The factory failed with `E_NOTIMPL` and returned no resource.
+Consequently no retail view or GPU use is established. The constructor would
+store its result at global RVA `+7665b50`, then build a child at `+7665b58`;
+these are disassembled continuations, not successful retail GPU allocations.
+
+Only these two size probes and the observed 1440p detail probe are enabled.
+The latter uses a host RT+UAV optimal descriptor; nothing here maps a WC
+section, changes `+428`, chooses an initial state, or interprets high flags.
 
 Host control: two optimal single-sample RTs in the same DEFAULT RT/DS-only
 heap at byte offsets zero and the queried size. Clear both, clear an interior
 rectangle of the second, transition to COPY_SOURCE, then fence and read every
 half-float channel of both. RTX 3070/595.112.07: size `0x780000`; RADV 26.3.0:
 `0x790000`. Both report alignment `0x10000` and a 10240-byte *copy* row pitch.
-The copy footprint is not the image's internal layout.
+At 2560×1440, RTX reported `0x1e00000` and RADV `0x1ce0000`, alignment
+`0x10000`, copy pitch 20480. Both placements and all pixels passed on both
+GPUs. The copy footprint is not the image's internal layout.
 
 With a staged tool, from the project root:
 
 ```sh
 w=$(mktemp -d); mkdir "$w/game"
+for src in d3d12_device d3d12_vm queue/queue; do
+    x86_64-w64-mingw32-gcc -Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED \
+        -c "scarlett/native/$src.c" -o "$w/${src##*/}.o"
+done
 x86_64-w64-mingw32-g++ -std=c++17 -Os -Wall -Wextra -Werror -static \
-    scarlett/native/test-half-target.cpp -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
+    scarlett/native/test-half-target.cpp "$w"/*.o -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
 TMPDIR="$w" SCARLETT_TEST_GPU=nvidia scarlett/test-launch-nixos.sh "$w/game" "$tool"
 TMPDIR="$w" SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway scarlett/test-launch-nixos.sh "$w/game" "$tool"
-grep 'PASS two 720p' "$w"/scarlett-run.*/logs/steam-*.log
+grep 'PASS .*RGBA16_FLOAT'  "$w"/scarlett-run.*/logs/steam-*.log
 ```

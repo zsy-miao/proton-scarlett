@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Experimental builds on AMD and RTX complete the first image clear on the GPU. Startup still needs to place an alpha texture in the game's memory and handle additional floating-point render targets. |
+| What's blocking it? | Experimental builds on AMD and RTX complete the first image clear on the GPU. Startup is still setting up more render targets, including a 1440p floating-point texture. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -23,7 +23,7 @@ Both GPUs pass the size and alignment queries for the [four-sample color target]
 
 **Experimental retail builds:** On RADV and RTX the GPU finished the list containing the transparent-black clear, texture release and second timestamp. The batch's own fence reached `1`, separately from the earlier sync-list fence. On RTX, pausing at the rejected allocation query made that completion visible before process exit. The game requested sizes for a 3840×2160 alpha texture and a 1280×720 floating-point color texture. In a [separate pixel test](scarlett/native/test-primary-barrier.hpp), both GPUs verified all 8,294,400 cleared pixels. The installed build stops earlier at the [counter wait](scarlett/native/queue/README.md#experimental-whole-queue-wait).
 
-The game now gets size and alignment results for the [4K alpha target](scarlett/native/color-allocation.md#a8-startup-rt-0xc8-0x360) on both adapters. In both retail traces it used those values before requesting placement at offset `0xf000000` in its allocation. A [separate 720p test](scarlett/native/half-target.md) verified every pixel of two floating-point render targets on each GPU; their retail placement is still unknown.
+Both GPUs now answer the game's size queries for the [4K alpha target](scarlett/native/color-allocation.md#a8-startup-rt-0xc8-0x360) and [720p and 1440p floating-point targets](scarlett/native/half-target.md). Separate AMD and RTX prototypes placed the alpha texture in the game's original memory. On RTX the game then created its shader and render-target views and requested a 2048×2048 BGRA target. The 1440p floating-point texture reached the placement call on RTX; its backing is still under test.
 
 Both adapters handle the six- and [twelve-layer textures](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070). The twelve-layer image takes 4 KiB on AMD and 8 KiB on RTX; its guest layout takes 48 KiB on both. Both also passed two-layer array shader tests and the [256-pixel sRGB row](scarlett/native/xg/README.md#256-texel-srgb-texture1d).
 
