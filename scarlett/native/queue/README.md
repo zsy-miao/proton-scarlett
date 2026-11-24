@@ -333,3 +333,14 @@ gate. GPU readback checks both complete 3840×2160 textures; the backing
 check also covers slice padding and unused space. Retail next records a
 second `+0x490` for the same image with sync `0x40→0`, access
 `0x8→0x80000000` and layout `2→0x1f`. That layout is unqualified.
+
+With `SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE`, the exact post-clear release
+on the same primary records a transition to host `COMMON`. This is a
+recording-local choice, not a general mapping of guest layout `0x1f`.
+Build the primary-clear fixture with `TEST_PRIMARY_RELEASE` and use that
+experimental define on `testq.c`. The producer leaves a red stripe in the
+black texture; an independent Direct queue, submitted first, waits for the
+producer fence, acquires from `COMMON`, and reads both images. RADV and RTX
+preserved the stripe, remaining black pixels, sibling image and padding.
+Both experimental retail runs next requested a second timestamp (`+0x240`,
+return `+0x2482b37`); neither demonstrated a subsequent acquire or flip.

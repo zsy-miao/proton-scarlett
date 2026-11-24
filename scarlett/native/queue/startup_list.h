@@ -10,6 +10,7 @@ struct startup_list {
     D3D12_COMMAND_LIST_TYPE type;
     HRESULT error;
     BOOL primary_cleared;
+    BOOL primary_released; /* Guest layout 0x1f on the retained primary. */
     ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
@@ -123,6 +124,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
     s->primary_cleared=FALSE;
+    s->primary_released=FALSE;
     if (s->primary) { ID3D12Resource_Release(s->primary); s->primary=NULL; }
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
@@ -371,7 +373,7 @@ static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT fla
 /* shortcut: one observed whole-primary UAV-to-RT transition per recording. */
 static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3D12_BARRIER_GROUP *groups)
 {
-    if (!s->reservation || !s->pool_owner || s->closed || FAILED(s->error) || s->primary ||
+    if (!s->reservation || !s->pool_owner || s->closed || FAILED(s->error) || s->primary_released ||
         s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT || count!=1) return E_NOTIMPL;
     D3D12_BARRIER_GROUP g;
     D3D12_TEXTURE_BARRIER b;
@@ -382,11 +384,30 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
     SIZE_T bytes=offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof b.Flags;
     if (!ReadProcessMemory(GetCurrentProcess(),g.pTextureBarriers,&b,bytes,&n) || n!=bytes) return E_POINTER;
     const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
-    if (b.SyncBefore!=D3D12_BARRIER_SYNC_ALL_SHADING || b.SyncAfter!=D3D12_BARRIER_SYNC_RENDER_TARGET ||
-        b.AccessBefore!=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS || b.AccessAfter!=D3D12_BARRIER_ACCESS_RENDER_TARGET ||
-        b.LayoutBefore!=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS || b.LayoutAfter!=D3D12_BARRIER_LAYOUT_RENDER_TARGET ||
-        b.Flags || memcmp(&b.Subresources,&all,sizeof all)) return E_NOTIMPL;
-    if (!(s->primary=xs_retain_primary(s->pool_owner,b.pResource))) return E_INVALIDARG;
+    if (b.Flags || memcmp(&b.Subresources,&all,sizeof all)) return E_NOTIMPL;
+    if (s->primary) {
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+        /* shortcut: host COMMON for this cleared primary only; qualify its retail acquire before enabling. */
+        if (!s->primary_cleared || s->host_exposed ||
+            b.SyncBefore!=D3D12_BARRIER_SYNC_RENDER_TARGET || b.SyncAfter!=D3D12_BARRIER_SYNC_NONE ||
+            b.AccessBefore!=D3D12_BARRIER_ACCESS_RENDER_TARGET || b.AccessAfter!=D3D12_BARRIER_ACCESS_NO_ACCESS ||
+            b.LayoutBefore!=D3D12_BARRIER_LAYOUT_RENDER_TARGET || b.LayoutAfter!=(D3D12_BARRIER_LAYOUT)0x1f) return E_NOTIMPL;
+        ID3D12Resource *named=xs_retain_primary(s->pool_owner,b.pResource);
+        if (!named) return E_INVALIDARG;
+        BOOL match=named==s->primary;
+        ID3D12Resource_Release(named);
+        if (!match) return E_INVALIDARG;
+        b.LayoutAfter=D3D12_BARRIER_LAYOUT_COMMON;
+        s->primary_released=TRUE;
+#else
+        return E_NOTIMPL;
+#endif
+    } else {
+        if (b.SyncBefore!=D3D12_BARRIER_SYNC_ALL_SHADING || b.SyncAfter!=D3D12_BARRIER_SYNC_RENDER_TARGET ||
+            b.AccessBefore!=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS || b.AccessAfter!=D3D12_BARRIER_ACCESS_RENDER_TARGET ||
+            b.LayoutBefore!=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS || b.LayoutAfter!=D3D12_BARRIER_LAYOUT_RENDER_TARGET) return E_NOTIMPL;
+        if (!(s->primary=xs_retain_primary(s->pool_owner,b.pResource))) return E_INVALIDARG;
+    }
     b.pResource=s->primary;
     g.pTextureBarriers=&b;
     ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
@@ -491,6 +512,7 @@ HRESULT xs_startup_list(ID3D12Device *device,D3D12_COMMAND_LIST_TYPE type,IUnkno
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 {
     if (!i || (i->lpVtbl!=&sl_vtbl.prefix && i->lpVtbl!=&pool_vtbl.prefix)) return NULL;
+    if (sl(i)->primary_released) return NULL; /* No untracked use after ending primary access. */
     sl(i)->host_exposed=TRUE;
     return sl(i)->host;
 }
