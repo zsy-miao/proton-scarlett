@@ -47,3 +47,32 @@ the other color targets. On both adapters a gated GPU copy retained it after
 the application released its last reference. An overlapping BGRA placement
 failed until retirement; a neighboring range and a different pool succeeded.
 Recorders using a raw GPU address must explicitly retain the buffer.
+
+### RTX typed view lowering over the shared 0032 lease
+
+`ScarlettTiledR32BufferV1` is the only import path. Combined captures put
+the first RTX R32 at `+12600000` or `+13600000`, depending on the second
+BGRA placement. A second R32 was observed at `+13990000` in the combined
+no-submit trace. `+10e00000` was a different, isolated run. The tested RTX
+fixture uses `+13600000`; the existing RADV control uses `+13580000`.
+
+`xs_r32_texel_table` takes an owner and its live tiled resource and creates
+a private three-entry table: BUFFER SRV R32_UINT, BUFFER UAV R32_UINT,
+BUFFER SRV R9G9B9E5_SHAREDEXP. The table retains the exact 0032 resource
+through a private-data COM reference. A recorder must hold this table until
+its last queue fence completes. The private path supports integer mip-zero
+loads and stores lowered to the verified tile index. It does not implement
+arbitrary Texture2D sampling or publish a buffer as a guest-visible texture.
+
+`scarlett/tests/rtx-r32-tile.sh STAGED-0032-TOOL rtx-typed` checks all
+921600 UINT words and native RGB9E5 values, both before and after a typed
+UAV rewrite. With the public wrapper released and VA reused behind a queue
+gate, overlapping reacquisition fails; it succeeds after the fence and
+release of the table. Both 64 KiB guards and replacement bytes are checked.
+
+In a combined CPU-only trace, descriptor indices were 61–63 and 64–66 for
+two adjacent groups rather than the isolated run's 59–61. The RGB view
+resolved to the same original section as the UINT views. No table bind or
+shader execution consuming either group was observed before the following
+2560×1440 format-86 allocation query (`+c8`, return `+344188`). The provider
+keeps ordinary guest binds disabled until the consuming shader ABI is known.

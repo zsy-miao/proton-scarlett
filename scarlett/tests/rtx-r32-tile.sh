@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 s=$(realpath "$(dirname "$0")/..")
-tool=$(realpath "${1:?usage: rtx-r32-tile.sh STAGED-TOOL [radv|nvidia]}")
+tool=$(realpath "${1:?usage: rtx-r32-tile.sh STAGED-TOOL [radv|nvidia|rtx-typed]}")
 w=$(mktemp -d "${TMPDIR:-/tmp}/r32-tile.XXXXXXXX")
 gpu=${2:-nvidia}; defines=()
-case "$gpu" in nvidia) display=xvfb ;; radv) display=sway; defines+=(-DTEST_RADV) ;; *) exit 2 ;; esac
+source=test-r32-tile; marker="^PASS +c8/+360"
+case "$gpu" in rtx-typed) gpu=nvidia; display=xvfb; source=test-r32-typed; marker="^PASS RTX 0032 typed aliases" ;; nvidia) display=xvfb ;; radv) display=sway; defines+=(-DTEST_RADV) ;; *) exit 2 ;; esac
 mkdir "$w/game"
 for unit in test-r32-device d3d12_vm queue/queue; do
     x86_64-w64-mingw32-gcc -Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED \
         -c "$s/native/$unit.c" -o "$w/${unit##*/}.o"
 done
-x86_64-w64-mingw32-g++ -std=c++17 -Os -Wall -Wextra -Werror -static "${defines[@]}" "$s/native/test-r32-tile.cpp" \
+x86_64-w64-mingw32-g++ -std=c++17 -Os -Wall -Wextra -Werror -static "${defines[@]}" "$s/native/$source.cpp" \
     "$w"/*.o -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
-"${DXC:-dxc}" -WX -T cs_6_0 -E main "$s/native/test-r32-tile.hlsl" -Fo "$w/game/tile.dxil"
+if [[ $source == test-r32-typed ]]; then
+    "${DXC:-dxc}" -WX -T cs_6_0 -E sample_alias "$s/native/$source.hlsl" -Fo "$w/game/tile.dxil"
+    "${DXC:-dxc}" -WX -T cs_6_0 -E write_alias "$s/native/$source.hlsl" -Fo "$w/game/write.dxil"
+else
+    "${DXC:-dxc}" -WX -T cs_6_0 -E main "$s/native/$source.hlsl" -Fo "$w/game/tile.dxil"
+fi
 TMPDIR="$w" SCARLETT_TEST_GPU="$gpu" SCARLETT_TEST_DISPLAY="$display" "$s/test-launch-nixos.sh" "$w/game" "$tool"
-grep -h '^PASS +c8/+360' "$w"/scarlett-run.*/logs/steam-*.log
+grep -h "$marker" "$w"/scarlett-run.*/logs/steam-*.log
 mkdir "$w/ranges"
 x86_64-w64-mingw32-g++ -std=c++17 -Os -Wall -Wextra -Werror -static "${defines[@]}" "$s/native/test-tiled-ranges.cpp" \
     -ld3d12 -ldxguid -o "$w/ranges/game_scarlett_master.exe"
