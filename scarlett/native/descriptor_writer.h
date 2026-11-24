@@ -124,9 +124,11 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav={0};
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv={0};
     DWORD words[10]={0};
-    SIZE_T size=kind==CBV?16:40;
+    SIZE_T size=kind==CBV || (object && kind==UAV)?16:40;
     if (kind!=CBV && kind!=SRV && kind!=UAV) return E_INVALIDARG;
     if (!copy_in(words,input,size)) return E_POINTER;
+    if (kind==UAV && object && words[1]!=D3D12_UAV_DIMENSION_TEXTURE2D &&
+        !copy_in(words,input,sizeof words)) return E_POINTER;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *old_placed=NULL;
     if (object && kind!=CBV) {
@@ -152,6 +154,10 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
         }
     } else if (!object) {
         if (memcmp(words,(DWORD[4]){0},16)) return E_NOTIMPL;
+    } else if (kind==UAV && words[0]==DXGI_FORMAT_R8G8B8A8_UNORM &&
+               words[1]==D3D12_UAV_DIMENSION_TEXTURE2D && !words[2] && !words[3]) {
+        uav.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+        uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
     } else {
         if (kind!=SRV || words[0]!=DXGI_FORMAT_R32_TYPELESS || words[1]!=1 || words[2]!=0x1688 ||
             !words[6] || words[7] || words[8]!=D3D12_BUFFER_SRV_FLAG_RAW) return E_NOTIMPL;
@@ -162,7 +168,11 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     HRESULT hr=E_INVALIDARG;
     ID3D12Resource *resource=NULL,*old=NULL;
     AcquireSRWLockExclusive(&d->descriptor_lock);
-    if (object) {
+    if (object && kind==UAV) {
+        for (struct color_resource *c=d->colors;c;c=c->next)
+            if (&c->iface==object) { resource=c->host; break; }
+        if (!resource) goto done;
+    } else if (object) {
         for (struct xs_buffer_binding *b=d->buffers;b;b=b->next) if (b->identity==object) {
             if (srv.Buffer.FirstElement>b->bytes/4 ||
                 srv.Buffer.NumElements>b->bytes/4-srv.Buffer.FirstElement) goto done;
@@ -185,7 +195,7 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
         hr=E_POINTER; goto done;
     }
     if (kind==SRV) ID3D12Device_CreateShaderResourceView(d->host,resource,&srv,cpu);
-    else if (kind==UAV) ID3D12Device_CreateUnorderedAccessView(d->host,NULL,NULL,&uav,cpu);
+    else if (kind==UAV) ID3D12Device_CreateUnorderedAccessView(d->host,resource,NULL,&uav,cpu);
     else ID3D12Device_CreateConstantBufferView(d->host,&cbv,cpu);
     old=r->resource;
 #ifdef SCARLETT_STAGED_PLACED
@@ -250,6 +260,42 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
 static void WINAPI write_cbv(IUnknown *d,const void *desc,SIZE_T dest)
 {
     if (FAILED(xs_write_view(d,CBV,NULL,desc,dest))) xs_stop();
+}
+
+/* Trusted host recorder only. The returned ref and caller's dedicated RTV
+ * heap stay alive through command retirement. Caller manages transitions. */
+HRESULT xs_color_rtv(IUnknown *heap,SIZE_T slot,ID3D12DescriptorHeap *rtvs,ID3D12Resource **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!heap || heap->lpVtbl!=&desc_vtbl.unknown || !rtvs) return E_INVALIDARG;
+    struct desc_heap *h=CONTAINING_RECORD(heap,struct desc_heap,iface);
+    D3D12_DESCRIPTOR_HEAP_DESC desc;
+    rtvs->lpVtbl->GetDesc(rtvs,&desc);
+    if (!h->records || desc.Type!=D3D12_DESCRIPTOR_HEAP_TYPE_RTV || desc.NumDescriptors!=1 || desc.Flags)
+        return E_INVALIDARG;
+    struct xbox_device *d=h->owner;
+    ID3D12Device *host=NULL;
+    if (FAILED(ID3D12DescriptorHeap_GetDevice(rtvs,&IID_ID3D12Device,(void **)&host))) return E_INVALIDARG;
+    BOOL same=host==d->host;
+    ID3D12Device_Release(host);
+    if (!same) return E_INVALIDARG;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    if (SUCCEEDED(xs_descriptor_slot(heap,slot,&cpu,NULL))) {
+        struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
+        UINT64 tag[2];
+        if (r->resource && r->kind==UAV && copy_in(tag,(void *)slot,sizeof tag) &&
+            tag[0]==r->serial && tag[1]==(0x5853444553430000ull|UAV)) {
+            *out=r->resource;
+            ID3D12Resource_AddRef(*out);
+        }
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if (!*out) return E_INVALIDARG;
+    rtvs->lpVtbl->GetCPUDescriptorHandleForHeapStart(rtvs,&cpu);
+    ID3D12Device_CreateRenderTargetView(d->host,*out,NULL,cpu);
+    return S_OK;
 }
 static void WINAPI write_srv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T dest)
 {

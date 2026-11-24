@@ -45,6 +45,7 @@ struct xbox_device {
     SRWLOCK descriptor_lock;
     struct desc_heap *heaps;
     struct xs_buffer_binding *buffers;
+    struct color_resource *colors; /* weak registry under descriptor_lock */
 #ifdef SCARLETT_STAGED_PLACED
     struct placed_backing *placed; /* weak, guarded by descriptor_lock */
 #endif
@@ -56,6 +57,7 @@ struct xbox_device {
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline descriptor flag");
 #include "descriptor_heap.h"
+#include "color_resource.h"
 #ifdef SCARLETT_STAGED_PLACED
 #include "placed_resource.h"
 #endif
@@ -195,20 +197,29 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
     return out;
 }
 
-/* 344182: console sret precedes This; the desktop C vtable takes This first. */
-HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void *wire,
-        D3D12_RESOURCE_ALLOCATION_INFO *out)
+static HRESULT color_description(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     D3D12_RESOURCE_DESC rd={0};
-    if (!out) return E_POINTER;
-    *out=(D3D12_RESOURCE_ALLOCATION_INFO){0};
-    if (!iface || node!=1 || count!=1) return E_INVALIDARG;
     if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Alignment ||
         rd.Width!=3840 || rd.Height!=2160 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 ||
         rd.Format!=DXGI_FORMAT_R8G8B8A8_UNORM || rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality ||
         rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN || (UINT)rd.Flags!=0x300005) return E_NOTIMPL;
     rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    *out=rd;
+    return S_OK;
+}
+
+/* 344182: console sret precedes This; the desktop C vtable takes This first. */
+HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void *wire,
+        D3D12_RESOURCE_ALLOCATION_INFO *out)
+{
+    D3D12_RESOURCE_DESC rd;
+    if (!out) return E_POINTER;
+    *out=(D3D12_RESOURCE_ALLOCATION_INFO){0};
+    if (!iface || node!=1 || count!=1) return E_INVALIDARG;
+    HRESULT hr=color_description(wire,&rd);
+    if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     D3D12_RESOURCE_ALLOCATION_INFO info;
     host->lpVtbl->GetResourceAllocationInfo(host,&info,node,count,&rd);
@@ -318,8 +329,35 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
 static HRESULT WINAPI bootstrap_committed(IUnknown *iface, const void *props, UINT flags, const void *desc,
         UINT state, const void *clear, const void *extra1, UINT extra2, const void *extra3, REFIID iid, void **out)
 {
-    (void)iface; (void)props; (void)extra1; (void)extra2; (void)extra3; (void)iid;
-    return resource_gap(0x3f8,0,desc,state,flags,clear,out);
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!iid) return E_INVALIDARG;
+    if (!IsEqualIID(iid,&IID_ID3D12Resource)) return E_NOINTERFACE;
+    if (flags!=8 || state!=3 || !clear || extra1 || extra2 || extra3)
+        return resource_gap(0x3f8,0,desc,state,flags,clear,out);
+    D3D12_HEAP_PROPERTIES hp;
+    D3D12_RESOURCE_DESC rd;
+    D3D12_CLEAR_VALUE cv;
+    HRESULT hr=color_description(desc,&rd);
+    if (FAILED(hr)) return hr;
+    if (!copy_in(&hp,props,sizeof hp) || !copy_in(&cv,clear,sizeof cv)) return E_POINTER;
+    if (hp.Type!=D3D12_HEAP_TYPE_DEFAULT || hp.CPUPageProperty || hp.MemoryPoolPreference ||
+        hp.CreationNodeMask!=1 || hp.VisibleNodeMask!=1 || cv.Format!=rd.Format ||
+        memcmp(cv.Color,(UINT[4]){0},sizeof cv.Color)) return E_NOTIMPL;
+    struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
+    struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
+    if (!r) return E_OUTOFMEMORY;
+    hr=ID3D12Device_CreateCommittedResource(d->host,&hp,D3D12_HEAP_FLAG_NONE,&rd,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,&cv,&IID_ID3D12Resource,(void **)&r->host);
+    if (FAILED(hr)) { HeapFree(GetProcessHeap(),0,r); return hr; }
+    r->iface.lpVtbl=&color_vtbl.unknown;
+    r->refs=1; r->owner=d;
+    IUnknown_AddRef(iface);
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    r->next=d->colors; d->colors=r;
+    ReleaseSRWLockExclusive(&d->descriptor_lock);
+    *out=&r->iface;
+    return S_OK;
 }
 
 struct bootstrap_vtbl {

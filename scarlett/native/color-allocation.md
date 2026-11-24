@@ -24,3 +24,30 @@ Only the 52-byte prefix ending at flags is consumed.
 checks both qwords against the native query. It creates a real heap of
 exactly that size/alignment, places the matching texture at offset zero,
 clears it, and verifies the bottom-right texel after a GPU fence.
+
+### Committed offscreen color (`+0x3f8`)
+
+The `247aeb6` primary ring path uses DEFAULT properties `{1,0,0,1,1}`,
+display flag `8`, guest state `3`, optimized transparent-black RGBA8,
+extensions `{NULL,0,NULL}` and the resource IID. `193e089` copies the
+optimized color from the owner's table. `48d8e4` selects internal state
+5 for this alternate loop; `4dbffb0` maps it to guest enum 3. This path
+uses desktop UAV as its initial working state; it does not cast guest 3
+to desktop resource-state bits. Both allocation query and creation use
+the same translated RT+UAV description.
+
+Each call creates an independent offscreen texture and returns a title COM
+identity. `xs_display_wrap` requires a verified `GetBuffer(index)` identity;
+this call has no swapchain or index. The first known texture-view builder
+at `16474f9`–`1647531` supplies mip 0 and plane 0, then `1647610` calls
+device `+0x98` with null counter. Only the first four DWORDs are active:
+`{28,4,0,0}`. The descriptor retains the texture independently of the
+wrapper, and the recorder retains it and both heaps through the last fence.
+No host handle is written into the title's descriptor storage.
+
+The synthetic invokes the public factory and UAV writer, releases the title
+identity, clears the original texture green through the GPU UAV, transitions
+it to render-target state, and clears only its last pixel red. Fenced
+readback checks the two colors. This qualifies offscreen rendering, not
+presentation. PresentX needs a synchronized copy to the actual swapchain
+buffer, after identifying the producing queue, state and output.

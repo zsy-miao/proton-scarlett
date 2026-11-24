@@ -4,6 +4,10 @@
 using Microsoft::WRL::ComPtr;
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *);
+extern "C" HRESULT xs_color_rtv(IUnknown *,SIZE_T,ID3D12DescriptorHeap *,ID3D12Resource **);
+extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
+extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
+#define SLOT(o,n,T) ((T)((*reinterpret_cast<void***>(o))[n/8]))
 #define CK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); return 1; } } while(0)
 #define HR(x) CK(SUCCEEDED(x))
 
@@ -44,9 +48,47 @@ int main()
     ComPtr<ID3D12Heap> h; ComPtr<ID3D12Resource> rt,rb;
     HR(d->CreateHeap(&hd,IID_PPV_ARGS(&h)));
     HR(d->CreatePlacedResource(h.Get(),0,&tex,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&rt)));
+    rt.Reset(); h.Reset();
+    using Make=HRESULT(WINAPI *)(IUnknown *,const void *,UINT,const void *,UINT,const void *,const void *,UINT,const void *,REFIID,void **);
+    auto make=SLOT(dev.Get(),0x3f8,Make);
+    D3D12_CLEAR_VALUE cv={}; cv.Format=tex.Format;
+    auto create=[&](IUnknown **o,UINT flags,UINT state,UINT extension,REFIID iid){
+        return make(dev.Get(),&hd.Properties,flags,wire,state,&cv,nullptr,extension,nullptr,iid,(void **)o);
+    };
+    IUnknown *surface=dev.Get(),*qi;
+    CK(FAILED(create(&surface,8,6,0,IID_ID3D12Resource)) && !surface);
+    CK(FAILED(create(&surface,0,3,0,IID_ID3D12Resource)) && !surface);
+    CK(FAILED(create(&surface,8,3,1,IID_ID3D12Resource)) && !surface);
+    CK(create(&surface,8,3,0,IID_IUnknown)==E_NOINTERFACE && !surface);
+    hd.Properties.VisibleNodeMask=2; CK(FAILED(create(&surface,8,3,0,IID_ID3D12Resource)) && !surface); hd.Properties.VisibleNodeMask=1;
+    cv.Color[3]=1; CK(FAILED(create(&surface,8,3,0,IID_ID3D12Resource)) && !surface); cv.Color[3]=0;
+    HR(create(&surface,8,3,0,IID_ID3D12Resource));
+    HR(surface->QueryInterface(IID_ID3D12Resource,(void **)&qi)); CK(qi==surface && qi->Release()==1);
+    HR(surface->QueryInterface(IID_IUnknown,(void **)&qi)); CK(qi==surface && qi->Release()==1);
+    CK(surface->QueryInterface(IID_ID3D12Resource1,(void **)&qi)==E_NOINTERFACE && !qi);
+    using Heap=HRESULT(WINAPI *)(IUnknown *,const void *,REFIID,void **);
+    using Start=SIZE_T(WINAPI *)(IUnknown *);
+    using UAV=void(WINAPI *)(IUnknown *,IUnknown *,IUnknown *,const void *,SIZE_T);
+    DWORD heapDesc[]={0,2,1,1},view[]={28,4,0,0}; ComPtr<IUnknown> heap;
+    HMODULE xm=LoadLibraryW(L"xmem.dll"); CK(xm);
+    HR(SLOT(dev.Get(),0x70,Heap)(dev.Get(),heapDesc,IID_ID3D12DescriptorHeap,(void **)heap.GetAddressOf()));
+    SIZE_T slot=SLOT(heap.Get(),0x48,Start)(heap.Get())+32;
+    CK(FAILED(xs_write_view(dev.Get(),0x98,(IUnknown *)1,view,slot)));
+    view[3]=1; CK(FAILED(xs_write_view(dev.Get(),0x98,surface,view,slot))); view[3]=0;
+    SLOT(dev.Get(),0x98,UAV)(dev.Get(),surface,nullptr,view,slot);
+    CK(surface->Release()==0); // slot owns the actual image
     D3D12_DESCRIPTOR_HEAP_DESC vd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
     ComPtr<ID3D12DescriptorHeap> views; HR(d->CreateDescriptorHeap(&vd,IID_PPV_ARGS(&views)));
-    auto rtv=views->GetCPUDescriptorHandleForHeapStart(); d->CreateRenderTargetView(rt.Get(),nullptr,rtv);
+    auto rtv=views->GetCPUDescriptorHandleForHeapStart();
+    *(UINT64 *)slot^=1; CK(FAILED(xs_color_rtv(heap.Get(),slot,views.Get(),rt.GetAddressOf())) && !rt); *(UINT64 *)slot^=1;
+    HR(xs_color_rtv(heap.Get(),slot,views.Get(),rt.GetAddressOf()));
+    auto actual=rt->GetDesc(); CK(actual.Width==3840 && actual.Height==2160 && actual.Format==tex.Format && actual.Flags==tex.Flags);
+    ID3D12DescriptorHeap *bank; D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    HR(xs_resolve_view(heap.Get(),slot,0x98,&bank,&gpu));
+    D3D12_DESCRIPTOR_HEAP_DESC ud={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
+    ComPtr<ID3D12DescriptorHeap> cpuHeap; HR(d->CreateDescriptorHeap(&ud,IID_PPV_ARGS(&cpuHeap)));
+    auto cpu=cpuHeap->GetCPUDescriptorHandleForHeapStart();
+    d->CreateUnorderedAccessView(rt.Get(),nullptr,nullptr,cpu);
     D3D12_RESOURCE_DESC buf={}; buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER; buf.Width=512;
     buf.Height=buf.DepthOrArraySize=buf.MipLevels=buf.SampleDesc.Count=1; buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     auto hp=hd.Properties; hp.Type=D3D12_HEAP_TYPE_READBACK;
@@ -55,18 +97,23 @@ int main()
     ComPtr<ID3D12GraphicsCommandList> l; ComPtr<ID3D12Fence> f;
     HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q))); HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
     HR(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l)));
-    FLOAT red[]={1,0,0,1}; l->ClearRenderTargetView(rtv,red,0,nullptr);
-    D3D12_RESOURCE_BARRIER b={}; b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};
+    const FLOAT green[]={0,1,0,1},red[]={1,0,0,1};
+    l->SetDescriptorHeaps(1,&bank); l->ClearUnorderedAccessViewFloat(gpu,cpu,rt.Get(),green,0,nullptr);
+    D3D12_RESOURCE_BARRIER b={}; b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_RENDER_TARGET};
+    l->ResourceBarrier(1,&b); D3D12_RECT corner={3839,2159,3840,2160};
+    l->ClearRenderTargetView(rtv,red,1,&corner);
+    b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};
     l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION src={},dst={}; src.pResource=rt.Get(); src.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     dst.pResource=rb.Get(); dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    dst.PlacedFootprint.Footprint={tex.Format,1,1,1,256};
-    D3D12_BOX last={3839,2159,0,3840,2160,1}; l->CopyTextureRegion(&dst,0,0,0,&src,&last);
+    dst.PlacedFootprint.Footprint={tex.Format,2,1,1,256};
+    D3D12_BOX last={3838,2159,0,3840,2160,1}; l->CopyTextureRegion(&dst,0,0,0,&src,&last);
     HR(l->Close()); ID3D12CommandList *batch[]={l.Get()}; q->ExecuteCommandLists(1,batch);
     HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f))); HR(q->Signal(f.Get(),1));
     HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(event);
     HR(f->SetEventOnCompletion(1,event)); CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0); CloseHandle(event);
-    DWORD *pixel; HR(rb->Map(0,nullptr,(void **)&pixel)); CK(*pixel==0xff0000ff); rb->Unmap(0,nullptr);
-    std::printf("PASS device +c8 sret: size=%llu alignment=%llu; exact heap/placed RGBA8 RT+UAV; fenced bottom-right pixel ff0000ff\n",
+    DWORD *pixel; HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[0]==0xff00ff00 && pixel[1]==0xff0000ff); rb->Unmap(0,nullptr);
+    heap.Reset(); FreeLibrary(xm);
+    std::printf("PASS +c8 size=%llu alignment=%llu; +3f8 committed identity -> +98 UAV -> checked RTV; fenced last pixels ff00ff00 ff0000ff after wrapper release\n",
             (unsigned long long)ref.SizeInBytes,(unsigned long long)ref.Alignment);
 }
