@@ -250,9 +250,16 @@ static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
 
 /* Both public slots consume the same descriptor. Require the per-resource and
  * aggregate results from the host to agree for this one-resource query. */
-static HRESULT msaa_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
+static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
 {
+    BOOL a8=rd->Format==DXGI_FORMAT_A8_UNORM;
+    if (a8) {
+        /* read_texture_desc validated the 2D shape. Only the low RT flag is translated. */
+        if (rd->Width!=3840 || rd->Height!=2160 || rd->Alignment ||
+            rd->Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN || (UINT)rd->Flags!=0x300001) return E_NOTIMPL;
+        rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    } else if (!msaa_desc(rd)) return E_NOTIMPL;
     ID3D12Device4 *d=NULL;
     HRESULT hr=ID3D12Device_QueryInterface(host,&IID_ID3D12Device4,(void **)&d);
     if (FAILED(hr)) return hr;
@@ -260,8 +267,10 @@ static HRESULT msaa_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
     D3D12_RESOURCE_ALLOCATION_INFO1 one={0};
     d->lpVtbl->GetResourceAllocationInfo1(d,&info,1,1,rd,&one);
     ID3D12Device4_Release(d);
-    if (info.SizeInBytes!=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT || info.Alignment!=info.SizeInBytes ||
-        one.Offset || one.SizeInBytes!=info.SizeInBytes || one.Alignment!=info.Alignment) return E_NOTIMPL;
+    if (one.Offset || one.SizeInBytes!=info.SizeInBytes || one.Alignment!=info.Alignment) return E_NOTIMPL;
+    if (a8) {
+        if (info.Alignment!=65536 || (info.SizeInBytes!=0x880000 && info.SizeInBytes!=0x800000)) return E_NOTIMPL;
+    } else if (info.SizeInBytes!=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT || info.Alignment!=info.SizeInBytes) return E_NOTIMPL;
     *out=info;
     if (detail) *detail=one;
     return S_OK;
@@ -310,7 +319,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    if (msaa_desc(&rd)) return msaa_info(host,&rd,out,NULL);
+    if (msaa_desc(&rd) || rd.Format==DXGI_FORMAT_A8_UNORM) return target_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL layered=is_layered_texel(&rd),texel32=layered || is_texel32(&rd);
     BOOL row=is_srgb_row(&rd);
@@ -349,8 +358,7 @@ HRESULT xs_msaa_allocation_info1(IUnknown *iface,UINT node,UINT count,const void
     if (!iface || count!=1 || node!=1) return E_INVALIDARG;
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
-    if (!msaa_desc(&rd)) return E_NOTIMPL;
-    return msaa_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&rd,out,detail);
+    return target_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&rd,out,detail);
 }
 static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info1(D3D12_RESOURCE_ALLOCATION_INFO *out,
         IUnknown *iface,UINT node,UINT count,const void *wire,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)

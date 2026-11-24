@@ -33,6 +33,29 @@ checks the returned `0x1fb0000` size and `0x10000` alignment on qualified
 RADV. The ordinary desktop optimal-image allocation-info result is not
 used for this pair of calls.
 
+### A8 startup RT (`+0xc8`, `+0x360`)
+
+After the startup sampler sequence, `+344182` queries a 3840×2160 A8_UNORM
+Texture2D with one layer, mip and sample, alignment/quality/layout zero and
+flags `0x300001`. Only the low RT flag has a qualified desktop translation.
+For the ordinary RT allocation query, the host reports `0x880000` bytes on
+RADV and `0x800000` on RTX 3070, both at `0x10000` alignment. The A8 owner
+path `+164ec2`–`+164e45` divides by one byte per element; `+320090` writes
+the resulting count at owner `+8` and the byte stride at `+c` (low 12 bits).
+
+`+abfe07` then queries the same descriptor with `+360`. The host's per-resource
+offset is zero and its size/alignment match the aggregate. `+193e243` takes
+the allocation size/alignment; `+193e2d4` calls device `+428` with the A8
+descriptor, guest state 6, zero A8 clear and resource IID. On both staged
+GPUs the address was at allocation base + `0xf000000`. RTX's WC section
+query identified a `0x89700000`-byte view. The corresponding RADV section
+query did not succeed. Both factories still return `E_NOTIMPL` for this image.
+
+`test-a8-allocation.cpp` checks both public query results and 52-byte
+guarded input, native allocation info and a native placed RT cleared and
+read back at its last two texels. That placement is a fixture; the retail
+owner's byte count is not evidence of host/guest memory layout compatibility.
+
 ### Committed offscreen color (`+0x3f8`)
 
 The `247aeb6` primary ring path uses DEFAULT properties `{1,0,0,1,1}`,
