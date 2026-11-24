@@ -11,6 +11,7 @@ done
 x86_64-w64-mingw32-g++ -std=c++17 -Os -static -Wall -Wextra -Werror "$s/$src.cpp" "$w"/*.o -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
 if [[ $src == test-small-rt ]]; then shader=small
 elif [[ $src == test-wc-row ]]; then
+    "${DXC:-dxc}" -WX -T cs_6_0 -E main -DTYPED "$s/$src.hlsl" -Fo "$w/game/typed.dxil"
     "${DXC:-dxc}" -WX -T cs_6_0 -E main -DWRITE "$s/$src.hlsl" -Fo "$w/game/write.dxil"; shader=read
 elif [[ $src == test-wc-depth1440 ]]; then
     "${DXC:-dxc}" -WX -T vs_6_0 -E vs "$s/test-msaa-depth.hlsl" -Fo "$w/game/ro-vs.dxil"

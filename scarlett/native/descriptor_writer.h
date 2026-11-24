@@ -75,7 +75,7 @@ static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
 }
 
 #ifdef SCARLETT_STAGED_PLACED
-static ID3D12Resource *row_host_locked(struct xbox_device*,IUnknown*);
+static ID3D12Resource *row_host_locked(struct xbox_device*,IUnknown*,UINT);
 static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T,UINT,UINT);
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
 static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,const DWORD *w,SIZE_T dest)
@@ -162,12 +162,14 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     /* Byte 12 is alignment padding before the SRV union (retail: 0 or stale VA high word). */
     const DWORD row_srv[]={0,1,0x1688,words[3],0,0,0x1c200,4,0,0};
     const DWORD row_uav[]={0,1,0,0,0x1c200,4,0,0,0,1};
-    BOOL row=object && ((kind==SRV && !memcmp(words,row_srv,sizeof row_srv)) ||
+    const DWORD tiny_srv[]={42,1,0x1688,words[3],0,0,4,0,0,0};
+    BOOL tiny=object && kind==SRV && !memcmp(words,tiny_srv,sizeof tiny_srv);
+    BOOL row=object && (tiny || (kind==SRV && !memcmp(words,row_srv,sizeof row_srv)) ||
             (kind==UAV && !memcmp(words,row_uav,sizeof row_uav)));
     if (row && kind==UAV) {
         uav.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;uav.Buffer.NumElements=words[4];uav.Buffer.StructureByteStride=words[5];
     } else if (row) {
-        srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;srv.Shader4ComponentMapping=words[2];
+        srv.Format=(DXGI_FORMAT)words[0];srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;srv.Shader4ComponentMapping=words[2];
         srv.Buffer.NumElements=words[6];srv.Buffer.StructureByteStride=words[7];
     } else
 #endif
@@ -236,7 +238,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     ID3D12Resource *resource=wc,*old=NULL;
     AcquireSRWLockExclusive(&d->descriptor_lock);
 #ifdef SCARLETT_STAGED_PLACED
-    if (row) {if (!(resource=row_host_locked(d,object))) goto done;} else
+    if (row) {if (!(resource=row_host_locked(d,object,tiny?16:0x70800))) goto done;} else
 #endif
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)

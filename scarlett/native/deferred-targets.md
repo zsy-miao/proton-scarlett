@@ -356,3 +356,16 @@ Four retail launches: two diagnostic and two ordinary. Both ordinary
 runs stopped at sampler write `+1e8` (return `+12b981e`). RTX presented
 token 1; RADV completed its producer fence with no logged presentation.
 Neither presented a second token.
+
+### Null resource after sampler setup (0043)
+
+The placed-buffer call (device `+428`, return `+6dd8b`) returned
+`E_NOTIMPL` with a null output for a 16-byte row-major buffer at WC
+`+0xe5c6fc0`. The title later called `+6eb740` with a null first argument
+and hit `+6eb888`. Both adapters now place that buffer over its original
+bytes and accept its four-element `R32_UINT` SRV. The null check is unchanged.
+
+Five retail launches: three diagnostic and two ordinary. In both final
+runs the next stop was a UAV write (device `+98`, return `+1647616`).
+RTX presented token 1; RADV issued token 1 without a logged presentation.
+Neither presented a second token.

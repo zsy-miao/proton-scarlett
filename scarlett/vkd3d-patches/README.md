@@ -151,3 +151,11 @@ sizes, including the 1440p stencil-7 contract. For 4K the guest stencil
 SRV and read-only DSVs are denied; host-only fixture descriptors check
 the underlying image independently. Next retail stop: sampler `+1e8`,
 return `+12b981e`.
+
+`0043` places the 16-byte flags-4 startup buffer at WC `+0xe5c6fc0`.
+`wc-float1440.sh GPU TOOL row` checks its four R32_UINT SRV elements,
+late-written original bytes, guards, lease and VA reuse, alongside the
+larger structured row. Behavioral reference only: Marvisak/VIctory
+`ffe310eb`, `crates/victory-gpu/src/resource.rs::create_at_address`
+returns an identity backed by the title-supplied address. This patch
+uses the project's own WC import and reservation; no upstream code copied.

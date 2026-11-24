@@ -737,10 +737,10 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_RESOURCE_DESC rd={0};
     BOOL read=copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags);
-    if (read && rd.Dimension==D3D12_RESOURCE_DIMENSION_BUFFER && !rd.Alignment && rd.Width==0x70800 && rd.Height==1 &&
+    if (read && rd.Dimension==D3D12_RESOURCE_DIMENSION_BUFFER && !rd.Alignment && (rd.Width==0x70800 || rd.Width==16) && rd.Height==1 &&
         rd.DepthOrArraySize==1 && rd.MipLevels==1 && !rd.Format && rd.SampleDesc.Count==1 && !rd.SampleDesc.Quality &&
         rd.Layout==D3D12_TEXTURE_LAYOUT_ROW_MAJOR && rd.Flags==D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
-        return create_row_buffer(d,address,state,clear,iid,out);
+        return create_row_buffer(d,address,(UINT)rd.Width,state,clear,iid,out);
     BOOL small=read && !rd.Alignment && small_tile_bytes(&rd,FALSE);
     if (small || (read && ((rd.MipLevels==5 && tiled_r11_chain(&rd)) || tiled_r32_desc(&rd))))
         return create_tiled_buffer(d,rd.Format,small,address,state,clear,iid,out);

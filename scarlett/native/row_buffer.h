@@ -1,8 +1,8 @@
 /* The title gets its own identity; only the host resource owns the pool reservation. */
-struct row_buffer { IUnknown iface; LONG refs; ID3D12Resource *host; struct xbox_device *owner; struct row_buffer *next; };
-static ID3D12Resource *row_host_locked(struct xbox_device *d,IUnknown *iface)
+struct row_buffer { IUnknown iface; LONG refs; UINT bytes; ID3D12Resource *host; struct xbox_device *owner; struct row_buffer *next; };
+static ID3D12Resource *row_host_locked(struct xbox_device *d,IUnknown *iface,UINT bytes)
 {
-    for(struct row_buffer *r=d->rows;r;r=r->next) if(&r->iface==iface)return r->host;
+    for(struct row_buffer *r=d->rows;r;r=r->next) if(&r->iface==iface && r->bytes==bytes)return r->host;
     return NULL;
 }
 static ULONG WINAPI row_addref(IUnknown *iface)
@@ -28,7 +28,7 @@ static HRESULT WINAPI row_query(IUnknown *iface,REFIID iid,void **out)
 }
 static const struct { IUnknownVtbl unknown; xs_stop_fn rest[64]; } row_vtbl={
     {row_query,row_addref,row_release},{[0 ... 63]=xs_stop}};
-static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
+static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT bytes,UINT state,const void *clear,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
     *out=NULL; IID id;
@@ -37,9 +37,9 @@ static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT state,cons
     if (!va || state!=UINT_MAX || clear) return E_INVALIDARG;
     struct row_buffer *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r) return E_OUTOFMEMORY;
-    HRESULT hr=open_wc_buffer(d,va,0x70800,"ScarlettRowBufferV1",&r->host,NULL,NULL,NULL);
+    HRESULT hr=open_wc_buffer(d,va,bytes,bytes==16?"ScarlettRow16V1":"ScarlettRowBufferV1",&r->host,NULL,NULL,NULL);
     if (FAILED(hr)){HeapFree(GetProcessHeap(),0,r);return hr;}
-    r->iface.lpVtbl=&row_vtbl.unknown; r->refs=1;r->owner=d;IUnknown_AddRef(&d->iface);
+    r->iface.lpVtbl=&row_vtbl.unknown; r->refs=1;r->bytes=bytes;r->owner=d;IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);r->next=d->rows;d->rows=r;ReleaseSRWLockExclusive(&d->descriptor_lock);
     *out=&r->iface; return S_OK;
 }
