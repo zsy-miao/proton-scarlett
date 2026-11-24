@@ -9,10 +9,10 @@ console SDK, external compatibility runtime, or ordinal compatibility contract.
 | [`XMemAllocDefault`](https://docs.xbox.com/reference/system/xmem/functions/xmemalloc_routine) and [`XMemFreeDefault`](https://docs.xbox.com/reference/system/xmem/functions/xmemfree_routine) | Cached CPU heap, ordinary pages, minimum 16-byte alignment. A tracking callback can call these directly without re-entering itself. |
 | [`XMemIsToolsMemAvailable`](https://docs.xbox.com/reference/system/xmem/functions/xmemistoolsmemavailable) | Returns `FALSE`: there is no profiling-mode tools partition. |
 | [`XMemVirtualAlloc`](https://docs.xbox.com/reference/system/xmem/functions/xmemvirtualalloc) | Untagged `XMEM_CPU` (`0x00000001`), ordinary 4 KiB pages, `MEM_RESERVE`, `MEM_COMMIT`, or both, with `PAGE_READWRITE` or `PAGE_READONLY`. Uses Win32 `VirtualAlloc` with the caller's base, size and protection; release with `VirtualFree`. |
-| `XMemVirtualAlloc`, 64 KiB reservations | Two supported `0x20402000` forms: CPU mappable (`0x21`, `PAGE_READWRITE`) and graphics VA only (`3`, `0x801`). Size and any specified base must be multiples of 64 KiB. |
+| `XMemVirtualAlloc`, 64 KiB reservations | Type `0x20402000`: CPU mappable (`0x21`, `PAGE_READWRITE`), WC CPU/GPU mappable (`0x23`, `0x2404`), or graphics VA only (`3`, `0x801`). Size and any specified base must be multiples of 64 KiB. |
 | `XMemVirtualAlloc`, 64 KiB CPU reserve+commit | Type `0x20403000`, flags exactly `0x181`, protection `PAGE_READWRITE` (`4`). Returns zero-initialized private committed CPU memory. Size must be a positive multiple of 64 KiB; an explicit base must be free and 64 KiB-aligned. Release with ordinary `VirtualFree(base, 0, MEM_RELEASE)`. |
 | `XMemVirtualAlloc`, graphics reserve+commit | Type `0x20003000`, flags `0x183`, protection `0x22004`: a live GPU-importable shared section on patched Wine. Size must be a positive multiple of 2 MiB; a requested base must also be aligned to 2 MiB and free. Release with `VirtualFree(base, 0, MEM_RELEASE)`. |
-| [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | CPU mappings of 64 KiB page runs, with shared backing. See limits below. |
+| [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | 64 KiB page runs with CPU section backing (`0`) or a WC graphics heap (`0x280`). See limits below. |
 
 Unsupported virtual allocation flags, types, or protections return `NULL` and set
 `ERROR_NOT_SUPPORTED` (this DLL's diagnostic). This includes other graphics commits,
@@ -51,6 +51,28 @@ all aliases (`ERROR_BUSY` otherwise). Use the XMem API, not `UnmapViewOfFile`
 or raw placeholder edits, for active views. The shim reclaims released arena
 bookkeeping on subsequent CPU reservations. Replacing live mappings, partial
 unmaps/frees, arbitrary page lists, 2 MiB clusters and scatter are unsupported.
+
+### Write-combined physical pages
+
+At RVA `0x5eb27a7` the title allocates `0x2c60` pages (710 MiB) with flags
+`0x280`. Its consumer reserves an arena with flags `0x23`, protection `0x2404`
+at `0x5eb1fbd` and maps selected IDs one page at a time at `0x2474671`.
+For this path XMem exports a real WC heap handle and checks re-import via
+`ImportedBuffer::wc` before publishing any IDs. The run owns the handle until
+whole-run free. It cannot be mapped into a cached CPU arena, nor can a cached
+run be mapped into a WC arena. Mapping/unmapping requires Wine WC subview
+support; an older Wine build rejects the map without a CPU fallback.
+
+Each WC map replaces one vacant 64 KiB placeholder with a view at the selected
+backing offset. Unmap restores the placeholder; use ordinary `VirtualFree`
+only after unmapping all aliases. `ImportedBuffer::acquire` on a WC slot
+requires Wine to return the full heap size and backing-relative byte offset.
+The acquired GPU resource retains the backing even after the page IDs are freed.
+
+Build `test_wc_pages.cpp` like `test_gpu.cpp` below, without `-DTEST_MARKED_SECTION`.
+It checks first/last page selection, two aliases of the last page, a GPU resource
+acquired from within that page, and teardown. With `-DTEST_MISSING_SLOT_ABI` it
+instead checks rollback on a tool that supports WC heaps but lacks WC subviews.
 
 ### Graphics commit and consumption
 

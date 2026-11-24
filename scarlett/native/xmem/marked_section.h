@@ -10,20 +10,25 @@ struct scarlett_section_info {
 };
 C_ASSERT(sizeof(struct scarlett_section_info) == 40);
 
-static inline HRESULT scarlett_query_section_handle(ULONG op, const void *address, SIZE_T bytes,
-                                             struct scarlett_section_info *info, HANDLE input)
+static inline HRESULT scarlett_section_call(ULONG op, const void *address, struct scarlett_section_info *info)
 {
     typedef LONG (WINAPI *query_fn)(HANDLE, const void *, ULONG, void *, SIZE_T, SIZE_T *);
     query_fn query = (query_fn)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryVirtualMemory");
-    if (!info) return E_POINTER;
-    ZeroMemory(info, sizeof(*info));
-    info->size = bytes;
-    info->section = input;
     if (!query) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     LONG status = query(GetCurrentProcess(), address, op, info, sizeof(*info), NULL);
     if (!status) return S_OK;
     if (status == (LONG)0xc0000003) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED); /* invalid class */
     return status < 0 ? HRESULT_FROM_NT(status) : E_FAIL;
+}
+
+static inline HRESULT scarlett_query_section_handle(ULONG op, const void *address, SIZE_T bytes,
+                                             struct scarlett_section_info *info, HANDLE input)
+{
+    if (!info) return E_POINTER;
+    ZeroMemory(info, sizeof(*info));
+    info->size = bytes;
+    info->section = input;
+    return scarlett_section_call(op, address, info);
 }
 
 static inline HRESULT scarlett_query_section(ULONG op, const void *address, SIZE_T bytes,
