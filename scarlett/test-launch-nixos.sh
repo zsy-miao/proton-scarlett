@@ -45,7 +45,6 @@ case ${SCARLETT_TEST_DISPLAY:-xvfb} in
     *) echo "SCARLETT_TEST_DISPLAY must be xvfb or sway" >&2; exit 2 ;;
 esac
 if [[ -n ${SCARLETT_INPUT_TITLE:-} ]]; then
-    [[ ${SCARLETT_TEST_DISPLAY:-} == sway ]] || { echo "External input requires private sway" >&2; exit 2; }
     x86_64-w64-mingw32-gcc -O2 -Wall -Werror -municode "$(dirname "$0")/tests/private-key.c" -o "$work/private-key.exe"
     display_env+=(--setenv INPUT_TITLE "$SCARLETT_INPUT_TITLE")
     mkfifo -m 600 "$work/input.fifo"
@@ -90,13 +89,6 @@ exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-
             [[ -S ${w[0]} && -S ${x[0]} ]]
             export DISPLAY=:${x[0]##*X}
             "$2" >/work/logs/xrandr.log
-            if [[ -n ${INPUT_TITLE:-} ]]; then
-                (while read -r key ms extra; do
-                    [[ -z $extra && $(cat /proc/1/comm) == bwrap && -S /tmp/.X11-unix/X${DISPLAY#:} ]] &&
-                        WINEPREFIX=/work/compat/scarlett-title/pfx /proton/files/bin/wine \
-                        /work/private-key.exe "$INPUT_TITLE" "$key" "$ms" || echo "refused input"
-                 done) <>/work/input.fifo >/work/logs/input.log 2>&1 &
-            fi
             if [[ -n $3 ]]; then
                 mkfifo /tmp/screencopy
                 (export WAYLAND_DISPLAY=${w[0]##*/}; unset LD_LIBRARY_PATH
@@ -108,6 +100,7 @@ exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-
             fb=()
             [[ -z $3 ]] || fb=(-fbdir /tmp)
             "$1" :93 -noreset -screen 0 800x600x24 -nolisten tcp "${fb[@]}" >/work/logs/xvfb.log 2>&1 &
+            compositor=$!
             for i in {1..50}; do [[ -S /tmp/.X11-unix/X93 ]] && break; sleep 0.1; done
             [[ -S /tmp/.X11-unix/X93 ]]
             # The default Xvfb mode advertises 0 Hz, which breaks DXGI frame timing.
@@ -115,6 +108,14 @@ exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-
             "$2" --addmode screen 800x600_60
             "$2" --output screen --mode 800x600_60
             input=(-re -f image2 -loop 1 -framerate 12 -c:v xwd -i /tmp/Xvfb_screen0)
+        fi
+        if [[ -n ${INPUT_TITLE:-} ]]; then
+            (while read -r key ms extra; do
+                [[ -z $extra && $(cat /proc/1/comm) == bwrap && -S /tmp/.X11-unix/X${DISPLAY#:} ]] &&
+                    kill -0 "$compositor" &&
+                    WINEPREFIX=/work/compat/scarlett-title/pfx /proton/files/bin/wine \
+                    /work/private-key.exe "$INPUT_TITLE" "$key" "$ms" || echo "refused input"
+             done) <>/work/input.fifo >/work/logs/input.log 2>&1 &
         fi
         title=(/proton/proton waitforexitandrun /game/game_scarlett_master.exe)
         [[ -n $3 ]] || exec "${title[@]}"

@@ -26,7 +26,7 @@ The NixOS harness defaults to NVIDIA. To run the queue and fence test on the hos
 
 For RADV presentation, set `SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway` when invoking `test-launch-nixos.sh`. This starts headless Sway and Xwayland in the same isolated sandbox with only the AMD render node. Requires NixOS `sway` and `Xwayland` on PATH and exactly one AMD render node. `SCARLETT_RECORD=1` samples the compositor with `grim` and saves `display.mp4` and `display.png` using `ffmpeg`; the MP4 is a color/ordering check, not a timing trace. Run `./scarlett/tests/radv-present.sh` to build the synthetic fixture and check the decoded colors.
 
-For external input on private Sway, set `SCARLETT_INPUT_TITLE` to the exact foreground window title at launch.
+For external input on private Sway or Xvfb, set `SCARLETT_INPUT_TITLE` to the exact foreground window title at launch.
 After the target is ready, send e.g. `timeout 2 sh -c 'printf "space 700\n" >"$1/input.fifo"' _ "$run"`
 where `run` is the printed output directory. `space` maps to A; `w a s d` and `Up Down Left Right` map to sticks.
 Holds are serialized and limited to 1–2000 ms. The owner-only FIFO accepts data, not shell commands.
@@ -34,6 +34,7 @@ A separate helper uses Wine `SendInput` in that run's prefix, checking the foreg
 the target does not need hooks or changes. See `logs/input.log` for accepted/refused commands.
 Run `SCARLETT_GAMEINPUT_HEADER=/path/to/10.0.26100/um/GameInput.h ./scarlett/tests/radv-gameinput.sh`
 to exercise the installed DLL and verify neutral/held/released in a **synthetic** GPU recording.
+This test defaults to RADV/Sway. Set `SCARLETT_TEST_GPU=nvidia` to check RTX/Xvfb instead.
 
 ## What the first graphics test covers
 

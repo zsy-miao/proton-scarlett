@@ -11,7 +11,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
 | What's blocking it? | Both GPUs now handle the flat images the game creates during startup. The next request is for a tiny 3D texture, and startup stops there. |
-| Do the controls work? | A [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
+| Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
 
@@ -67,7 +67,7 @@ A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 w
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 
-An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent virtual A, forward movement, and left camera inputs to a synthetic game window on RADV. The installed GameInput provider reported each action and returned to neutral after each release. The decoded recording showed a distinct color for each action. Retail input has not yet been exercised.
+An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent virtual A, forward movement, and camera-left inputs to a test window on RADV and RTX 3070. The installed GameInput provider reported each action and returned to neutral after each release. Both recordings showed the expected color for each action and release. Retail input has not yet been exercised.
 
 **Disclaimer:** scarlett-proton is an independent compatibility project, unaffiliated with Valve, Microsoft,
 Rockstar Games, or Take-Two Interactive. It includes no game files or console firmware. Use your

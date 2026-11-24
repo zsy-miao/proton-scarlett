@@ -2,6 +2,11 @@
 # Drive the installed provider in a separate process; check pixels after H.264 decoding.
 set -euo pipefail
 here=$(dirname "$(realpath "$0")")
+case ${SCARLETT_TEST_GPU:-radv} in
+    radv) display=sway; pixel=400:300 ;;
+    nvidia) display=xvfb; pixel=200:160 ;;
+    *) echo "SCARLETT_TEST_GPU must be nvidia or radv" >&2; exit 2 ;;
+esac
 sdk=$(realpath "${SCARLETT_GAMEINPUT_HEADER:?Set to SDK 10.0.26100 um/GameInput.h}")
 w=$(mktemp -d "${TMPDIR:-/tmp}/scarlett-pad.XXXXXXXX")
 mkdir "$w/game" "$w/inc"
@@ -10,7 +15,7 @@ printf 'LIBRARY GameInput.dll\nEXPORTS\nGameInputCreate @1 NONAME\n' >"$w/import
 x86_64-w64-mingw32-dlltool -d "$w/import.def" -l "$w/import.a"
 x86_64-w64-mingw32-g++ -O2 -static -DTEST_GAMEINPUT -I"$w/inc" "$here/present-capture.cpp" \
     "$w/import.a" -ld3d12 -ldxgi -ldxguid -luuid -o "$w/game/game_scarlett_master.exe"
-SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway SCARLETT_RECORD=1 SCARLETT_INPUT_TITLE='Presentation fixture' \
+SCARLETT_TEST_GPU=${SCARLETT_TEST_GPU:-radv} SCARLETT_TEST_DISPLAY=$display SCARLETT_RECORD=1 SCARLETT_INPUT_TITLE='Presentation fixture' \
     TMPDIR="$w" "$here/../test-launch-nixos.sh" "$w/game" "$@" &
 launcher=$!
 trap 'kill "$launcher" 2>/dev/null || :' EXIT
@@ -37,11 +42,11 @@ done
 wait "$launcher"
 trap - EXIT
 grep -F 'refused input' "${run[0]}/logs/input.log"
-grep -F 'space held 700 ms' "${run[0]}/logs/input.log"
+for key in space w Left; do grep -F ": $key held 700 ms" "${run[0]}/logs/input.log"; done
 test "$(readlink "${run[0]}/compat/scarlett-title/pfx/drive_c/windows/system32/gameinput.dll")" = /proton/scarlett/GameInput.dll
 grep -ai 'system32.*gameinput\.dll".*: native' "$log"
 grep -aF 'PASS synthetic GameInput DXGI: A, forward, camera left; all returned to neutral' "$log"
-ffmpeg -v error -i "${run[0]}/display.mp4" -vf 'crop=2:2:400:300,scale=1:1,format=rgb24' -f rawvideo - |
+ffmpeg -v error -i "${run[0]}/display.mp4" -vf "crop=2:2:$pixel,scale=1:1,format=rgb24" -f rawvideo - |
     python3 -c 'import itertools, sys
 rgb=iter(sys.stdin.buffer.read())
 runs=[(k,len(list(v))) for k,v in itertools.groupby(
