@@ -49,7 +49,20 @@ the allocation size/alignment; `+193e2d4` calls device `+428` with the A8
 descriptor, guest state 6, zero A8 clear and resource IID. On both staged
 GPUs the address was at allocation base + `0xf000000`. RTX's WC section
 query identified a `0x89700000`-byte view. The corresponding RADV section
-query did not succeed. Both factories still return `E_NOTIMPL` for this image.
+query did not succeed. On the qualified RTX 3070, `ScarlettA8ImageV1`
+imports that WC section and binds an optimal `VK_FORMAT_A8_UNORM_KHR`
+image at `0xf000000`. Its Vulkan requirement is `0x7f8000` bytes at
+1024-byte alignment; the overlap guard covers the full `0x800000` guest slice.
+On RADV the same consumer acquires the original native pool heap instead.
+The optimal image needs `0x87c000` bytes at `0x10000` alignment in its
+`0x880000` slot. Both paths pin the original backing through host descriptor
+release. Run `scarlett/tests/wc-a8.sh radv|nvidia STAGED-TOOL` with core
+patch `0029` applied after `0028`. The fixture frees and replaces the guest
+mapping before submission. It verifies every alpha texel, checks packed
+shader reads `40000000` and `bf000000`, and checks slot padding (16 KiB
+RADV, 32 KiB RTX), both adjacent 64 KiB guards and the replacement bytes.
+The RADV raw-buffer check compares before and after GPU snapshots rather
+than assuming that an optimally tiled image exposes one raw byte per texel.
 
 `test-a8-allocation.cpp` checks both public query results and 52-byte
 guarded input, native allocation info and a native placed RT cleared and

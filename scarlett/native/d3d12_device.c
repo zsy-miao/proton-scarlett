@@ -248,6 +248,12 @@ static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
          (r->Format==DXGI_FORMAT_R32G8X24_TYPELESS && r->Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL));
 }
 
+static BOOL a8_desc(const D3D12_RESOURCE_DESC *r)
+{
+    return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && r->Width==3840 && r->Height==2160 && !r->Alignment &&
+        r->DepthOrArraySize==1 && r->MipLevels==1 && r->SampleDesc.Count==1 && !r->SampleDesc.Quality &&
+        r->Format==DXGI_FORMAT_A8_UNORM && !r->Layout && (UINT)r->Flags==0x300001;
+}
 /* Both public slots consume the same descriptor. Require the per-resource and
  * aggregate results from the host to agree for this one-resource query. */
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
@@ -266,7 +272,7 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         else return E_NOTIMPL;
     } else if (a8 || bgra) {
         /* read_texture_desc validated the 2D shape. Only the low RT flag is translated. */
-        if (rd->Width!=(a8?3840u:2048u) || rd->Height!=(a8?2160u:2048u) || rd->Alignment ||
+        if (a8 ? !a8_desc(rd) : rd->Width!=2048 || rd->Height!=2048 || rd->Alignment ||
             rd->Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN || (UINT)rd->Flags!=0x300001) return E_NOTIMPL;
         rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     } else if (!msaa_desc(rd)) return E_NOTIMPL;
@@ -478,7 +484,7 @@ static HRESULT resource_gap(UINT slot, UINT64 address, const void *wire, UINT st
     return E_NOTIMPL;
 }
 #ifdef SCARLETT_STAGED_PLACED
-static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UINT state,const void *clear,REFIID iid,void **out)
+static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UINT state,const void *clear,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
     *out=NULL;
@@ -486,34 +492,41 @@ static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UI
     IID id;
     if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
     if (!IsEqualIID(&id,&IID_ID3D12Resource)) return E_NOINTERFACE;
-    BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS;
+    BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS,a8=format==DXGI_FORMAT_A8_UNORM;
     D3D12_CLEAR_VALUE cv={0};
     if (!copy_in(&cv,clear,depth ? offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+sizeof cv.DepthStencil.Stencil : sizeof cv)) return E_POINTER;
     if (state!=6) return E_NOTIMPL;
     if (depth) {
         if (cv.Format!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || cv.DepthStencil.Depth!=0 || cv.DepthStencil.Stencil) return E_NOTIMPL;
-    } else if (cv.Format!=format || memcmp(cv.Color,(float[4]){1,1,1,1},16)) return E_NOTIMPL;
+    } else if (cv.Format!=format || memcmp(cv.Color,a8?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
-    const UINT span=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    UINT span=a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     ID3D12Heap *native=NULL;UINT off=0;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&native,NULL,&off);
-    if(hr==S_FALSE)hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
+    if(hr==S_FALSE) {
+        if (a8) span=0x800000;
+        hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
+    }
     else if(SUCCEEDED(hr))i=(struct scarlett_section_info){span,(void *)(va-off),WC_POOL_BYTES,off,NULL};
     if (FAILED(hr)) return hr;
-    if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset%span || i.offset>i.view_size-span) hr=E_INVALIDARG;
+    if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset>i.view_size-span ||
+        (a8 ? i.offset!=0xf000000 : i.offset%span)) hr=E_INVALIDARG;
     else {
         HRESULT (WINAPI *import)(ID3D12Device *,HANDLE,SIZE_T,SIZE_T,ID3D12Resource **)=
-            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),depth?"ScarlettMsaaDepthV1":"ScarlettMsaaColorV1");
+            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),a8?"ScarlettA8ImageV1":depth?"ScarlettMsaaDepthV1":"ScarlettMsaaColorV1");
         struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r) hr=E_OUTOFMEMORY;
         else {
-            if(native){
+            if(native && a8) {
+                HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettNativeA8ImageV1");
+                hr=place?place(d->host,native,off,&r->host):DXGI_ERROR_UNSUPPORTED;
+            }else if(native){
                 HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,BOOL,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettNativeImageV1");
                 hr=place?place(d->host,native,off,depth,&r->host):DXGI_ERROR_UNSUPPORTED;
             }else hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
             if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
             else {
-                r->iface.lpVtbl=&color_vtbl.unknown; r->msaa=TRUE; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
+                r->iface.lpVtbl=&color_vtbl.unknown; r->a8=a8; r->msaa=!a8; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
                 AcquireSRWLockExclusive(&d->descriptor_lock); r->next=d->colors; d->colors=r; ReleaseSRWLockExclusive(&d->descriptor_lock);
                 *out=&r->iface;
             }
@@ -529,8 +542,8 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
 #ifdef SCARLETT_STAGED_PLACED
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_RESOURCE_DESC rd={0};
-    if (copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) && msaa_desc(&rd))
-        return create_msaa(d,address,rd.Format,state,clear,iid,out);
+    if (copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) && (msaa_desc(&rd) || a8_desc(&rd)))
+        return create_target(d,address,rd.Format,state,clear,iid,out);
     return placed_create(d,address,desc,state,clear,iid,out);
 #else
     (void)iface; (void)iid;

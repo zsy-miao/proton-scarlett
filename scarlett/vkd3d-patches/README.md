@@ -85,3 +85,8 @@ core and graphics provider. It uses the same Wine `0012` import path.
 `0028` adds the [directly mapped RADV pool](../native/radv-retained-pool.md).
 Use it with Wine `0013` and the matching XMem, XG and graphics providers.
 The RTX 3070 continues to use the `0026`/`0027` image imports.
+
+Apply `0029` after `0028` for the 3840×2160 alpha render target. Rebuild the
+x64 `d3d12core.dll` and the graphics provider together. Test the retained
+RADV heap and RTX section imports with `scarlett/tests/wc-a8.sh radv TOOL`
+and `scarlett/tests/wc-a8.sh nvidia TOOL`.
