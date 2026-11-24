@@ -1,0 +1,61 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index 5e78eab..64ac347 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -12,6 +12,7 @@ EXPORTS
+     ScarlettBoundedBeginPassV1
+     ScarlettBoundedInitHeadersV1
+     ScarlettBoundedRearrangeV1
++    ScarlettBoundedHierarchyV1
+     ScarlettBoundedMortonV1
+     ScarlettBoundedBitonicV1
+     ScarlettPrimaryImageInfoV1
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+index 92731c2..641f0af 100644
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1316,6 +1316,7 @@ void WINAPI DLLEXPORT ScarlettBoundedLoadInstancesV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBeginPassV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedInitHeadersV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedRearrangeV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedHierarchyV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedMortonV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBitonicV1(void) {}
+ void WINAPI DLLEXPORT ScarlettRadixCountV1(void) {}
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+index c0769f1..f0da80a 100644
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1258,7 +1258,7 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+     unsigned int root_constant_words = 0;
+     unsigned int heuristic_min_wave_size;
+     unsigned int heuristic_max_wave_size;
+-    bool refit, triangles, load_pass, read_only, instances, boxes, morton, bitonic, rearrange;
++    bool refit, triangles, load_pass, read_only, instances, boxes, morton, bitonic, header_read;
+     dxil_spv_converter converter = NULL;
+     dxil_spv_parsed_blob blob = NULL;
+     dxil_spv_compiled_spirv compiled;
+@@ -1403,9 +1403,11 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+             (dxbc->size == 0x2204 && hash == UINT64_C(0xd94c62f47a4dc2cf)) ||
+             (dxbc->size == 0x1554 && hash == UINT64_C(0x6418df8f45aa5520)) ||
+             (dxbc->size == 0x2094 && hash == UINT64_C(0xbe761fb667184255));
+-    rearrange = (dxbc->size == 0x1c80 && hash == UINT64_C(0x338965854453d35d)) ||
+-            (dxbc->size == 0x1794 && hash == UINT64_C(0x8a1f344edf785181));
+-    read_only = refit || rearrange || bitonic || morton || instances || hash == UINT64_C(0xc1e76d5512cb4a65) || hash == UINT64_C(0xe3b64c009ba3851e) ||
++    header_read = (dxbc->size == 0x1c80 && hash == UINT64_C(0x338965854453d35d)) ||
++            (dxbc->size == 0x1794 && hash == UINT64_C(0x8a1f344edf785181)) ||
++            (dxbc->size == 0x1e68 && hash == UINT64_C(0xb79d27d4432d86ec)) ||
++            (dxbc->size == 0x2094 && hash == UINT64_C(0x4896871e638169b6));
++    read_only = refit || header_read || bitonic || morton || instances || hash == UINT64_C(0xc1e76d5512cb4a65) || hash == UINT64_C(0xe3b64c009ba3851e) ||
+             (dxbc->size == 0x493c && hash == UINT64_C(0xc367e4ee1d4bdfe0));
+     if ((boxes || read_only || hash == UINT64_C(0x5ec439b66277e3af) ||
+             (dxbc->size == 0x1488 && hash == UINT64_C(0xddcdabacd472f524))) && stage == DXIL_SPV_STAGE_COMPUTE)
+@@ -1425,7 +1427,7 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+             {
+                 dxil_spv_vulkan_binding atom = {0};
+                 dxil_spv_option_bounded_xbox_load_instances opt = {
+-                        {{rearrange ? DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ :
++                        {{header_read ? DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ :
+                           bitonic ? DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC : morton ? DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON :
+                           triangles ? DXIL_SPV_OPTION_BOUNDED_XBOX_TRIANGLES : load_pass ? DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS : instances ? DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES : DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE},
+                          p->offset / 4 - 2 * num_root_descriptors, vk.root_constant_index, read_only ? DXIL_SPV_TRUE : DXIL_SPV_FALSE},
