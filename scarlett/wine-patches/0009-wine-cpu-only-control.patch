@@ -1,0 +1,238 @@
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2468,6 +2468,9 @@
+     MemoryWineScarlettAcquireWcReadPagesV1 = 0x53430011,
+     MemoryWineScarlettMapCodePagesV1 = 0x53430012,
+     MemoryWineScarlettSnapshotCodeV1 = 0x53430013,
++    MemoryWineScarlettMapCpuControlV1 = 0x53430014,
++    MemoryWineScarlettCpuControlIdV1 = 0x53430015,
++    MemoryWineScarlettCheckHostImportV1 = 0x53430016,
+     MemoryWineScarlettMapWbPagesV1 = 0x5343000d,
+     MemoryWineScarlettMapWbV1 = 0x5343000b,
+     MemoryWineScarlettAcquireWbV1 = 0x5343000c,
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -258,6 +258,7 @@
+     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
+     HANDLE        scarlett_section; /* owned only by opt-in public views */
+     BOOL          scarlett_code_store; /* snapshot only; no GPU buffer imports */
++    UINT64        scarlett_cpu_id; /* CPU-only incarnation; never returned as a handle */
+     BOOL          scarlett_read_view; /* do not hand out a writable import for this VA */
+     SIZE_T        scarlett_offset, scarlett_heap_size; /* only for WC DMA views */
+ };
+@@ -1951,6 +1952,7 @@
+     view->size    = size;
+     view->protect = vprot;
+     view->scarlett_section = NULL;
++    view->scarlett_cpu_id = 0;
+     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
+     set_page_vprot( base, size, vprot );
+ 
+@@ -2759,6 +2761,7 @@
+         new_view->size    = (char *)view->base + view->size - (char *)new_view->base;
+         new_view->protect = view->protect;
+         new_view->scarlett_section = NULL;
++        new_view->scarlett_cpu_id = 0;
+ 
+         unregister_view( view );
+         view->size = base - (char *)view->base;
+@@ -6622,7 +6625,7 @@
+ 
+ /* This mmap is owned by the VM, not by vkMapMemory or the source heap. */
+ static NTSTATUS map_scarlett_dma( const void *addr, SIZE_T size, HANDLE shared, SIZE_T offset,
+-                                  SIZE_T *heap_size, BOOL replace, BOOL wb, BOOL control, void **ret )
++                                  SIZE_T *heap_size, BOOL replace, BOOL wb, BOOL control, BOOL cpu, void **ret )
+ {
+     struct dma_buf_sync sync = { DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW };
+     HANDLE obj = NULL, ref = NULL;
+@@ -6648,7 +6651,7 @@
+         if (!(status = wine_server_call( req ))) obj = wine_server_ptr_handle( reply->handle );
+     }
+     SERVER_END_REQ;
+-    if (!status && (wc_tag[0] != (wb ? 0x5343574200000001ull : control ? 0x5343554300000001ull : 0x5343574300000001ull) || (*heap_size && wc_tag[1] != *heap_size) ||
++    if (!status && (wc_tag[0] != (cpu ? 0x5343435000000001ull : wb ? 0x5343574200000001ull : control ? 0x5343554300000001ull : 0x5343574300000001ull) || (*heap_size && wc_tag[1] != *heap_size) ||
+                     size > wc_tag[1] || offset > wc_tag[1] - size)) status = STATUS_INVALID_PARAMETER;
+     if (!status && !(status = wine_server_handle_to_fd( obj, GENERIC_ALL, &fd, NULL )))
+     {
+@@ -6709,6 +6712,20 @@
+         goto done;
+     }
+     info.size = ((struct scarlett_section_info *)buffer)->size;
++    if (op == MemoryWineScarlettCpuControlIdV1)
++    {
++        struct file_view *v = info.size ? find_view( addr, info.size ) : NULL;
++        if (v && v->scarlett_cpu_id && info.size <= v->size &&
++            (uintptr_t)addr - (uintptr_t)v->base <= v->size - info.size)
++        {
++            /* Identity only. There is deliberately no importable section handle. */
++            info.offset = v->scarlett_cpu_id;
++            info.base = v->base;
++            info.view_size = v->size;
++            status = STATUS_SUCCESS;
++        }
++    }
++    else
+     if (info.size && (op == MemoryWineScarlettCreateV1 || op == MemoryWineScarlettCreateSpanV1))
+     {
+         LARGE_INTEGER size;
+@@ -6732,14 +6749,17 @@
+         }
+     }
+ #ifdef __linux__
+-    else if (op == MemoryWineScarlettMapWcV1 || op == MemoryWineScarlettMapControl64V1 || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbV1 || op == MemoryWineScarlettMapWbPagesV1 || op == MemoryWineScarlettMapWcReadPagesV1 || op == MemoryWineScarlettMapWbReadPagesV1 || op == MemoryWineScarlettMapCodePagesV1)
++    else if (op == MemoryWineScarlettMapCpuControlV1 || op == MemoryWineScarlettMapWcV1 || op == MemoryWineScarlettMapControl64V1 || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbV1 || op == MemoryWineScarlettMapWbPagesV1 || op == MemoryWineScarlettMapWcReadPagesV1 || op == MemoryWineScarlettMapWbReadPagesV1 || op == MemoryWineScarlettMapCodePagesV1)
+     {
+         const struct scarlett_section_info *in = buffer;
+         BOOL read_view = op == MemoryWineScarlettMapWbReadPagesV1 || op == MemoryWineScarlettMapWcReadPagesV1;
+         BOOL code_store = op == MemoryWineScarlettMapCodePagesV1;
++        BOOL cpu = op == MemoryWineScarlettMapCpuControlV1;
++        static UINT64 cpu_serial; /* virtual_mutex */
+         BOOL replace = code_store || read_view || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbPagesV1;
+         info.view_size = replace ? in->view_size : info.size;
+         info.offset = replace ? in->offset : 0;
++        if (cpu && (addr || info.size != 65536 || in->offset || in->view_size || cpu_serial == ~(UINT64)0)) goto done;
+         if (code_store)
+         {
+             if (info.size != 0x1b00000 || info.offset) goto done;
+@@ -6747,12 +6767,13 @@
+         }
+         if (op != MemoryWineScarlettMapControl64V1 || info.size == 65536)
+             status = map_scarlett_dma( addr, info.size, in->section, info.offset, &info.view_size, replace, op == MemoryWineScarlettMapWbV1 || op == MemoryWineScarlettMapWbPagesV1 || op == MemoryWineScarlettMapWbReadPagesV1,
+-                                       op == MemoryWineScarlettMapControl64V1, &info.base );
++                                       op == MemoryWineScarlettMapControl64V1, cpu, &info.base );
+         if (!status)
+         {
+             struct file_view *v = find_view( info.base, 0 );
+             v->scarlett_read_view = read_view;
+             v->scarlett_code_store = code_store;
++            if (cpu) v->scarlett_cpu_id = ++cpu_serial;
+         }
+     }
+     else if (op == MemoryWineScarlettUnmapPagesV1)
+@@ -6782,7 +6803,7 @@
+         struct file_view *view;
+ 
+         status = STATUS_NOT_MAPPED_VIEW;
+-        if ((view = find_view( addr, 0 )) && view->scarlett_section &&
++        if ((view = find_view( addr, 0 )) && view->scarlett_section && !view->scarlett_cpu_id &&
+             !!(view->protect & VPROT_SCARLETT_DMA) == (op != MemoryWineScarlettAcquireV1) &&
+             !!(view->protect & VPROT_SCARLETT_CONTROL) == (op == MemoryWineScarlettAcquireControl64V1) &&
+             !!(view->protect & VPROT_SCARLETT_WB) == (op == MemoryWineScarlettAcquireWbV1 || op == MemoryWineScarlettAcquireWbReadPagesV1) &&
+@@ -6872,7 +6893,7 @@
+             server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+             status = STATUS_INVALID_PARAMETER;
+             if ((v = find_view( addr, 0 )) && addr == v->base && v->size == 0x10000 &&
+-                v->scarlett_section && (v->protect & VPROT_SCARLETT_CONTROL) && !(v->protect & VPROT_PLACEHOLDER))
++                v->scarlett_section && ((v->protect & VPROT_SCARLETT_CONTROL) || v->scarlett_cpu_id) && !(v->protect & VPROT_PLACEHOLDER))
+             {
+                 /* The recursive VM mutex covers identity check and destruction. */
+                 if (v->protect & VPROT_SCARLETT_DMA) { delete_view( v ); status = STATUS_SUCCESS; }
+@@ -6881,6 +6902,28 @@
+             server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+             return status;
+         }
++        case MemoryWineScarlettCheckHostImportV1:
++        {
++            struct file_view *v;
++            sigset_t sigset;
++            if (process != NtCurrentProcess() || buffer || res_len || !len ||
++                len > (uintptr_t)user_space_limit || (uintptr_t)addr > (uintptr_t)user_space_limit - len)
++                return STATUS_INVALID_PARAMETER;
++            server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++            status = STATUS_SUCCESS;
++            v = find_view_range( addr, len );
++            while (v && rb_prev( &v->entry ))
++            {
++                struct file_view *prev = RB_ENTRY_VALUE( rb_prev( &v->entry ), struct file_view, entry );
++                if ((uintptr_t)prev->base + prev->size <= (uintptr_t)addr) break;
++                v = prev;
++            }
++            for (; v && (uintptr_t)v->base < (uintptr_t)addr + len;
++                 v = RB_ENTRY_VALUE( rb_next( &v->entry ), struct file_view, entry ))
++                if (v->scarlett_cpu_id) { status = STATUS_ACCESS_DENIED; break; }
++            server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++            return status;
++        }
+         case MemoryWineScarlettCreateV1:
+         case MemoryWineScarlettCreateSpanV1:
+         case MemoryWineScarlettAcquireV1:
+@@ -6891,6 +6934,8 @@
+         case MemoryWineScarlettMapControl64V1:
+         case MemoryWineScarlettAcquireControl64V1:
+         case MemoryWineScarlettMapCodePagesV1:
++        case MemoryWineScarlettMapCpuControlV1:
++        case MemoryWineScarlettCpuControlIdV1:
+         case MemoryWineScarlettMapWbReadPagesV1:
+         case MemoryWineScarlettMapWcReadPagesV1:
+         case MemoryWineScarlettAcquireWbReadPagesV1:
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -311,6 +311,7 @@
+ #define SCARLETT_WB_HANDLE 0x10000000u
+ #define SCARLETT_DMA_HANDLE 0x40000000u
+ #define SCARLETT_CONTROL_HANDLE 0x20000000u
++#define SCARLETT_CPU_CONTROL_HANDLE 0x08000000u
+ 
+ static int control_gem_fd( struct vulkan_device *device, int source )
+ {
+@@ -1119,7 +1120,7 @@
+     VkDeviceMemory host_device_memory = VK_NULL_HANDLE;
+     VkExportMemoryAllocateInfo *export_info = NULL;
+     struct device_memory *memory;
+-    BOOL nt_shared = FALSE, wc = FALSE, wb = FALSE;
++    BOOL nt_shared = FALSE, wc = FALSE, wb = FALSE, cpu_control = FALSE;
+     int control_fd = -1;
+     uint32_t mem_flags;
+     void *mapping = NULL;
+@@ -1132,7 +1133,8 @@
+         case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_MEMORY_ALLOCATE_INFO_NV: break;
+         case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO:
+             export_info = (VkExportMemoryAllocateInfo *)*next;
+-            if (export_info->handleTypes == SCARLETT_DMA_HANDLE || export_info->handleTypes == SCARLETT_WB_HANDLE)
++            if (export_info->handleTypes == SCARLETT_DMA_HANDLE || export_info->handleTypes == SCARLETT_WB_HANDLE ||
++                export_info->handleTypes == SCARLETT_CPU_CONTROL_HANDLE)
+             {
+                 VkPhysicalDeviceDriverProperties driver = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+                 VkPhysicalDeviceProperties2 props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
+@@ -1143,6 +1145,8 @@
+                 else if (driver.driverID == VK_DRIVER_ID_MESA_RADV && props.properties.vendorID == 0x1002 &&
+                     props.properties.deviceID == 0x164e && props.properties.driverVersion == 0x06803000) wc_type = 2;
+                 else return VK_ERROR_FEATURE_NOT_PRESENT;
++                cpu_control = export_info->handleTypes == SCARLETT_CPU_CONTROL_HANDLE;
++                if (cpu_control && (wc_type != 3 || alloc_info->allocationSize != 65536)) return VK_ERROR_FEATURE_NOT_PRESENT;
+                 if ((wb = export_info->handleTypes == SCARLETT_WB_HANDLE)) { if (wc_type != 2) return VK_ERROR_FEATURE_NOT_PRESENT; wc_type = 5; }
+                 if (!device->extensions.has_VK_EXT_external_memory_dma_buf || alloc_info->memoryTypeIndex != wc_type ||
+                     physical_device->memory_properties.memoryTypeCount <= wc_type ||
+@@ -1168,6 +1172,9 @@
+             break;
+         case VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT:
+             pointer_info = (VkImportMemoryHostPointerInfoEXT *)*next;
++            if (sizeof(void *) == 8 && NtQueryVirtualMemory( NtCurrentProcess(), pointer_info->pHostPointer,
++                    MemoryWineScarlettCheckHostImportV1, NULL, alloc_info->allocationSize, NULL ))
++                return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+             break;
+         case VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR:
+             import_win32 = (VkImportMemoryWin32HandleInfoKHR *)*next;
+@@ -1297,7 +1304,7 @@
+                 break;
+             }
+ 
+-            const UINT64 wc_tag[] = { wb ? 0x5343574200000001ull : 0x5343574300000001ull, alloc_info->allocationSize };
++            const UINT64 wc_tag[] = { cpu_control ? 0x5343435000000001ull : wb ? 0x5343574200000001ull : 0x5343574300000001ull, alloc_info->allocationSize };
+             memory->local = d3dkmt_create_resource( fd, nt_shared ? NULL : &memory->global,
+                                                     wc ? wc_tag : NULL, wc ? sizeof(wc_tag) : 0 );
+             close( fd );
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -2000,6 +2000,11 @@
+     if ((status = d3dkmt_object_alloc( sizeof(*resource), D3DKMT_RESOURCE, (void **)&resource ))) goto failed;
+     if ((status = d3dkmt_object_alloc( sizeof(*allocation), D3DKMT_ALLOCATION, (void **)&allocation ))) goto failed;
+     if ((status = d3dkmt_object_open( &resource->obj, global, shared, runtime_data, &runtime_size ))) goto failed;
++    if (runtime_size == 2 * sizeof(UINT64) && ((UINT64 *)runtime_data)[0] == 0x5343435000000001ull)
++    {
++        status = STATUS_ACCESS_DENIED;
++        goto failed;
++    }
+ 
+     if ((status = alloc_object_handle( allocation ))) goto failed;
+     resource->allocation = allocation->local;

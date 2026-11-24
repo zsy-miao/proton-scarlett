@@ -1,5 +1,12 @@
 # Scarlett section lifetime ABI v1 (native x64)
 
+Patch `0009` adds a separate CPU-only, write-combined control-page view for
+the RTX startup path. `0x53430014` maps the tagged 64 KiB backing;
+`0x53430015` returns its allocation identity without a handle; `0x53430016`
+checks that a host-import range does not overlap it. The last check is used
+by win32u's Vulkan host-pointer import. Build and stage `ntdll.so` and
+`win32u.so` together. See the [hardware tests](../native/xmem/control-page.md).
+
 `0001-ntdll-scarlett-section-v1.patch` targets Valve Wine
 `e60892cc2398b0a83c332a2078c7b85e47bdb42b`. It lets XMem return a
 section view that accepts ordinary `VirtualFree`, while a graphics consumer

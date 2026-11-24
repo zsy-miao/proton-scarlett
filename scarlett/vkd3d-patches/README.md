@@ -53,3 +53,9 @@ Wine owns the title's CPU mapping. Acquisition under Wine's VM lock duplicates a
 For [PostBuildInfoQuery](../native/bvh-postbuild.md), apply `0018-bounded-postbuild.patch` after `0017`. No new dxil-spirv patch. Run `scarlett/tests/postbuild-query.sh` with the matched adapter/core.
 
 For the [outer decompressor](../native/bvh-decompress.md), apply `0021-bounded-leaf-rehydration.patch` after Apex `0020` and nested dxil-spirv `0012-bounded-leaf-rehydration.patch` after Treelets `0011`. Only the leaf stage requires those extensions. Use `scarlett/tests/decompress.sh` with the pinned builder and staged tool.
+
+For the [RTX startup control page](../native/xmem/control-page.md), apply
+`0022-vkd3d-rtx-cpu-control.patch` after `0021` with Wine patch `0009` and
+the matching XMem provider. `ScarlettCpuControlViewV1` returns a CPU mapping
+only. On RTX run `test-control-cpu.cpp` and `test-control-import.cpp`; on
+RADV run `test-control64.cpp` to check the existing GPU-visible path.

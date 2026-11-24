@@ -4,6 +4,7 @@
 #include "arena_data_uav.hpp"
 #include <new>
 #include <winternl.h>
+#include <wincrypt.h>
 
 extern "C" HRESULT xmem_pin_code_source(const void *, SIZE_T, HANDLE *, SIZE_T *, SIZE_T *);
 struct CodeSource : CodeReadSource {
@@ -187,6 +188,33 @@ extern "C" __declspec(dllexport) void WINAPI ScarlettReleasePlacedTableV1(XsPlac
     t->heap->Release(); ScarlettReleasePlacedV1(t->capture); delete t;
 }
 
+/* Only this executable's pre-PSO control-page accesses have been traced. */
+static bool traced_control_title()
+{
+    static constexpr BYTE expected[] = {0xe9,0x50,0x20,0xb2,0xfa,0x4a,0x72,0x1d,0xb3,0xdf,0x59,0xfd,0xec,0xf7,0x56,0x21,
+        0x73,0x0a,0xc5,0x59,0xd8,0x83,0x52,0x52,0xf6,0xc3,0xb6,0x58,0xd5,0xa0,0x89,0x93};
+    WCHAR path[1024];
+    DWORD length=GetModuleFileNameW(nullptr,path,ARRAYSIZE(path));
+    if (!length || length>=ARRAYSIZE(path)) return false;
+    HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_FLAG_SEQUENTIAL_SCAN,nullptr);
+    if (file==INVALID_HANDLE_VALUE) return false;
+    HCRYPTPROV prov=0; HCRYPTHASH hash=0;
+    bool ok=CryptAcquireContextW(&prov,nullptr,nullptr,PROV_RSA_AES,CRYPT_VERIFYCONTEXT) &&
+            CryptCreateHash(prov,CALG_SHA_256,0,0,&hash);
+    BYTE bytes[16384]; DWORD n=0;
+    while(ok) {
+        ok=ReadFile(file,bytes,sizeof(bytes),&n,nullptr);
+        if (!ok || !n) break;
+        ok=CryptHashData(hash,bytes,n,0);
+    }
+    n=sizeof(expected);
+    ok=ok && CryptGetHashParam(hash,HP_HASHVAL,bytes,&n,0) && n==sizeof(expected) && !memcmp(bytes,expected,n);
+    if (hash) CryptDestroyHash(hash);
+    if (prov) CryptReleaseContext(prov,0);
+    CloseHandle(file);
+    return ok;
+}
+
 static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false, bool tile = false)
 {
     // Resolve only for graphics requests: CPU allocations do not require D3D12.
@@ -204,6 +232,15 @@ static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE
         } else {
             HANDLE h = nullptr;
             hr = probe.wc(device,size,nullptr,&h,control,wb,wc_backing && wb && !tile);
+            if (control && hr == DXGI_ERROR_UNSUPPORTED && wc_result && !base && size == 65536 && traced_control_title()) {
+                using Fn = HRESULT (WINAPI *)(ID3D12Device3 *, SIZE_T, void **);
+                auto cpu = (Fn)(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");
+                if (cpu) {
+                    hr = cpu(device,size,wc_result);
+                    device->Release(); FreeLibrary(d3d);
+                    return hr;
+                }
+            }
             ImportedBuffer rebound;
             if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr,control,wb,wc_backing && wb && !tile);
             scarlett_section_info info;

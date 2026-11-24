@@ -1,0 +1,80 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index 7d2ea44..c540ad2 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettCpuControlViewV1 @27
+     ScarlettBoundedTreeletsV1
+     ScarlettBoundedBVH4V1
+     ScarlettBoundedLeafRehydrationV1
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index a2e14f6..b96ad79 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7794,6 +7794,16 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
+     TRACE("iface %p, address %p, riid %s, heap %p\n",
+           iface, address, debugstr_guid(riid), heap);
+ 
++    {
++        struct { SIZE_T size; void *base; SIZE_T span, id; HANDLE section; } check = {1};
++        typedef LONG (WINAPI *query_fn)(HANDLE,const void *,ULONG,void *,SIZE_T,SIZE_T *);
++        query_fn query = (query_fn)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtQueryVirtualMemory");
++        if (query && !query(GetCurrentProcess(),address,0x53430015,&check,sizeof(check),NULL))
++        {
++            if (heap) *heap = NULL;
++            return E_ACCESSDENIED;
++        }
++    }
+     if (!VirtualQuery(address, &info, sizeof(info)))
+     {
+         ERR("Failed to VirtualQuery host pointer.\n");
+@@ -7919,6 +7929,46 @@ HRESULT WINAPI ScarlettControlHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in,
+ {
+     return scarlett_create_heap(d, n, in, out, h, true, false, false);
+ }
++/* No VkBuffer, D3D12 heap, GPU VA or export handle is returned to the caller. */
++HRESULT WINAPI ScarlettCpuControlViewV1(d3d12_device_iface *d, SIZE_T n, void **out)
++{
++    struct d3d12_device *device;
++    const struct vkd3d_vk_device_procs *vk_procs;
++    const VkPhysicalDeviceProperties *p;
++    VkExportMemoryAllocateInfo ex = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
++    VkMemoryAllocateInfo ma = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
++    VkMemoryGetWin32HandleInfoKHR get = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
++    struct {SIZE_T size; void *base; SIZE_T span, offset; HANDLE handle;} map = {0};
++    typedef LONG (WINAPI *query_fn)(HANDLE,const void *,ULONG,void *,SIZE_T,SIZE_T *);
++    query_fn query = (query_fn)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtQueryVirtualMemory");
++    VkDeviceMemory mem;
++    HRESULT hr = E_FAIL;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!d || n != 65536) return E_INVALIDARG;
++    device = impl_from_ID3D12Device(d);
++    vk_procs = &device->vk_procs;
++    p = &device->device_info.properties2.properties;
++    if (!query || !vk_procs->vkGetMemoryWin32HandleKHR || p->vendorID != 0x10de || p->deviceID != 0x2484 ||
++        p->driverVersion != ((595u<<22)|(112u<<14)|(7u<<6)) ||
++        device->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
++        device->memory_properties.memoryTypeCount <= 3 || device->memory_properties.memoryTypes[3].propertyFlags !=
++        (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return DXGI_ERROR_UNSUPPORTED;
++    ex.handleTypes = 0x08000000u;
++    ma.pNext = &ex; ma.allocationSize = n; ma.memoryTypeIndex = 3;
++    if (VK_CALL(vkAllocateMemory(device->vk_device,&ma,NULL,&mem))) return E_FAIL;
++    get.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT; get.memory = mem;
++    if (!VK_CALL(vkGetMemoryWin32HandleKHR(device->vk_device,&get,&map.handle)) && map.handle)
++    {
++        HANDLE owned = map.handle;
++        map.size = n;
++        if (!query(GetCurrentProcess(),NULL,0x53430014,&map,sizeof(map),NULL))
++        { *out = map.base; hr = S_OK; }
++        CloseHandle(owned);
++    }
++    VK_CALL(vkFreeMemory(device->vk_device,mem,NULL));
++    return hr;
++}
+ HRESULT WINAPI ScarlettWbHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
+ { return scarlett_create_heap(d,n,in,out,h,false,true,false); }
+ HRESULT WINAPI ScarlettWbPagesHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)

@@ -222,17 +222,19 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
     return out;
 }
 
-static HRESULT color_description(const void *wire,D3D12_RESOURCE_DESC *out)
+static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
-    D3D12_RESOURCE_DESC rd={0};
-    if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
-    if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Alignment ||
-        rd.Width!=3840 || rd.Height!=2160 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 ||
-        rd.Format!=DXGI_FORMAT_R8G8B8A8_UNORM || rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality ||
-        rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN || (UINT)rd.Flags!=0x300005) return E_NOTIMPL;
-    rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    *out=rd;
+    if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
+    if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
+        out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality ||
+        out->Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;
     return S_OK;
+}
+
+static BOOL primary_desc(const D3D12_RESOURCE_DESC *rd)
+{
+    return !rd->Alignment && rd->Width==3840 && rd->Height==2160 &&
+        rd->Format==DXGI_FORMAT_R8G8B8A8_UNORM && (UINT)rd->Flags==0x300005;
 }
 
 static HRESULT primary_info(ID3D12Device *device,D3D12_RESOURCE_ALLOCATION_INFO *out)
@@ -255,13 +257,25 @@ static HRESULT primary_info(ID3D12Device *device,D3D12_RESOURCE_ALLOCATION_INFO 
 HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void *wire,
         D3D12_RESOURCE_ALLOCATION_INFO *out)
 {
-    D3D12_RESOURCE_DESC rd;
+    D3D12_RESOURCE_DESC rd={0};
     if (!out) return E_POINTER;
     *out=(D3D12_RESOURCE_ALLOCATION_INFO){0};
     if (!iface || node!=1 || count!=1) return E_INVALIDARG;
-    HRESULT hr=color_description(wire,&rd);
+    HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
-    return primary_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,out);
+    ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
+    if (primary_desc(&rd)) return primary_info(host,out);
+    if (rd.Width!=256 || rd.Height!=128 || rd.Format!=DXGI_FORMAT_R8_UNORM ||
+        (UINT)rd.Flags!=0x300000 || (rd.Alignment && rd.Alignment!=4096)) return E_NOTIMPL;
+    rd.Flags=D3D12_RESOURCE_FLAG_NONE;
+    host->lpVtbl->GetResourceAllocationInfo(host,out,node,1,&rd);
+    /* +34414d compares Alignment only. Never let a failed probe masquerade as small. */
+    if (out->Alignment!=(rd.Alignment ? rd.Alignment : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) ||
+        out->SizeInBytes!=(rd.Alignment ? 32768 : 65536)) {
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){UINT64_MAX,D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT};
+        return S_FALSE;
+    }
+    return S_OK;
 }
 
 static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO *out,
@@ -385,10 +399,12 @@ static HRESULT WINAPI bootstrap_committed(IUnknown *iface, const void *props, UI
     if (flags!=8 || state!=3 || !clear || extra1 || extra2 || extra3)
         return resource_gap(0x3f8,0,desc,state,flags,clear,out);
     D3D12_HEAP_PROPERTIES hp;
-    D3D12_RESOURCE_DESC rd;
+    D3D12_RESOURCE_DESC rd={0};
     D3D12_CLEAR_VALUE cv;
-    HRESULT hr=color_description(desc,&rd);
+    HRESULT hr=read_texture_desc(desc,&rd);
     if (FAILED(hr)) return hr;
+    if (!primary_desc(&rd)) return E_NOTIMPL;
+    rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     if (!copy_in(&hp,props,sizeof hp) || !copy_in(&cv,clear,sizeof cv)) return E_POINTER;
     if (hp.Type!=D3D12_HEAP_TYPE_DEFAULT || hp.CPUPageProperty || hp.MemoryPoolPreference ||
         hp.CreationNodeMask!=1 || hp.VisibleNodeMask!=1 || cv.Format!=rd.Format ||

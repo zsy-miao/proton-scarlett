@@ -196,7 +196,8 @@ instead checks rollback on a tool that supports WC heaps but lacks WC subviews.
 ### Graphics commit and consumption
 
 The separate 64 KiB request at RVA `0x24786b9` (`NULL, 0x10000, 0x20401000,
-0x283, 0x42404`) is unsupported. Its protection includes `PAGE_GRAPHICS_NOCACHE`
+0x283, 0x42404`) first tries the GPU-uncached control allocator.
+Its protection includes `PAGE_GRAPHICS_NOCACHE`
 (`0x40000`) in addition to CPU read/write, CPU write-combine and GPU read/write.
 The title clears the full page, uses it as an aligned bump allocator and releases
 it at `0x248be0f` with `VirtualFree(base, 0x10000, MEM_RELEASE)`.
@@ -207,8 +208,10 @@ passed CPU zeroing and fenced GPU read/write, but NVIDIA RM returned CPU
 (`attr=0x4a800000, attr2=0x5`); the DMA mapping used the allocation policy
 (`NVOS46_FLAGS_GPU_CACHEABLE_DEFAULT`). This heap is unsuitable for the extra
 modifier. The title's nonzero-size release also returned error 87 and left
-the WC mapping committed; zero-size release succeeded. Support needs both a
-device-uncached mapping (including re-import) and the exact-size release.
+that ordinary WC mapping committed; zero-size release succeeded. On the
+identified RTX driver and title build the startup fallback uses a distinct,
+CPU-only view that accepts exact-size release. It provides no GPU import.
+See the [control-page tests](control-page.md).
 
 In `scarlett-run.x6UanyCT/logs/steam-999001.log:239–246`, the trap is at
 RVA `0x1e1d3a7`, with `RAX=0`, `R15=0x49400000` and pool index `R13=0`.
