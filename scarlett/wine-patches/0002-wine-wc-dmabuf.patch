@@ -1,0 +1,325 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d729177f2ee7e6c3a7e23d113e869012eae10c65..a28ef7d4e0773e0a1f9124d9c57016acf44d3526 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -37,6 +37,9 @@
+ #include <sys/stat.h>
+ #include <sys/mman.h>
+ #include <sys/ioctl.h>
++#ifdef __linux__
++#include <linux/dma-buf.h>
++#endif
+ #ifdef HAVE_SYS_SYSINFO_H
+ # include <sys/sysinfo.h>
+ #endif
+@@ -273,6 +276,7 @@ struct file_view
+ #define VPROT_PLACEHOLDER      0x0400
+ #define VPROT_FREE_PLACEHOLDER 0x0800
+ #define VPROT_NATIVE           0x1000
++#define VPROT_SCARLETT_DMA     0x2000
+ 
+ /* Conversion from VPROT_* to Win32 flags */
+ static const BYTE VIRTUAL_Win32Flags[16] =
+@@ -1967,6 +1971,7 @@ static DWORD get_win32_prot( BYTE vprot, unsigned int map_prot )
+     ret = VIRTUAL_Win32Flags[vprot & 0x0f];
+     if (vprot & VPROT_GUARD) ret |= PAGE_GUARD;
+     if (map_prot & SEC_NOCACHE) ret |= PAGE_NOCACHE;
++    if (map_prot & VPROT_SCARLETT_DMA) ret |= PAGE_WRITECOMBINE;
+     return ret;
+ }
+ 
+@@ -2100,6 +2105,7 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
+     NTSTATUS status;
+ 
+     if ((status = get_vprot_flags( protect, &vprot, view->protect & SEC_IMAGE ))) return status;
++    if (view->protect & VPROT_SCARLETT_DMA) return STATUS_INVALID_PAGE_PROTECTION;
+     if (view->scarlett_section && (vprot & VPROT_WRITECOPY)) return STATUS_INVALID_PAGE_PROTECTION;
+     if (is_view_valloc( view ))
+     {
+@@ -5814,7 +5820,8 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+     {
+         size = view->size;
+         /* Recursive virtual_mutex: keep lookup and ordinary section unmap atomic. */
+-        status = NtUnmapViewOfSection( NtCurrentProcess(), addr );
++        if (view->protect & VPROT_SCARLETT_DMA) delete_view( view );
++        else status = NtUnmapViewOfSection( NtCurrentProcess(), addr );
+     }
+     else if (!is_view_valloc( view )) status = STATUS_INVALID_PARAMETER;
+     else if (!size && base != view->base) status = STATUS_FREE_VM_NOT_AT_BASE;
+@@ -6585,6 +6592,62 @@ struct scarlett_section_info
+     HANDLE section;
+ };
+ 
++#ifdef __linux__
++/* This mmap is owned by the VM, not by vkMapMemory or the source heap. */
++static NTSTATUS map_scarlett_dma( const void *addr, SIZE_T size, HANDLE shared, void **ret )
++{
++    struct dma_buf_sync sync = { DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW };
++    HANDLE obj = NULL, ref = NULL;
++    UINT64 wc_tag[2] = {0};
++    struct file_view *view;
++    unsigned int status, prot = VPROT_READ | VPROT_WRITE | VPROT_COMMITTED | SEC_COMMIT | VPROT_SCARLETT_DMA;
++    struct stat st;
++    int fd;
++
++    if (!size || ((size | (UINT_PTR)addr) & granularity_mask) || size > (UINT_PTR)user_space_limit ||
++        (UINT_PTR)addr > (UINT_PTR)user_space_limit - size) return STATUS_INVALID_PARAMETER;
++    if ((status = NtDuplicateObject( NtCurrentProcess(), shared, NtCurrentProcess(), &ref, 0, 0,
++                                     DUPLICATE_SAME_ACCESS ))) return status;
++    SERVER_START_REQ( d3dkmt_object_open )
++    {
++        req->type = D3DKMT_RESOURCE;
++        req->handle = wine_server_obj_handle( ref );
++        wine_server_set_reply( req, wc_tag, sizeof(wc_tag) );
++        if (!(status = wine_server_call( req ))) obj = wine_server_ptr_handle( reply->handle );
++    }
++    SERVER_END_REQ;
++    if (!status && (wc_tag[0] != 0x5343574300000001ull || wc_tag[1] != size)) status = STATUS_INVALID_PARAMETER;
++    if (!status && !(status = wine_server_handle_to_fd( obj, GENERIC_ALL, &fd, NULL )))
++    {
++        status = STATUS_INVALID_PARAMETER;
++        if (!fstat( fd, &st ) && st.st_size > 0 && size == (SIZE_T)st.st_size &&
++            !ioctl( fd, DMA_BUF_IOCTL_SYNC, &sync ))
++        {
++            sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW;
++            if (!ioctl( fd, DMA_BUF_IOCTL_SYNC, &sync ) &&
++                !(status = map_view( &view, (void *)addr, size, 0, prot, 0, 0, SCARLETT_ALIGN_MASK )))
++            {
++                if (mmap( view->base, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0 ) == MAP_FAILED)
++                {
++                    delete_view( view );
++                    status = STATUS_NOT_SUPPORTED;
++                }
++                else
++                {
++                    view->scarlett_section = ref;
++                    ref = NULL;
++                    *ret = view->base;
++                }
++            }
++        }
++        close( fd );
++    }
++    if (obj) NtClose( obj );
++    if (ref) NtClose( ref );
++    return status;
++}
++#endif
++
+ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY_INFORMATION_CLASS op,
+                                         void *buffer, SIZE_T len, SIZE_T *res_len )
+ {
+@@ -6624,12 +6687,20 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+             }
+         }
+     }
+-    else if (info.size && op == MemoryWineScarlettAcquireV1)
++#ifdef __linux__
++    else if (op == MemoryWineScarlettMapWcV1)
++    {
++        status = map_scarlett_dma( addr, info.size, ((struct scarlett_section_info *)buffer)->section, &info.base );
++        info.view_size = info.size;
++    }
++#endif
++    else if (info.size && (op == MemoryWineScarlettAcquireV1 || op == MemoryWineScarlettAcquireWcV1))
+     {
+         struct file_view *view;
+ 
+         status = STATUS_NOT_MAPPED_VIEW;
+-        if ((view = find_view( addr, 0 )) && view->scarlett_section)
++        if ((view = find_view( addr, 0 )) && view->scarlett_section &&
++            !!(view->protect & VPROT_SCARLETT_DMA) == (op == MemoryWineScarlettAcquireWcV1))
+         {
+             info.offset = (UINT_PTR)addr - (UINT_PTR)view->base;
+             if (info.size <= view->size - info.offset)
+@@ -6683,6 +6754,8 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+ #ifdef __x86_64__
+         case MemoryWineScarlettCreateV1:
+         case MemoryWineScarlettAcquireV1:
++        case MemoryWineScarlettMapWcV1:
++        case MemoryWineScarlettAcquireWcV1:
+             return query_scarlett_section( process, addr, info_class, buffer, len, res_len );
+ #endif
+ 
+@@ -6966,6 +7039,7 @@ static NTSTATUS unmap_view_of_section( HANDLE process, PVOID addr, ULONG flags )
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     if (!(view = find_view( addr, 0 )) || is_view_valloc( view )) goto done;
++    if (view->protect & VPROT_SCARLETT_DMA) goto done;  /* No server section view. */
+ 
+     if (flags & MEM_PRESERVE_PLACEHOLDER && !(view->protect & VPROT_PLACEHOLDER))
+     {
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+index 38f7a53c3fb63cd1b94d1a36832f4e8cb22197e8..1cbb43686a1c5a698fb9a7cec2c020e48dce5eeb 100644
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -1955,7 +1955,7 @@ int d3dkmt_object_get_fd( D3DKMT_HANDLE local )
+ }
+ 
+ /* create a D3DKMT global or shared resource from a host-specific fd */
+-D3DKMT_HANDLE d3dkmt_create_resource( int fd, D3DKMT_HANDLE *global )
++D3DKMT_HANDLE d3dkmt_create_resource( int fd, D3DKMT_HANDLE *global, const void *runtime, UINT len )
+ {
+     struct d3dkmt_resource *resource = NULL;
+     struct d3dkmt_object *allocation = NULL;
+@@ -1965,7 +1965,7 @@ D3DKMT_HANDLE d3dkmt_create_resource( int fd, D3DKMT_HANDLE *global )
+ 
+     if ((status = d3dkmt_object_alloc( sizeof(*resource), D3DKMT_RESOURCE, (void **)&resource ))) goto failed;
+     if ((status = d3dkmt_object_alloc( sizeof(*allocation), D3DKMT_ALLOCATION, (void **)&allocation ))) goto failed;
+-    if ((status = d3dkmt_object_create( &resource->obj, fd, 0, !global, NULL, 0 ))) goto failed;
++    if ((status = d3dkmt_object_create( &resource->obj, fd, 0, !global, runtime, len ))) goto failed;
+ 
+     if ((status = alloc_object_handle( allocation ))) goto failed;
+     resource->allocation = allocation->local;
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 911db797e490836132e55e7e99095cf71ce83726..e3d073c134f318d8d742ad6edd84fb6ab955908e 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -300,6 +300,8 @@ static VkResult allocate_external_host_memory( struct vulkan_device *device, VkM
+     return VK_SUCCESS;
+ }
+ 
++/* Private PE selector, never sent to the ICD. Normal Win32 handles keep their host type. */
++#define SCARLETT_DMA_HANDLE 0x40000000u
+ static VkExternalMemoryHandleTypeFlagBits get_host_external_memory_type(void)
+ {
+     struct vulkan_device_extensions extensions = {.has_VK_KHR_external_memory_win32 = 1};
+@@ -807,6 +809,8 @@ static VkResult convert_device_create_info( struct vulkan_physical_device *physi
+     }
+ 
+     driver_funcs->p_map_device_extensions( &device->extensions );
++    if (device->extensions.has_VK_KHR_external_memory_win32 && physical_device->extensions.has_VK_EXT_external_memory_dma_buf)
++        device->extensions.has_VK_EXT_external_memory_dma_buf = 1;
+     device->extensions.has_VK_KHR_win32_keyed_mutex = 0;
+     device->extensions.has_VK_KHR_external_memory_win32 = 0;
+     device->extensions.has_VK_KHR_external_fence_win32 = 0;
+@@ -1061,7 +1065,7 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+     VkDeviceMemory host_device_memory = VK_NULL_HANDLE;
+     VkExportMemoryAllocateInfo *export_info = NULL;
+     struct device_memory *memory;
+-    BOOL nt_shared = FALSE;
++    BOOL nt_shared = FALSE, wc = FALSE;
+     uint32_t mem_flags;
+     void *mapping = NULL;
+     VkResult res;
+@@ -1073,7 +1077,21 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+         case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_MEMORY_ALLOCATE_INFO_NV: break;
+         case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO:
+             export_info = (VkExportMemoryAllocateInfo *)*next;
+-            if (!(export_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
++            if (export_info->handleTypes == SCARLETT_DMA_HANDLE)
++            {
++                VkPhysicalDeviceProperties props;
++                instance->p_vkGetPhysicalDeviceProperties( physical_device->host.physical_device, &props );
++                if (!device->extensions.has_VK_EXT_external_memory_dma_buf || props.vendorID != 0x10de ||
++                    props.deviceID != 0x2484 || props.driverVersion != ((595u<<22)|(112u<<14)|(7u<<6)) ||
++                    alloc_info->memoryTypeIndex != 3 || physical_device->memory_properties.memoryTypeCount <= 3 ||
++                    physical_device->memory_properties.memoryTypes[3].propertyFlags !=
++                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
++                    return VK_ERROR_FEATURE_NOT_PRESENT;
++                wc = TRUE;
++                export_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++                nt_shared = TRUE;
++            }
++            else if (!(export_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
+                 FIXME( "Unsupported handle types %#x\n", export_info->handleTypes );
+             else
+             {
+@@ -1130,6 +1148,9 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+             if (shared && shared != import_win32->handle) NtClose( shared );
+             break;
+         }
++        case SCARLETT_DMA_HANDLE:
++            memory->local = d3dkmt_open_resource( 0, import_win32->handle, &memory->mutex, &memory->sync );
++            break;
+         default:
+             FIXME( "Unsupported handle type %#x\n", import_win32->handleType );
+             break;
+@@ -1161,7 +1182,8 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+             goto failed;
+         }
+ 
+-        fd_info.handleType = get_host_external_memory_type();
++        fd_info.handleType = import_win32->handleType == SCARLETT_DMA_HANDLE ?
++                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT : get_host_external_memory_type();
+         fd_info.pNext = alloc_info->pNext;
+         alloc_info->pNext = &fd_info;
+     }
+@@ -1176,7 +1198,7 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+             VkMemoryGetFdInfoKHR get_fd_info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = host_device_memory};
+             int fd = -1;
+ 
+-            switch ((get_fd_info.handleType = get_host_external_memory_type()))
++            switch ((get_fd_info.handleType = export_info->handleTypes))
+             {
+             case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+             case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
+@@ -1187,7 +1209,9 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+                 break;
+             }
+ 
+-            memory->local = d3dkmt_create_resource( fd, nt_shared ? NULL : &memory->global );
++            const UINT64 wc_tag[] = { 0x5343574300000001ull, alloc_info->allocationSize };
++            memory->local = d3dkmt_create_resource( fd, nt_shared ? NULL : &memory->global,
++                                                    wc ? wc_tag : NULL, wc ? sizeof(wc_tag) : 0 );
+             close( fd );
+ 
+             if (!memory->local) goto failed;
+@@ -1449,7 +1473,12 @@ static VkResult win32u_vkCreateBuffer( VkDevice client_device, const VkBufferCre
+         case VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_BUFFER_CREATE_INFO_NV: break;
+         case VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO:
+             external_info = (VkExternalMemoryBufferCreateInfo *)*next;
+-            if (!(external_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
++            if (external_info->handleTypes == SCARLETT_DMA_HANDLE)
++            {
++                if (!device->extensions.has_VK_EXT_external_memory_dma_buf) return VK_ERROR_FEATURE_NOT_PRESENT;
++                external_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++            }
++            else if (!(external_info->handleTypes & EXTERNAL_MEMORY_WIN32_BITS))
+                 FIXME( "Unsupported handle types %#x\n", external_info->handleTypes );
+             else
+                 external_info->handleTypes = get_host_external_memory_type();
+@@ -3461,7 +3490,7 @@ static VkResult win32u_vkCreateSemaphore( VkDevice client_device, const VkSemaph
+     VkExportSemaphoreCreateInfoKHR *export_info = NULL;
+     struct semaphore *semaphore;
+     VkSemaphore host_semaphore;
+-    BOOL nt_shared = FALSE;
++    BOOL nt_shared = FALSE, wc = FALSE;
+     VkResult res;
+ 
+     TRACE( "device %p, create_info %p, allocator %p, ret %p\n", device, create_info, allocator, ret );
+@@ -3713,7 +3742,7 @@ static VkResult win32u_vkCreateFence( VkDevice client_device, const VkFenceCreat
+     VkBaseOutStructure **next, *prev = (VkBaseOutStructure *)create_info;
+     struct vulkan_instance *instance = device->physical_device->instance;
+     VkExportFenceCreateInfoKHR *export_info = NULL;
+-    BOOL nt_shared = FALSE;
++    BOOL nt_shared = FALSE, wc = FALSE;
+     struct fence *fence;
+     VkFence host_fence;
+     VkResult res;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index dbc2d332c7efa8ca876d4fc6f137b0a2ba92e230..d908c77ade6543ce0bb7934fcceeb5eb20e8efa5 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -225,7 +225,7 @@ extern NTSTATUS d3dkmt_destroy_mutex( D3DKMT_HANDLE local );
+ extern HANDLE open_shared_resource_from_name( const WCHAR *name );
+ extern HANDLE open_shared_semaphore_from_name( const WCHAR *name );
+ 
+-extern D3DKMT_HANDLE d3dkmt_create_resource( int fd, D3DKMT_HANDLE *global );
++extern D3DKMT_HANDLE d3dkmt_create_resource( int fd, D3DKMT_HANDLE *global, const void *runtime, UINT len );
+ extern D3DKMT_HANDLE d3dkmt_open_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local, D3DKMT_HANDLE *sync_local );
+ extern NTSTATUS d3dkmt_destroy_resource( D3DKMT_HANDLE local );
+ 
+diff --git a/include/winternl.h b/include/winternl.h
+index c0bf159ac049f6b38f37b98f33b993bc9f25e383..c7d8592968283cc47797b10f577b9d8f9dc2ee53 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2461,6 +2461,8 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+     MemoryWineUnixWow64Funcs,
+     MemoryWineScarlettCreateV1 = 0x53430001,
+     MemoryWineScarlettAcquireV1 = 0x53430002,
++    MemoryWineScarlettMapWcV1 = 0x53430004,
++    MemoryWineScarlettAcquireWcV1 = 0x53430005,
+ #endif
+ } MEMORY_INFORMATION_CLASS;
+ 

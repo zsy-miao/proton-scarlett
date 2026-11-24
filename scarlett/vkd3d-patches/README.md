@@ -1,0 +1,7 @@
+# Write-combined graphics pool
+
+The allocator accepts the observed tuple `(NULL, 0x89700000, 0x20003000, 0x283, 0x2404)` on the tested RTX 3070 (PCI `10de:2484`, NVIDIA 595.112.07). The driver reported write-combined system memory. The meaning of flag bit `0x200` and physical page size are unverified.
+
+Apply both `scarlett/wine-patches/*.patch` in numeric order to the pinned Wine source. Apply `0001-vkd3d-wc-heap.patch` in this directory to the pinned vkd3d-proton source (`212991fc2c266bc0d59f4c4ce8f80f7126508d71`). Build with Vulkan, GL and DRM support. In the configured Wine build run `make dlls/ntdll/ntdll.so dlls/win32u/win32u.so`; in the 64-bit MinGW vkd3d-proton build run `ninja libs/d3d12core/d3d12core.dll`. Stage all three files by basename alongside the native PE DLLs before running `scarlett/install.sh`.
+
+Wine owns the title's CPU mapping. Acquisition under Wine's VM lock duplicates a handle to the underlying GPU allocation. If the title releases its mapping, an existing GPU consumer keeps its own backing until its queue retires; a fresh lookup cannot acquire the released view. `test_gpu.cpp` with `-DTEST_WC_SECTION` exercises the exact allocation, bidirectional CPU/GPU access, release and address reuse. Link it against `xmem.dll` and `-ld3d12` and run it through `scarlett/test-launch-nixos.sh`. `-DTEST_WC_UNSUPPORTED` in addition tests rejection on a first-pool-only tool.

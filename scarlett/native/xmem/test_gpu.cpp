@@ -1,6 +1,9 @@
 /* Synthetic Proton release/alias test. Never submit GPU work against the public VA. */
 #include "gpu_buffer.hpp"
 #include <cstdio>
+#ifdef TEST_WC_SECTION
+#define TEST_MARKED_SECTION
+#endif
 #ifdef TEST_MARKED_SECTION
 extern "C" __declspec(dllimport) void *WINAPI XMemVirtualAlloc(void *, SIZE_T, DWORD, ULONGLONG, DWORD);
 #endif
@@ -27,9 +30,66 @@ static void expect_mapped_release_failure(void *p)
     CHECK(query(p).State == MEM_COMMIT);
 }
 
+#ifdef TEST_WC_SECTION
+struct Race {
+    SYNCHRONIZATION_BARRIER gate;
+    void *base;
+    scarlett_section_info acquired;
+    HRESULT hr;
+};
+static void compete(Race *race, bool acquire)
+{
+    EnterSynchronizationBarrier(&race->gate,0);
+    if (acquire) race->hr = scarlett_query_section(0x53430005,race->base,4,&race->acquired);
+    else CHECK(VirtualFree(race->base,0,MEM_RELEASE));
+    EnterSynchronizationBarrier(&race->gate,0);
+}
+static DWORD WINAPI racer(void *arg)
+{
+    for (unsigned i=0;i<64;i++) compete((Race *)arg, i%2);
+    return 0;
+}
+static void test_wc_race(HANDLE backing, SIZE_T size)
+{
+    Race race = {};
+    CHECK(InitializeSynchronizationBarrier(&race.gate,2,-1));
+    HANDLE t=CreateThread(NULL,0,racer,&race,0,NULL);
+    CHECK(t);
+    unsigned wins=0;
+    for (unsigned i=0;i<64;i++) {
+        scarlett_section_info info;
+        HR(scarlett_query_section_handle(0x53430004,race.base,size,&info,backing));
+        race.base=info.base;
+        *(volatile DWORD*)race.base=0x11133000+i;
+        MemoryBarrier();
+        compete(&race,!(i%2));
+        CHECK(query(race.base).State==MEM_FREE);
+        if (SUCCEEDED(race.hr)) {
+            HR(scarlett_query_section_handle(0x53430004,race.base,size,&info,race.acquired.section));
+            CHECK(*(volatile DWORD*)info.base==0x11133000+i);
+            CHECK(VirtualFree(info.base,0,MEM_RELEASE) && CloseHandle(race.acquired.section));
+            ++wins;
+        } else CHECK(race.hr==HRESULT_FROM_NT((LONG)0xc0000019));
+    }
+    CHECK(WaitForSingleObject(t,10000)==WAIT_OBJECT_0 && CloseHandle(t));
+    CHECK(DeleteSynchronizationBarrier(&race.gate));
+    printf("PASS WC acquire/release: 64 races (%u acquired)\n",wins);
+}
+#endif
+
 int main()
 {
-    const SIZE_T size = 0x49400000;  // First nonzero startup pool, 1,172 MiB.
+#ifdef TEST_WC_UNSUPPORTED
+    CHECK(!XMemVirtualAlloc(nullptr,0x89700000,0x20003000,0x283,0x2404));
+    CHECK(GetLastError()!=ERROR_SUCCESS);
+    puts("PASS WC: unavailable backing rejected");
+    return 0;
+#endif
+#ifdef TEST_WC_SECTION
+    const SIZE_T size = 0x89700000;
+#else
+    const SIZE_T size = 0x49400000;
+#endif
     const SIZE_T align = 2u << 20;
     HMODULE kernel = GetModuleHandleW(L"kernelbase.dll");
     auto alloc2 = (Alloc2)(void *)GetProcAddress(kernel, "VirtualAlloc2");
@@ -54,10 +114,27 @@ int main()
 #ifdef TEST_MARKED_SECTION
     CHECK(UnmapViewOfFile(title));
     CHECK(CloseHandle(section));
+#ifdef TEST_WC_SECTION
+    title = (DWORD *)XMemVirtualAlloc(nullptr, size, 0x20003000, 0x283, 0x2404);
+#else
     title = (DWORD *)XMemVirtualAlloc(nullptr, size, 0x20003000, 0x183, 0x22004);
+#endif
     CHECK(title && !((UINT_PTR)title % align));
 #endif
     auto original = query(title);
+#ifdef TEST_WC_SECTION
+    CHECK(original.RegionSize == size && original.State == MEM_COMMIT && original.Type == MEM_MAPPED &&
+          original.Protect == (PAGE_READWRITE|PAGE_WRITECOMBINE));
+    scarlett_section_info held,bad;
+    HR(scarlett_query_section(0x53430005,title+size/4-1,4,&held));
+    CHECK(held.view_size == size && held.offset == size-4 && held.section);
+    CHECK(FAILED(scarlett_query_section_handle(0x53430004,nullptr,size-65536,&bad,held.section)));
+    HANDLE other = CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,65536,nullptr);
+    CHECK(other && FAILED(scarlett_query_section_handle(0x53430004,nullptr,65536,&bad,other)) && CloseHandle(other));
+    CHECK(FAILED(scarlett_query_section(0x53430005,title+size/4-1,5,&bad)));
+    CHECK(FAILED(scarlett_query_section(0x53430002,title,4,&bad)));
+    CHECK(!VirtualFree((BYTE*)title+1,0,MEM_RELEASE) && !UnmapViewOfFile(title));
+#endif
     ID3D12Device3 *device;
     HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)));
     ImportedBuffer allocation;
@@ -71,7 +148,10 @@ int main()
 #endif
     auto cpu = (volatile DWORD *)allocation.cpu();
     auto shared = allocation.resource();
-    CHECK(cpu && cpu != title && !((UINT_PTR)cpu % align) && shared->GetGPUVirtualAddress() &&
+#ifndef TEST_WC_SECTION
+    CHECK(!((UINT_PTR)cpu % align));
+#endif
+    CHECK(cpu && cpu != title && shared->GetGPUVirtualAddress() &&
           allocation.translate((void *)(cpu + 1), 4) == shared->GetGPUVirtualAddress() + 4 &&
           !allocation.translate((void *)(cpu + size / 4 - 1), 5) && !allocation.translate(title, 4));
     D3D12_RESOURCE_DESC desc = {};
@@ -99,6 +179,7 @@ int main()
     HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     CHECK(event);
     title[0] = 0xa103bd17;
+    MemoryBarrier();
     CHECK(cpu[0] == title[0] && !cpu[size / 4 - 1]);
     list->CopyBufferRegion(scratch, 0, shared, 0, 4);
     HR(list->Close());
@@ -108,18 +189,32 @@ int main()
     HR(retire->SetEventOnCompletion(1, event));
     CHECK(WaitForSingleObject(event, 15000) == WAIT_OBJECT_0);
     title[0] = 0;
+    MemoryBarrier();
+#ifdef TEST_WC_SECTION
+    HR(alloc->Reset());
+    HR(list->Reset(alloc,nullptr));
+    list->CopyBufferRegion(shared,4,scratch,0,4);
+    HR(list->Close());
+    queue->ExecuteCommandLists(1,batch);
+    HR(queue->Signal(gate,1));
+    HR(gate->SetEventOnCompletion(1,event));
+    CHECK(WaitForSingleObject(event,15000)==WAIT_OBJECT_0 && title[1]==0xa103bd17);
+#endif
 
     HR(alloc->Reset());
     HR(list->Reset(alloc, nullptr));
     list->CopyBufferRegion(shared, size - 4, scratch, 0, 4);
     HR(list->Close());
-    HR(queue->Wait(gate, 1));
+    HR(queue->Wait(gate, 2));
     queue->ExecuteCommandLists(1, batch);
     HR(queue->Signal(retire, 2));
 
     // Let the queued GPU write retire after the public VA has been reused.
 #ifdef TEST_MARKED_SECTION
     CHECK(VirtualFree(title, 0, MEM_RELEASE));
+#ifdef TEST_WC_SECTION
+    CHECK(query(title).State == MEM_FREE && FAILED(scarlett_query_section(0x53430005,title,4,&bad)));
+#endif
 #else
     CHECK(UnmapViewOfFile(title));
 #endif
@@ -129,16 +224,26 @@ int main()
     auto reused = query(title);
     CHECK(reused.BaseAddress == original.BaseAddress && reused.AllocationBase == original.AllocationBase &&
           reused.RegionSize == original.RegionSize && reused.State == original.State &&
-          reused.Type == original.Type && reused.Protect == original.Protect &&
-          reused.AllocationProtect == original.AllocationProtect);
+           reused.Type == original.Type && reused.Protect == PAGE_READWRITE);
+#ifdef TEST_WC_SECTION
+    CHECK(FAILED(scarlett_query_section(0x53430005,title,4,&bad)));
+    ImportedBuffer retained;
+    HR(retained.wc(device,size,held.section,nullptr));
+#endif
     title[size / 4 - 1] = 0x55aabb33;
     CHECK(retire->GetCompletedValue() == 1 && !cpu[size / 4 - 1]);
-    HR(gate->Signal(1));
+    HR(gate->Signal(2));
     HR(retire->SetEventOnCompletion(2, event));
     CHECK(WaitForSingleObject(event, 15000) == WAIT_OBJECT_0);
     HR(device->GetDeviceRemovedReason());
     CHECK(retire->GetCompletedValue() == 2 && cpu[size / 4 - 1] == 0xa103bd17 &&
           title[size / 4 - 1] == 0x55aabb33);
+#ifdef TEST_WC_SECTION
+    CHECK(((volatile DWORD*)retained.cpu())[size/4-1] == 0xa103bd17);
+    test_wc_race(held.section,size);
+    CHECK(CloseHandle(held.section));
+    puts("PASS WC XMem: exact size, bounds, acquire before free/import after reuse, GPU retired into old backing");
+#endif
     CHECK(UnmapViewOfFile(title));
     CHECK(CloseHandle(event));
     list->Release(); alloc->Release(); gate->Release(); retire->Release(); queue->Release();

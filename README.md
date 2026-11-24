@@ -7,9 +7,9 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
-Retail build `1.0.2.1` passes both initial address-space reservations and the 1,172 MiB graphics allocation on [patched Wine](scarlett/wine-patches/README.md). Startup now stops at `+0x1e1d4e0`: `XMemVirtualAlloc` rejects a different 2,199 MiB pool (`0x89700000` bytes, flags `0x283`, protection `0x2404`). A [GPU copy test](scarlett/native/xmem/README.md) verified that queued work completes against the original backing even after the title frees and reuses its address. No native retail frame has been presented.
+Retail build `1.0.2.1` passes both initial address-space reservations, the 1,172 MiB graphics allocation and the 2,199 MiB write-combined pool. The next observed failure is pool index 4: a 563 MiB (`0x23300000`) allocation returns null and the game breaks at `+0x1e1d3c8`. No native retail frame has been presented.
 
-A [hardware test with patched vkd3d-proton](https://github.com/rcx2135/proton-scarlett/tree/8168ad2c/scarlett/native/xmem/wc-probe) created a write-combined heap of the requested 2,199 MiB on the RTX 3070. After a second CPU mapping was released, a queued GPU copy still read the correct last word. The next step is to let the title release that mapping with ordinary `VirtualFree` while GPU work retains the backing.
+The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 

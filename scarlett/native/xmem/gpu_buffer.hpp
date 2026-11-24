@@ -62,11 +62,36 @@ public:
         *offset = 0;
         scarlett_section_info info;
         HRESULT hr = scarlett_acquire_section(address, bytes, &info);
-        if (FAILED(hr)) return hr;
-        hr = create(device, info.section, info.view_size);
+        if (SUCCEEDED(hr)) hr = create(device, info.section, info.view_size);
+        else {
+            hr = scarlett_query_section(0x53430005, address, bytes, &info);
+            if (FAILED(hr)) return hr;
+            hr = wc(device, info.view_size, info.section, nullptr);
+        }
         CloseHandle(info.section);
         if (SUCCEEDED(hr)) *offset = info.offset;
         return hr;
+    }
+
+    HRESULT wc(ID3D12Device3 *device, SIZE_T size, HANDLE input, HANDLE *output) {
+        if (!device || heap || base) return E_INVALIDARG;
+        using Fn = HRESULT (WINAPI *)(ID3D12Device3 *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **);
+        auto fn = (Fn)(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");
+        if (!fn) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+        HRESULT hr = fn(device,size,input,output,&heap);
+        if (FAILED(hr)) return hr;
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = size;
+        desc.Height = desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        hr = device->CreatePlacedResource(heap,0,&desc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&buffer));
+        if (SUCCEEDED(hr) && !buffer->GetGPUVirtualAddress()) hr = E_FAIL;
+        if (SUCCEEDED(hr)) hr = buffer->Map(0,nullptr,&base);
+        if (FAILED(hr)) { reset(); return hr; }
+        wc_mapped = true;
+        length = size;
+        return S_OK;
     }
 
     void *cpu() const { return buffer ? base : nullptr; }
@@ -80,6 +105,7 @@ public:
 
 private:
     void reset() {
+        if (wc_mapped) { buffer->Unmap(0,nullptr); wc_mapped = false; base = nullptr; }
         if (buffer) { buffer->Release(); buffer = nullptr; }
         if (heap) { heap->Release(); heap = nullptr; }
         if (base) { UnmapViewOfFile(base); base = nullptr; }
@@ -88,4 +114,5 @@ private:
     ID3D12Heap *heap = nullptr;
     ID3D12Resource *buffer = nullptr;
     SIZE_T length = 0;
+    bool wc_mapped = false;
 };

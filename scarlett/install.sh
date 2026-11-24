@@ -22,6 +22,12 @@ install -m755 "$src/proton" "$stage/proton"
 if [[ -f "$runtime/ntdll.so" ]]; then
     install -m755 "$runtime/ntdll.so" "$stage/files/lib/wine/x86_64-unix/ntdll.so"
 fi
+if [[ -f "$runtime/win32u.so" || -f "$runtime/d3d12core.dll" ]]; then
+    [[ -f "$runtime/ntdll.so" && -f "$runtime/win32u.so" && -f "$runtime/d3d12core.dll" ]] ||
+        { echo "Write-combined graphics requires matched ntdll.so, win32u.so and d3d12core.dll." >&2; exit 1; }
+    install -m755 "$runtime/win32u.so" "$stage/files/lib/wine/x86_64-unix/win32u.so"
+    install -m644 "$runtime/d3d12core.dll" "$stage/files/lib/wine/vkd3d-proton/x86_64-windows/d3d12core.dll"
+fi
 if [[ -f "$runtime/xaudio2_9.dll" ]]; then
     install -m644 "$runtime/xaudio2_9.dll" "$stage/files/lib/wine/x86_64-windows/xaudio2_9.dll"
 fi

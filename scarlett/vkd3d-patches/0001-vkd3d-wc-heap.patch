@@ -1,0 +1,189 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index abd56d6dc66372bcb69e124448fcc0182ff5afdf..aa18be449d5148d79f0a82e002b43734c7e2c339 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,5 +1,6 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettWcHeapV1
+     D3D12GetInterface
+     D3D12SDKVersion DATA PRIVATE
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 6c713c90ab3e71a79f85d9c507a7483be01d4c8c..854475dfbf575d6fc21ea4db819dcf2d05244d11 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7833,7 +7833,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
+     heap_desc.Properties.VisibleNodeMask = 1;
+     heap_desc.SizeInBytes = allocation_size;
+ 
+-    if (FAILED(hr = d3d12_heap_create(device, &heap_desc, address, &object)))
++    if (FAILED(hr = d3d12_heap_create(device, &heap_desc, address, NULL, &object)))
+     {
+         *heap = NULL;
+         return hr;
+@@ -7846,6 +7846,53 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
+ #endif
+ }
+ 
++#ifdef _WIN32
++/* Private x64 ABI: the D3DKMT handle retains the allocation independently of this heap. */
++HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *iface, SIZE_T size, HANDLE input, HANDLE *output, ID3D12Heap **result)
++{
++    VkMemoryGetWin32HandleInfoKHR get = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
++    VkImportMemoryWin32HandleInfoKHR imp = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
++    VkExportMemoryAllocateInfo exp = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
++    struct d3d12_device *device = impl_from_ID3D12Device(iface);
++    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
++    const VkPhysicalDeviceProperties *p = &device->device_info.properties2.properties;
++    struct d3d12_heap *heap;
++    D3D12_HEAP_DESC desc = {0};
++    HRESULT hr;
++
++    if (!result || (!input && !output)) return E_INVALIDARG;
++    *result = NULL;
++    if (output) *output = NULL;
++    if (!size || size % 65536) return E_INVALIDARG;
++    /* Only this device/driver/type has measured WC rather than merely non-HOST_CACHED. */
++    if (p->vendorID != 0x10de || p->deviceID != 0x2484 || p->driverVersion != ((595u<<22)|(112u<<14)|(7u<<6)) ||
++            device->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
++            device->memory_properties.memoryTypeCount <= 3 || device->memory_properties.memoryTypes[3].propertyFlags !=
++            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
++            !vk_procs->vkGetMemoryWin32HandleKHR) return DXGI_ERROR_UNSUPPORTED;
++    desc.SizeInBytes = size;
++    desc.Properties.CreationNodeMask = desc.Properties.VisibleNodeMask = 1;
++    desc.Properties.Type = D3D12_HEAP_TYPE_CUSTOM;
++    desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
++    desc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
++    desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
++    imp.handleType = SCARLETT_DMA_HANDLE;
++    imp.handle = input;
++    exp.handleTypes = SCARLETT_DMA_HANDLE;
++    if (FAILED(hr = d3d12_heap_create(device, &desc, NULL, input ? (void *)&imp : (void *)&exp, &heap))) return hr;
++    if (heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type != 3) hr = E_FAIL;
++    if (SUCCEEDED(hr) && !input)
++    {
++        get.memory = heap->allocation.device_allocation.vk_memory;
++        get.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        if (VK_CALL(vkGetMemoryWin32HandleKHR(device->vk_device, &get, output)) || !*output) hr = E_FAIL;
++    }
++    if (FAILED(hr)) ID3D12Heap1_Release(&heap->ID3D12Heap_iface);
++    else *result = (ID3D12Heap *)&heap->ID3D12Heap_iface;
++    return hr;
++}
++#endif
++
+ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromFileMapping(d3d12_device_iface *iface,
+         HANDLE file_mapping, REFIID riid, void **heap)
+ {
+@@ -7946,7 +7993,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateHeap1(d3d12_device_iface *if
+     if (protected_session)
+         FIXME("Ignoring protected session %p.\n", protected_session);
+ 
+-    if (FAILED(hr = d3d12_heap_create(device, desc, NULL, &object)))
++    if (FAILED(hr = d3d12_heap_create(device, desc, NULL, NULL, &object)))
+     {
+         *heap = NULL;
+         return hr;
+diff --git a/libs/vkd3d/heap.c b/libs/vkd3d/heap.c
+index 54c6dedfb8d98e2fd8a379ed14c4538bcc71d973..6d7a8ee1ceee6a2d81e452f798cc6ba2f2697af9 100644
+--- a/libs/vkd3d/heap.c
++++ b/libs/vkd3d/heap.c
+@@ -290,7 +290,7 @@ static HRESULT validate_heap_desc(struct d3d12_device *device, const D3D12_HEAP_
+ }
+ 
+ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *device,
+-        const D3D12_HEAP_DESC *desc, void* host_address)
++        const D3D12_HEAP_DESC *desc, void* host_address, const void *scarlett_chain)
+ {
+     struct vkd3d_allocate_heap_memory_info alloc_info;
+     HRESULT hr;
+@@ -319,6 +319,7 @@ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *dev
+     memset(&alloc_info, 0, sizeof(alloc_info));
+     alloc_info.heap_desc = heap->desc;
+     alloc_info.host_ptr = host_address;
++    alloc_info.scarlett_chain = scarlett_chain;
+ 
+     if ((alloc_info.heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS) &&
+             device->d3d12_caps.options.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2)
+@@ -391,7 +392,7 @@ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *dev
+ }
+ 
+ HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+-        void* host_address, struct d3d12_heap **heap)
++        void* host_address, const void *scarlett_chain, struct d3d12_heap **heap)
+ {
+     struct d3d12_heap *object;
+     HRESULT hr;
+@@ -399,7 +400,7 @@ HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *de
+     if (!(object = vkd3d_malloc(sizeof(*object))))
+         return E_OUTOFMEMORY;
+ 
+-    if (FAILED(hr = d3d12_heap_init(object, device, desc, host_address)))
++    if (FAILED(hr = d3d12_heap_init(object, device, desc, host_address, scarlett_chain)))
+     {
+         vkd3d_free(object);
+         return hr;
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+index ef0bb4646fa42c30a25aa436eb430122f161baa3..d6a654400b564351375627a795bc711df6984e7a 100644
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -2151,6 +2151,13 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+     alloc_info.heap_properties = info->heap_desc.Properties;
+     alloc_info.heap_flags = info->heap_desc.Flags;
+     alloc_info.host_ptr = info->host_ptr;
++    if (info->scarlett_chain)
++    {
++        alloc_info.pNext = info->scarlett_chain;
++        alloc_info.memory_requirements.memoryTypeBits = 1u << 3;
++        alloc_info.flags |= VKD3D_ALLOCATION_FLAG_DEDICATED | VKD3D_ALLOCATION_FLAG_NO_FALLBACK;
++        alloc_info.heap_flags |= SCARLETT_EXTERNAL_BUFFER;
++    }
+     alloc_info.vk_memory_priority = info->vk_memory_priority;
+     alloc_info.explicit_global_buffer_usage = info->explicit_global_buffer_usage;
+ 
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index c36bfe9adbdb7a97db09f7e775e0c3e78b4027cc..53ad0efcbdf322b01321196dd70523d1105f4612 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -203,6 +203,14 @@ HRESULT vkd3d_create_buffer(struct d3d12_device *device,
+         buffer_info.pNext = &external_info;
+     }
+ 
++    if (heap_flags & SCARLETT_EXTERNAL_BUFFER)
++    {
++        external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
++        external_info.pNext = NULL;
++        external_info.handleTypes = SCARLETT_DMA_HANDLE;
++        buffer_info.pNext = &external_info;
++    }
++
+     if (sparse_resource)
+     {
+         buffer_info.flags |= VK_BUFFER_CREATE_SPARSE_BINDING_BIT |
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index 9616a3a46a2aa7ebfd764f88f29a56632a808b73..79d06b2ea4cac8d585696066c0a8c7fc47d46266 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -769,8 +769,12 @@ struct vkd3d_allocate_memory_info
+     float vk_memory_priority;
+ };
+ 
++/* Private marker used only when creating the global VkBuffer, never exposed in GetDesc. */
++#define SCARLETT_EXTERNAL_BUFFER 0x40000000u
++#define SCARLETT_DMA_HANDLE 0x40000000u
+ struct vkd3d_allocate_heap_memory_info
+ {
++    const void *scarlett_chain;
+     D3D12_HEAP_DESC heap_desc;
+     void *host_ptr;
+     uint32_t extra_allocation_flags;
+@@ -1003,7 +1007,7 @@ struct d3d12_heap
+ };
+ 
+ HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+-        void *host_address, struct d3d12_heap **heap);
++        void *host_address, const void *scarlett_chain, struct d3d12_heap **heap);
+ HRESULT d3d12_device_validate_custom_heap_type(struct d3d12_device *device,
+         const D3D12_HEAP_PROPERTIES *heap_properties);
+ 
