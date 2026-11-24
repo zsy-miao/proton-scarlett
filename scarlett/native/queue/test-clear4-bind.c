@@ -242,6 +242,35 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     pool_vtbl.b27(l,0,handle);REQUIRE(s->b27.slot==368504 && s->b27.heap==inline_pair[0] && s->b27.root==colour && !tables);
     REQUIRE(FAILED(record_b27(s,0,0)) && s->b27.slot==368504 && !s->bound);
     memset(slot,0xa5,32);MemoryBarrier(); // a volatile rewrite must not leave a materialized CBV
+#ifdef TEST_SECOND_VB
+    struct xs_clear_source first_vb=s->vb;
+    D3D12_VERTEX_BUFFER_VIEW second={v.BufferLocation-0x1020,4080,24},bad=second;
+    bad.BufferLocation+=16;REQUIRE(FAILED(record_colour_vb(s,0,1,&bad)));
+    bad=second;bad.SizeInBytes=4079;REQUIRE(FAILED(record_colour_vb(s,0,1,&bad)));
+    bad=second;bad.StrideInBytes=32;REQUIRE(FAILED(record_colour_vb(s,0,1,&bad)));
+    struct xs_clear_source rejected={0};
+    REQUIRE(FAILED(xs_copy_colour_vb(owner,hd,s->host,second.BufferLocation,TRUE,pso,&rejected)) && !rejected.buffer && !rejected.placed);
+    REQUIRE(vb_calls==1 && !memcmp(&s->vb,&first_vb,sizeof first_vb) && !s->previous_vb.buffer);
+    pool_vtbl.vb(l,0,1,&second);
+    REQUIRE(vb_calls==2 && !memcmp(&s->previous_vb,&first_vb,sizeof first_vb) && s->vb.placed==first_vb.placed && s->vb.buffer!=first_vb.buffer);
+    REQUIRE(FAILED(record_colour_vb(s,0,1,&second)) && vb_calls==2);
+    BYTE *sources[]={(BYTE*)v.BufferLocation,(BYTE*)second.BufferLocation};
+    BYTE expected[2][4080];
+    for(UINT j=0;j<2;j++){
+        for(UINT k=0;k<4080;k++)expected[j][k]=(BYTE)(k*7+(k>>5)+j*113);
+        if(j==1){
+            /* +1263ad..+1263e6 producer shape; synthetic dimensions and firstVertex. */
+            const struct {float x,y,z;UINT color;float u,v;} verts[]={
+                {0,0,0,~0u,0,0},{0,2160,0,~0u,0,1},{3840,2160,0,~0u,1,1}};
+            _Static_assert(sizeof verts==72,"three packed composite vertices");
+            memcpy(expected[j],verts,sizeof verts);
+        }
+        memcpy(sources[j],expected[j],4080);
+    }
+    MemoryBarrier();
+    ID3D12Resource *vb_read; rbd.Width=2*4080+72;
+    REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(hd,&rbh,0,&rbd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&vb_read)));
+#endif
 
 #endif
 #endif
@@ -254,7 +283,12 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
 #ifdef TEST_LATE_COLOUR
     REQUIRE(binds==1 && src_host==s->head && roots==old_roots+2 && seen_rec==s->host && seen_root==s->graphics_root && !s->pipeline && psos==old_psos);
-    REQUIRE(vb_calls==2 && vb_rec==s->host && last_vb.BufferLocation==ID3D12Resource_GetGPUVirtualAddress(s->vb.buffer) && last_vb.BufferLocation!=v.BufferLocation && last_vb.SizeInBytes==4080 && last_vb.StrideInBytes==24);
+#ifdef TEST_SECOND_VB
+    const UINT expected_vb_calls=3;
+#else
+    const UINT expected_vb_calls=2;
+#endif
+    REQUIRE(vb_calls==expected_vb_calls && vb_rec==s->host && last_vb.BufferLocation==ID3D12Resource_GetGPUVirtualAddress(s->vb.buffer) && last_vb.BufferLocation!=v.BufferLocation && last_vb.SizeInBytes==4080 && last_vb.StrideInBytes==24);
 #ifdef TEST_INLINE_B27
     REQUIRE(!tables && s->b27.slot==368504 && s->b27.heap==inline_pair[0] && s->b27.root==colour &&
         bank_pair[0]==orig[0] && bank_pair[1]==orig[1] && slot[0]==0xa5a5a5a5a5a5a5a5ull);
@@ -264,6 +298,18 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
             s->clear4_lanes==0xffff00000000ffffULL && s->prior_pso==pso && s->prior_root==root &&
             !memcmp(&held,&s->source,sizeof held));
     IUnknown *ready=publish_late();REQUIRE(ready && !s->pipeline && !s->bound && !xs_list_host(l));
+#ifdef TEST_SECOND_VB
+    REQUIRE(FAILED(record_clear4(s,ready)) && !s->bound && !s->pipeline && psos==old_psos);
+    REQUIRE(FAILED(record_b27(s,0,handle)) && !tables && FAILED(record_clear4_draw(s,3,1,0,0)));
+    ID3D12Resource *buffers[]={s->previous_vb.buffer,s->vb.buffer};
+    for(UINT j=0;j<2;j++){
+        D3D12_RESOURCE_BARRIER b={.Transition={buffers[j],0,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+        ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
+        ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,vb_read,4080*j,buffers[j],0,4080);
+    }
+    /* Last legal start for three 24-byte records; do not bake firstVertex into the bound VA. */
+    ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,vb_read,8160,buffers[1],167*24,72);
+#else
     pool_vtbl.pipeline(l,ready);REQUIRE(s->bound==ready && psos==old_psos+1 && seen_rec==s->host && s->required_root==colour && FAILED(record_graphics_root(s,root)));
 #ifdef TEST_INLINE_B27
     REQUIRE(!tables && s->b27.heap==inline_pair[0] && s->b27.root==colour && s->b27.slot==368504 && FAILED(record_b27(s,0,handle)));
@@ -271,6 +317,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #endif
     REQUIRE(s->pipeline!=diag && s->pipeline!=full && FAILED(record_470(l,UINT64_MAX)) && FAILED(record_clear4_draw(s,3,1,0,0)) &&
             s->prior_pso==pso && s->prior_root==root && topo_calls==nia+2 && binds==1);
+#endif
 #else
     REQUIRE(binds==2 && src_host==s->host && last_va==private_va && s->pending_470);
     pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -283,10 +330,16 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
     REQUIRE(execute_quad_fixture(hd,s,quad_rb));ID3D12Resource_Release(quad_rb);
+#ifdef TEST_SECOND_VB
+    BYTE *read;REQUIRE(SUCCEEDED(ID3D12Resource_Map(vb_read,0,NULL,(void**)&read)) &&
+        !memcmp(read,expected,sizeof expected) && !memcmp(read+8160,expected[1]+167*24,72));
+    ID3D12Resource_Unmap(vb_read,0,NULL);ID3D12Resource_Release(vb_read);
+    puts("PASS changing VB: both 4080-byte buffers through fence, replacement on tail, exact firstVertex=167 window, late colour PSO refused");
+#endif
     REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->guest_topology==17 && !can_set_topology(s,17));
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
 #ifdef TEST_LATE_COLOUR
-    REQUIRE(!s->b27.heap && !s->vb.placed && !s->vb.buffer);
+    REQUIRE(!s->previous_vb.placed && !s->previous_vb.buffer && !s->b27.heap && !s->vb.placed && !s->vb.buffer);
     REQUIRE(!s->prior_pso && !s->prior_root && !s->graphics_identity && !s->pipeline && !s->bound);puts("PASS controlled late worker: root on current and split recorder, source not rebound under CBV table, publication alone ineffective, explicit PSO on tail, denied submit and reset");
 #endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");

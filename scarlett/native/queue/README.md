@@ -858,3 +858,24 @@ by green/magenta on both adapters (capture frames 26→50 on RADV, 42→65
 on RTX). These are capture sample numbers, not frame tokens. This checks
 the route from a known rendering batch through presentation to visible
 pixels; the corresponding retail batch has yet to be observed.
+
+### Composite source and destination
+
+The same ordinary build on AMD and RTX accepted the replacement vertex
+buffer. Both first stopped at list `+490`, return `+32113`, with the
+composite caller `+1263f0`. Each recorded one offscreen clear and issued
+tokens 1 and 2. Token 2 queued synchronization only; token 1 was the
+only successful presentation (display count 0→1).
+
+The AMD diagnostic identified the source as the original offscreen
+render target (RTV serial 119). The request was one whole-image transition
+from render target to shader resource. Technique 96 selected ring entry
+1 of 2 as its intended destination. Its candidate RTV (serial 17)
+resolved to the registered primary. Recording stopped before the output
+bind; no shader sample or write to that primary was observed.
+
+Before ordinary testing, both GPUs passed fenced comparisons of the two
+4,080-byte vertex ranges, including the last legal three-vertex window
+at index 167. Splitting the recording bound the replacement buffer and
+preserved both original ranges. Ordinary provider SHA-256:
+`cf348e198ef8ea021a038ed7be0bc720112d53ec8f0b0d5dac42c9fcd28c235b`.

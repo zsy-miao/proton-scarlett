@@ -31,7 +31,7 @@ struct xs_attachment_pin {IUnknown *identity; ID3D12Resource *host; SIZE_T slot;
 /* The wrapper pins both its XMem module and the original generation. */
 struct xs_clear_source {IUnknown *placed;ID3D12Resource *buffer;};
 HRESULT xs_b27_slot(IUnknown*,IUnknown*,UINT64,UINT*);
-HRESULT xs_copy_colour_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,IUnknown*,struct xs_clear_source*);
+HRESULT xs_copy_colour_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,BOOL,IUnknown*,struct xs_clear_source*);
 HRESULT xs_copy_clear_source(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList7 *,UINT64,struct xs_clear_source *);
 struct om_views;
 HRESULT xs_freeze_om(IUnknown *,const struct xs_attachment_pin [2],const SIZE_T [2],struct om_views *);

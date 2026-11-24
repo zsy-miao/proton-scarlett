@@ -1123,10 +1123,10 @@ HRESULT xs_copy_clear_source(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsComm
 {
     return copy_pass_span(owner,hd,list,va,0x3ff80,100,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,NULL,out);
 }
-HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,IUnknown *expected,struct xs_clear_source *out)
+HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,BOOL replacement,IUnknown *expected,struct xs_clear_source *out)
 {
     if(!expected)return E_INVALIDARG;
-    return copy_pass_span(owner,hd,list,va,0x3ef30,4080,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,expected,out);
+    return copy_pass_span(owner,hd,list,va,replacement?0x3df10:0x3ef30,4080,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,expected,out);
 }
 /* The active heap is pinned by this recording; no title descriptor memory is read. */
 HRESULT xs_b27_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT *slot)
