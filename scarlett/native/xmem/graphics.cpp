@@ -48,8 +48,7 @@ extern "C" BOOL xmem_wc_slot(void *addr, SIZE_T size, HANDLE backing, SIZE_T off
 {
     scarlett_section_info info = {size, nullptr, 0, offset, backing};
     ULONG op = policy == 0x2004 ? 0x5343000d : policy == 0x1004 ? 0x5343000e :
-               policy == 0x1404 ? 0x5343000f : 0x53430006;
-    if (backing && policy == 0x8404) { SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+               policy == 0x1404 ? 0x5343000f : policy == 0x8404 ? 0x53430012 : 0x53430006;
     HRESULT hr = scarlett_section_call(backing ? op : 0x53430007, addr, &info);
     if (FAILED(hr)) set_graphics_error(hr);
     return SUCCEEDED(hr);

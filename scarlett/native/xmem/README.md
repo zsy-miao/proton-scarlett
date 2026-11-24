@@ -46,10 +46,10 @@ editing the underlying virtual reservations.
 | `1e86760` (`2004`) | `[752,2352)` | WB/RW | buffer read/write |
 | `1e86784` (`1004`) | `[2352,2512)` | WB/RW | read source |
 | `1e867ac` (`1404`) | `[2512,2528)` | WC/RW | read source |
-| `1e867d1` (`8404`) | `[2528,2960)` | WC/RW requested | execute/read not supported; map fails |
+| `1e867d1` (`8404`) | `[2528,2960)` | WC/RW | translated compute shader store; no buffer handle or raw GPU VA |
 
 `test-descriptor-pages.cpp` builds like `test_wc_pages.cpp`. On RADV it tests
-the actual layout, first four maps, last-word GPU reads and writes permitted by
+the actual layout, all five maps, last-word GPU reads and writes permitted by
 the translated operations, rejected writable imports of source-only VAs,
 conflicting aliases, lifetime and teardown. The two smaller dedicated WB heaps
 use `ScarlettWbPagesHeapV1` independently of the existing WB pool size contract.
@@ -58,7 +58,29 @@ views. The ordinary acquire operations refuse the latter. `ImportedReadSpan`
 uses `0x53430010/11` privately and only records bounded source copies. This is
 a restriction of the translation path, not a GPU page-table permission or a
 sandbox against arbitrary native code. CPU access is never made read-only.
-No GPU instruction-fetch path from this backing has been qualified.
+
+The last extent is a code store, not an executable CPU mapping or a host GPU
+instruction buffer. `0x53430012` maps the exact 432-page WC backing; the
+buffer-acquire operations refuse it. `0x53430013` copies at most 64 KiB from
+one live code view while holding Wine's VM lock; it returns no backing handle.
+In `code_store.hpp`, `xs_code_pipeline` compares the private snapshot with
+known-good host DXIL before creating a real desktop compute PSO from the
+snapshot. The approved bytes must come from trusted host code. Title writes
+after capture cannot change the PSO. The synthetic consumer supplies two
+DXC-compiled fixtures, checks rejection after changing one byte, and dispatches
+both PSOs after unmapping and reusing the title VA. Build the fixtures next to
+the synthetic executable, then launch it from that directory:
+
+```sh
+for entry in first second; do
+    dxc -T cs_6_0 -E "$entry" -Qstrip_debug -Qstrip_reflect \
+        -Fo "$game/$entry.dxil" "$src/test-code-store.hlsl"
+done
+```
+
+This tests the translated store and host shader consumer, not an equivalence
+between retail console shader ISA and DXIL. No retail consumer or trusted
+translation for an unknown title shader is supplied.
 
 The separate 20 MiB CPU allocation at RVA `+0x5ba6c30` saves its result at
 `+0x78cb800` and branches to `+0x5ba6c65` on null. On success, `+0x28b7b09`

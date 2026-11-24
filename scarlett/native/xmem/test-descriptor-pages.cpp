@@ -1,4 +1,5 @@
 #include "gpu_buffer.hpp"
+#include "code_store.hpp"
 #include <cstdio>
 #include <initializer_list>
 
@@ -10,6 +11,84 @@ __declspec(dllimport) void *WINAPI XMemVirtualAlloc(void *,SIZE_T,DWORD,ULONGLON
 }
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s (error %lu)\n",__LINE__,#x,GetLastError()); return 1; } } while (0)
 #define HR(x) CHECK(SUCCEEDED(x))
+
+static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, ULONG_PTR *ids)
+{
+    D3D12_ROOT_PARAMETER rp = {};
+    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    D3D12_ROOT_SIGNATURE_DESC rs = {1,&rp,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    ID3DBlob *blob;
+    ID3D12RootSignature *root;
+    HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
+    HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
+    blob->Release();
+    BYTE code[8192];
+    UINT n = 0;
+    ID3D12PipelineState *ps[2], *bad;
+    MEMORY_BASIC_INFORMATION m;
+    CHECK(VirtualQuery(base,&m,sizeof m) && m.RegionSize==size && m.State==MEM_COMMIT &&
+          m.Protect==(PAGE_READWRITE|PAGE_WRITECOMBINE));
+    DWORD old_protect;
+    CHECK(!VirtualProtect(base,65536,PAGE_EXECUTE_READWRITE,&old_protect));
+    for (int i=0;i<2;i++) {
+        FILE *file=fopen(i?"second.dxil":"first.dxil","rb");
+        CHECK(file);
+        n=fread(code,1,sizeof code,file);
+        CHECK(n && n<sizeof code && feof(file)); fclose(file);
+        auto slot=base+size-n;
+        D3D12_SHADER_BYTECODE allowed={code,n};
+        memcpy(slot,code,n); MemoryBarrier();
+        HR(xs_code_pipeline(d,root,slot,allowed,&ps[i]));
+        CHECK(FAILED(xs_code_pipeline(d,root,slot+1,allowed,&bad)) && !bad);
+        slot[n-1]^=1; MemoryBarrier();
+        CHECK(xs_code_pipeline(d,root,slot,allowed,&bad)==E_NOTIMPL && !bad);
+        memcpy(ordinary,code,n); MemoryBarrier();
+        CHECK(FAILED(xs_code_pipeline(d,root,ordinary,allowed,&bad)) && !bad);
+    }
+    scarlett_section_info qi;
+    for (ULONG op: {0x53430002u,0x53430005u,0x5343000au,0x5343000cu,0x53430010u,0x53430011u})
+        CHECK(FAILED(scarlett_query_section(op,base,4,&qi)));
+    BYTE *slot=base+size-n;
+    memcpy(slot,code,n); MemoryBarrier();
+    CHECK(XMemMapPhysicalPages(base,size/65536,nullptr)==base);
+    CHECK(FAILED(xs_code_pipeline(d,root,slot,{code,n},&bad)) && !bad);
+    CHECK(XMemMapPhysicalPages(base,size/65536,ids)==base && !memcmp(slot,code,n));
+    CHECK(XMemMapPhysicalPages(base,size/65536,nullptr)==base && VirtualFree(base,0,MEM_RELEASE));
+    CHECK(VirtualAlloc(base,size,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==base);
+    memcpy(slot,code,n);
+    CHECK(FAILED(xs_code_pipeline(d,root,slot,{code,n},&bad)) && !bad);
+
+    D3D12_COMMAND_QUEUE_DESC qd={}; qd.Type=D3D12_COMMAND_LIST_TYPE_COMPUTE;
+    ID3D12CommandQueue *q; ID3D12CommandAllocator *a; ID3D12GraphicsCommandList *l;
+    HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q)));
+    HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
+    HR(d->CreateCommandList(0,qd.Type,a,ps[0],IID_PPV_ARGS(&l)));
+    D3D12_HEAP_PROPERTIES h={}; h.Type=D3D12_HEAP_TYPE_DEFAULT; h.CreationNodeMask=h.VisibleNodeMask=1;
+    D3D12_RESOURCE_DESC r={}; r.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER; r.Width=8;
+    r.Height=r.DepthOrArraySize=r.MipLevels=r.SampleDesc.Count=1; r.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    r.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ID3D12Resource *dst,*rb;
+    HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&r,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&dst)));
+    h.Type=D3D12_HEAP_TYPE_READBACK; r.Flags=D3D12_RESOURCE_FLAG_NONE;
+    HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&r,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));
+    l->SetComputeRootSignature(root); l->SetComputeRootUnorderedAccessView(0,dst->GetGPUVirtualAddress());
+    l->Dispatch(1,1,1); l->SetPipelineState(ps[1]); l->Dispatch(1,1,1);
+    D3D12_RESOURCE_BARRIER b={}; b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource=dst; b.Transition.StateBefore=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;
+    l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb,0,dst,0,8); HR(l->Close());
+    ID3D12CommandList *batch[]={l}; q->ExecuteCommandLists(1,batch);
+    ID3D12Fence *f; HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));
+    HR(q->Signal(f,1)); HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr); CHECK(e);
+    HR(f->SetEventOnCompletion(1,e)); CHECK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);
+    UINT *data; HR(rb->Map(0,nullptr,(void **)&data));
+    CHECK(data[0]==0xc0de8404 && data[1]==0x8404beef);
+    rb->Unmap(0,nullptr);
+    CloseHandle(e); f->Release(); l->Release(); a->Release(); q->Release(); dst->Release(); rb->Release();
+    ps[0]->Release(); ps[1]->Release(); root->Release();
+    puts("PASS code store: two immutable PSOs from the same last-byte-aligned slot, post-reuse fenced GPU results c0de8404/8404beef; imports and unknown code denied");
+    return 0;
+}
 
 int main()
 {
@@ -37,7 +116,7 @@ int main()
     CHECK(XMemMapPhysicalPages(at[4],counts[4],ids+fourth)==at[4]);
     CHECK(XMemMapPhysicalPages(at[0],counts[0],ids+2352)==at[0]);
     CHECK(XMemMapPhysicalPages(at[1],counts[1],ids+2512)==at[1]);
-    CHECK(!XMemMapPhysicalPages(at[2],counts[2],ids+2528));
+    CHECK(XMemMapPhysicalPages(at[2],counts[2],ids+2528)==at[2]);
     MEMORY_BASIC_INFORMATION m;
     CHECK(VirtualQuery(at[3],&m,sizeof m) && m.RegionSize==fourth*pg &&
           m.Protect==(PAGE_READWRITE|PAGE_WRITECOMBINE));
@@ -124,6 +203,8 @@ int main()
     CHECK(XMemMapPhysicalPages(alias,1,nullptr)==alias);
     CHECK(!XMemMapPhysicalPages(alias,1,ids+fourth)); // WC alias of a WB ID denied
     CHECK(!XMemMapPhysicalPages(alias,1,ids+2512)); // cannot get RW alias via this worker arena
+    CHECK(!XMemMapPhysicalPages(alias,1,ids+2528));
+    CHECK(!test_code(d,at[2],counts[2]*pg,at[1],ids+2528));
     CHECK(XMemMapPhysicalPages(at[3],fourth,nullptr)==at[3]);
     CHECK(!XMemMapPhysicalPages(at[3],fourth,ids+fourth)); // no WC map covering WB IDs
     CHECK(XMemMapPhysicalPages(at[3],fourth,ids)==at[3] && *last==0x839ab7c1);
@@ -141,5 +222,5 @@ int main()
     CHECK(XMemFreePhysicalPages(n,ids) && *(volatile DWORD *)((BYTE *)wb.cpu()+offset)==0xb5f30003);
     CloseHandle(event);
     tmp->Release(); fence->Release(); list->Release(); alloc->Release(); queue->Release(); d->Release();
-    puts("PASS actual 2960 IDs: WC/RW, WB/RW, WB/source and WC/source, disjoint policies, fenced GPU copies, RX rejected, unmap/reuse/free");
+    puts("PASS actual 2960 IDs: all five slices, fenced GPU copies and compiled shader consumption, unmap/reuse/free");
 }
