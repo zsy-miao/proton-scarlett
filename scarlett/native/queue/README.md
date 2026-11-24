@@ -235,3 +235,29 @@ reference fixed. Observe work following the wait with the cell below, equal
 to and above the target, including values differing only in the high 32 bits.
 The guard remains: the observed `1 >= 1` while recording does not establish
 that later GPU work may proceed when this list is submitted or replayed.
+
+### Experimental whole-queue wait
+
+Two scratch builds support the observed pooled Direct list, comparison `7`,
+flag `1` and control-page offset zero. Both record the wait without reading
+the counter to decide whether to skip it. The test implementation holds
+all following Direct-queue work; it does not identify the Xbox engine.
+
+* **RADV:** A GPU test submitted the list behind a gate, reset and released
+  the guest list, then reused the control-page address. The replacement held
+  the target; the original counter was lower by `2^32`. The first marker,
+  timestamp and second marker completed. The following copy, shader output
+  and fence stayed pending. Raising the original counter above target
+  released all three. In separate two-list tests, equality also released the
+  suffix, and an independent COPY queue published an overshoot to the original
+  allocation while the Direct queue was blocked.
+* **RTX 3070:** The CPU-only page required a retained alias. On two submissions
+  of the same recording, a below-target original with matching low 32 bits
+  kept the suffix and fence pending. Equality and unsigned overshoot released
+  them. An independent Direct queue retired while the first was stalled.
+
+On both experimental builds retail next called list `+0x490` (return
+`+0x32113`). The AMD trace parked the concurrent tagged submit **at its
+guard** to observe the recording thread; it did not execute the tagged list.
+These traces show recording, not retail execution. A producer scheduled
+behind the stronger wait could deadlock even if it could run on the console.
