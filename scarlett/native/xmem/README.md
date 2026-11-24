@@ -1,6 +1,6 @@
 # xmem.dll — Windows x64 subset for Proton
 
-This original DLL has nine named exports. It needs only Win32; there is no
+This original DLL has nine named exports. There is no
 console SDK, external compatibility runtime, or ordinal compatibility contract.
 
 | Export | Supported behavior |
@@ -10,10 +10,11 @@ console SDK, external compatibility runtime, or ordinal compatibility contract.
 | [`XMemIsToolsMemAvailable`](https://docs.xbox.com/reference/system/xmem/functions/xmemistoolsmemavailable) | Returns `FALSE`: there is no profiling-mode tools partition. |
 | [`XMemVirtualAlloc`](https://docs.xbox.com/reference/system/xmem/functions/xmemvirtualalloc) | Untagged `XMEM_CPU` (`0x00000001`), ordinary 4 KiB pages, `MEM_RESERVE`, `MEM_COMMIT`, or both, with `PAGE_READWRITE` or `PAGE_READONLY`. Uses Win32 `VirtualAlloc` with the caller's base, size and protection; release with `VirtualFree`. |
 | `XMemVirtualAlloc`, 64 KiB reservations | Two supported `0x20402000` forms: CPU mappable (`0x21`, `PAGE_READWRITE`) and graphics VA only (`3`, `0x801`). Size and any specified base must be multiples of 64 KiB. |
+| `XMemVirtualAlloc`, graphics reserve+commit | Type `0x20003000`, flags `0x183`, protection `0x22004`: a live GPU-importable shared section on patched Wine. Size must be a positive multiple of 2 MiB; a requested base must also be aligned to 2 MiB and free. Release with `VirtualFree(base, 0, MEM_RELEASE)`. |
 | [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | CPU mappings of 64 KiB page runs, with shared backing. See limits below. |
 
 Unsupported virtual allocation flags, types, or protections return `NULL` and set
-`ERROR_NOT_SUPPORTED` (this DLL's diagnostic). This includes graphics commits,
+`ERROR_NOT_SUPPORTED` (this DLL's diagnostic). This includes other graphics commits,
 tools memory, tags, and other special page sizes or protection modifiers.
 Errors from supported calls pass through from Win32. There is no console
 budget accounting.
@@ -24,8 +25,7 @@ The two startup reservations consume process **address space only**. The CPU
 arena uses a Win32 placeholder. The graphics form reserves inaccessible VA:
 the returned pointer is **not a GPU address** and there is no GPU mapping or
 memory allocation. The DLL rejects mapping CPU sections into the graphics
-reservation. GPU commit, bandwidth guarantees, and D3D resource sharing need
-a graphics backend; treating these as anonymous CPU RAM would be incorrect.
+reservation. A separate committed graphics allocation is described below.
 
 With allocation flags zero, each page run owns a pagefile-backed Win32 section.
 Returned numbers are process-local page identifiers, not OS PFNs, DMA
@@ -43,7 +43,7 @@ or raw placeholder edits, for active views. The shim reclaims released arena
 bookkeeping on subsequent CPU reservations. Replacing live mappings, partial
 unmaps/frees, arbitrary page lists, 2 MiB clusters and scatter are unsupported.
 
-### Graphics commit: measured blocker
+### Graphics commit and consumption
 
 In `scarlett-run.x6UanyCT/logs/steam-999001.log:239–246`, the trap is at
 RVA `0x1e1d3a7`, with `RAX=0`, `R15=0x49400000` and pool index `R13=0`.
@@ -54,65 +54,49 @@ At `0x1e1d189` a null result branches directly to this trap. That is a
 preceding large allocations were VA-only. `R9=0x182` in the exception log
 is **after** the call; the call site loads `0x183`. No physical-page API
 failed on this branch. Other pool cases at `0x1e1d288` and `0x1e1d369` use
-the same flags with per-pool sizes; `0x1e1d4d6` uses `0x283, 0x2404`.
-Those are static call sites, not observed failures.
+the same flags with per-pool sizes. The installed fork passed this first commit
+and reached `0x1e1d4d6`: a 2,199 MiB request with flags `0x283` and protection
+`0x2404` returned null, followed by a breakpoint at `0x1e1d4e0`.
 
-`gpu_buffer.hpp` imports a **privately owned view** of a pagefile-backed
-section via desktop
+[`marked_section.h`](marked_section.h) uses the [native x64 Wine lifetime ABI](../../wine-patches/README.md)
+to create the title view. Before returning it, XMem validates the entire
+allocation on the default host D3D12 device (feature level 12.0): it acquires
+the backing, maps a **privately owned view** and imports it via desktop
 [`OpenExistingHeapFromAddress`](https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12device3-openexistingheapfromaddress),
-then creates a placed cross-adapter buffer. The test verifies 2 MiB VA
-alignment; this does not establish physical page size, console cache
-attributes or GPU-local bandwidth.
+then creates a placed cross-adapter buffer and checks its GPU virtual address.
+The temporary resource, heap and alias are released immediately. Stock Wine
+or a failed device/heap/buffer import returns `NULL` without leaving the title
+view mapped. CPU-only requests do not load D3D12.
 
-On an NVIDIA RTX 3070 (driver 595.112.7), vkd3d-proton 3.0.0 build
-`212991fc2c266bc`, `test_gpu.cpp` passed at the exact `0x49400000` size.
-The observed `VirtualFree(base, 0, MEM_RELEASE)` results were:
+When consuming a live title range, use `ImportedBuffer::acquire(device,
+address, bytes, &offset)` from `gpu_buffer.hpp` on the owning device. Use the
+returned byte offset within `resource()` (or add it to the resource's GPU
+VA). Keep the `ImportedBuffer` alive until every queue using it retires.
+Ordinary title release and VA reuse leave this private binding on its original
+backing. There is no cache keyed by title VA. This establishes shared storage
+and 2 MiB **VA** alignment, not physical large pages, console cache policy or
+GPU-local bandwidth.
 
-| Title VA backing | Result |
-| --- | --- |
-| `MapViewOfFileEx` | `FALSE`, error 87; remains committed. |
-| `MapViewOfFile3` replacing a `VirtualAlloc2` placeholder | Same failure. |
-| `VirtualAlloc2` replacing a placeholder with `MEM_RESERVE \| MEM_COMMIT \| MEM_REPLACE_PLACEHOLDER` | Success; `MEM_FREE` afterward. Before release it was `MEM_PRIVATE`; there is no section argument to this API. |
+On the RTX 3070 test host a synthetic caller obtained the full `0x49400000`
+allocation through the production export, imported its final four bytes, and
+retained the old data across ordinary release and exact VA reuse. The same
+export failed with the requested VA still free on stock Wine and on patched
+Wine with no usable Vulkan device.
 
-The copy queue first saved a title-written word to a default heap. With a
-second GPU copy submitted but blocked on a fence, the test explicitly
-**unmapped** the title view and mapped an unrelated section at the exact same
-VA with identical `VirtualQuery` metadata. After opening the gate and
-observing the retirement fence, the GPU had written the saved word to the
-last word of the old backing. The replacement's marker was unchanged. The
-test never imports the public VA and holds the private view and resource
-through retirement.
-
-**Production decision:** keep the public request unsupported. The title
-imports ordinary `VirtualFree` (IAT `0x6793a70`). In [pinned Wine's VM
-implementation](https://github.com/ValveSoftware/wine/blob/e60892cc2398b0a83c332a2078c7b85e47bdb42b/dlls/ntdll/unix/virtual.c#L5790-L5815),
-`NtFreeVirtualMemory` rejects non-valloc views before dispatching `MEM_RELEASE`;
-placeholder replacement preserves the section classification. Importing a
-private allocation lazily from its raw VA instead would leave the consumer
-unable to prevent a concurrent free or distinguish reuse.
-
-For the two-view path Wine needs an opt-in, release-compatible title view
-and a way to acquire a referenced backing and offset for a live range
-atomically with respect to release. Ordinary release must remove that view
-and invalidate future lookups before VA reuse; already-acquired GPU bindings
-retain the old backing until all consuming queues retire. A section unmap
-must also update wineserver mapping state. Ordinary section views must keep
-their current behavior. A consumer taking an explicit lifetime token at
-allocation could avoid a late pointer lookup, but would still need the
-title-side release contract. No public GPU allocation or resolver is enabled.
-
-To reproduce on the NixOS GPU test host, from this directory:
+After building the DLL and import library below, run the GPU lifetime test
+on the NixOS GPU test host with a patched compatibility tool:
 
 ```sh
 mkdir -p build/gpu-game build/gpu-run
+cp build/xmem.dll build/gpu-game/
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
-  test_gpu.cpp -ld3d12 -o build/gpu-game/game_scarlett_master.exe
-TMPDIR="$PWD/build/gpu-run" ../../test-launch-nixos.sh "$PWD/build/gpu-game"
-grep -h 'PASS: VirtualFree rejected both section views' build/gpu-run/scarlett-run.*/logs/steam-999001.log
+  -DTEST_MARKED_SECTION test_gpu.cpp -Lbuild -lxmem -ld3d12 -o build/gpu-game/game_scarlett_master.exe
+TMPDIR="$PWD/build/gpu-run" ../../test-launch-nixos.sh "$PWD/build/gpu-game" "$patched_tool"
+grep -h 'PASS:' build/gpu-run/scarlett-run.*/logs/steam-999001.log
 ```
 
 The harness requires this executable name; the directory above contains only
-the synthetic test.
+the synthetic test and the adjacent provider.
 
 ### Heap allocation attributes and ownership
 
@@ -147,7 +131,8 @@ From this directory on Linux with x86-64 MinGW-w64 and Wine:
 
 ```sh
 mkdir -p build
-x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -Werror -shared xmem.c \
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -c xmem.c -o build/xmem.o
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -shared -static build/xmem.o graphics.cpp -lntdll \
   -Wl,--out-implib,build/libxmem.a -o build/xmem.dll
 x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -Werror test.c \
   -Lbuild -lxmem -o build/test.exe
@@ -159,6 +144,8 @@ for mode in 0 1 2; do
 done
 export WINEPREFIX="$PWD/build/prefix" WINEDLLOVERRIDES=xmem=n
 for exe in build/test.exe build/test_pages.exe build/test-alloc-{0,1,2}.exe; do wine "$exe" || exit 1; done # bash
+# On stock Wine, also check that the graphics path fails and leaves the VA free:
+wine build/test.exe --no-graphics
 ```
 
 The synthetic executable imports the adjacent DLL by name, checks page state

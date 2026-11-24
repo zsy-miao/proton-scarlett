@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 
 __declspec(dllimport) BOOL WINAPI XMemIsToolsMemAvailable(void);
 __declspec(dllimport) PVOID WINAPI XMemVirtualAlloc(PVOID, SIZE_T, DWORD, ULONGLONG, DWORD);
@@ -9,7 +10,7 @@ __declspec(dllimport) PVOID WINAPI XMemVirtualAlloc(PVOID, SIZE_T, DWORD, ULONGL
     return 1; \
 } } while (0)
 
-int main(void)
+int main(int argc, char **argv)
 {
     const ULONGLONG cpu = 1;
     MEMORY_BASIC_INFORMATION info;
@@ -45,6 +46,18 @@ int main(void)
     CHECK(!XMemVirtualAlloc(NULL, 0x49400000, 0x20003000, 0x283, 0x2404));
     CHECK(GetLastError() == ERROR_NOT_SUPPORTED);
     CHECK(!GetProcAddress(GetModuleHandleA("xmem.dll"), "XMemTransferMemory"));
+    if (argc == 2 && !strcmp(argv[1], "--no-graphics")) {
+        /* Run on stock Wine or with the graphics backend disabled. */
+        const SIZE_T align = 2u << 20;
+        base = VirtualAlloc(NULL, 2 * align, MEM_RESERVE, PAGE_NOACCESS);
+        CHECK(base);
+        void *at = (void *)(((UINT_PTR)base + align - 1) & ~(align - 1));
+        CHECK(VirtualFree(base, 0, MEM_RELEASE));
+        SetLastError(ERROR_SUCCESS);
+        CHECK(!XMemVirtualAlloc(at, align, 0x20003000, 0x183, 0x22004));
+        CHECK(GetLastError() != ERROR_SUCCESS);
+        CHECK(VirtualQuery(at, &info, sizeof(info)) && info.State == MEM_FREE);
+    }
     puts("xmem CPU page allocation tests passed");
     return 0;
 }

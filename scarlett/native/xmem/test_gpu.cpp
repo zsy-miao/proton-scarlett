@@ -1,6 +1,9 @@
 /* Synthetic Proton release/alias test. Never submit GPU work against the public VA. */
 #include "gpu_buffer.hpp"
 #include <cstdio>
+#ifdef TEST_MARKED_SECTION
+extern "C" __declspec(dllimport) void *WINAPI XMemVirtualAlloc(void *, SIZE_T, DWORD, ULONGLONG, DWORD);
+#endif
 
 // On failure after submission, tear down the process rather than unwind a busy heap.
 #define CHECK(expr) do { if (!(expr)) { std::fprintf(stderr, "line %d: %s, last error %lu\n", \
@@ -51,24 +54,21 @@ int main()
 #ifdef TEST_MARKED_SECTION
     CHECK(UnmapViewOfFile(title));
     CHECK(CloseHandle(section));
-    struct SectionInfo { SIZE_T size; void *base; SIZE_T view_size, offset; HANDLE section; };
-    static_assert(sizeof(SectionInfo) == 40);
-    using Query = LONG (WINAPI *)(HANDLE, const void *, ULONG, void *, SIZE_T, SIZE_T *);
-    auto nt_query = (Query)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryVirtualMemory");
-    SectionInfo info = {size, nullptr, 0, 0, nullptr};
-    CHECK(nt_query && !nt_query(GetCurrentProcess(), title, 0x53430001, &info, sizeof info, nullptr));
-    CHECK(info.base == title && info.view_size == size);
-    info.size = 4;
-    CHECK(!nt_query(GetCurrentProcess(), title + size / 4 - 1, 0x53430002, &info, sizeof info, nullptr));
-    CHECK(info.offset == size - 4 && info.view_size == size && info.section);
-    section = info.section;
+    title = (DWORD *)XMemVirtualAlloc(nullptr, size, 0x20003000, 0x183, 0x22004);
+    CHECK(title && !((UINT_PTR)title % align));
 #endif
     auto original = query(title);
     ID3D12Device3 *device;
     HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)));
     ImportedBuffer allocation;
+#ifdef TEST_MARKED_SECTION
+    SIZE_T offset;
+    HR(allocation.acquire(device, title + size / 4 - 1, 4, &offset));
+    CHECK(offset == size - 4);
+#else
     HR(allocation.create(device, section, size));
     CHECK(CloseHandle(section));
+#endif
     auto cpu = (volatile DWORD *)allocation.cpu();
     auto shared = allocation.resource();
     CHECK(cpu && cpu != title && !((UINT_PTR)cpu % align) && shared->GetGPUVirtualAddress() &&

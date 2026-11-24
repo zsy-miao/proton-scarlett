@@ -1,4 +1,4 @@
-/* Private implementation included by xmem.c for the single-source DLL build. */
+/* Private physical-page implementation included by xmem.c. */
 #define XMEM_PAGE ((SIZE_T)65536)
 static PVOID (WINAPI *reserve2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 static PVOID (WINAPI *map3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
