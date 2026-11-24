@@ -1,5 +1,10 @@
 # Write-combined graphics pool
 
+For [LoadInstances](../native/bvh-load-instances.md), additionally apply
+`0007-vkd3d-bounded-load-instances.patch` after `0006` and nested
+`../dxil-spirv-patches/0002-bounded-load-instances.patch` after `0001`.
+Build the matching `d3d12core.dll` and native adapter together.
+
 For `WriteInstances`, apply `0006-vkd3d-bounded-builder-memory.patch` after
 `0005`, and apply `../dxil-spirv-patches/0001-bounded-builder-memory.patch`
 inside vkd3d-proton's `subprojects/dxil-spirv` (`219d770799606f15abb3c57a8a9b9d19c2ae94ca`).

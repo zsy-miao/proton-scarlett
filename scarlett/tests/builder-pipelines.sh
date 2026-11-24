@@ -23,10 +23,13 @@ builder 0xc8ab0 0x1410
 offline 0xc6be0 0x1ec4
 partitions 0xc5660 0x1580
 instances 0xc0d20 0x493c
+load-instances 0xb97f0 0x752c
 reset 0xb76e0 0xfe8
 index 0xb3fd0 0x1004
+copy-update 0xb4fe0 0x126c
+copycounters 0xb2ee0 0x10e8
 SLICES
-for fixture in pipeline partitions instances reset; do
+for fixture in pipeline partitions instances load-instances reset copy-update copycounters; do
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
         "$s/test-bvh-$fixture.cpp" "$w/d3d12_device.o" "$w/queue.o" -ld3d12 \
         -o "$w/game/game_scarlett_master.exe"

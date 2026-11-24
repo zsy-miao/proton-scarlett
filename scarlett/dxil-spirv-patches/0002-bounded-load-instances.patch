@@ -1,0 +1,296 @@
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6315,6 +6315,11 @@
+ static unsigned xbox_memory_opcode(llvm::Function *fn)
+ {
+ 	if (fn->begin() != fn->end()) return 0;
++	if (fn->getName() == "xbox.Min3_F32") return 8;
++	if (fn->getName() == "xbox.Max3_F32") return 9;
++	if (fn->getName() == "xbox.Med3_F32") return 10;
++	if (fn->getName() == "xbox.global_atomic_fmin") return 368;
++	if (fn->getName() == "xbox.global_atomic_fmax") return 369;
+ 	if (fn->getName() == "xbox.global_load_dword_with_cache") return 356;
+ 	if (fn->getName() == "xbox.global_load_dwordx3_with_cache") return 358;
+ 	if (fn->getName() == "xbox.global_load_dwordx4_with_cache") return 359;
+@@ -6325,14 +6330,42 @@
+ 
+ static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
+ {
++	const bool atomic = opnum >= 368;
+ 	const bool read = opnum < 360;
+-	const unsigned n = opnum - (read ? 356 : 360) + 1;
++	const auto f32 = llvm::Type::TypeID::FloatTyID;
++	if (opnum <= 10)
++	{
++		if (impl.xbox_atomic_descriptor >= impl.root_descriptor_count || call.getNumOperands() != 4 ||
++		    call.getType()->getTypeID() != f32) return false;
++		auto *num = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
++		if (!num || num->getType()->getIntegerBitWidth() != 32 || num->getUniqueInteger().getZExtValue() != opnum) return false;
++		for (unsigned i = 1; i < 4; i++)
++			if (call.getOperand(i)->getType()->getTypeID() != f32) return false;
++		if (!impl.glsl_std450_ext) impl.glsl_std450_ext = impl.builder().import("GLSL.std.450");
++		auto binary = [&](bool maximum, spv::Id a, spv::Id b, bool final) {
++			auto *op = final ? impl.allocate(spv::OpExtInst, &call) : impl.allocate(spv::OpExtInst, impl.get_type_id(call.getType()));
++			op->add_id(impl.glsl_std450_ext); op->add_literal(maximum ? GLSLstd450NMax : GLSLstd450NMin);
++			op->add_id(a); op->add_id(b); impl.add(op); return op->id;
++		};
++		auto a = impl.get_id_for_value(call.getOperand(1)), b = impl.get_id_for_value(call.getOperand(2));
++		auto c = impl.get_id_for_value(call.getOperand(3));
++		if (opnum == 10)
++		{
++			auto lo = binary(false, a, b, false), hi = binary(true, a, b, false);
++			binary(true, lo, binary(false, hi, c, false), true);
++		}
++		else binary(opnum == 9, binary(opnum == 9, a, b, false), c, true);
++		return true;
++	}
++	const unsigned word = impl.xbox_range_word + (atomic ? 3u : 0u);
++	const unsigned desc = atomic ? impl.xbox_atomic_descriptor : impl.xbox_range_descriptor;
++	const unsigned n = atomic ? 1 : opnum - (read ? 356 : 360) + 1;
+ 	auto integer = [](const llvm::Type *t, unsigned w) { return t->isIntegerTy() && t->getIntegerBitWidth() == w; };
+ 	if (!impl.options.physical_storage_buffer || impl.execution_model != spv::ExecutionModelGLCompute ||
+-	    !impl.root_constant_id || impl.xbox_range_descriptor >= impl.root_descriptor_count ||
+-	    impl.root_constant_num_words < 3 || impl.xbox_range_word > impl.root_constant_num_words - 3 ||
+-	    read != impl.xbox_read_only || call.getNumOperands() != (read ? 4u : 5u) ||
+-	    (!read && call.getType()->getTypeID() != llvm::Type::TypeID::VoidTyID))
++	    !impl.root_constant_id || desc >= impl.root_descriptor_count ||
++	    impl.root_constant_num_words < 3 || word > impl.root_constant_num_words - 3 ||
++	    (!atomic && read != impl.xbox_read_only) || call.getNumOperands() != (atomic ? 3u : read ? 4u : 5u) ||
++	    (!read && call.getType()->getTypeID() != (atomic ? f32 : llvm::Type::TypeID::VoidTyID)))
+ 		return false;
+ 	auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 	if (!opcode || !integer(opcode->getType(), 32) || opcode->getUniqueInteger().getZExtValue() != opnum ||
+@@ -6340,7 +6373,7 @@
+ 	for (unsigned i = read ? 2 : 3; i < call.getNumOperands(); i++)
+ 		if (!llvm::isa<llvm::UndefValue>(call.getOperand(i)) || !integer(call.getOperand(i)->getType(), 32)) return false;
+ 	auto *payload = read ? call.getType() : call.getOperand(2)->getType();
+-	if (n == 1 && !integer(payload, 32)) return false;
++	if (n == 1 && (atomic ? payload->getTypeID() != f32 : !integer(payload, 32))) return false;
+ 	if (n > 1)
+ 	{
+ 		auto *s = llvm::dyn_cast<llvm::StructType>(payload);
+@@ -6348,7 +6381,7 @@
+ 		for (unsigned i = 0; i < n; i++) if (!integer(s->getElementType(i), 32)) return false;
+ 	}
+ 	auto &b = impl.builder();
+-	auto &helper = impl.xbox_helpers[n - 1];
++	auto &helper = impl.xbox_helpers[atomic ? 4u + opnum - 368u : n - 1];
+ 	auto payload_id = impl.get_type_id(payload);
+ 	if (read && n > 1) impl.llvm_composite_meta[&call].forced_composite = true;
+ 	if (!helper)
+@@ -6358,7 +6391,7 @@
+ 		spv::Block *entry;
+ 		Vector<spv::Id> params = {u64};
+ 		if (!read) params.push_back(payload_id);
+-		auto *fn = b.makeFunctionEntry(spv::NoPrecision, read ? payload_id : b.makeVoidType(),
++		auto *fn = b.makeFunctionEntry(spv::NoPrecision, (read || atomic) ? payload_id : b.makeVoidType(),
+ 		                               call.getCalledFunction()->getName().data(), params, {}, &entry);
+ 		b.setBuildPoint(entry);
+ 		auto storage = impl.options.inline_ubo_enable ? spv::StorageClassUniform : spv::StorageClassPushConstant;
+@@ -6369,8 +6402,8 @@
+ 			return b.createLoad(b.createAccessChain(storage, impl.root_constant_id, indices));
+ 		};
+ 		auto guest = b.createUnaryOp(spv::OpBitcast, u64, b.createCompositeConstruct(b.makeVectorType(u32,2),
+-		                       {load(impl.xbox_range_word), load(impl.xbox_range_word + 1)}));
+-		auto bytes = b.createUnaryOp(spv::OpUConvert, u64, load(impl.xbox_range_word + 2));
++		                       {load(word), load(word + 1)}));
++		auto bytes = b.createUnaryOp(spv::OpUConvert, u64, load(word + 2));
+ 		auto addr = fn->getParamId(0), delta = b.createBinOp(spv::OpISub, u64, addr, guest);
+ 		auto width = b.makeUint64Constant(n * 4);
+ 		auto ok = b.createBinOp(spv::OpUGreaterThanEqual, bit, addr, guest);
+@@ -6380,7 +6413,7 @@
+ 		require(b.createBinOp(spv::OpIEqual, bit, b.createBinOp(spv::OpBitwiseAnd, u64, delta, b.makeUint64Constant(3)), b.makeUint64Constant(0)));
+ 		spv::Builder::If guard(ok, 0, b);
+ 		auto host = b.createUnaryOp(spv::OpBitcast, u64, b.createLoad(b.createAccessChain(storage, impl.root_constant_id,
+-		                             {b.makeUintConstant(impl.xbox_range_descriptor)})));
++		                             {b.makeUintConstant(desc)})));
+ 		auto type = n == 1 ? u32 : b.makeVectorType(u32, n);
+ 		auto ptr = b.createUnaryOp(spv::OpConvertUToPtr, b.makePointer(spv::StorageClassPhysicalStorageBuffer, type),
+ 		                           b.createBinOp(spv::OpIAdd, u64, host, delta));
+@@ -6402,7 +6435,20 @@
+ 			for (unsigned i = 0; i < n; i++) parts.push_back(b.createCompositeExtract(data, u32, i));
+ 			data = b.createCompositeConstruct(read ? payload_id : type, parts);
+ 		}
+-		if (!read)
++		if (atomic)
++		{
++			// For non-NaN IEEE floats the input sign selects the integer ordering.
++			auto v = b.createUnaryOp(spv::OpBitcast, u32, data);
++			auto neg = b.createBinOp(spv::OpUGreaterThanEqual, bit, v, b.makeUintConstant(0x80000000u));
++			auto scope = b.makeUintConstant(spv::ScopeDevice), relaxed = b.makeUintConstant(0);
++			spv::Builder::If sign(neg, 0, b);
++			auto t = b.createOp(opnum == 368 ? spv::OpAtomicUMax : spv::OpAtomicUMin, u32, {ptr, scope, relaxed, v});
++			auto tb = b.getBuildPoint()->getId(); sign.makeBeginElse();
++			auto f = b.createOp(opnum == 368 ? spv::OpAtomicSMin : spv::OpAtomicSMax, u32, {ptr, scope, relaxed, v});
++			auto fb = b.getBuildPoint()->getId(); sign.makeEndIf();
++			data = b.createUnaryOp(spv::OpBitcast, payload_id, b.createOp(spv::OpPhi, u32, {t, tb, f, fb}));
++		}
++		else if (!read)
+ 		{
+ 			auto store = std::make_unique<spv::Instruction>(spv::OpStore);
+ 			store->addIdOperand(ptr); store->addIdOperand(data);
+@@ -6411,12 +6457,12 @@
+ 		}
+ 		auto taken = b.getBuildPoint()->getId();
+ 		guard.makeEndIf();
+-		b.makeReturn(true, read ? b.createOp(spv::OpPhi, payload_id,
++		b.makeReturn(true, (read || atomic) ? b.createOp(spv::OpPhi, payload_id,
+ 		             {data, taken, b.makeNullConstant(payload_id), entry->getId()}) : 0);
+ 		b.setBuildPoint(saved);
+ 		helper = fn->getId();
+ 	}
+-	auto *op = read ? impl.allocate(spv::OpFunctionCall, &call) : impl.allocate(spv::OpFunctionCall, b.makeVoidType());
++	auto *op = (read || atomic) ? impl.allocate(spv::OpFunctionCall, &call) : impl.allocate(spv::OpFunctionCall, b.makeVoidType());
+ 	op->add_id(helper);
+ 	op->add_id(impl.get_id_for_value(call.getOperand(1)));
+ 	if (!read) op->add_id(impl.get_id_for_value(call.getOperand(2)));
+@@ -6449,6 +6495,27 @@
+ 		}
+ 		else if (strncmp(called_function->getName().data(), "llvm.", 5) == 0)
+ 		{
++			if (called_function->getName() == "llvm.copysign.f32" && xbox_atomic_descriptor < root_descriptor_count)
++			{
++				auto f32 = llvm::Type::TypeID::FloatTyID;
++				if (called_function->begin() != called_function->end() || call_inst->getNumOperands() != 2 ||
++				    call_inst->getType()->getTypeID() != f32 || call_inst->getOperand(0)->getType()->getTypeID() != f32 ||
++				    call_inst->getOperand(1)->getType()->getTypeID() != f32) return false;
++				auto u32 = builder().makeUintType(32);
++				spv::Id v[2];
++				for (unsigned i = 0; i < 2; ++i)
++				{
++					auto *bits = allocate(spv::OpBitcast, u32);
++					bits->add_id(get_id_for_value(call_inst->getOperand(i))); add(bits);
++					auto *masked = allocate(spv::OpBitwiseAnd, u32);
++					masked->add_id(bits->id); masked->add_id(builder().makeUintConstant(i ? 0x80000000u : 0x7fffffffu));
++					add(masked); v[i] = masked->id;
++				}
++				auto *joined = allocate(spv::OpBitwiseOr, u32);
++				joined->add_id(v[0]); joined->add_id(v[1]); add(joined);
++				auto *out = allocate(spv::OpBitcast, call_inst); out->add_id(joined->id); add(out);
++				return true;
++			}
+ 			// lib_6_6 sometimes emits llvm.lifetime.begin/end for some bizarre reason.
+ 			// Just ignore ...
+ 			return true;
+@@ -9327,6 +9394,7 @@
+ 	}
+ 
+ 	case Option::BoundedXboxRange:
++		xbox_atomic_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).atomic_descriptor;
+ 		xbox_read_only = static_cast<const OptionBoundedXboxRange &>(cap).read_only;
+ 		xbox_range_word = static_cast<const OptionBoundedXboxRange &>(cap).range_word;
+ 		xbox_range_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).range_descriptor;
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -357,7 +357,7 @@
+ struct OptionBoundedXboxRange : OptionBase
+ {
+ 	OptionBoundedXboxRange() : OptionBase(Option::BoundedXboxRange) {}
+-	unsigned range_word, range_descriptor;
++	unsigned range_word, range_descriptor, atomic_descriptor;
+ 	bool read_only;
+ };
+ 
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -936,6 +936,8 @@
+ /* Useful to check if the implementation recognizes a particular capability for ABI compatibility. */
+ dxil_spv_bool dxil_spv_converter_supports_option(dxil_spv_option cap)
+ {
++	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES)
++		cap = DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE;
+ 	return Converter::recognizes_option(static_cast<Option>(cap)) ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+ }
+ 
+@@ -1010,11 +1012,14 @@
+ 	}
+ 
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES:
+ 	{
+ 		auto *in = reinterpret_cast<const dxil_spv_option_bounded_xbox_range *>(option);
+ 		OptionBoundedXboxRange helper;
+ 		helper.range_word = in->range_word;
+ 		helper.range_descriptor = in->range_descriptor;
++		helper.atomic_descriptor = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES ?
++		    reinterpret_cast<const dxil_spv_option_bounded_xbox_load_instances *>(option)->atomic_descriptor : ~0u;
+ 		helper.read_only = in->read_only == DXIL_SPV_TRUE;
+ 		converter->options.emplace_back(duplicate(helper));
+ 		break;
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -485,6 +485,7 @@
+ 	DXIL_SPV_OPTION_MIXED_FLOAT_DOT_PRODUCT = 50,
+ 	DXIL_SPV_OPTION_COMPUTE_SHADER_DERIVATIVES_QUAD = 51,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE = 52,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES = 53,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+ 
+@@ -516,6 +517,12 @@
+ 	unsigned range_descriptor;
+ 	dxil_spv_bool read_only;
+ } dxil_spv_option_bounded_xbox_range;
++
++typedef struct dxil_spv_option_bounded_xbox_load_instances
++{
++	dxil_spv_option_bounded_xbox_range range;
++	unsigned atomic_descriptor;
++} dxil_spv_option_bounded_xbox_load_instances;
+ 
+ typedef struct dxil_spv_option_shader_demote_to_helper
+ {
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -470,7 +470,8 @@
+ 	unsigned root_descriptor_count = 0;
+ 	unsigned root_constant_num_words = 0;
+ 	unsigned xbox_range_word = ~0u, xbox_range_descriptor = ~0u;
+-	spv::Id xbox_helpers[4] = {};
++	unsigned xbox_atomic_descriptor = ~0u;
++	spv::Id xbox_helpers[6] = {};
+ 	bool xbox_read_only = false;
+ 	bool root_constant_arrayed = false;
+ 	unsigned patch_location_offset = ~0u;
+diff --git a/opcodes/dxil/dxil_resources.cpp b/opcodes/dxil/dxil_resources.cpp
+--- a/opcodes/dxil/dxil_resources.cpp
++++ b/opcodes/dxil/dxil_resources.cpp
+@@ -2346,6 +2346,10 @@
+ 
+ 	// CBufferLoad vs CBufferLoadLegacy
+ 	bool scalar_load = !type_is_composite_return_value(instruction->getType());
++	bool xbox_i64 = !scalar_load && constant_int && storage == spv::StorageClassPushConstant &&
++	                impl.xbox_atomic_descriptor < impl.root_descriptor_count &&
++	                get_composite_element_type(instruction->getType())->isIntegerTy() &&
++	                get_composite_element_type(instruction->getType())->getIntegerBitWidth() == 64;
+ 	unsigned member_index = UINT32_MAX;
+ 	spv::Id dynamic_member_index = 0;
+ 
+@@ -2398,7 +2402,7 @@
+ 			dynamic_member_index = mul4->id;
+ 		}
+ 
+-		if (get_type_scalar_alignment(impl, get_composite_element_type(instruction->getType())) != 4)
++		if (!xbox_i64 && get_type_scalar_alignment(impl, get_composite_element_type(instruction->getType())) != 4)
+ 		{
+ 			LOGE("Attempting to use root constant buffer with non-32bit type.\n");
+ 			return false;
+@@ -2507,6 +2511,13 @@
+ 		id = impl.build_vector(builder.makeUintType(32), elements, 4);
+ 
+ 	spv::Op value_cast_op = spv::OpNop;
++	if (xbox_i64)
++	{
++		if (num_words != 4) return false;
++		auto *pair = impl.allocate(spv::OpBitcast, builder.makeVectorType(builder.makeUintType(64), 2));
++		pair->add_id(id); impl.add(pair); impl.rewrite_value(instruction, pair->id);
++		return true;
++	}
+ 	spv::Id physical_type_id = 0;
+ 	get_physical_load_store_cast_info(impl, result_scalar_type, physical_type_id, value_cast_op);
+ 

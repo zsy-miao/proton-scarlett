@@ -95,7 +95,7 @@ per counter using `u0` and `b0`. The private recorder bounds the destination
 to `16 * count` bytes. `test-bvh-reset.cpp` takes `private-reset.bin` and
 checks 33 counters across two workgroups, including untouched words on both
 sides and rejection of a range one byte too short. This is a fixture result;
-retail still stops earlier at `LoadInstances`.
+retail dispatch has not been observed.
 
 The tenth utility constructor call (DLL `+206f4`) selects `ResetToIndexBuffer`
 at `+b4bd0` (`0x1004` bytes). It takes the same three constants as `ResetCounters`

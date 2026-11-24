@@ -5,7 +5,7 @@
 #include "bvh_offline_dxil.h"
 #include "bvh_partitions_dxil.h"
 
-enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX };
+enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX, BVH_COPY_UPDATE, BVH_COPY_COUNTERS, BVH_LOAD_INSTANCES };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -30,6 +30,12 @@ static const struct bvh_candidate {
         L"XDXR ResetToIndexBuffer",3,{NULL,0}},
     [BVH_INSTANCES]={0x493c,{0xda,0x1d,0x4b,0xc3,0xb8,0xc1,0xf6,0x85,0x19,0x76,0xd8,0x99,0x18,0xba,0xb9,0x96,
         0x78,0xd1,0xb0,0xf7,0x4b,0x0c,0x91,0x8f,0xf1,0x58,0xe9,0xe9,0x20,0x54,0xb6,0x20},L"XDXR WriteInstances",16,{0}},
+    [BVH_COPY_UPDATE]={0x126c,{0x96,0xfd,0xbb,0x6d,0x8c,0x64,0xad,0x8a,0x39,0x5f,0xc8,0x8f,0x28,0x4b,0xcd,0x48,
+        0x3d,0xa7,0x71,0x94,0x37,0x6d,0xc5,0x29,0x07,0xed,0x93,0x1a,0x25,0x5e,0xbd,0x12},L"XDXR CopyForUpdate",2,{0}},
+    [BVH_LOAD_INSTANCES]={0x752c,{0xee,0x24,0xd3,0x76,0x1d,0xc2,0xfa,0x3a,0x74,0xf3,0x9e,0x97,0xfd,0x6b,0xf6,0xe8,
+        0x68,0xf4,0x15,0x65,0xf6,0x0f,0x8b,0xdc,0x46,0x94,0x27,0x69,0xb5,0x5a,0x73,0x21},L"XDXR LoadInstances",16,{0}},
+    [BVH_COPY_COUNTERS]={0x10e8,{0x1b,0x08,0x3c,0x49,0xc7,0x32,0xe1,0x85,0x49,0xcf,0xb7,0x53,0x78,0xe9,0x14,0xdb,
+        0xca,0x80,0xb1,0xf1,0x22,0xc7,0x58,0xb3,0x55,0xc8,0xaa,0x3f,0x56,0xed,0x93,0x61},L"XDXR CopyCounters",2,{0}},
 };
 
 struct bvh_pipeline {
@@ -94,7 +100,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     if (!IsEqualIID(&id,&IID_ID3D12PipelineState)) return E_NOINTERFACE;
     if (x || y) return E_NOTIMPL;
     if (!copy_in(&w,desc,sizeof w)) return E_POINTER;
-    BYTE code[0x493c];
+    BYTE code[0x752c];
     enum bvh_kind kind=BVH_INIT;
     while (kind<ARRAYSIZE(bvh_candidates) && w.n!=bvh_candidates[kind].bytes) ++kind;
     if (kind==ARRAYSIZE(bvh_candidates) || w.n>sizeof code || memcmp(w.tail,(BYTE[32]){0},sizeof w.tail)) return E_NOTIMPL;
@@ -103,17 +109,21 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     AcquireSRWLockShared(&d->descriptor_lock);
     struct bvh_root *r=d->bvh_roots;
     while (r && &r->iface!=w.root) r=r->next;
-    BOOL known=r!=NULL;
+    BOOL known=r && !r->morton;
     ReleaseSRWLockShared(&d->descriptor_lock);
     if (!known) return E_INVALIDARG;
     if (!copy_in(code,w.shader,w.n)) return E_POINTER;
     if (!shader_digest_matches(code,w.n,candidate->digest)) return E_NOTIMPL;
 
-    D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,0};
-    D3D12_ROOT_PARAMETER rp[5]={
-        {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,.DescriptorTable={1,&range}},
+    D3D12_DESCRIPTOR_RANGE ranges[]={{D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,0},{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,1}};
+    D3D12_ROOT_PARAMETER rp[6]={
+        {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,.DescriptorTable={kind==BVH_COPY_COUNTERS ? 2u : 1u,ranges}},
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,candidate->constants}}};
     D3D12_ROOT_SIGNATURE_DESC rs={2,rp,0,NULL,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    if (kind==BVH_COPY_UPDATE) {
+        rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV};
+        rs.NumParameters=3;
+    }
     if (kind==BVH_INSTANCES) {
         HMODULE core=GetModuleHandleW(L"d3d12core.dll");
         if (!core || !GetProcAddress(core,"ScarlettBoundedInstanceReadsV1")) return E_NOTIMPL;
@@ -122,6 +132,17 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,3}};
         rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
         rs.NumParameters=5;
+    }
+    if (kind==BVH_LOAD_INSTANCES) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedLoadInstancesV1")) return E_NOTIMPL;
+        rp[2]=rp[1];
+        rp[0]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV};
+        rp[1]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,6}};
+        rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
+        rp[5]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
+        rs.NumParameters=6;
     }
     ID3DBlob *blob=NULL;
     HRESULT hr=D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,NULL);
@@ -154,8 +175,26 @@ void xs_drop_bvh_hold(struct xs_bvh_hold *h)
     ID3D12DescriptorHeap_Release(h->heap); ID3D12Resource_Release(h->dst); IUnknown_Release(h->pipeline);
     HeapFree(GetProcessHeap(),0,h);
 }
-static HRESULT bvh_record_target(IUnknown *pipeline,enum bvh_kind kind,ID3D12GraphicsCommandList *list,
-        const struct xs_bvh_range *range,UINT64 addr,UINT size,struct xs_bvh_hold **out)
+static HRESULT bvh_view_offset(ID3D12Device *device,const struct xs_bvh_range *range,UINT64 addr,UINT size,BOOL uav,UINT64 *offset)
+{
+    if (!range || !range->resource) return E_INVALIDARG;
+    ID3D12Device *other;
+    HRESULT hr=ID3D12Resource_GetDevice(range->resource,&IID_ID3D12Device,(void **)&other);
+    if (FAILED(hr)) return hr;
+    BOOL match=other==device; ID3D12Device_Release(other);
+    if (!match) return E_INVALIDARG;
+    D3D12_RESOURCE_DESC rd; range->resource->lpVtbl->GetDesc(range->resource,&rd);
+    UINT64 delta=addr-range->guest_base;
+    if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER ||
+        (uav ? !(rd.Flags&D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) : (rd.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)) ||
+        !range->guest_base || range->bytes>UINT64_MAX-range->guest_base || addr<range->guest_base ||
+        (addr&3) || range->resource_offset>rd.Width || range->bytes>rd.Width-range->resource_offset ||
+        delta>range->bytes || size>range->bytes-delta) return E_INVALIDARG;
+    *offset=range->resource_offset+delta;
+    return *offset%D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT ? E_INVALIDARG : S_OK;
+}
+static HRESULT bvh_record_buffers(IUnknown *pipeline,enum bvh_kind kind,ID3D12GraphicsCommandList *list,
+        const struct xs_bvh_range *range,UINT64 addr,UINT size,const struct xs_bvh_range *src,struct xs_bvh_hold **out)
 {
     if (!pipeline || pipeline->lpVtbl!=&bp_methods.unknown || !list || !range || !range->resource) return E_INVALIDARG;
     if (CONTAINING_RECORD(pipeline,struct bvh_pipeline,iface)->kind!=kind) return E_INVALIDARG;
@@ -167,21 +206,17 @@ static HRESULT bvh_record_target(IUnknown *pipeline,enum bvh_kind kind,ID3D12Gra
     if (FAILED(hr)) return hr;
     BOOL match=other==device; ID3D12Device_Release(other);
     if (!match) return E_INVALIDARG;
-    hr=ID3D12Resource_GetDevice(dst,&IID_ID3D12Device,(void **)&other);
+    UINT64 first,src_first=0;
+    hr=bvh_view_offset(device,range,addr,size,TRUE,&first);
     if (FAILED(hr)) return hr;
-    match=other==device; ID3D12Device_Release(other);
-    if (!match) return E_INVALIDARG;
-    D3D12_RESOURCE_DESC rd; dst->lpVtbl->GetDesc(dst,&rd);
-    UINT64 delta=addr-range->guest_base;
-    if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || !(rd.Flags&D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) ||
-        !range->guest_base || range->bytes>UINT64_MAX-range->guest_base || addr<range->guest_base ||
-        (addr&3) || range->resource_offset>rd.Width || range->bytes>rd.Width-range->resource_offset ||
-        delta>range->bytes || size>range->bytes-delta) return E_INVALIDARG;
-    UINT64 first=range->resource_offset+delta;
-    if (first%D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT) return E_INVALIDARG;
+    if (src) {
+        if (src->resource==dst) return E_INVALIDARG;
+        hr=bvh_view_offset(device,src,src->guest_base,size,FALSE,&src_first);
+        if (FAILED(hr)) return hr;
+    }
     struct xs_bvh_hold *h=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *h);
     if (!h) return E_OUTOFMEMORY;
-    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
+    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,src ? 2u : 1u,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
     hr=ID3D12Device_CreateDescriptorHeap(device,&hd,&IID_ID3D12DescriptorHeap,(void **)&h->heap);
     if (FAILED(hr)) { HeapFree(GetProcessHeap(),0,h); return hr; }
     h->dst=dst; ID3D12Resource_AddRef(dst); h->pipeline=pipeline; IUnknown_AddRef(pipeline);
@@ -191,12 +226,39 @@ static HRESULT bvh_record_target(IUnknown *pipeline,enum bvh_kind kind,ID3D12Gra
     D3D12_UNORDERED_ACCESS_VIEW_DESC view={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_UAV_DIMENSION_BUFFER,
             .Buffer={.FirstElement=first/4,.NumElements=size/4,.Flags=D3D12_BUFFER_UAV_FLAG_RAW}};
     ID3D12Device_CreateUnorderedAccessView(device,dst,NULL,&view,cpu);
+    if (src) {
+        cpu.ptr+=ID3D12Device_GetDescriptorHandleIncrementSize(device,hd.Type);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
+            .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            .Buffer={.FirstElement=src_first/4,.NumElements=size/4,.Flags=D3D12_BUFFER_SRV_FLAG_RAW}};
+        ID3D12Device_CreateShaderResourceView(device,src->resource,&srv,cpu);
+        h->upload=src->resource; ID3D12Resource_AddRef(h->upload);
+    }
     struct bvh_pipeline *p=CONTAINING_RECORD(pipeline,struct bvh_pipeline,iface);
     ID3D12GraphicsCommandList_SetDescriptorHeaps(list,1,&h->heap);
     ID3D12GraphicsCommandList_SetPipelineState(list,p->host);
     ID3D12GraphicsCommandList_SetComputeRootSignature(list,p->root);
     ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,0,gpu);
     *out=h;
+    return S_OK;
+}
+static HRESULT bvh_record_target(IUnknown *pipeline,enum bvh_kind kind,ID3D12GraphicsCommandList *list,
+        const struct xs_bvh_range *range,UINT64 addr,UINT size,struct xs_bvh_hold **out)
+{
+    return bvh_record_buffers(pipeline,kind,list,range,addr,size,NULL,out);
+}
+HRESULT xs_record_bvh_copy_counters(IUnknown *pipeline,ID3D12GraphicsCommandList *list,const struct xs_bvh_range *dst,
+        const struct xs_bvh_range *src,UINT count,struct xs_bvh_hold **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!dst || !src || !count) return E_INVALIDARG;
+    if (count>32u*D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION) return E_NOTIMPL;
+    HRESULT hr=bvh_record_buffers(pipeline,BVH_COPY_COUNTERS,list,dst,dst->guest_base,16*count,src,out);
+    if (FAILED(hr)) return hr;
+    UINT constants[]={count,count};
+    ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list,1,2,constants,0);
+    ID3D12GraphicsCommandList_Dispatch(list,(count+31)/32,1,1);
     return S_OK;
 }
 HRESULT xs_record_bvh_init(IUnknown *pipeline,ID3D12GraphicsCommandList *list,const struct xs_bvh_range *range,
@@ -219,6 +281,7 @@ HRESULT xs_record_bvh_init(IUnknown *pipeline,ID3D12GraphicsCommandList *list,co
 #include "bvh_offline_record.h"
 #include "bvh_partitions_record.h"
 #include "bvh_instances_record.h"
+#include "bvh_copy_update_record.h"
 
 HRESULT xs_record_bvh_reset(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
         const struct xs_bvh_range *dst,UINT count,UINT value,struct xs_bvh_hold **out)

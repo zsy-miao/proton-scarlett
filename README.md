@@ -13,13 +13,13 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates four compute pipelines, including [`WriteInstances`](scarlett/native/bvh-write-instances.md) from the original Xbox shader. The fifth, `LoadInstances` (29,996 bytes, builder shader RVA `+0xba3f0`), is the current stop. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates five compute pipelines, including [`WriteInstances`](scarlett/native/bvh-write-instances.md) and [`LoadInstances`](scarlett/native/bvh-load-instances.md) from the original Xbox shaders. The sixth request, `BeginPass` (4,376 bytes, builder shader RVA `+0xb92d0`), is the current stop. **No retail frame has been presented.**
 
 Each [primary texture](scarlett/native/color-allocation.md) consumes a 33,226,752-byte slice through the game's allocator hook, leaving 640 KiB unused. A [GPU test](scarlett/native/test-allocation-info.cpp) verified that rendering and shader writes changed the original arena bytes and that the memory stayed live until the last texture reference was released.
 
 The [pipeline regression](scarlett/native/test-bvh-pipeline.cpp) checked all 1,280 destination words after `WriteOfflinePartition` ran on the GPU, including a parent link 40 bytes before its table anchor. Retail has reached pipeline creation; these dispatch results are from the fixture.
 
-`LoadInstances` passed 20 test dispatches on each of RADV and RTX 3070 with a development compiler. Each dispatch compared all 8,192 words across the inputs and outputs, including guard regions. The installed build still stops at pipeline creation.
+`LoadInstances` passed 20 test dispatches on each of RADV and RTX 3070. Each dispatch compared all 8,192 words across the inputs and outputs, including guard regions. Retail has created the pipeline but has not dispatched it.
 
 Two later builder shaders, [`ResetCounters` and `ResetToIndexBuffer`](scarlett/native/bvh-root.md#resetcounters-verified-ahead-of-retail), ran unmodified on RADV. The second filled a buffer with 132 consecutive indices and left adjacent memory unchanged.
 
