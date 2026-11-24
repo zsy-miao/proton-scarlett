@@ -429,6 +429,7 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
+        if (is_cube1(&rd)) return write_wc_address_view(device,w[1]==D3D12_SRV_DIMENSION_TEXTURE2DARRAY?ARRAY6_VIEW:CUBE1_VIEW,w,dest);
         if (is_r8(&rd)) return write_wc_address_view(device,R8_VIEW,w,dest);
         if (is_texel32(&rd)) return write_wc_address_view(device,is_volume1(&rd)?VOLUME1_VIEW:TEXEL32_BASE+rd.Format,w,dest);
     }

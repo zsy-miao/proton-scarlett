@@ -31,7 +31,7 @@ using Copy=HRESULT(WINAPI*)(void*,void*,UINT,UINT,const void*,UINT,UINT);
 static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UINT;
 #elif defined(TEST_R32_FLOAT)
 static constexpr DWORD format=DXGI_FORMAT_R32_FLOAT;
-#elif defined(TEST_RGBA1) || defined(TEST_VOLUME1)
+#elif defined(TEST_RGBA1) || defined(TEST_VOLUME1) || defined(TEST_CUBE1) || defined(TEST_ARRAY6)
 static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UNORM;
 #else
 static constexpr DWORD format=DXGI_FORMAT_R8_UNORM;
@@ -41,12 +41,22 @@ static constexpr bool volume=true;
 #else
 static constexpr bool volume=false;
 #endif
+#if defined(TEST_CUBE1) || defined(TEST_ARRAY6)
+static constexpr bool six=true;
+#else
+static constexpr bool six=false;
+#endif
+#ifdef TEST_ARRAY6
+static constexpr bool array6=true;
+#else
+static constexpr bool array6=false;
+#endif
 static constexpr bool rgba1=format!=DXGI_FORMAT_R8_UNORM;
 static constexpr bool integer=format==DXGI_FORMAT_R8G8B8A8_UINT, scalar=format==DXGI_FORMAT_R32_FLOAT;
-static DWORD pattern(unsigned pass) {
-    return scalar ? (pass?0xc0300000u:0x3fb00000u) : (pass?0x7de30b94u:0xc641a807u);
+static DWORD pattern(unsigned pass,unsigned face=0) {
+    return scalar ? (pass?0xc0300000u:0x3fb00000u) : ((pass?0x7de30b94u:0xc641a807u) ^ (face*0x0f182537u));
 }
-static constexpr UINT N=rgba1?4:32768, Bytes=4*N, tile=rgba1?4096:32768;
+static constexpr UINT N=six?24:rgba1?4:32768, Bytes=4*N, tile=six?6*4096:rgba1?4096:32768;
 static constexpr SIZE_T span=0x89700000u, offset=8192;
 int main(){
     auto alloc=(Alloc)(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc"); CK(alloc);
@@ -54,7 +64,7 @@ int main(){
     BYTE *b=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404);CK(s&&b);
     DWORD desc[]={volume?4u:3u,0,0,0,256,0,128,0x10001,61,1,0,0,0x300000};
     if (rgba1) {
-        desc[4]=desc[6]=1; desc[8]=format;
+        desc[4]=desc[6]=1; desc[8]=format; if(six)desc[7]=0x10006;
         CK(XGSuggestSwizzleMode(desc,1,&desc[11])==E_NOTIMPL && !desc[11]);
         for (UINT j:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
             desc[j]^=1; DWORD before=desc[11]; CK(XGSuggestSwizzleMode(desc,0,&desc[11])==E_NOTIMPL && desc[11]==before); desc[j]^=1;
@@ -81,7 +91,7 @@ int main(){
                 CK(xs_color_allocation_info(guest.Get(),1,1,desc,&result)==E_NOTIMPL && !result.SizeInBytes && !result.Alignment);
                 continue;
             }
-            CK(query(&result,guest.Get(),1,1,desc)==&result && result.SizeInBytes==4096 && result.Alignment==4096);
+            CK(query(&result,guest.Get(),1,1,desc)==&result && result.SizeInBytes==(six && layout?tile:4096) && result.Alignment==4096);
         }
         for (UINT j:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
             D3D12_RESOURCE_ALLOCATION_INFO bad={7,8}; void *unused=desc;
@@ -91,13 +101,13 @@ int main(){
             desc[j]^=1;
         }
     }
-    desc[2]=0; DWORD w[16]={format,volume?8u:4u,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};
+    desc[2]=0; DWORD w[16]={format,array6?5u:six?9u:volume?8u:4u,0x1688,0,0,1,0,array6?6u:0u,0,0,0,0,0,0,0,3};
     auto address=[&](BYTE *p){memcpy(w+10,&p,sizeof p);};
     address(b+span-tile); HR(xs_write_address_srv(guest.Get(),desc,w,from));
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
     UINT64 serial=*(UINT64*)from;
     if (rgba1) {
-        w[1]=volume?4:8; CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)) && *(UINT64*)from==serial); w[1]=volume?8:4;
+        w[1]=volume?4:8; CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)) && *(UINT64*)from==serial); w[1]=array6?5:six?9:volume?8:4;
         w[0]=integer?28:30; // supported formats still cannot reinterpret each other's views
         CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)) && *(UINT64*)from==serial); w[0]=format;
     }
@@ -130,7 +140,7 @@ int main(){
     D3D12_ROOT_SIGNATURE_DESC rs={2,p,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
     ComPtr<ID3DBlob> blob;HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
     ComPtr<ID3D12RootSignature> root;HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
-    FILE *f=fopen(volume?"volume1.dxil":integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
+    FILE *f=fopen(array6?"array6.dxil":six?"cube1.dxil":volume?"volume1.dxil":integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd={};pd.pRootSignature=root.Get();pd.CS={dxil,n};
     ComPtr<ID3D12PipelineState> ps;HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&ps)));
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
@@ -168,20 +178,23 @@ int main(){
             DWORD color=pattern(pass);
             CK(FAILED(copy(c,b+offset+1,0,0,&color,4,4)) && FAILED(copy(c,b+offset,0,0,&color,3,4)) &&
                 FAILED(copy(c,b+offset,0,0,&color,4,5)) && FAILED(copy(c,b+offset,1,0,&color,4,4)) &&
-                FAILED(copy(c,b+offset,0,1,&color,4,4)) && FAILED(copy(c,b+offset,0,0,s,4,4)));
+                FAILED(copy(c,b+offset,0,six?6:1,&color,4,4)) && FAILED(copy(c,b+offset,0,0,s,4,4)));
             // Last full tile fits; the four-byte texel does not license a shorter destination.
             if (!pass) {
                 memset(b+span-tile,0xbd,tile); HR(copy(c,b+span-tile,0,0,&color,4,4));
                 CK(*(DWORD*)(b+span-tile)==color); for(UINT j=4;j<tile;j++) CK(b[span-tile+j]==0xbd);
             }
-            HR(copy(c,b+offset,0,0,&color,4,4)); CK(*(DWORD*)(b+offset)==color);
+            if(six) CK(FAILED(copy(c,b+span-tile+4096,0,0,&color,4,4)));
+            for(UINT face=0;face<(six?6u:1u);face++) {
+                color=pattern(pass,face);HR(copy(c,b+offset,0,face,&color,4,4)); CK(*(DWORD*)(b+offset+4096*face)==color);
+            }
         } else {
             for(UINT i=0;i<N;i++)s[i]=pass?i>>8:i&255;
             HR(copy(c,b+offset,0,0,s,256,N));
         }
         MemoryBarrier();
         if(pass){
-            for(UINT i=0;i<65536;i++)if(i<offset || i>=offset+N)CK(b[i]==0xd7);
+            for(UINT i=0;i<65536;i++)if(six ? i<offset || i>=offset+tile || (i-offset)%4096>=4 : i<offset || i>=offset+N)CK(b[i]==0xd7);
             HR(xs_write_view(guest.Get(),0x90,nullptr,nullview,to)); HR(xs_resolve_view(dst.Get(),to,0x90,&raw,&gh));
             dst.Reset();guest.Reset(); // Only the recorded use retains the original buffer now.
             CK(VirtualFree(b,0,MEM_RELEASE));
@@ -189,7 +202,7 @@ int main(){
         }
         HR(gate->Signal(pass+1));CK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
         DWORD *map;HR(read->Map(0,nullptr,(void**)&map));for(unsigned i=0;i<N;i++){
-            DWORD bits=map[pass*N+i]; unsigned want=rgba1 ? (pattern(pass)>>(i*8))&255 : pass?i>>8:i&255;
+            DWORD bits=map[pass*N+i]; unsigned want=rgba1 ? (pattern(pass,i/4)>>((i%4)*8))&255 : pass?i>>8:i&255;
             if (integer) CK(bits==want);
             else if (scalar) {
                 const DWORD expected[]={pattern(pass),pass?0xc0b00000u:0x40300000u,0,0x3f800000u};
@@ -199,12 +212,14 @@ int main(){
                 if(!std::isfinite(value)||fabs(value-want/255.f)>1e-7){fprintf(stderr,"pass %u index %u got %g expected %u/255\n",pass,i,value,want);ExitProcess(1);}
             }
         }read->Unmap(0,nullptr);xs_drop_texture_use(hold);
-        if (rgba1) printf("PASS format %lu pass %u: all four shader results for original WC word %#010lx\n",format,pass,pattern(pass));
+        if (six) printf("PASS %s pass %u: all six distinct faces, all 24 channels, verified after gated writes\n",array6?"Texture2DArray":"TextureCube",pass);
+        else if (rgba1) printf("PASS format %lu pass %u: all four shader results for original WC word %#010lx\n",format,pass,pattern(pass));
         else printf("PASS pass %u: all 32768 %c coordinates as R8_UNORM; checked gate held before CPU producer\n",pass,pass?'Y':'X');
     }
     for(UINT i=0;i<65536;i++)CK(b[i]==0xad);
     CK(VirtualFree(b,0,MEM_RELEASE)&&VirtualFree(s,0,MEM_RELEASE));CloseHandle(ev);
     CK(((ULONG(WINAPI*)(void*))v[1])(c)==0);HR(d->GetDeviceRemovedReason());
-    if (rgba1) puts("PASS RGBA1 allocation/copy: 4096/4096, all 4092 padding bytes and adjacent guards unchanged; copied view retained across VA reuse");
+    if (six) puts("PASS guest allocation 24576/4096, face padding and adjacent guards intact; copied descriptor survived heap release and exact VA reuse");
+    else if (rgba1) puts("PASS RGBA1 allocation/copy: 4096/4096, all 4092 padding bytes and adjacent guards unchanged; copied view retained across VA reuse");
     else puts("PASS +230 and +c0 copied view: refresh before native Texture2D sample; overwrites, bounds, heap release, VA reuse and guards");
 }

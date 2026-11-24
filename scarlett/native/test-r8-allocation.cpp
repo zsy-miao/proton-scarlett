@@ -18,6 +18,13 @@ int main()
     using Query=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *);
     auto slot=(Query)((*reinterpret_cast<void***>(dev.Get()))[0xc8/8]);
     DWORD w[]={3,0,4096,0,256,0,128,0x10001,61,1,0,0,0x300000};
+#ifdef TEST_CUBE1
+    constexpr bool six=true;
+    w[4]=w[6]=1;w[7]=0x10006;w[8]=28;
+#else
+    constexpr bool six=false;
+#endif
+    constexpr UINT nativeBytes=six?4096:32768,guestBytes=six?24576:32768;
     SYSTEM_INFO sys; GetSystemInfo(&sys);
     auto pages=(BYTE *)VirtualAlloc(nullptr,2*sys.dwPageSize,MEM_RESERVE,PAGE_NOACCESS);
     CK(pages && VirtualAlloc(pages,sys.dwPageSize,MEM_COMMIT,PAGE_READWRITE)==pages);
@@ -27,10 +34,11 @@ int main()
     D3D12_RESOURCE_DESC rd={}; memcpy(&rd,w,sizeof w); rd.Flags=D3D12_RESOURCE_FLAG_NONE;
     for (DWORD align:{0u,4096u}) {
         w[2]=align; memcpy(prefix,w,sizeof w); rd.Alignment=align;
-        CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
         auto native=d->GetResourceAllocationInfo(1,1,&rd);
+        if (six && !align) {CK(native.Alignment==65536 && native.SizeInBytes==65536);continue;}
+        CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
         CK(!memcmp(&got.info,&native,sizeof native));
-        CK(native.Alignment==(align?4096u:65536u) && native.SizeInBytes==(align?32768u:65536u));
+        CK(native.Alignment==(align?4096u:65536u) && native.SizeInBytes==(align?nativeBytes:65536u));
         CK(r8_bad_host(UINT64_MAX,65536,prefix) && r8_bad_host(UINT64_MAX,4096,prefix) &&
             r8_bad_host(0,4096,prefix) && r8_bad_host(32768,0,prefix));
     }
@@ -44,7 +52,7 @@ int main()
     CK(deny(0,1,prefix) && deny(1,2,prefix) && deny(1,1,prefix+1));
     w[11]=0x105; memcpy(prefix,w,sizeof w);
     CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
-    CK(got.info.SizeInBytes==32768 && got.info.Alignment==4096);
+    CK(got.info.SizeInBytes==guestBytes && got.info.Alignment==4096);
     for (UINT k:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
         w[k]^=1; CK(deny(1,1,w)); w[k]^=1;
     }
@@ -57,19 +65,19 @@ int main()
     void *resource=primary;
     CK(committed(dev.Get(),nullptr,8,primary,3,primary,nullptr,0,nullptr,__uuidof(ID3D12Resource),&resource)
             ==E_NOTIMPL && !resource);
-    puts("PASS explicit +c8: 32768/4096; descriptor mutations and explicit primary query/create rejected");
+    printf("PASS +c8: native %u/4096, guest explicit %u/4096; bad aggregates, guarded input/output and descriptor controls\n",nativeBytes,guestBytes);
     CK(VirtualFree(pages,0,MEM_RELEASE));
 
     // Three adjacent small placements, none at a 64 KiB boundary. Seed the guards
     // first, then write the middle texture and check all three after the fence.
-    constexpr UINT bytes=256*128, total=3*bytes;
+    constexpr UINT layers=six?6:1,face=six?512:32768,bytes=layers*face,total=3*bytes;
     D3D12_HEAP_DESC hd={}; hd.SizeInBytes=2*65536; hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT;
     hd.Properties.CreationNodeMask=hd.Properties.VisibleNodeMask=1;
     hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
     ComPtr<ID3D12Heap> heap; HR(d->CreateHeap(&hd,IID_PPV_ARGS(&heap)));
     ComPtr<ID3D12Resource> image[3],upload,readback;
     for (UINT j=0;j<3;j++)
-        HR(d->CreatePlacedResource(heap.Get(),4096+j*got.info.SizeInBytes,&rd,D3D12_RESOURCE_STATE_COPY_DEST,
+        HR(d->CreatePlacedResource(heap.Get(),4096+j*nativeBytes,&rd,D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,IID_PPV_ARGS(&image[j])));
     D3D12_RESOURCE_DESC buf={}; buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER; buf.Width=total;
     buf.Height=buf.DepthOrArraySize=buf.MipLevels=buf.SampleDesc.Count=1; buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -86,26 +94,26 @@ int main()
     HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q))); HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
     HR(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l)));
     D3D12_TEXTURE_COPY_LOCATION loc[3]={},linear={}; linear.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    linear.PlacedFootprint.Footprint={rd.Format,256,128,1,256}; linear.pResource=upload.Get();
+    linear.PlacedFootprint.Footprint={rd.Format,(UINT)rd.Width,rd.Height,1,256}; linear.pResource=upload.Get();
     for (UINT j:{0u,2u,1u}) {
         loc[j].pResource=image[j].Get(); loc[j].Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        linear.PlacedFootprint.Offset=j*bytes;
-        l->CopyTextureRegion(&loc[j],0,0,0,&linear,nullptr);
+        for(UINT k=0;k<layers;k++) {linear.PlacedFootprint.Offset=j*bytes+k*face;loc[j].SubresourceIndex=k;
+            l->CopyTextureRegion(&loc[j],0,0,0,&linear,nullptr);}
     }
     linear.pResource=readback.Get();
     for (UINT j=0;j<3;j++) {
         D3D12_RESOURCE_BARRIER b={};
-        b.Transition={image[j].Get(),0,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE};
+        b.Transition={image[j].Get(),D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE};
         l->ResourceBarrier(1,&b);
-        linear.PlacedFootprint.Offset=j*bytes; l->CopyTextureRegion(&linear,0,0,0,&loc[j],nullptr);
+        for(UINT k=0;k<layers;k++) {linear.PlacedFootprint.Offset=j*bytes+k*face;loc[j].SubresourceIndex=k;
+            l->CopyTextureRegion(&linear,0,0,0,&loc[j],nullptr);}
     }
     HR(l->Close()); ID3D12CommandList *batch[]={l.Get()}; q->ExecuteCommandLists(1,batch);
     HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f))); HR(q->Signal(f.Get(),1));
     HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(e); HR(f->SetEventOnCompletion(1,e));
     CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0); CloseHandle(e);
     HR(readback->Map(0,nullptr,(void **)&p));
-    for (UINT n=0;n<total;n++) CK(p[n]==value(n));
+    for (UINT n=0;n<total;n++) if(!six || n%face<4)CK(p[n]==value(n));
     readback->Unmap(0,nullptr);
-    puts("PASS +c8 R8: native 32768/4096, fallback 65536/65536; rejected bad host sentinels and descriptor controls");
-    puts("PASS RADV placement offsets 0x1000/0x9000/0x11000: all 32768 target texels and 65536 guard texels after fence");
+    printf("PASS native placement offsets %#x/%#x/%#x, checked all %u subresources after fence\n",4096,4096+nativeBytes,4096+2*nativeBytes,3*layers);
 }

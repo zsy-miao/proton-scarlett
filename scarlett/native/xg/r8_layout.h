@@ -27,3 +27,12 @@ static inline BOOL is_texel32(const D3D12_RESOURCE_DESC *d)
     return is_volume1(d) || (d->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && runtime_texture(d) &&
         d->Width==1 && d->Height==1 && texel32_format(d->Format));
 }
+
+/* Six independent 2D array slices, one 4KB_S tile per face at this extent. */
+enum { CUBE1_FACES=6, CUBE1_BYTES=CUBE1_FACES*R8_ALIGNMENT };
+static inline BOOL is_cube1(const D3D12_RESOURCE_DESC *d)
+{
+    return d->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && d->Width==1 && d->Height==1 &&
+        d->DepthOrArraySize==CUBE1_FACES && d->MipLevels==1 && d->Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
+        d->SampleDesc.Count==1 && !d->SampleDesc.Quality && (UINT)d->Flags==0x300000;
+}

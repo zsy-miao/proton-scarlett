@@ -254,7 +254,7 @@ static HRESULT msaa_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
 static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
-    if (msaa_desc(out)) return S_OK;
+    if (msaa_desc(out) || is_cube1(out)) return S_OK;
     if (is_volume1(out) && (UINT)out->Layout==R8_LAYOUT && out->Alignment==R8_ALIGNMENT) return S_OK;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
         out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
@@ -296,12 +296,12 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     if (msaa_desc(&rd)) return msaa_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
-    BOOL texel32=is_texel32(&rd);
+    BOOL cube=is_cube1(&rd),texel32=cube || is_texel32(&rd);
     if (texel32 && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
     if ((!texel32 && !is_r8(&rd)) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
     if ((UINT)rd.Layout==R8_LAYOUT && rd.Alignment==R8_ALIGNMENT) {
         /* Runtime R8 occupies eight tiles; the single RGBA8 texel occupies one. */
-        *out=(D3D12_RESOURCE_ALLOCATION_INFO){texel32?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){cube?CUBE1_BYTES:texel32?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
         return S_OK;
     }
     if (rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;

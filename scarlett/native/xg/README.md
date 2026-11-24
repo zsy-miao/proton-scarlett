@@ -228,3 +228,31 @@ Build the same fixture with `-DTEST_VOLUME1` and compile `test-volume1.hlsl`
 (from `scarlett/native`) with `dxc -T cs_6_0 -E main -Fo volume1.dxil`.
 It checks native Texture3D dimensions and loads, 2D/3D view mismatch refusal,
 padding, source-slot overwrite, heap release and exact title VA reuse.
+
+### Six 1×1 RGBA8_UNORM layers (RTX 3070)
+
+With one mip/sample, quality 0 and flags `0x300000`, retail asks `+c8` for
+small placement with UNKNOWN layout. After clearing the guest-only flags,
+the native query reports 4096/4096. Three native six-layer images placed at
+`0x1000`, `0x2000`, `0x3000` preserved all 18 subresources. For the explicit
+project recommendation `0x105` the **guest** result is 24576/4096. A separate
+reference texture computer confirmed one 4096-byte tile per face, with its
+four-byte texel at the origin. These are distinct layouts.
+
+For each resource retail made six XG copies (plane zero, subresources 0..5,
+row/slice pitches 4/4) from stack DWORDs to one WC base. `+230` requested
+TextureCube or Texture2DArray (base layer 0, count 6); all four descriptors
+used default mapping and mip 0/count 1. The record pins the original WC
+buffer. Refresh copies six tile origins on the consuming queue and creates
+the matching one-slot native SRV. This is not a direct import of the WC
+span as a native optimal image. The four observed WC offsets were `e5d4000`,
+`e5da000`, `e5e0000`, `e5e6000` (zero, zero, white, white). The next stop
+was `+c8`, return `+344145`, for **12** layers. Retail did not demonstrate
+shader sampling.
+
+Build `test-r8-allocation.cpp` as in `../r8-allocation.md` with `-DTEST_CUBE1`
+for the native placement test. Build the view fixture above with `-DTEST_CUBE1`
+or `-DTEST_ARRAY6` and compile `test-six-face.hlsl` with the matching define,
+`-T cs_6_0 -E main`, as `cube1.dxil` or `array6.dxil`. Each test compares all
+24 normalized channel values twice, including writes after queue submission,
+visible slot overwrite, heap release, original VA reuse, and padding guards.

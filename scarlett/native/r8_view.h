@@ -20,6 +20,15 @@ static BOOL valid_address_record(const struct descriptor_record *r,SIZE_T slot,U
         tag[0]==r->serial && tag[1]==(0x5853444553430000ull|kind);
 }
 
+static D3D12_SHADER_RESOURCE_VIEW_DESC texture_srv(UINT kind)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC v={.Format=refresh_format(kind),.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+    if (kind==CUBE1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE; v.TextureCube.MipLevels=1; }
+    else if (kind==ARRAY6_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=CUBE1_FACES; }
+    else if (kind==VOLUME1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; v.Texture3D.MipLevels=1; }
+    else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=1; }
+    return v;
+}
 /* A copy takes a new serial and owns its own reference to the original import. */
 static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID3D12Resource *buffer,UINT offset,
         BOOL require_visible,struct descriptor_record *old)
@@ -31,12 +40,7 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     UINT64 tag[]={++d->descriptor_serial,0x5853444553430000ull|kind};
     if (!store_slot_tag(dest,tag)) return E_POINTER;
     /* A texture requires refresh; its bank slot must never expose a stale texture. */
-    D3D12_SHADER_RESOURCE_VIEW_DESC null_view={.Format=refresh_format(kind),.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D,
-        .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Texture2D.MipLevels=1};
-    if (kind==VOLUME1_VIEW) {
-        null_view.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D;
-        null_view.Texture3D.MipLevels=1;
-    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC null_view=texture_srv(kind);
     if (kind==RAW38_VIEW) {
         D3D12_SHADER_RESOURCE_VIEW_DESC raw={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
             .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Buffer={offset/4,38,0,D3D12_BUFFER_SRV_FLAG_RAW}};
@@ -49,17 +53,17 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
 }
 static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,SIZE_T dest)
 {
-    static const DWORD texture[]={61,4,0x1688,0,0,1,0,0,0,0},raw[]={39,1,0x1688,0,0,0,38,0,1,0};
-    BOOL tex=refresh_required(kind);
-    if (w[0]!=(tex?(DWORD)refresh_format(kind):raw[0]) || w[1]!=(kind==VOLUME1_VIEW?8u:tex?texture[1]:raw[1]) ||
-            memcmp(w+2,(tex?texture:raw)+2,8*sizeof(DWORD)) ||
-            w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
+    static const DWORD raw[]={39,1,0x1688,0,0,0,38,0,1,0};
+    BOOL tex=refresh_required(kind),six=kind==CUBE1_VIEW || kind==ARRAY6_VIEW;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv=texture_srv(kind);
+    DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==ARRAY6_VIEW?CUBE1_FACES:0,0,0};
+    if (memcmp(w,tex?texture:raw,sizeof texture) || w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
     UINT alignment=tex ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
     if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;
-    HRESULT hr=retain_wc_buffer(device,(void *)va,kind==R8_VIEW?R8_BYTES:tex?R8_ALIGNMENT:160,&buffer,&offset);
+    HRESULT hr=retain_wc_buffer(device,(void *)va,six?CUBE1_BYTES:kind==R8_VIEW?R8_BYTES:tex?R8_ALIGNMENT:160,&buffer,&offset);
     if (FAILED(hr)) return hr;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct descriptor_record old={0};
@@ -101,7 +105,7 @@ void xs_drop_texture_use(struct xs_texture_use *u)
 static void r8_transition(ID3D12GraphicsCommandList *l,ID3D12Resource *r,D3D12_RESOURCE_STATES before,
         D3D12_RESOURCE_STATES after)
 {
-    D3D12_RESOURCE_BARRIER b={.Transition={r,0,before,after}};
+    D3D12_RESOURCE_BARRIER b={.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,before,after}};
     ID3D12GraphicsCommandList_ResourceBarrier(l,1,&b);
 }
 /* Call immediately before use on an open direct/compute list, source in COMMON.
@@ -125,14 +129,14 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     if (!same) return E_INVALIDARG;
     struct xs_texture_use *u=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *u);
     if (!u) return E_OUTOFMEMORY;
-    UINT offset=0; BOOL volume=FALSE; DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
+    UINT offset=0; UINT kind=0; DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     AcquireSRWLockShared(&d->descriptor_lock);
     if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         struct descriptor_record *r=&h->records[(slot-h->start)/h->stride];
         if (refresh_required(r->kind) && valid_address_record(r,slot,r->kind)) {
             u->source=r->resource; ID3D12Resource_AddRef(u->source); offset=r->offset; format=refresh_format(r->kind);
-            volume=r->kind==VOLUME1_VIEW;
+            kind=r->kind;
         }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
@@ -145,15 +149,16 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->rows);
         if (FAILED(hr)) goto fail;
     }
-    rd.Dimension=volume?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
-    rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    rd.Dimension=kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
+    rd.DepthOrArraySize=(kind==CUBE1_VIEW || kind==ARRAY6_VIEW)?CUBE1_FACES:1; rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
     if (FAILED(hr)) goto fail;
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
     hr=ID3D12Device_CreateDescriptorHeap(d->host,&hd,&IID_ID3D12DescriptorHeap,(void **)&u->view);
     if (FAILED(hr)) goto fail;
     u->view->lpVtbl->GetCPUDescriptorHandleForHeapStart(u->view,&cpu);
-    ID3D12Device_CreateShaderResourceView(d->host,u->texture,NULL,cpu);
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv=texture_srv(kind);
+    ID3D12Device_CreateShaderResourceView(d->host,u->texture,&srv,cpu);
 
     /* Each 16-byte row segment is contiguous in both layouts. All reads execute
      * on the consuming queue, including writes ordered after list submission. */
@@ -168,7 +173,11 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     D3D12_TEXTURE_COPY_LOCATION from={.pResource=texel32?u->source:u->rows,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
         .PlacedFootprint={texel32?offset:0,{rd.Format,(UINT)rd.Width,rd.Height,1,256}}};
     D3D12_TEXTURE_COPY_LOCATION to={.pResource=u->texture,.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-    ID3D12GraphicsCommandList_CopyTextureRegion(l,&to,0,0,0,&from,NULL);
+    for (UINT layer=0;layer<rd.DepthOrArraySize;layer++) {
+        to.SubresourceIndex=layer;
+        ID3D12GraphicsCommandList_CopyTextureRegion(l,&to,0,0,0,&from,NULL);
+        from.PlacedFootprint.Offset+=R8_ALIGNMENT;
+    }
     r8_transition(l,u->source,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
     r8_transition(l,u->texture,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
             (type==D3D12_COMMAND_LIST_TYPE_DIRECT ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : 0));
