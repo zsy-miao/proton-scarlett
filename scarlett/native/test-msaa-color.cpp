@@ -69,6 +69,7 @@ int main() {
         BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page&&VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
         auto end=page+4096-sizeof ms;memcpy(end,ms,sizeof ms);
         ((Srv)vt[0x90/8])(g.Get(),obj,end,slot);UINT64 before=*(UINT64*)slot;
+        ms[0]=DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;CK(FAILED(xs_write_view(g.Get(),0x90,obj,ms,slot)));ms[0]=28;
         for(unsigned j=0;j<8;j++){ms[j]^=1; CK(FAILED(xs_write_view(g.Get(),0x90,obj,ms,slot)));ms[j]^=1;}
         DWORD single[10]={28,4,0x1688,0,0,1};CK(FAILED(xs_write_view(g.Get(),0x90,obj,single,slot)));
         CK(FAILED(xs_write_view(g.Get(),0x90,g.Get(),ms,slot)) && FAILED(xs_write_view(g.Get(),0x90,obj,ms,slot+1)));

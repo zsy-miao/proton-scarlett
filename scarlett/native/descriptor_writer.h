@@ -169,9 +169,9 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         uav.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
         uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
     } else if (ms_srv) {
-        if (words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM || words[2]!=0x1688 ||
+        if ((words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM && words[0]!=DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) || words[2]!=0x1688 ||
                 memcmp(words+3,(DWORD[5]){0},5*sizeof(DWORD))) return E_NOTIMPL;
-        srv.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv.Format=words[0];
         srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DMS;
         srv.Shader4ComponentMapping=words[2];
     } else if (kind==SRV && words[0]==DXGI_FORMAT_R8G8B8A8_UNORM &&
@@ -193,7 +193,8 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     AcquireSRWLockExclusive(&d->descriptor_lock);
     if (object && (kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !c->depth && c->msaa==ms_srv) { resource=c->host; break; }
+            if (&c->iface==object && c->msaa==ms_srv &&
+                c->depth==(srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)) { resource=c->host; break; }
         if (!resource) goto done;
     } else if (object) {
         for (struct xs_buffer_binding *b=d->buffers;b;b=b->next) if (b->identity==object) {

@@ -30,6 +30,15 @@ preserves all prior depth/stencil bytes. The color fixture still passes.
 These offsets describe this tested driver/format only. No depth/stencil
 resolve is implied.
 
-Retail confirmed successful placement, then rejected a depth SRV on that
-same object: device `+90`, return `+164f01`, prefix `15 6 1688 0 0 0 0 0`
-(hex). Retail did not execute the fixture's draws or sample reads.
+Retail confirmed successful placement and `+90` on the same depth wrapper,
+prefix `15 6 1688 0 0 0 0 0` (hex): R32_FLOAT_X8X24_TYPELESS, Texture2DMS,
+default mapping. The existing writer retains the device-local native image
+in the slot. The color format requires a color wrapper; neither the typed
+DSV nor the stencil-only format qualifies for this depth SRV.
+
+In the RTX fixture, the middle placement's four depth loads use the resolved
+guest slot. Only the neighboring stencil descriptor is written natively for
+that placement. After wrapper release, title VA reuse and the fence, the slot
+still excludes duplicate placement until overwritten. Retail's next failure
+is `+a0` on the **color** wrapper, RTV prefix `1c 6 0 0` (hex), return
+`+cc29ea`. Retail did not execute the fixture's draws or sample reads.
