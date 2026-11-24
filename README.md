@@ -54,7 +54,7 @@ Both GPUs passed the [3D sampler test](scarlett/tests/w-clamp.sh) for all eight 
 
 Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarlett/native/xmem/README.md#retail-write-back-page-pool) with the graphics device. A [GPU test](scarlett/native/test-page-pool.c) verified all six backing heaps after the title address was reused. Retail creates its COPY queue; the [queue test](scarlett/native/test-d3d12-bootstrap.c) verified all 1,024 copied words after a Direct-queue fence released the transfer.
 
-Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) through device `+0x2b0`. Its clear shader pair reads positions and colors from the `t0, space3` buffer. On both RADV and RTX, three offscreen draws matched all 384 expected pixels, including untouched background pixels. AMD retail then creates a point-filtered wrap sampler and copies it into visible slot 1. The [explicit layout for its 256×128 `R8_UNORM` texture](scarlett/native/r8-allocation.md) occupies 32 KiB at 4 KiB alignment. Retail on both GPUs writes the [R8 address SRV](scarlett/native/xg/README.md#r8-address-view) at device `+0x230` (title return `+0x4ecc821`). **No retail draw submission, builder dispatch or presented frame has been observed.**
+Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) through device `+0x2b0`. Its clear shader pair reads positions and colors from the `t0, space3` buffer. On both RADV and RTX, three offscreen draws matched all 384 expected pixels, including untouched background pixels. A retail draw using that pipeline has not been observed.
 
 In a [controlled draw test](scarlett/tests/clear-fallback/README.md), the original title routine recorded a clear through nine graphics calls. AMD and RTX 3070 both rendered the expected color in all 256 pixels inside the scissor rectangle. All 1,344 pixels outside it and all 1,600 pixels on a second target stayed unchanged.
 
@@ -84,7 +84,7 @@ An [offscreen draw test](scarlett/tests/native-ps/) translated the title's nativ
 
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
 
-The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
+The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. The retail startup presentation uses the original primary image and the private display bridge described above.
 
 An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent virtual A, forward movement, and camera-left inputs to a test window on RADV and RTX 3070. The installed GameInput provider reported each action and returned to neutral after each release. Both recordings showed the expected color for each action and release. Retail input has not yet been exercised.
 
