@@ -86,6 +86,26 @@ int main(void)
            count, last - first);
     IGameInputReading_Release(held);
     IGameInputReading_Release(before);
+    INPUT keys[2] = {
+        {.type = INPUT_KEYBOARD, .ki = {.wVk = 'W'}},
+        {.type = INPUT_KEYBOARD, .ki = {.wVk = VK_LEFT}}
+    };
+    for (int i = 0; i < 2; ++i) {
+        assert(SendInput(2, keys, sizeof(INPUT)) == 2);
+        GameInputGamepadState pad;
+        DWORD limit = GetTickCount();
+        do {
+            IGameInputReading *r = poll_pad(g);
+            assert(IGameInputReading_GetGamepadState(r, &pad));
+            IGameInputReading_Release(r);
+            if (pad.leftThumbstickY == (i ? 0 : 1) && pad.rightThumbstickX == (i ? 0 : -1)) break;
+            assert(GetTickCount() - limit < 2000);
+            Sleep(10);
+        } while (true);
+        assert(!pad.leftThumbstickX && !pad.rightThumbstickY && !pad.buttons);
+        keys[0].ki.dwFlags = keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    }
+    puts("PASS virtual sticks: forward + look left, then neutral");
     IGameInputDevice_Release(device);
     IGameInput_Release(g);
     return 0;

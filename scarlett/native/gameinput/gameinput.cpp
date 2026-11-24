@@ -120,6 +120,7 @@ static IGameInputReadingVtbl read_vt = {
     },
     .GetRacingWheelState = absent, .GetUiNavigationState = absent
 };
+static bool pressed(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; }
 static HRESULT current(IGameInput *, GameInputKind kind, IGameInputDevice *dev, IGameInputReading **out)
 {
     if (!out) return E_POINTER;
@@ -131,8 +132,13 @@ static HRESULT current(IGameInput *, GameInputKind kind, IGameInputDevice *dev, 
     r->refs = 1;
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_SPACE) & 0x8000))
-        r->state.buttons = GameInputGamepadA;
+    if (pid == GetCurrentProcessId()) {
+        if (pressed(VK_SPACE)) r->state.buttons = GameInputGamepadA;
+        r->state.leftThumbstickX = pressed('D') - pressed('A');
+        r->state.leftThumbstickY = pressed('W') - pressed('S');
+        r->state.rightThumbstickX = pressed(VK_RIGHT) - pressed(VK_LEFT);
+        r->state.rightThumbstickY = pressed(VK_UP) - pressed(VK_DOWN);
+    }
     static LONG64 sequence;
     r->sequence = InterlockedIncrement64(&sequence);
     r->timestamp = now();

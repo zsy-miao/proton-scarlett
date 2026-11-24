@@ -1,7 +1,9 @@
 # GameInput ordinal 1: x64 polling subset
 
 Original provider for one virtual gamepad. Holding Space while a window of the
-calling process has foreground focus sets `GameInputGamepadA`. A reading is an
+calling process has foreground focus sets `GameInputGamepadA`. WASD controls
+the left stick and arrow keys control the right stick, with positive Y for up.
+Releasing a key returns its axis to neutral; opposite keys cancel. A reading is an
 immutable sample; it stays valid until its final `Release`.
 
 Build against Microsoft's **Windows SDK 10.0.26100 `um/GameInput.h`** (v0,
