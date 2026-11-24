@@ -47,8 +47,12 @@ and one 1,116 MiB heap. Page IDs advance by 16 so they stay distinct after
 the title drops the low four bits. The matching
 `XMemVirtualAlloc(NULL, 0x185c00000, 0x20402000, 0x23, 0x2004)` reserves a
 contiguous range. `XMemMapPhysicalPages` at `+0x1e6c295` maps those same six
-sections into it. Only whole-run mapping is supported. Retail reaches the
-graphics device's page-pool registration call at `+0x1e6c2bb`.
+sections into it. Only whole-run mapping is supported. At `+0x1e6c2bb`,
+retail registers that range through device `+0x250`. XMem verifies all six
+section identities under the page lock; the device imports those sections
+and returns an opaque registration handle. The [registration test](../test-page-pool.c)
+checked 12 fenced reads from the original heaps after release and address reuse.
+The guest unregister slot and queue-side remapping remain unverified.
 
 [`test-tile-pages.cpp`](test-tile-pages.cpp) maps the run twice, writes and
 reads both ends of each heap through opposite mappings, and checks fenced

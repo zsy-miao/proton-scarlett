@@ -44,6 +44,7 @@ struct xbox_device {
     BYTE inline_descriptor_mode;
     SRWLOCK descriptor_lock;
     struct desc_heap *heaps;
+    struct page_pool *page_pools;
     struct desc_heap *rtv_heaps;
     struct desc_heap *sampler_heaps;
     struct xs_buffer_binding *buffers;
@@ -67,6 +68,7 @@ _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline
 #include "placed_resource.h"
 #endif
 #include "descriptor_writer.h"
+#include "page_pool.h"
 #include "bvh_root.h"
 #include "bvh_pipeline.h"
 #ifdef SCARLETT_STAGED_PLACED
@@ -113,6 +115,11 @@ static ULONG WINAPI device_release(IUnknown *iface)
     if (!refs) {
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
         frame_clear(&device->clock);
+        while (device->page_pools) {
+            struct page_pool *p=device->page_pools;
+            device->page_pools=p->next;
+            pool_destroy(p);
+        }
 #ifdef SCARLETT_STAGED_PLACED
         if (device->pool_buffer) ID3D12Resource_Release(device->pool_buffer);
         if (device->pool_section) CloseHandle(device->pool_section);
@@ -531,7 +538,8 @@ struct bootstrap_vtbl {
 #endif
     xs_stop_fn gap238[2];
     __typeof__(&bootstrap_list) list;
-    xs_stop_fn gap250[4];
+    HRESULT (WINAPI *register_pool)(IUnknown *,UINT64,UINT,HANDLE *);
+    xs_stop_fn gap258[3];
     __typeof__(&bootstrap_frame_interval) frame_interval;
     __typeof__(&bootstrap_frame_event) frame_event;
     __typeof__(&bootstrap_frame_wait) frame_wait;
@@ -557,6 +565,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, frame_wait) == 0x280 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
+               offsetof(struct bootstrap_vtbl, register_pool) == 0x250 &&
                offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
                offsetof(struct bootstrap_vtbl, root) == 0x80 &&
                offsetof(struct bootstrap_vtbl, bvh_pipeline) == 0x1f0 &&
@@ -666,7 +675,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
 #else
     .address_srv = xs_stop,
 #endif
-    .gap238 = {xs_stop,xs_stop}, .list = bootstrap_list, .gap250 = { [0 ... 3] = xs_stop },
+    .gap238 = {xs_stop,xs_stop}, .list = bootstrap_list, .register_pool = register_page_pool,
+    .gap258 = {xs_stop,xs_stop,xs_stop},
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
     .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 44] = xs_stop },
     .committed = bootstrap_committed, .gap400 = { [0 ... 4] = xs_stop }, .placed = bootstrap_placed

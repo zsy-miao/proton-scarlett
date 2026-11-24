@@ -1,10 +1,7 @@
 /* Private physical-page implementation included by xmem.c. */
 #define XMEM_PAGE ((SIZE_T)65536)
-#define TILE_PAGES ((ULONG_PTR)99776)
-static SIZE_T tile_bytes(unsigned chunk)
-{
-    return chunk == 5 ? (1116ULL<<20) : (1ULL<<30);
-}
+#include "tile_sections.h"
+#include "marked_section.h"
 HANDLE xmem_page_backing(SIZE_T size, BOOL wb);
 HANDLE xmem_tile_backing(SIZE_T size);
 BOOL xmem_wc_slot(PVOID addr, SIZE_T size, HANDLE backing, SIZE_T offset, DWORD policy);
@@ -56,6 +53,34 @@ static PageRun *runs;
 static PageView *views;
 static Arena *arenas;
 static ULONG_PTR next_page = 1;
+
+__declspec(dllexport) HRESULT WINAPI ScarlettCaptureTileSectionsV1(const void *base,UINT count,struct tile_sections *out)
+{
+    if (!out) return E_POINTER;
+    ZeroMemory(out,sizeof *out);
+    if (!base || count!=TILE_PAGES || ((UINT_PTR)base%XMEM_PAGE)) return E_INVALIDARG;
+    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+    if (!same) return E_NOTIMPL;
+    HRESULT hr=E_INVALIDARG;
+    AcquireSRWLockShared(&page_lock);
+    for (Arena *a=arenas;a;a=a->next) {
+        if (a->base!=base || !a->tile || !a->tile_run || a->size!=count*XMEM_PAGE ||
+                a->tile_mapped!=ARRAYSIZE(out->part)) continue;
+        for (unsigned i=0;i<ARRAYSIZE(out->part);++i) {
+            const BYTE *at=(const BYTE *)base+((SIZE_T)i<<30);
+            struct scarlett_section_info info;
+            hr=scarlett_query_section(0x5343000c,at,tile_bytes(i),&info);
+            if (FAILED(hr)) break;
+            out->part[i]=info.section;
+            if (info.base!=at || info.offset || info.view_size!=tile_bytes(i) ||
+                    !same(info.section,a->tile_run->tile[i])) { hr=E_INVALIDARG; break; }
+        }
+        break;
+    }
+    ReleaseSRWLockShared(&page_lock);
+    if (FAILED(hr)) tile_sections_close(out);
+    return hr;
+}
 
 /* Preserve the distinction from a later ordinary reservation at the same VA. */
 static BOOL descriptor_marker(PVOID base)
