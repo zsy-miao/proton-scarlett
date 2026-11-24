@@ -276,6 +276,21 @@ static HRESULT WINAPI bootstrap_extended(IUnknown *iface, const void *desc, REFI
     return hr;
 }
 
+static HRESULT WINAPI bootstrap_query_heap(IUnknown *iface, const void *wire, REFIID iid, void **out)
+{
+    D3D12_QUERY_HEAP_DESC d;
+    IID id;
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!wire || !iid) return E_INVALIDARG;
+    if (!copy_in(&id,iid,sizeof id) || !copy_in(&d,wire,sizeof d)) return E_POINTER;
+    if (!IsEqualIID(&id,&IID_ID3D12QueryHeap)) return E_NOINTERFACE;
+    if (!d.Count) return E_INVALIDARG;
+    if (d.Type != D3D12_QUERY_HEAP_TYPE_OCCLUSION || d.Count != 2460 || d.NodeMask != 1)
+        return E_NOTIMPL;
+    return xs_query_heap(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&d,out);
+}
+
 static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_SIGNATURE_DESC *desc,
         IUnknown *root, REFIID iid, void **out)
 {
@@ -421,7 +436,9 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
     __typeof__(&bootstrap_fence) fence;
-    xs_stop_fn gap128[4];
+    xs_stop_fn gap128[2];
+    __typeof__(&bootstrap_query_heap) query_heap;
+    xs_stop_fn gap140;
     __typeof__(&bootstrap_signature) signature;
     xs_stop_fn gap150[6];
     __typeof__(&bootstrap_extended) extended;
@@ -464,6 +481,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, rtv) == 0xa0 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
+               offsetof(struct bootstrap_vtbl, query_heap) == 0x138 &&
                offsetof(struct bootstrap_vtbl, signature) == 0x148 &&
                offsetof(struct bootstrap_vtbl, extended) == 0x180, "bootstrap x64 ABI");
 static const struct bootstrap_vtbl bootstrap_vtbl;
@@ -555,7 +573,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 3] = xs_stop },
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
-    .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
+    .gap128 = { xs_stop, xs_stop }, .query_heap = bootstrap_query_heap, .gap140 = xs_stop,
+    .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
     .gap188 = { [0 ... 12] = xs_stop }, .bvh_pipeline = builder_pipeline_call,
     .gap1f8 = { [0 ... 6] = xs_stop },

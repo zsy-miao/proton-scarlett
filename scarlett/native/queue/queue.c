@@ -17,6 +17,7 @@ struct adapter {
         ID3D12Fence *fence;
         ID3D12CommandAllocator *allocator;
         ID3D12CommandSignature *signature;
+        ID3D12QueryHeap *query_heap;
         ID3D12Resource *surface;
     } host;
     union {
@@ -80,7 +81,7 @@ static const IUnknownVtbl surface_vtbl;
 static const struct {
     IUnknownVtbl prefix;
     xs_stop_fn inherited[5];
-} st;
+} st, qht;
 _Static_assert(offsetof(struct atable, reset) == 0x40 && offsetof(struct atable, callback) == 0x48,
         "x64 allocator slots");
 #endif
@@ -109,6 +110,7 @@ static ULONG WINAPI release(IUnknown *iface)
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
         else if (iface->lpVtbl == &at.prefix) ID3D12CommandAllocator_Release(a->host.allocator);
         else if (iface->lpVtbl == &st.prefix) ID3D12CommandSignature_Release(a->host.signature);
+        else if (iface->lpVtbl == &qht.prefix) ID3D12QueryHeap_Release(a->host.query_heap);
         else if (iface->lpVtbl == &surface_vtbl) ID3D12Resource_Release(a->host.surface);
 #endif
         else {
@@ -140,6 +142,7 @@ static HRESULT WINAPI query(IUnknown *iface, REFIID iid, void **out)
             && !(iface->lpVtbl == &fence_prefix && IsEqualIID(iid, &IID_ID3D12Fence))
             && !(iface->lpVtbl == &at.prefix && IsEqualIID(iid, &IID_ID3D12CommandAllocator))
             && !(iface->lpVtbl == &st.prefix && IsEqualIID(iid, &IID_ID3D12CommandSignature))
+            && !(iface->lpVtbl == &qht.prefix && IsEqualIID(iid, &IID_ID3D12QueryHeap))
 #endif
             ) return E_NOINTERFACE;
     addref(iface);
@@ -155,6 +158,22 @@ static ID3D12CommandQueue *as_queue(IUnknown *iface)
 
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 static const __typeof__(st) st = { {query, addref, release}, { [0 ... 4] = xs_stop } };
+static const __typeof__(qht) qht = { {query, addref, release}, { [0 ... 4] = xs_stop } };
+
+HRESULT xs_query_heap(ID3D12Device *host, const D3D12_QUERY_HEAP_DESC *desc, void **out)
+{
+    struct adapter *a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
+    if (!a) return E_OUTOFMEMORY;
+    HRESULT hr = ID3D12Device_CreateQueryHeap(host, desc, &IID_ID3D12QueryHeap, (void **)&a->host.query_heap);
+    if (FAILED(hr)) {
+        HeapFree(GetProcessHeap(), 0, a);
+        return hr;
+    }
+    a->iface.lpVtbl = &qht.prefix;
+    a->refs = 1;
+    *out = &a->iface;
+    return S_OK;
+}
 
 ID3D12CommandSignature *xs_signature_host(IUnknown *iface, D3D12_INDIRECT_ARGUMENT_TYPE original_type)
 {

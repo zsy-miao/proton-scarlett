@@ -107,6 +107,41 @@ the submitting worker waits before consuming the physical queue, so another
 logical queue can submit the GPU signal even on a shared physical queue.
 This does not infer an Xbox vtable slot for Wait, submission or cache control.
 
+### Occlusion query heaps
+
+At RVA `0x2481b2b` (return `0x2481b31`), device `+0x138` takes the three-dword
+`D3D12_QUERY_HEAP_DESC`, IID `0d9658ae-ed45-469e-a61d-970ec583cab4`
+(`ID3D12QueryHeap`, RVA `0x61e06f8`), and output at object `+0x58`. The four
+observed descriptors are `(OCCLUSION,2460,1)`. Each wrapper owns one distinct
+native query heap; only IUnknown identity methods are exposed. Other descriptors
+are not enabled. In particular, title kind 2 takes a separate allocation path,
+and kind 4 can reach this slot with `PIPELINE_STATISTICS` rather than occlusion.
+
+After the HRESULT handler at `0x2481b35`, success calls device `+0xd8` at
+`0x2481bce` (return `0x2481bd5`), matching `CreateCommittedResource`: READBACK
+heap, masks 1/1, no flags, row-major buffer, COPY_DEST (`0x400`), no clear value,
+`IID_ID3D12Resource`, output at object `+0x60`. Width is count times result
+stride (2460 × 8 = 19680 bytes for the traced requests). On failure the title
+releases the query heap through `+0x10`.
+
+To run the synthetic occlusion test from the repository root on RADV:
+
+```sh
+w=$(mktemp -d); mkdir "$w/game"
+x86_64-w64-mingw32-gcc -std=c11 -Os -Wall -Wextra -Werror \
+  -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED \
+  scarlett/native/{test-query-heap,d3d12_device}.c -ld3d12 -ld3dcompiler \
+  -o "$w/game/game_scarlett_master.exe"
+TMPDIR="$w" SCARLETT_TEST_GPU=radv scarlett/test-launch-nixos.sh "$w/game"
+grep -E '^visible samples|^PASS ' "$w"/scarlett-run.*/logs/steam-999001.log
+```
+
+The fixture releases the console device, draws four scissored triangles using
+index 2459 in four heaps, then resolves all four through a native command list.
+After the fence, it checks 64, 48, 32 and 16 samples, unchanged guards, and
+final object release. This checks native backing; it does not infer any
+console query recording or resolve slot.
+
 ### Allocator and list boundary
 
 Device `+0x48` creates a real Direct or Compute host allocator behind a
