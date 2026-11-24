@@ -382,10 +382,22 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     return S_OK;
 }
 
+static void log_rejected_query(UINT slot, UINT node, UINT count, const void *wire, HRESULT hr)
+{
+    D3D12_RESOURCE_DESC r={0};
+    if (count!=1 || !copy_in(&r,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof r.Flags)) return;
+    char msg[256];
+    snprintf(msg,sizeof msg,"scarlett: device+%x rejected allocation node=%u dim=%u %llux%ux%u mips=%u "
+        "fmt=%u sample=%u:%u alignment=%llu layout=%#x flags=%#x hr=%#lx\n",
+        slot,node,r.Dimension,(unsigned long long)r.Width,r.Height,r.DepthOrArraySize,r.MipLevels,r.Format,
+        r.SampleDesc.Count,r.SampleDesc.Quality,(unsigned long long)r.Alignment,r.Layout,r.Flags,(unsigned long)hr);
+    OutputDebugStringA(msg);
+}
 static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO *out,
         IUnknown *iface,UINT node,UINT count,const void *wire)
 {
-    if (FAILED(xs_color_allocation_info(iface,node,count,wire,out))) xs_stop();
+    HRESULT hr=xs_color_allocation_info(iface,node,count,wire,out);
+    if (FAILED(hr)) { log_rejected_query(0xc8,node,count,wire,hr); xs_stop(); }
     return out;
 }
 
@@ -402,7 +414,8 @@ HRESULT xs_msaa_allocation_info1(IUnknown *iface,UINT node,UINT count,const void
 static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info1(D3D12_RESOURCE_ALLOCATION_INFO *out,
         IUnknown *iface,UINT node,UINT count,const void *wire,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
 {
-    if (FAILED(xs_msaa_allocation_info1(iface,node,count,wire,out,detail))) xs_stop();
+    HRESULT hr=xs_msaa_allocation_info1(iface,node,count,wire,out,detail);
+    if (FAILED(hr)) { log_rejected_query(0x360,node,count,wire,hr); xs_stop(); }
     return out;
 }
 

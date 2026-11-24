@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | The installed test build completes the first image clear on AMD and RTX. Both still stop during creation of a 1440p floating-point texture, before any image reaches the screen. |
+| What's blocking it? | The installed build stops while creating a 1440p texture. The latest staged build also reaches a depth-buffer size request on AMD and a smaller color-buffer request on RTX. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -23,7 +23,7 @@ Both GPUs pass the size and alignment queries for the [four-sample color target]
 
 **Installed test build:** On RADV and RTX the GPU finished the list containing the transparent-black clear, texture release and second timestamp. Both retail runs logged `tagged singleton batch end` with `completed=1` without a diagnostic pause. Both logs also reported a breakpoint at title RVA `+0xcc2834`. In a [separate pixel test](scarlett/native/test-primary-barrier.hpp), both GPUs verified all 8,294,400 cleared pixels. This installation uses the [opt-in submission path](scarlett/native/queue/README.md#experimental-whole-queue-wait) and graphics backend patch `0029`.
 
-With backend patch `0030`, retail created both 2048×2048 BGRA color targets and their views in the game's memory on AMD and RTX. The [hardware test](scarlett/native/test-wc-bgra.cpp) checked every pixel of each target and verified that writing one left its neighbor intact. The next request on that thread was for a 1024×1024 depth/stencil texture.
+With backend patch `0030`, retail created both 2048×2048 BGRA color targets and their views in the game's memory on AMD and RTX. The [hardware test](scarlett/native/test-wc-bgra.cpp) checked every pixel of each target and verified that writing one left its neighbor intact. The next request on that thread was for a 1024×1024 depth/stencil texture. AMD still stops at that query. RTX accepted an 8 MiB size and then requested a 994×624 BGRA target. A [separate depth test](scarlett/native/depth1024.md) verified all depth and stencil texels on RTX.
 
 Separate prototypes on both adapters created the [1440p floating-point target](scarlett/native/half-target.md) and its render-target, shader-read and shader-write views. That thread then requested a tiled 720p integer texture. The game can reuse an offset when another texture fails to be created, so offsets from separate runs cannot be treated as simultaneous allocations.
 
