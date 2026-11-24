@@ -37,6 +37,11 @@ int main() {
     p.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p.DescriptorTable={count,ranges};
     D3D12_STATIC_SAMPLER_DESC samp={D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,0,1,D3D12_COMPARISON_FUNC_NEVER,D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,0,12,3,1,D3D12_SHADER_VISIBILITY_ALL};
     rs.Desc_1_1={1,&p,1,&samp,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};const SIZE_T bytes=alpha?332:308;
+#elif defined(TEST_BLIT_COLOUR)
+    D3D12_DESCRIPTOR_RANGE1 range={D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,27,1,D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,UINT_MAX};
+    p={};p.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p.DescriptorTable={1,&range};
+    rs.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    constexpr SIZE_T bytes=112;
 #else
     constexpr SIZE_T bytes=92;
 #endif
@@ -49,12 +54,22 @@ int main() {
     CK(create(dev.Get(),1,capture,bytes-1,IID_ID3D12RootSignature,&bad)==E_NOTIMPL&&!bad);
 #ifdef TEST_BINK
     ranges[1].BaseShaderRegister=5;ranges[2].BaseShaderRegister=6;
+#elif defined(TEST_BLIT_COLOUR)
+    auto rejects=[&](){ComPtr<ID3DBlob> mismatch;void *out=dev.Get();return SUCCEEDED(D3D12SerializeVersionedRootSignature(&rs,&mismatch,nullptr)) &&
+        create(dev.Get(),1,mismatch->GetBufferPointer(),mismatch->GetBufferSize(),IID_ID3D12RootSignature,&out)==E_NOTIMPL && !out;};
+    range.RegisterSpace=0;CK(rejects());range.RegisterSpace=1;range.Flags=D3D12_DESCRIPTOR_RANGE_FLAG_NONE;CK(rejects());range.Flags=D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+    rs.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_NONE;CK(rejects());rs.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    p.ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;CK(rejects());p.ShaderVisibility=D3D12_SHADER_VISIBILITY_ALL;
+    range.BaseShaderRegister=26;
+    bad=dev.Get();CK(create(dev.Get(),1,capture,bytes,IID_IUnknown,&bad)==E_NOINTERFACE && !bad);
+    CK(create(dev.Get(),1,capture,bytes,IID_ID3D12RootSignature,nullptr)==E_POINTER);
+    bad=dev.Get();CK(create(dev.Get(),1,(void*)1,bytes,IID_ID3D12RootSignature,&bad)==E_POINTER && !bad);
 #else
     p.Descriptor.RegisterSpace=2;
 #endif
     ComPtr<ID3DBlob> other;HR(D3D12SerializeVersionedRootSignature(&rs,&other,nullptr));
     CK(create(dev.Get(),1,other->GetBufferPointer(),other->GetBufferSize(),IID_ID3D12RootSignature,&bad)==E_NOTIMPL&&!bad);
-    HR(create(dev.Get(),1,capture,bytes,IID_ID3D12RootSignature,(void**)root.GetAddressOf()));
+    CK(create(dev.Get(),1,capture,bytes,IID_ID3D12RootSignature,(void**)root.GetAddressOf())==S_OK && root);
     auto host=xs_bvh_root_host(dev.Get(),root.Get());CK(host);ComPtr<ID3D12Device>d;HR(host->GetDevice(IID_PPV_ARGS(&d)));
 #ifdef TEST_BINK
     using Warm=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);auto warm=(Warm)(*(void***)dev.Get())[0x1c8/8];IUnknown *key=root.Get();
@@ -89,7 +104,13 @@ int main() {
     };
     ComPtr<ID3D12Resource> src,rt,rb;HR(resource(D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ,&src));
     HR(resource(D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_RENDER_TARGET,&rt));HR(resource(D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST,&rb));
-    const UINT vals[]={19,37,0xfedcba98,0x7abc1234};void* m;HR(src->Map(0,nullptr,&m));memcpy(m,vals,sizeof vals);src->Unmap(0,nullptr);
+    const UINT vals[]={19,37,0xfedcba98,0x7abc1234};void* m;HR(src->Map(0,nullptr,&m));
+#ifdef TEST_BLIT_COLOUR
+    memset(m,0xcc,256);memcpy((BYTE*)m+32,vals,sizeof vals);
+#else
+    memcpy(m,vals,sizeof vals);
+#endif
+    src->Unmap(0,nullptr);
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};ComPtr<ID3D12DescriptorHeap>heap;
     HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&heap)));auto h=heap->GetCPUDescriptorHandleForHeapStart();d->CreateRenderTargetView(rt.Get(),nullptr,h);
 #ifdef TEST_POOL_ROOT
@@ -115,6 +136,12 @@ int main() {
 #endif
 #ifdef TEST_BINK
     BinkInputs inputs;CK(!inputs.bind(d.Get(),l.Get(),alpha));
+#elif defined(TEST_BLIT_COLOUR)
+    ComPtr<IUnknown> foreign,identity;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)foreign.GetAddressOf()));
+    CK(!xs_bvh_root_host(foreign.Get(),root.Get()) && (void*)host!=(void*)root.Get());HR(root.As(&identity));CK(identity.Get()==root.Get());identity.Reset();
+    ComPtr<ID3D12DescriptorHeap> table;hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
+    HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&table)));D3D12_CONSTANT_BUFFER_VIEW_DESC cb={src->GetGPUVirtualAddress(),256};
+    d->CreateConstantBufferView(&cb,table->GetCPUDescriptorHandleForHeapStart());auto bank=table.Get();l->SetDescriptorHeaps(1,&bank);l->SetGraphicsRootDescriptorTable(0,table->GetGPUDescriptorHandleForHeapStart());
 #else
     l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress());
 #endif
@@ -145,7 +172,12 @@ int main() {
     rb->Unmap(0,nullptr);printf("PASS Bink slot %u: IA, all %u table entries, static s3 linear/clamp, 2D/3D fenced readback and reject controls\n",alpha?0:1,count);return 0;
 #else
     CK(!memcmp(m,vals,sizeof vals));rb->Unmap(0,nullptr);
+#ifdef TEST_BLIT_COLOUR
+    auto stale=root.Get();CK(!root.Reset() && !xs_bvh_root_host(dev.Get(),stale));
+    puts("PASS canonical IA b27 space1 table: four exact CBV pixels after fence; shape, flags, HRESULT, identity, owner and release controls");return 0;
+#else
     puts("PASS node/size/space negatives; t0 space3 fenced draw returned four exact R32_UINT pixels");return 0;
+#endif
 #endif
 }
 

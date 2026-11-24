@@ -657,3 +657,20 @@ and a null root. The factory discarded the group and stored null in
 slot 42. When `im:CS_BLIT_COLOUR` selected that slot on the same asset,
 it replaced the previous group with null; lookup then faulted at `+b5a5f8`.
 The run issued tokens 1 and 2; only token 1 presented (WSI count 0→1).
+
+### Colour-pass root signature
+
+Device `+80` now accepts that exact layout. Eight fixture runs passed
+across AMD and RTX. On each GPU a test shader read four distinct values
+at byte offset 32 through the returned root's CBV table.
+
+The RADV diagnostic followed the successful root through group creation
+and slot 42 to the same group's pipeline request. The request still had
+no pipeline. The first stop was list `+110`, return `+327cb`: the recorder
+still held the previous clear pipeline and rejected the new root. The
+game copied the 96-byte constant block into its ring; the four floats
+at offset 32 were zero. No retail shader read from that buffer was observed.
+
+On the identical ordinary stage, both AMD and RTX still stopped at the
+earlier offscreen draw (`+bff06`). In each of the three retail launches,
+the game issued tokens 1 and 2 and presented only token 1 (WSI count 0→1).
