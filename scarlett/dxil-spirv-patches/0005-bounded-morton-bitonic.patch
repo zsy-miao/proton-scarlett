@@ -1,0 +1,156 @@
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6315,6 +6315,11 @@
+ static unsigned xbox_memory_opcode(llvm::Function *fn)
+ {
+ 	if (fn->begin() != fn->end()) return 0;
++	if (fn->getName() == "xbox.Min3_U32") return 14;
++	if (fn->getName() == "xbox.Max3_U32") return 15;
++	if (fn->getName() == "xbox.Med3_U32") return 16;
++	if (fn->getName() == "xbox.BFI") return 23;
++	if (fn->getName() == "xbox.s_load_dword_with_cache") return 364;
+ 	if (fn->getName() == "xbox.Min3_F32") return 8;
+ 	if (fn->getName() == "xbox.Max3_F32") return 9;
+ 	if (fn->getName() == "xbox.Med3_F32") return 10;
+@@ -6332,30 +6337,49 @@
+ static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
+ {
+ 	const bool atomic = opnum >= 368;
+-	const bool read = opnum < 360;
++	const bool read = opnum < 360 || opnum == 364;
++	if (opnum == 364 && !impl.xbox_morton && !impl.xbox_bitonic) return false;
++	if (opnum == 23)
++	{
++		auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };
++		if (!impl.xbox_bitonic || call.getNumOperands() != 4 || !u32(call.getType())) return false;
++		for (unsigned i = 0; i < 4; ++i) if (!u32(call.getOperand(i)->getType())) return false;
++		auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
++		if (!opcode || opcode->getUniqueInteger().getZExtValue() != 23) return false;
++		auto mask = impl.get_id_for_value(call.getOperand(1));
++		auto yes = impl.get_id_for_value(call.getOperand(2)), no = impl.get_id_for_value(call.getOperand(3));
++		// Bitwise select: no ^ (mask & (yes ^ no)), including non-contiguous masks.
++		auto t = impl.builder().makeUintType(32);
++		auto *delta = impl.allocate(spv::OpBitwiseXor, t); delta->add_id(yes); delta->add_id(no); impl.add(delta);
++		auto *masked = impl.allocate(spv::OpBitwiseAnd, t); masked->add_id(mask); masked->add_id(delta->id); impl.add(masked);
++		auto *ret = impl.allocate(spv::OpBitwiseXor, &call); ret->add_id(no); ret->add_id(masked->id); impl.add(ret);
++		return true;
++	}
+ 	const auto f32 = llvm::Type::TypeID::FloatTyID;
+-	if (opnum <= 10)
+-	{
+-		if (impl.xbox_atomic_descriptor >= impl.root_descriptor_count || call.getNumOperands() != 4 ||
+-		    call.getType()->getTypeID() != f32) return false;
++	if (opnum <= 16)
++	{
++		const bool u32 = opnum >= 14;
++		auto matches = [&](const llvm::Type *t) { return u32 ? t->isIntegerTy() && t->getIntegerBitWidth() == 32 : t->getTypeID() == f32; };
++		if ((u32 ? !impl.xbox_morton : impl.xbox_atomic_descriptor >= impl.root_descriptor_count) ||
++		    call.getNumOperands() != 4 || !matches(call.getType())) return false;
+ 		auto *num = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 		if (!num || num->getType()->getIntegerBitWidth() != 32 || num->getUniqueInteger().getZExtValue() != opnum) return false;
+ 		for (unsigned i = 1; i < 4; i++)
+-			if (call.getOperand(i)->getType()->getTypeID() != f32) return false;
++			if (!matches(call.getOperand(i)->getType())) return false;
+ 		if (!impl.glsl_std450_ext) impl.glsl_std450_ext = impl.builder().import("GLSL.std.450");
+ 		auto binary = [&](bool maximum, spv::Id a, spv::Id b, bool final) {
+ 			auto *op = final ? impl.allocate(spv::OpExtInst, &call) : impl.allocate(spv::OpExtInst, impl.get_type_id(call.getType()));
+-			op->add_id(impl.glsl_std450_ext); op->add_literal(maximum ? GLSLstd450NMax : GLSLstd450NMin);
++			op->add_id(impl.glsl_std450_ext); op->add_literal(u32 ? (maximum ? GLSLstd450UMax : GLSLstd450UMin) : (maximum ? GLSLstd450NMax : GLSLstd450NMin));
+ 			op->add_id(a); op->add_id(b); impl.add(op); return op->id;
+ 		};
+ 		auto a = impl.get_id_for_value(call.getOperand(1)), b = impl.get_id_for_value(call.getOperand(2));
+ 		auto c = impl.get_id_for_value(call.getOperand(3));
+-		if (opnum == 10)
++		if (opnum == 10 || opnum == 16)
+ 		{
+ 			auto lo = binary(false, a, b, false), hi = binary(true, a, b, false);
+ 			binary(true, lo, binary(false, hi, c, false), true);
+ 		}
+-		else binary(opnum == 9, binary(opnum == 9, a, b, false), c, true);
++		else { bool maximum = opnum == 9 || opnum == 15; binary(maximum, binary(maximum, a, b, false), c, true); }
+ 		return true;
+ 	}
+ 	const bool boxes = impl.xbox_centroid_descriptor_plus_one != 0;
+@@ -6363,7 +6387,7 @@
+ 	    impl.root_constant_num_words < 12 || impl.xbox_range_word > impl.root_constant_num_words - 12)) return false;
+ 	const unsigned word = impl.xbox_range_word + (atomic ? 3u : boxes && !read ? 4u : 0u);
+ 	const unsigned desc = atomic ? impl.xbox_atomic_descriptor : impl.xbox_range_descriptor;
+-	const unsigned n = atomic ? 1 : opnum - (read ? 356 : 360) + 1;
++	const unsigned n = (atomic || opnum == 364) ? 1 : opnum - (read ? 356 : 360) + 1;
+ 	auto integer = [](const llvm::Type *t, unsigned w) { return t->isIntegerTy() && t->getIntegerBitWidth() == w; };
+ 	if (!impl.options.physical_storage_buffer || impl.execution_model != spv::ExecutionModelGLCompute ||
+ 	    !impl.root_constant_id || desc >= impl.root_descriptor_count ||
+@@ -9415,6 +9439,8 @@
+ 	case Option::BoundedXboxRange:
+ 		xbox_centroid_descriptor_plus_one = static_cast<const OptionBoundedXboxRange &>(cap).centroid_descriptor_plus_one;
+ 		xbox_atomic_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).atomic_descriptor;
++		xbox_bitonic = static_cast<const OptionBoundedXboxRange &>(cap).bitonic;
++		xbox_morton = static_cast<const OptionBoundedXboxRange &>(cap).morton;
+ 		xbox_read_only = static_cast<const OptionBoundedXboxRange &>(cap).read_only;
+ 		xbox_range_word = static_cast<const OptionBoundedXboxRange &>(cap).range_word;
+ 		xbox_range_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).range_descriptor;
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -359,7 +359,7 @@
+ 	OptionBoundedXboxRange() : OptionBase(Option::BoundedXboxRange) {}
+ 	unsigned range_word, range_descriptor, atomic_descriptor;
+ 	unsigned centroid_descriptor_plus_one;
+-	bool read_only;
++	bool read_only, morton = false, bitonic = false;
+ };
+ 
+ struct OptionPhysicalStorageBuffer : OptionBase
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -936,7 +936,8 @@
+ /* Useful to check if the implementation recognizes a particular capability for ABI compatibility. */
+ dxil_spv_bool dxil_spv_converter_supports_option(dxil_spv_option cap)
+ {
+-	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS)
++	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
++	     cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS)
+ 		cap = DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE;
+ 	return Converter::recognizes_option(static_cast<Option>(cap)) ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+ }
+@@ -1013,10 +1014,14 @@
+ 
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS:
+ 	{
+ 		auto *in = reinterpret_cast<const dxil_spv_option_bounded_xbox_range *>(option);
+ 		OptionBoundedXboxRange helper;
++		helper.bitonic = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC;
++		helper.morton = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON;
+ 		helper.range_word = in->range_word;
+ 		helper.range_descriptor = in->range_descriptor;
+ 		helper.centroid_descriptor_plus_one = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS ?
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -487,6 +487,8 @@
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE = 52,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES = 53,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS = 54,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON = 55,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC = 56,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+ 
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -473,7 +473,7 @@
+ 	unsigned xbox_atomic_descriptor = ~0u;
+ 	unsigned xbox_centroid_descriptor_plus_one = 0;
+ 	spv::Id xbox_helpers[6] = {};
+-	bool xbox_read_only = false;
++	bool xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
+ 	bool root_constant_arrayed = false;
+ 	unsigned patch_location_offset = ~0u;
+ 	unsigned descriptor_qa_counter = 0;

@@ -499,6 +499,25 @@ static HRESULT WINAPI device_query(IUnknown *iface, REFIID iid, void **out)
 
 static const IUnknownVtbl device_vtbl = { device_query, device_addref, device_release };
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+static HRESULT WINAPI builder_root_call(IUnknown *device,UINT node,const void *blob,SIZE_T bytes,REFIID iid,void **out)
+{
+    HRESULT hr=bootstrap_root(device,node,blob,bytes,iid,out);
+    if (hr==E_NOTIMPL) {
+        HMODULE builder=GetModuleHandleW(L"XboxBvhBuilder.dll");
+        void *frames[8];
+        USHORT n=CaptureStackBackTrace(0,ARRAYSIZE(frames),frames,NULL);
+        for (USHORT i=0;builder && i<n;i++) {
+            HMODULE module;
+            if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    (const char *)frames[i],&module) || module!=builder) continue;
+            char text[144];
+            snprintf(text,sizeof text,"scarlett: device +0x80 unsupported: %zu-byte root, XboxBvhBuilder.dll return +%llx\n",
+                    bytes,(unsigned long long)((UINT_PTR)frames[i]-(UINT_PTR)builder));
+            OutputDebugStringA(text);
+        }
+    }
+    return hr;
+}
 static HRESULT WINAPI builder_pipeline_call(IUnknown *device,const void *desc,UINT64 x,UINT64 y,REFIID iid,void **out)
 {
     HRESULT hr=bootstrap_bvh_pipeline(device,desc,x,y,iid,out);
@@ -518,7 +537,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
-    .descriptors = descriptor_heap, .stride = descriptor_stride, .root = bootstrap_root,
+    .descriptors = descriptor_heap, .stride = descriptor_stride, .root = builder_root_call,
     .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 3] = xs_stop },
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,

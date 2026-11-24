@@ -32,4 +32,5 @@ sortroot5 0x3c644 128
 SLICES
 SCARLETT_TEST_GPU="${SCARLETT_TEST_GPU:-radv}" "$s/../test-launch-nixos.sh" "$w/game" "$@" | tee "$w/result"
 run=$(sed -n 's/^Test output (including prefix): //p' "$w/result")
-grep -E '^PASS (Morton|Bitonic) root:' "$run/logs/steam-999001.log"
+grep '^PASS Bitonic root:' "$run/logs/steam-999001.log"
+grep '^PASS Morton root:' "$run/logs/steam-999001.log"

@@ -13,7 +13,9 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. The ray-tracing builder now creates all 11 utility compute pipelines, then creates the root signature for calculating Morton codes (spatial sort keys). Its first `CalculateMortonCodes` pipeline is the current stop: the builder requests the 13,216-byte shader at RVA `+0x8e5e0`. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 19 compute pipelines: 11 utility shaders, two that calculate Morton codes (spatial sort keys), and six that sort the keys. The next request, the 236-byte `RadixSortCountAndAlloc` root signature, stops startup at device `+0x80` (builder return `+0x1dd2a`). **No retail frame has been presented.**
+
+The [Morton test](scarlett/tests/morton-root.sh) checked 1,960 words after GPU completion. The [bitonic sort test](scarlett/tests/bitonic-pipelines.sh) compared 32- and 64-bit results with `std::sort` and checked that each key still had its original index. Both tests passed on RADV and RTX 3070; retail has reached pipeline creation only.
 
 Each [primary texture](scarlett/native/color-allocation.md) consumes a 33,226,752-byte slice through the game's allocator hook, leaving 640 KiB unused. A [GPU test](scarlett/native/test-allocation-info.cpp) verified that rendering and shader writes changed the original arena bytes and that the memory stayed live until the last texture reference was released.
 

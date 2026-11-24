@@ -42,6 +42,11 @@ HRESULT xs_record_bvh_beginpass(IUnknown *pipeline,ID3D12GraphicsCommandList *li
 HRESULT xs_record_bvh_headers(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
     const struct xs_bvh_range *dst,const struct xs_bvh_range *extra,const void *commands,
     SIZE_T command_bytes,UINT num_commands,struct xs_bvh_hold **out);
+/* Trusted synchronized UAV arena; offsets select disjoint u0..u3 slices. Private
+ * read-only guest window is snapshotted; no guest address is a host pointer. */
+HRESULT xs_record_bvh_morton(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
+    const struct xs_bvh_range *arena,const UINT offsets[4],const UINT b0[8],
+    UINT64 guest_base,const void *snapshot,UINT bytes,struct xs_bvh_hold **out);
 void xs_drop_bvh_hold(struct xs_bvh_hold *hold);
 #ifdef __cplusplus
 }
