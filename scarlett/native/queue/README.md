@@ -344,3 +344,11 @@ producer fence, acquires from `COMMON`, and reads both images. RADV and RTX
 preserved the stripe, remaining black pixels, sibling image and padding.
 Both experimental retail runs next requested a second timestamp (`+0x240`,
 return `+0x2482b37`); neither demonstrated a subsequent acquire or flip.
+
+An AMD prototype recorded the second timestamp at pool offset `0x4196210`,
+eight bytes before the first timestamp. A GPU test replayed the same closed
+list and observed `head₁ < tail₁ < head₂ < tail₂`. In each pass the head
+became visible while the counter wait still held the tail. Resetting and
+releasing the submitted list and reusing the pool address did not redirect
+either write. With this prototype the retail queue reached `+0x118`, flags
+`3` (return `+0x24821e3`). It stopped before the batch executed.
