@@ -65,6 +65,24 @@ int main()
     size_t n=load("reset.bin",cs,sizeof cs); CK(n==0xfe8);
     CK(make(morton.Get(),n)==E_INVALIDARG && !bad);
     HR(make(utility.Get(),n)); CK(bad); ((IUnknown *)bad)->Release();
+    ComPtr<IUnknown> bitonic;
+    memset(p,0,sizeof p); sig.Desc_1_1.NumParameters=4;
+    for (UINT i=0;i<2;i++) {
+        p[i].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; p[i].Constants={1-i,0,2};
+        p[i+2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV; p[i+2].Descriptor.ShaderRegister=i;
+    }
+    blob.Reset(); HR(D3D12SerializeVersionedRootSignature(&sig,&blob,nullptr));
+    CK(blob->GetBufferSize()==164);
+    const auto *chunk=(const BYTE *)blob->GetBufferPointer()+36;
+    BYTE embedded[128];
+    for (unsigned i=0;i<6;i++) {
+        char file[32]; snprintf(file,sizeof file,"sortroot%u.bin",i);
+        CK(load(file,embedded,sizeof embedded)==sizeof embedded && !memcmp(embedded,chunk,sizeof embedded));
+    }
+    HR(root(blob->GetBufferPointer(),blob->GetBufferSize(),(void **)bitonic.GetAddressOf()));
+    HR(SLOT(bitonic.Get(),0x30,Name)(bitonic.Get(),L"XDXR BitonicSort"));
+    CK(make(bitonic.Get(),n)==E_INVALIDARG && !bad);
+    puts("PASS Bitonic root: all six embedded signatures match; utility PSO rejected");
 
     auto host=xs_bvh_root_host(dev.Get(),morton.Get()); CK(host);
     ComPtr<ID3D12Device> d; HR(host->GetDevice(IID_PPV_ARGS(&d)));

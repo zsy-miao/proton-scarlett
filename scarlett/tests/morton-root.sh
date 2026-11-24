@@ -23,7 +23,13 @@ done <<'SLICES'
 morton32 0x8d9e0 0x33a0
 morton64 0x8a5e0 0x33fc
 reset 0xb76e0 0xfe8
+sortroot0 0x43cc4 128
+sortroot1 0x4090c 128
+sortroot2 0x41d64 128
+sortroot3 0x3e6e4 128
+sortroot4 0x3b0fc 128
+sortroot5 0x3c644 128
 SLICES
 SCARLETT_TEST_GPU="${SCARLETT_TEST_GPU:-radv}" "$s/../test-launch-nixos.sh" "$w/game" "$@" | tee "$w/result"
 run=$(sed -n 's/^Test output (including prefix): //p' "$w/result")
-grep '^PASS Morton root:' "$run/logs/steam-999001.log"
+grep -E '^PASS (Morton|Bitonic) root:' "$run/logs/steam-999001.log"

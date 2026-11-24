@@ -4,7 +4,7 @@ struct bvh_root {
     LONG refs;
     struct xbox_device *owner;
     ID3D12RootSignature *host;
-    BOOL morton;
+    enum { ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC } kind;
     struct bvh_root *next;
 };
 static ULONG WINAPI root_addref(IUnknown *i)
@@ -40,7 +40,8 @@ static HRESULT WINAPI root_name(IUnknown *i,const WCHAR *name)
 {
     /* The supplied helper passes exactly this literal immediately after success. */
     struct bvh_root *r=CONTAINING_RECORD(i,struct bvh_root,iface);
-    const WCHAR *expected=r->morton?L"XDXR MortonCodesCalculator":L"XDXR UtilityShaders";
+    const WCHAR *expected=r->kind==ROOT_MORTON?L"XDXR MortonCodesCalculator":
+            r->kind==ROOT_BITONIC?L"XDXR BitonicSort":L"XDXR UtilityShaders";
     WCHAR copy[ARRAYSIZE(L"XDXR MortonCodesCalculator")];
     SIZE_T bytes=(wcslen(expected)+1)*sizeof(WCHAR);
     if (!copy_in(copy,name,bytes)) return E_POINTER;
@@ -71,8 +72,7 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
     if (!iid || !blob || !n) return E_INVALIDARG;
     if (!IsEqualIID(iid,&IID_ID3D12RootSignature)) return E_NOINTERFACE;
     BYTE wire[212];
-    BOOL morton=n==sizeof wire;
-    if (node!=1 || (!morton && n!=140)) return E_NOTIMPL;
+    if (node!=1 || (n!=140 && n!=164 && n!=212)) return E_NOTIMPL;
     if (!copy_in(wire,blob,n)) return E_POINTER;
     D3D12_ROOT_PARAMETER1 p[6]={
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV},
@@ -81,11 +81,17 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
     };
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1,
         .Desc_1_1={3,p,0,NULL,(D3D12_ROOT_SIGNATURE_FLAGS)0x03000000}};
-    if (morton) {
+    if (n==212) {
         desc.Desc_1_1.NumParameters=6;
         p[0]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,8}};
         for (UINT i=1;i<6;i++)
             p[i]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i-1,0,0}};
+    } else if (n==164) {
+        desc.Desc_1_1.NumParameters=4;
+        for (UINT i=0;i<2;i++) {
+            p[i]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={1-i,0,2}};
+            p[i+2]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0,0}};
+        }
     }
     ID3DBlob *serialized=NULL;
     HRESULT hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
@@ -102,7 +108,8 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
         hr=ID3D12Device_CreateRootSignature(d->host,node,ID3D10Blob_GetBufferPointer(serialized),
                 ID3D10Blob_GetBufferSize(serialized),&IID_ID3D12RootSignature,(void **)&r->host);
         if (SUCCEEDED(hr)) {
-            IUnknown_AddRef(device); r->owner=d; r->refs=1; r->morton=morton;
+            IUnknown_AddRef(device); r->owner=d; r->refs=1;
+            r->kind=n==140?ROOT_UTILITY:n==164?ROOT_BITONIC:ROOT_MORTON;
             r->iface.lpVtbl=&root_methods.unknown;
             AcquireSRWLockExclusive(&d->descriptor_lock);
             r->next=d->bvh_roots; d->bvh_roots=r;

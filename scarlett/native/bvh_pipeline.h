@@ -109,7 +109,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     AcquireSRWLockShared(&d->descriptor_lock);
     struct bvh_root *r=d->bvh_roots;
     while (r && &r->iface!=w.root) r=r->next;
-    BOOL known=r && !r->morton;
+    BOOL known=r && r->kind==ROOT_UTILITY;
     ReleaseSRWLockShared(&d->descriptor_lock);
     if (!known) return E_INVALIDARG;
     if (!copy_in(code,w.shader,w.n)) return E_POINTER;
