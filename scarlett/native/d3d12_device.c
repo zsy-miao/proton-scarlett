@@ -1202,6 +1202,15 @@ ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *device,IUnknown
     }
     ReleaseSRWLockShared(&d->descriptor_lock);return host;
 }
+/* Internal only: identity is already pinned by xs_pin_clear4, never a raw guest argument. */
+ID3D12PipelineState *xs_clear4_effective(IUnknown *pin,UINT64 lanes)
+{
+    struct clear_wrapper *w=CONTAINING_RECORD(pin,struct clear_wrapper,pso.iface);
+    if(!w->diagonal)return NULL;
+    if(lanes==UINT64_MAX)return w->pso.host;
+    if(lanes==0xffff00000000ffffULL)return w->diagonal;
+    return NULL;
+}
 /* Borrowed host root; caller holds the device and root live through use. */
 ID3D12RootSignature *xs_bvh_root_host(IUnknown *device,IUnknown *i)
 {

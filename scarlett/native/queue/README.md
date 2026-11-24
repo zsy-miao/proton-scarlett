@@ -696,3 +696,48 @@ This batch comprised two ordinary runs, two RADV diagnostics and six
 passing fixtures. Two of the fixtures independently measured 4×4 sample
 coverage: 6 for the original triangle, 16 for the completed rectangle,
 and 32 when drawn twice. No retail rectangle draw has been observed.
+
+### Clear pattern and colour-pass tests
+
+On AMD and RTX, the standalone clear test painted 48 pixels, left 156
+guard pixels intact and preserved both depth and stencil. It checked the
+pattern across a command-list split and then restored full coverage. The
+first run failed on each GPU: two expected panels were swapped. Both
+passed after correcting the expected images, without changing the shader.
+
+The [bounded-copy fixture](../test-b27-placed.hpp) checked that the
+colour pass reads its 96 bytes from the original allocation after address
+reuse. Both GPUs read the four expected pixels from offset 32, left all
+160 padding bytes intact and rejected a new copy using the stale identity.
+
+A separate fixture on each GPU bound the colour root before the worker
+finished creating its pipeline. Only an explicit later pipeline bind made
+that pipeline current. In the RTX diagnostic the root bind succeeded; the
+next stop on the recorder was the vertex-buffer bind (`+180`, return
+`+32966`). The first process breakpoint was `+1d52fa1` on another thread.
+Tokens 1 and 2 were issued; only token 1 presented (display count 0→1).
+
+### First offscreen clear recorded in ordinary retail
+
+AMD recorded the game's `DrawInstanced(3,1,0,0)` on the host Direct list.
+It used the full-coverage mask and the frozen offscreen colour and depth
+views (serials 119 and 121). The next unsupported call was list `+a0`,
+title return `+325c0`. Before the clear, token 2 had a sync submission
+with no rendering batch. No subsequent submission of the clear was
+observed. On the identical stage, RTX stopped at the 1440p depth factory
+(`+5707b8c`) after issuing only token 1. Each GPU presented token 1 and
+advanced its display count from 0 to 1.
+
+The integrated fixture ran first on both GPUs. Three fenced readbacks
+checked the diagonal pixel pattern before and after splitting the list,
+then full coverage after restoring all ones. Both depth and stencil
+were unchanged across all 3840×2160 pixels. Ordinary provider SHA-256:
+`a8e70b7bfd7595e1189957bdbc534182b0512ad028b651b532df75cc8b843c12`.
+
+In a separate AMD diagnostic, the colour pass bound a 4,080-byte vertex
+view (stride 24, first vertex 0) and selected its one used CBV table
+entry. The game wrote and copied that descriptor inline; neither slot
+had a provider serial. A private fixture with supplied descriptor
+identities passed on both GPUs. Binding that inline entry in ordinary
+retail still requires preserving the active heap slot and its original
+backing through completion.

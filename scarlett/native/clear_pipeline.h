@@ -1,5 +1,6 @@
 #include "clear_pair_dxil.h"
 #include "clear_srgb_dxil.h"
+#include "clear_diag_dxil.h"
 
 /* Reuse PSO lifetime/identity, but never identify graphics PSOs as BVH kernels. */
 static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
@@ -7,7 +8,7 @@ static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
     (void)i; (void)name;
     return E_NOTIMPL;
 }
-struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next;};
+struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next; ID3D12PipelineState *diagonal;};
 static ULONG WINAPI clear_release(IUnknown *i)
 {
     struct clear_wrapper *p=CONTAINING_RECORD(i,struct clear_wrapper,pso.iface);
@@ -20,6 +21,7 @@ static ULONG WINAPI clear_release(IUnknown *i)
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     if(!refs){
+        if(p->diagonal)ID3D12PipelineState_Release(p->diagonal);
         if(p->root)IUnknown_Release(p->root);
         ID3D12PipelineState_Release(p->pso.host);ID3D12RootSignature_Release(p->pso.root);
         IUnknown_Release(&d->iface);HeapFree(GetProcessHeap(),0,p);
@@ -109,15 +111,21 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     }
     sd.pPipelineStateSubobjectStream=q;
     ID3D12Device2 *d2=NULL;
-    ID3D12PipelineState *pso=NULL;
+    ID3D12PipelineState *pso=NULL,*diag=NULL;
+    BOOL clear4=!colour && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     HRESULT hr=ID3D12Device_QueryInterface(d->host,&IID_ID3D12Device2,(void **)&d2);
     if (SUCCEEDED(hr)) {
         hr=ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void **)&pso);
+        if(SUCCEEDED(hr) && clear4){
+            q[6]=(UINT_PTR)clear_diag_dxil;q[7]=sizeof clear_diag_dxil;
+            hr=ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void**)&diag);
+        }
         ID3D12Device2_Release(d2);
     }
-    if (FAILED(hr)) { IUnknown_Release(guest_root); return hr; }
+    if (FAILED(hr)) { if(pso)ID3D12PipelineState_Release(pso);IUnknown_Release(guest_root); return hr; }
     struct clear_wrapper *wrap=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *wrap);
     if (!wrap) {
+        if(diag)ID3D12PipelineState_Release(diag);
         ID3D12PipelineState_Release(pso);
         IUnknown_Release(guest_root);
         return E_OUTOFMEMORY;
@@ -127,7 +135,8 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     p->iface.lpVtbl=&clear_methods.unknown; p->refs=1;
     p->owner=d; IUnknown_AddRef(device);
     p->root=host; p->host=pso;
-    if (!colour && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT){
+    if (clear4){
+        wrap->diagonal=diag;
         wrap->root=guest_root;
         AcquireSRWLockExclusive(&d->descriptor_lock);
         wrap->next=d->clear4;d->clear4=wrap;

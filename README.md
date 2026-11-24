@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | The game requests a triangle that clears an offscreen image. An earlier graphics setting still blocks that draw. The latest AMD run stopped there; RTX can also stop earlier while creating a depth buffer. |
+| What's blocking it? | AMD [recorded a draw that clears an offscreen image](scarlett/native/queue/README.md#first-offscreen-clear-recorded-in-ordinary-retail), then stopped at the next graphics call before submitting the draw. The same build on RTX stopped earlier while creating a depth buffer. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress
@@ -54,7 +54,7 @@ Both GPUs passed the [3D sampler test](scarlett/tests/w-clamp.sh) for slots 0–
 
 Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarlett/native/xmem/README.md#retail-write-back-page-pool) with the graphics device. A [GPU test](scarlett/native/test-page-pool.c) verified all six backing heaps after the title address was reused. Retail creates its COPY queue; the [queue test](scarlett/native/test-d3d12-bootstrap.c) verified all 1,024 copied words after a Direct-queue fence released the transfer.
 
-Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) through device `+0x2b0`. Its clear shader pair reads positions and colors from the `t0, space3` buffer. On both RADV and RTX, three offscreen draws matched all 384 expected pixels, including untouched background pixels. A retail draw using that pipeline has not been observed.
+Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) through device `+0x2b0`. Its clear shader pair reads positions and colors from the `t0, space3` buffer. In fixtures on both RADV and RTX, three offscreen draws matched all 384 expected pixels, including untouched background pixels.
 
 In a [controlled draw test](scarlett/tests/clear-fallback/README.md), the original title routine recorded a clear through nine graphics calls. AMD and RTX 3070 both rendered the expected color in all 256 pixels inside the scissor rectangle. All 1,344 pixels outside it and all 1,600 pixels on a second target stayed unchanged.
 

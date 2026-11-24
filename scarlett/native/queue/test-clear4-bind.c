@@ -43,6 +43,7 @@ static void count_bind(ID3D12GraphicsCommandList7 *l,UINT i,UINT64 va){if(i==0){
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
+#include "test-quad-read.h"
 /* Takes the caller's last PSO reference. The submission waits behind a CPU gate. */
 BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown *root,IUnknown *other_root,IUnknown *p,IUnknown *linear)
 {
@@ -110,6 +111,13 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
         b[k].LayoutBefore=D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;b[k].LayoutAfter=k?D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE:D3D12_BARRIER_LAYOUT_RENDER_TARGET;
     }
     D3D12_BARRIER_GROUP g={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=2,.pTextureBarriers=b};UINT before=calls;
+    D3D12_TEXTURE_BARRIER init[2];memcpy(init,b,sizeof init);
+    for(UINT k=0;k<2;k++){
+        init[k].pResource=images[k];init[k].LayoutBefore=b[k].LayoutAfter;init[k].LayoutAfter=b[k].LayoutBefore;
+        init[k].SyncBefore=b[k].SyncAfter;init[k].SyncAfter=b[k].SyncBefore;
+        init[k].AccessBefore=b[k].AccessAfter;init[k].AccessAfter=b[k].AccessBefore;
+    }
+    D3D12_BARRIER_GROUP pre=g;pre.pTextureBarriers=init;s->host->lpVtbl->Barrier(s->host,1,&pre);
     REQUIRE(FAILED(record_primary_barrier(s,1,&g)));pool_vtbl.pipeline(l,pso);pool_vtbl.root(l,root);pool_vtbl.depth_order(l,0);pool_vtbl.stencil(l,0);pool_vtbl.state470(l,UINT64_MAX);pool_vtbl.blend(l,ones_factor);
     b[1].pResource=(ID3D12Resource*)ids[0];REQUIRE(FAILED(record_primary_barrier(s,1,&g)));b[1].pResource=(ID3D12Resource*)ids[1];
     b[1].Flags=1;REQUIRE(FAILED(record_primary_barrier(s,1,&g)));b[1].Flags=0;
@@ -135,6 +143,20 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(FAILED(record_source(s,1,va)) && FAILED(record_source(s,0,va+16)) && !binds && !s->source.buffer);
     pool_vtbl.source(l,0,va);UINT64 private_va=ID3D12Resource_GetGPUVirtualAddress(s->source.buffer);
     REQUIRE(private_va!=va && binds==1 && src_host==s->host && last_va==private_va && FAILED(record_source(s,0,va)) && !xs_list_host(l));
+    REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    REQUIRE(FAILED(record_clear4_draw(s,4,1,0,0)) && FAILED(record_clear4_draw(s,3,2,0,0)) &&
+            FAILED(record_clear4_draw(s,3,1,1,0)) && FAILED(record_clear4_draw(s,3,1,0,1)));
+    D3D12_HEAP_PROPERTIES rbh={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
+    D3D12_RESOURCE_DESC rbd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=1536,.Height=1,.DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+    ID3D12Resource *quad_rb;REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(hd,&rbh,0,&rbd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&quad_rb)));
+    ID3D12PipelineState *full=s->pipeline;const FLOAT guard[]={1,0,1,1};
+    ID3D12GraphicsCommandList7_ClearDepthStencilView(s->host,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
+    ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
+    pool_vtbl.state470(l,0xffff00000000ffffULL);REQUIRE(s->pipeline!=full);
+    ID3D12PipelineState *diag=s->pipeline;
+    REQUIRE(FAILED(record_470(l,0xffff)) && s->pipeline==diag && s->clear4_lanes==0xffff00000000ffffULL);
+    pool_vtbl.pipeline(l,pso);REQUIRE(s->pipeline==diag);
+    pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,0);
     DWORD rt[]={28,4,0,0},ds[]={20,3,0,0,0,0};
     REQUIRE(xs_write_view(owner,0xa8,ids[1],ds,slots[1])==S_OK && FAILED(record_om(s,1,slots,FALSE,slots+1)));
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,slots[0])==S_OK && xs_write_view(owner,0xa8,siblings[1],ds,slots[1])==S_OK);
@@ -144,9 +166,14 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
     REQUIRE(binds==2 && src_host==s->host && last_va==private_va && s->pending_470);
+    ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
+    pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,1);
+    pool_vtbl.state470(l,UINT64_MAX);REQUIRE(s->pipeline==full && s->clear4_lanes==UINT64_MAX);
+    pool_vtbl.root(l,root);REQUIRE(binds==3 && src_host==s->host && last_va==private_va);
+    pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,2);
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
-    ID3D12GraphicsCommandList7_ClearDepthStencilView(isolated,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
+    REQUIRE(execute_quad_fixture(hd,s,quad_rb));ID3D12Resource_Release(quad_rb);
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
     puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");

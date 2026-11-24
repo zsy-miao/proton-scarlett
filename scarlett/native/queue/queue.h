@@ -22,6 +22,7 @@ HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnk
 HRESULT xs_device_list(ID3D12Device *host,D3D12_COMMAND_LIST_TYPE type,IUnknown *allocator,BOOL pooled,IUnknown *pool_owner,IUnknown **out);
 /* On success identity is retained; returned host and optional root are borrowed from it. */
 ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *host,IUnknown *identity,IUnknown **root);
+ID3D12PipelineState *xs_clear4_effective(IUnknown *pinned,UINT64 lanes);
 ID3D12RootSignature *xs_retain_graphics_root(IUnknown *owner,IUnknown *identity);
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);
 struct xs_attachment_pin {IUnknown *identity; ID3D12Resource *host; SIZE_T slot; UINT64 serial;};

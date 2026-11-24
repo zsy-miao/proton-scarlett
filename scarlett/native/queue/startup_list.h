@@ -49,6 +49,8 @@ struct startup_list {
     BOOL closed,host_exposed,post_boundary,stencil_zero,blend_ones,full_bounds,full_rect,full_vp;
     SRWLOCK borrow_lock; /* Serialize a native borrow against recording deferred guest state. */
     BOOL depth_zero_pending,pending_470;
+    UINT64 clear4_lanes;
+    BOOL triangle_list;
     struct list_face local; /* Non-pooled lists need no inline ABI. */
 };
 const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
@@ -194,6 +196,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     s->blend_ones=FALSE;
     s->full_bounds=s->full_rect=s->full_vp=FALSE;
     s->pending_470=FALSE;
+    s->clear4_lanes=0;s->triangle_list=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -332,6 +335,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     ID3D12CommandAllocator *a=NULL;
     HRESULT hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void **)&a);
     if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,s->pipeline,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
+    if (SUCCEEDED(hr) && s->triangle_list)ID3D12GraphicsCommandList7_IASetPrimitiveTopology(tail,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->blend_ones) ID3D12GraphicsCommandList7_OMSetBlendFactor(tail,ones_factor);
     if (SUCCEEDED(hr))replay_om(&s->om,tail);
@@ -580,6 +584,7 @@ static void WINAPI pool_topology(IUnknown *i,UINT topology)
     struct startup_list *s=sl(i);
     if (!can_set_topology(s,topology)) xs_stop();
     ID3D12GraphicsCommandList7_IASetPrimitiveTopology(s->host,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    s->triangle_list=TRUE;
     recorded_direct_state(s);
 }
 /* shortcut: retain zero without emitting a host mode. Draw/indirect/bundle slots must
@@ -627,6 +632,7 @@ static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
         s->graphics_identity=identity;
     }
     ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,s->graphics_root);
+    if(s->source.buffer)bind_source(s->host,&s->source);
     recorded_direct_state(s);return S_OK;
 }
 static void WINAPI pool_root(IUnknown *i,IUnknown *root)
@@ -668,7 +674,7 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
             if(!s->graphics_identity || s->graphics_identity==root){
                 if(!s->bound){s->bound=identity;s->pipeline=p;s->required_root=root;}
                 else IUnknown_Release(identity);
-                ID3D12GraphicsCommandList7_SetPipelineState(s->host,p);recorded_direct_state(s);hr=S_OK;
+                ID3D12GraphicsCommandList7_SetPipelineState(s->host,s->pipeline);recorded_direct_state(s);hr=S_OK;
             }else IUnknown_Release(identity);
         }
     }
@@ -743,13 +749,37 @@ static void WINAPI pool_source(IUnknown *i,UINT index,UINT64 va)
 {
     if(FAILED(record_source(sl(i),index,va)))xs_stop();
 }
+/* +258(0) remains logical state. Only this digest-qualified pair has disabled
+ * depth/bounds/stencil, no PS memory effects, and no depth or stencil output. */
+static HRESULT record_clear4_draw(struct startup_list *s,UINT n,UINT instances,UINT first,UINT base)
+{
+    if(n!=3 || instances!=1 || first || base || !open_direct_state(s) || !s->depth_zero_pending ||
+       !s->pending_470 || !s->triangle_list || !s->source.buffer || !s->source.placed ||
+       !s->om.heap[0] || !s->om.heap[1] || !s->attachments[0].identity || !s->attachments[1].identity ||
+       !s->full_bounds || !s->full_rect || !s->full_vp || !s->stencil_zero || !s->blend_ones ||
+       !s->graphics_root || !s->required_root || s->graphics_identity!=s->required_root)return E_NOTIMPL;
+    IUnknown *root=NULL;
+    if(!xs_pin_clear4(s->pool_owner,s->device,s->bound,&root))return E_NOTIMPL;
+    BOOL match=root==s->required_root && s->pipeline && s->pipeline==xs_clear4_effective(s->bound,s->clear4_lanes);
+    IUnknown_Release(s->bound);
+    if(!match)return E_NOTIMPL;
+    ID3D12GraphicsCommandList7_DrawInstanced(s->host,n,instances,first,base);
+    recorded_direct_state(s);
+    fprintf(stderr,"scarlett: recorded #4 DrawInstanced(3,1,0,0) recorder=%p host=%p lanes=%016llx RTV/DSV=%llu/%llu\n",
+            s,s->host,s->clear4_lanes,s->attachments[0].serial,s->attachments[1].serial);
+    return S_OK;
+}
+static void WINAPI pool_clear4_draw(IUnknown *i,UINT n,UINT instances,UINT first,UINT base)
+{
+    if(FAILED(record_clear4_draw(sl(i),n,instances,first,base)))xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static void WINAPI pool_470(IUnknown *,UINT64);
 static const struct {
     IUnknownVtbl prefix;
     xs_stop_fn gap18[6];
     __typeof__(&sl_close) close;
-    xs_stop_fn gap50[10];
+    xs_stop_fn gap50[2]; __typeof__(&pool_clear4_draw) draw; xs_stop_fn gap68[7];
     __typeof__(&pool_topology) topology;
     __typeof__(&pool_vp) vp;__typeof__(&pool_rect) rect; __typeof__(&pool_blend) blend; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
@@ -771,8 +801,9 @@ static const struct {
     xs_stop_fn gap460[2]; __typeof__(&pool_470) state470; xs_stop_fn gap478[3];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 8]=xs_stop},pool_source,{xs_stop,xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {xs_stop,xs_stop},pool_clear4_draw,{[0 ... 6]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 8]=xs_stop},pool_source,{xs_stop,xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),draw)==0x60,"#4 draw ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),blend)==0xb8,"blend factor ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),om)==0x190,"OM ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),state470)==0x470,"pooled opaque state ABI");
@@ -793,19 +824,22 @@ _Static_assert(offsetof(__typeof__(pool_vtbl),barrier)==0x490, "pooled barrier A
 _Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
 
-/* shortcut: retain only #4's measured qword on its logical recording. No host
- * lowering or submit until a consumer establishes the meaning of this state. */
+/* shortcut: exactly full coverage and the diagonal discriminator on #4.
+ * The wrapper pins both PSOs; no root change or invalidated guest binding. */
 static HRESULT record_470(IUnknown *i,UINT64 value)
 {
-    if (!i || i->lpVtbl!=&pool_vtbl.prefix || value!=UINT64_MAX) return E_NOTIMPL;
+    if (!i || i->lpVtbl!=&pool_vtbl.prefix) return E_NOTIMPL;
     struct startup_list *s=sl(i);
     HRESULT hr=E_NOTIMPL;
     AcquireSRWLockExclusive(&s->borrow_lock);
     /* record_clear4 already pins bound for this exact pool owner and host device. */
     if (open_direct_state(s) && s->bound && s->required_root && s->graphics_identity==s->required_root) {
-        s->pending_470=TRUE;
-        recorded_direct_state(s);
-        hr=S_OK;
+        ID3D12PipelineState *effective=xs_clear4_effective(s->bound,value);
+        if(effective){
+            ID3D12GraphicsCommandList7_SetPipelineState(s->host,effective);
+            s->pipeline=effective;s->clear4_lanes=value;s->pending_470=TRUE;
+            recorded_direct_state(s);hr=S_OK;
+        }
     }
     ReleaseSRWLockExclusive(&s->borrow_lock);
     return hr;

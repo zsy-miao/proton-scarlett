@@ -46,6 +46,7 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     UINT64 va=(UINT64)control.at[2]+0x3ff80;ComPtr<IUnknown> placed,duplicate;
     auto make_arena=[&](ComPtr<IUnknown>& out){HR(((Place)vt[0x428/8])(owner,(UINT64)control.at[2],&arena,UINT_MAX,nullptr,IID_ID3D12Resource,(void**)out.GetAddressOf()));};
     make_arena(placed);make_arena(duplicate);
+    control.write({.125f,.375f,.625f,.875f});memcpy((void*)va,control.record(),100);MemoryBarrier();
     CK(test_pair_record(d,owner,pso,root,ids,slots,l.Get(),images,sid,va,duplicate.Detach()));
     memset((void*)va,0x11,100);
     auto replace=[](void *arg){auto c=(ClearSourceControl*)arg;BYTE *src=c->at[2]+0x3ff80;for(UINT k=0;k<100;k++)src[k]=(BYTE)(7+3*k);MemoryBarrier();c->replace();memset(src,0xcd,100);MemoryBarrier();};
@@ -60,6 +61,12 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     D3D12_TEXTURE_COPY_LOCATION from={},to={};from.pResource=host[0].Get();to.pResource=read.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;to.PlacedFootprint.Footprint={DXGI_FORMAT_R8G8B8A8_UNORM,1,1,1,256};D3D12_BOX box={0,0,0,1,1,1};l->CopyTextureRegion(&to,0,0,0,&from,&box);
     from.pResource=host[1].Get();to.pResource=planes.Get();for(UINT k=0;k<2;k++){from.SubresourceIndex=k;to.PlacedFootprint=fp[k];l->CopyTextureRegion(&to,0,0,0,&from,nullptr);}
     HR(l->Close());ID3D12CommandList *batch[]={l.Get()};q->ExecuteCommandLists(1,batch);ComPtr<ID3D12Fence> f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));HR(q->Signal(f.Get(),1));HR(f->SetEventOnCompletion(1,nullptr));HR(d->GetDeviceRemovedReason());
-    BYTE *map;HR(read->Map(0,nullptr,(void**)&map));CK(*(DWORD*)map==0xff00ff00);read->Unmap(0,nullptr);HR(planes->Map(0,nullptr,(void**)&map));CK(*(float*)(map+fp[0].Offset)==.375f && map[fp[1].Offset]==0x69);planes->Unmap(0,nullptr);
+    BYTE *map;HR(read->Map(0,nullptr,(void**)&map));CK(*(DWORD*)map==0xff00ff00);read->Unmap(0,nullptr);HR(planes->Map(0,nullptr,(void**)&map));
+    CK(fp[0].Footprint.Format==DXGI_FORMAT_R32_TYPELESS && fp[1].Footprint.Format==DXGI_FORMAT_R8_TYPELESS);
+    for(UINT y=0;y<ds.Height;y++)for(UINT x=0;x<ds.Width;x++){
+        float z;memcpy(&z,map+fp[0].Offset+y*fp[0].Footprint.RowPitch+4*x,4);
+        CK(z==.375f && map[fp[1].Offset+y*fp[1].Footprint.RowPitch+x]==0x69);
+    }
+    planes->Unmap(0,nullptr);puts("PASS original #4 recorder: both DSV planes unchanged over all 3840x2160 pixels");
     CK(VirtualFree(base,0,MEM_RELEASE));puts("PASS +190/+490: private split descriptors survived both producer rewrites; original color/depth/stencil readback, pending submit blocked");
 }
