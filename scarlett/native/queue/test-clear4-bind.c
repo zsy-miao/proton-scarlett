@@ -21,10 +21,11 @@ BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown 
     pool_vtbl.root(list,root);REQUIRE(record_clear4(s,p)==S_OK);
     s->marker=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *s->marker);REQUIRE(s->marker);s->marker->refs=1;
     struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);REQUIRE(post);
+    pool_vtbl.stencil(list,0);
     REQUIRE(split_native_list(s,post)==S_OK && s->head && s->pipeline && s->graphics_identity==root && !xs_list_host(list));
     REQUIRE(sl_close(list)==S_OK && FAILED(record_clear4(s,p)) && FAILED(sl_reset(list,a,NULL,1)) && s->bound==p);
-    REQUIRE(sl_reset(list,a,NULL,0)==S_OK && !s->bound && !s->head && !s->graphics_identity);
-    REQUIRE(record_depth_order(s,0)==S_OK && record_clear4(s,p)==S_OK && s->depth_zero_pending && !xs_list_host(list));
+    REQUIRE(sl_reset(list,a,NULL,0)==S_OK && !s->stencil_zero && !s->bound && !s->head && !s->graphics_identity);
+    REQUIRE(record_depth_order(s,0)==S_OK && record_clear4(s,p)==S_OK && record_stencil(s,0)==S_OK && s->depth_zero_pending && !xs_list_host(list));
     REQUIRE(sl_close(list)==S_OK && xs_direct_queue(hd,&q)==S_OK && xs_shared_fence(hd,&gate)==S_OK && xs_shared_fence(hd,&done)==S_OK);
     REQUIRE(xs_queue_wait(q,gate,1)==S_OK);startup_submit(q,1,&list,0,0);
     REQUIRE(ID3D12CommandQueue_Signal(as_queue(q),as_fence(done),1)==S_OK && !ID3D12Fence_GetCompletedValue(as_fence(done)));

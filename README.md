@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | AMD now binds the clear pipeline and its shader layout, then stops at the next graphics setting. RTX copies a 128-byte lookup texture, then stops while making it readable by shaders. |
+| What's blocking it? | AMD sets the stencil reference, then stops at a graphics command whose effect is still unknown. RTX creates shader views for the first lookup textures, but a later row starts between the boundaries required by the host texture copy. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

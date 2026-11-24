@@ -42,7 +42,7 @@ struct startup_list {
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
     ID3D12CommandAllocator *tail_allocator;
     struct system_timestamp *stamp;
-    BOOL closed,host_exposed,post_boundary;
+    BOOL closed,host_exposed,post_boundary,stencil_zero;
     SRWLOCK borrow_lock; /* Serialize a native borrow against recording deferred guest state. */
     BOOL depth_zero_pending;
     struct list_face local; /* Non-pooled lists need no inline ABI. */
@@ -170,6 +170,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     AcquireSRWLockExclusive(&s->borrow_lock);
     if(s->bound){IUnknown_Release(s->bound);s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;}
     if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
+    s->stencil_zero=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -306,6 +307,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     ID3D12CommandAllocator *a=NULL;
     HRESULT hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void **)&a);
     if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,s->pipeline,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
+    if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
@@ -578,6 +580,16 @@ static void WINAPI pool_root(IUnknown *i,IUnknown *root)
 {
     if(FAILED(record_graphics_root(sl(i),root)))xs_stop();
 }
+static HRESULT record_stencil(struct startup_list *s,UINT reference)
+{
+    if(reference || !open_direct_state(s))return E_NOTIMPL;
+    ID3D12GraphicsCommandList7_OMSetStencilRef(s->host,0);
+    s->stencil_zero=TRUE;recorded_direct_state(s);return S_OK;
+}
+static void WINAPI pool_stencil(IUnknown *i,UINT reference)
+{
+    if(FAILED(record_stencil(sl(i),reference)))xs_stop();
+}
 static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
 {
     HRESULT hr=E_NOTIMPL;
@@ -618,7 +630,7 @@ static const struct {
     __typeof__(&sl_close) close;
     xs_stop_fn gap50[10];
     __typeof__(&pool_topology) topology;
-    xs_stop_fn gapa8[4]; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
+    xs_stop_fn gapa8[3]; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
     xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[12];
     __typeof__(&pool_index) index; xs_stop_fn gap180[4];
@@ -638,8 +650,9 @@ static const struct {
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 3]=xs_stop},pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 2]=xs_stop},pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),stencil)==0xc0,"stencil reference ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),pipeline)==0xc8,"pooled PSO ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),root)==0x110,"pooled graphics root ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),index)==0x178,"index buffer ABI");

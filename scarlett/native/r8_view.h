@@ -32,7 +32,7 @@ static D3D12_SHADER_RESOURCE_VIEW_DESC address_srv_desc(UINT kind,UINT elements,
     else if (kind==CUBE1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE; v.TextureCube.MipLevels=1; }
     else if (kind==CUBE_PAIR_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBEARRAY; v.TextureCubeArray.MipLevels=1; v.TextureCubeArray.NumCubes=2; }
     else if (array_view_layers(kind)) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=array_view_layers(kind); }
-    else if (kind==SRGB_ROW_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE1D; v.Texture1D.MipLevels=1; }
+    else if (kind==SRGB_ROW_VIEW || kind==A8_LINE_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE1D; v.Texture1D.MipLevels=1; }
     else if (kind==VOLUME1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; v.Texture3D.MipLevels=1; }
     else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=1; }
     return v;
@@ -103,11 +103,11 @@ static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,S
     DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==CUBE_PAIR_VIEW?2:array_view_layers(kind),0,0};
     if (memcmp(w,tex?texture:stride?structured:raw,sizeof texture) || w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
-    UINT alignment=tex ? R8_ALIGNMENT : six_records ? 256 : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
+    UINT alignment=kind==A8_LINE_VIEW?D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT:tex ? R8_ALIGNMENT : six_records ? 256 : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
     if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;
-    HRESULT hr=retain_wc_buffer(device,(void *)va,stride?(UINT64)elements*stride:kind==R8_VIEW?R8_BYTES:tex?view_layers(kind)*R8_ALIGNMENT:160,&buffer,&offset);
+    HRESULT hr=retain_wc_buffer(device,(void *)va,stride?(UINT64)elements*stride:kind==A8_LINE_VIEW?256:kind==R8_VIEW?R8_BYTES:tex?view_layers(kind)*R8_ALIGNMENT:160,&buffer,&offset);
     if (FAILED(hr)) return hr;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct descriptor_record old={0};
@@ -196,7 +196,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     }
     if (kind==STRUCT_VIEW) rd.Width=(UINT64)elements*stride;
     else {
-        rd.Dimension=row?D3D12_RESOURCE_DIMENSION_TEXTURE1D:kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=atlas?atlas:texel32?1:256; rd.Height=atlas?atlas:(row || texel32)?1:128;
+        rd.Dimension=(row || kind==A8_LINE_VIEW)?D3D12_RESOURCE_DIMENSION_TEXTURE1D:kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=atlas?atlas:texel32?1:kind==A8_LINE_VIEW?128:256; rd.Height=atlas?atlas:(row || texel32 || kind==A8_LINE_VIEW)?1:128;
         rd.DepthOrArraySize=view_layers(kind); rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     }
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);

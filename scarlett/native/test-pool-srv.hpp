@@ -6,21 +6,40 @@ static void test_pool_srv(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T s
     using Microsoft::WRL::ComPtr;
     auto reserve=(void *(WINAPI *)(void *,SIZE_T,DWORD,UINT64,DWORD))(void *)
         GetProcAddress(GetModuleHandleW(L"xmem.dll"),"XMemVirtualAlloc");
-    constexpr UINT pool=0x89700000,n=0xc00;
-    static_assert(DXGI_FORMAT_R16_UINT==0x39 && DXGI_FORMAT_R16_TYPELESS==0x35);
+    constexpr UINT pool=0x89700000;
+#ifdef TEST_POOL_R8_SRV
+    using Element=BYTE;
+    constexpr UINT n=0x4b000;
+    constexpr auto format=DXGI_FORMAT_R8_UINT, typeless=DXGI_FORMAT_R8_TYPELESS;
+    auto pattern=[](UINT i){return (BYTE)(0x87u+37u*i+(i>>8));};
+#else
+    using Element=WORD;
+    constexpr UINT n=0xc00,tail=0xf935;
+    constexpr auto format=DXGI_FORMAT_R16_UINT, typeless=DXGI_FORMAT_R16_TYPELESS;
+    auto pattern=[](UINT i){return (WORD)(0x8031u+199u*i);};
+#endif
+    constexpr UINT elem=sizeof(Element), last_index=256/elem-1;
     CK(reserve);
-    auto *p=(WORD *)reserve(nullptr,pool,0x20003000,0x283,0x2404); CK(p);
-    DWORD rd[]={1,0x7d9d1efa,0,0,0x1800,0,1,0x10001,0,1,0,1,0};
-    DWORD w[16]={DXGI_FORMAT_R16_UINT,1,0x1688,0,0,0,n};
+    auto *base=(Element *)reserve(nullptr,pool,0x20003000,0x283,0x2404); CK(base);
+    Element *p=base;
+#ifdef TEST_POOL_R8_SRV
+    p+=0x1c3a0000;
+#endif
+    DWORD rd[]={1,0x7d9d1efa,0,0,n*elem,0,1,0x10001,0,1,0,1,0};
+    DWORD w[16]={format,1,0x1688,0,0,0,n};
     SIZE_T va=(SIZE_T)p; memcpy(w+10,&va,8);
     *(UINT64 *)slot=23; *(UINT64 *)(slot+16)=0x942613ad;
     auto attempt=[&]{return xs_write_address_srv(d,rd,w,slot);};
 #ifdef TEST_POOL_BASELINE
     CK(attempt()==E_NOTIMPL && *(UINT64 *)slot==23);
-    puts("PASS baseline: original +230 R16_UINT tuple rejected E_NOTIMPL before touching WB slot");
+    std::printf("PASS baseline: +230 format %u rejected E_NOTIMPL before touching WB slot\n",(UINT)format);
     CK(VirtualFree(p,0,MEM_RELEASE)); return;
 #endif
-    w[0]=DXGI_FORMAT_R16_TYPELESS; CK(FAILED(attempt())); w[0]=DXGI_FORMAT_R16_UINT;
+    w[0]=typeless; CK(FAILED(attempt())); w[0]=format;
+#ifdef TEST_POOL_R8_SRV
+    w[0]=DXGI_FORMAT_R8_UNORM; CK(FAILED(attempt())); w[0]=format;
+    w[15]=1; CK(FAILED(attempt())); w[15]=0;
+#endif
     w[6]*=2; CK(FAILED(attempt())); w[6]=n;
     w[8]=1; CK(FAILED(attempt())); w[8]=0;
     w[10]+=16; CK(FAILED(attempt())); w[10]-=16;
@@ -39,17 +58,25 @@ static void test_pool_srv(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T s
         SIZE_T address=va+offset; memcpy(w+10,&address,8);
         rd[4]=width; w[4]=first; w[6]=count;
     };
-    window(2*n,2*padded,0,smaller);
+#ifdef TEST_POOL_R8_SRV
+    window(elem*n,elem*padded,0,smaller);CK(FAILED(attempt()));window(0,n,0,n);
+#else
+    window(elem*n,elem*padded,0,smaller);
+#endif
     SLOT(d,0x230,Writer)(d,rd,w,slot+32);
     D3D12_GPU_DESCRIPTOR_HANDLE interior,last;
     HR(xs_resolve_view(heap,slot+32,0x90,&bank,&interior));
     UINT64 stamp=*(UINT64 *)slot;
     window(pool-256,512,0,1); CK(FAILED(attempt())); // count fits, padded resource doesn't
-    window(pool-256,256,127,2); CK(FAILED(attempt()));
-    window(2*n,2*padded,0,~0u); CK(FAILED(attempt()));
+    window(pool-256,256,last_index,2); CK(FAILED(attempt()));
+    window(elem*n,elem*padded,0,~0u); CK(FAILED(attempt()));
     w[6]=0; CK(FAILED(attempt())); w[6]=1; w[5]=~0u; CK(FAILED(attempt())); w[5]=0;
     CK(*(UINT64 *)slot==stamp);
-    window(pool-256,256,127,1);
+#ifdef TEST_POOL_R8_SRV
+    window(0,n,0,n);
+#else
+    window(pool-256,256,last_index,1);
+#endif
     SLOT(d,0x230,Writer)(d,rd,w,slot+64);
     HR(xs_resolve_view(heap,slot+64,0x90,&bank,&last));
     D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};
@@ -86,16 +113,28 @@ static void test_pool_srv(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T s
     ComPtr<ID3D12Fence> fence; HR(host->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
     HR(q->Wait(fence.Get(),1)); ID3D12CommandList *batch[]={l.Get()}; q->ExecuteCommandLists(1,batch);
     HR(q->Signal(fence.Get(),2));
-    for (UINT i=0;i<n+padded;i++) p[i]=(WORD)(0x8031u+199u*i);
-    p[pool/2-1]=0xf935;
-    MemoryBarrier(); CK(VirtualFree(p,0,MEM_RELEASE));
-    CK(VirtualAlloc(p,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==p);
-    memset(p,0xda,2*(n+padded)); window(2*n,2*padded,0,smaller); CK(FAILED(attempt())); HR(fence->Signal(1));
+    for (UINT i=0;i<n+padded;i++) p[i]=pattern(i);
+#ifndef TEST_POOL_R8_SRV
+    p[pool/elem-1]=tail;
+#endif
+    MemoryBarrier(); CK(VirtualFree(base,0,MEM_RELEASE));
+    CK(VirtualAlloc(p,(elem*(n+padded)+65535)&~65535u,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==p);
+    memset(p,0xda,elem*(n+padded)); window(0,n*elem,0,n); CK(FAILED(attempt())); HR(fence->Signal(1));
     HANDLE ev=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(ev); HR(fence->SetEventOnCompletion(2,ev));
     CK(WaitForSingleObject(ev,15000)==WAIT_OBJECT_0); CloseHandle(ev); HR(host->GetDeviceRemovedReason());
     UINT *m; HR(rb->Map(0,nullptr,(void **)&m));
-    for (UINT i=0;i<n+padded;i++) CK(m[i]==(i<n+smaller?(WORD)(0x8031u+199u*i):0) && p[i]==0xdada);
-    for (UINT i=0;i<64;i++) CK(m[n+padded+i]==(i?0u:0xf935u));
+#ifdef TEST_POOL_R8_SRV
+    for(UINT i=0;i<n+padded+64;i++){UINT index=i<n?i:i<n+padded?i-n:i-n-padded;CK(m[i]==pattern(index));}
+    for(UINT i=0;i<n+padded;i++)CK(p[i]==0xda);
+#else
+    for (UINT i=0;i<n+padded;i++) CK(m[i]==(i<n+smaller?(UINT)pattern(i):0u) && p[i]==(Element)0xdada);
+    for (UINT i=0;i<64;i++) CK(m[n+padded+i]==(i?0u:tail));
+#endif
     rb->Unmap(0,nullptr); CK(VirtualFree(p,0,MEM_RELEASE));
-    puts("PASS +230: neighboring WC R16 views returned 3072 + 378 original elements and 6 padding zeros; final pool element selected by FirstElement, 63 OOB zeros; stale/clipped/malformed windows rejected");
+#ifdef TEST_POOL_R8_SRV
+    puts("PASS +230 R8_UINT: full 307200-byte original at +1c3a0000 after VA reuse; three descriptors and clipped/shape controls");
+#else
+    std::printf("PASS +230: R%u_UINT returned %u + %u original elements and %u padding zeros after VA reuse; final pool element and 63 OOB zeros\n",
+        8*elem,n,smaller,padded-smaller);
+#endif
 }

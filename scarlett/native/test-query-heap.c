@@ -60,11 +60,14 @@ int main(void)
         .VS={ID3D10Blob_GetBufferPointer(vs),ID3D10Blob_GetBufferSize(vs)},.SampleMask=UINT_MAX,
         .RasterizerState={.FillMode=D3D12_FILL_MODE_SOLID,.CullMode=D3D12_CULL_MODE_NONE,.DepthClipEnable=TRUE},
         .DepthStencilState={.DepthEnable=TRUE,.DepthWriteMask=D3D12_DEPTH_WRITE_MASK_ALL,.DepthFunc=D3D12_COMPARISON_FUNC_ALWAYS},
-        .DSVFormat=DXGI_FORMAT_D32_FLOAT,.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,.SampleDesc={1,0}};
+        .DSVFormat=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,.SampleDesc={1,0}};
     ID3D12PipelineState *pso;
     const char pixel[]="uint main(float4 p:SV_Position):SV_Target{return (uint)round(ddx(p.x))+256*(uint)round(ddy(p.y));}";
     ID3DBlob *ps;
     OK(D3DCompile(pixel,sizeof pixel-1,NULL,NULL,NULL,"main","ps_5_0",0,0,&ps,NULL));
+    pd.DepthStencilState.StencilEnable=TRUE;pd.DepthStencilState.StencilReadMask=0xff;
+    pd.DepthStencilState.FrontFace=pd.DepthStencilState.BackFace=(D3D12_DEPTH_STENCILOP_DESC){
+        D3D12_STENCIL_OP_KEEP,D3D12_STENCIL_OP_KEEP,D3D12_STENCIL_OP_KEEP,D3D12_COMPARISON_FUNC_EQUAL};
     pd.NumRenderTargets=1;pd.RTVFormats[0]=DXGI_FORMAT_R32_UINT;
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask=D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.PS=(D3D12_SHADER_BYTECODE){ID3D10Blob_GetBufferPointer(ps),ID3D10Blob_GetBufferSize(ps)};
@@ -78,7 +81,7 @@ int main(void)
     OK(ID3D12Device_CreateCommittedResource(host,&hp,0,&buf,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&result));
     hp.Type=D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC depth={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=8,.Height=8,
-        .DepthOrArraySize=1,.MipLevels=1,.Format=DXGI_FORMAT_D32_FLOAT,.SampleDesc={1,0},.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL};
+        .DepthOrArraySize=1,.MipLevels=1,.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.SampleDesc={1,0},.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL};
     ID3D12Resource *depth_image;
     OK(ID3D12Device_CreateCommittedResource(host,&hp,0,&depth,D3D12_RESOURCE_STATE_DEPTH_WRITE,NULL,&IID_ID3D12Resource,(void **)&depth_image));
     D3D12_DESCRIPTOR_HEAP_DESC dh={.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV,.NumDescriptors=1};
@@ -131,7 +134,13 @@ int main(void)
     ID3D12GraphicsCommandList7_RSSetShadingRate(sl(list)->host,D3D12_SHADING_RATE_2X2,pair);
     CHECK(record_pool_rate(sl(list),5,pair)==E_INVALIDARG && record_pool_rate(sl(list),0,NULL)==E_POINTER);
     for(UINT j=0;j<2;j++){pair[j]=D3D12_SHADING_RATE_COMBINER_OVERRIDE;CHECK(record_pool_rate(sl(list),0,pair)==E_NOTIMPL);pair[j]=0;}
+    /* First query passes only with 0x59. The other three pass only after +c0. */
+    ID3D12GraphicsCommandList_ClearDepthStencilView(l,dsv,D3D12_CLEAR_FLAG_STENCIL,0,0x59,0,NULL);
+    ID3D12GraphicsCommandList_OMSetStencilRef(l,0x59);
+    CHECK(FAILED(record_stencil(sl(list),0x59)));
     for (int i=0;i<4;++i) {
+        if(i==1){ID3D12GraphicsCommandList_ClearDepthStencilView(l,dsv,D3D12_CLEAR_FLAG_STENCIL,0,0,0,NULL);
+            pool_vtbl.stencil(list,0);}
         if(i==1)pool_vtbl.rate(list,0,pair);
         D3D12_RECT scissor={0,0,8-i*2,8};
         ID3D12GraphicsCommandList_RSSetScissorRects(l,1,&scissor);
@@ -159,6 +168,7 @@ int main(void)
     CHECK(words[0]==UINT64_MAX && words[5]==UINT64_MAX);
     for(UINT y=0;y<8;y++)for(UINT x=0;x<8;x++)
         CHECK(*(UINT*)((BYTE*)words+512+y*256+4*x)==(x<6?0x101u:0x202u));
+    puts("PASS +c0: 64 samples at seeded reference, then 48/32/16 only with zero reference");
     printf("PASS +3f0 tier=%u: 16 coarse and 48 fine pixels in order after fence\n",opts.VariableShadingRateTier);
     ID3D12Resource_Unmap(result,0,NULL);
     CloseHandle(e); ID3D12Fence_Release(f); IUnknown_Release(list);

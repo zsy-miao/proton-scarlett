@@ -181,7 +181,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     } else
 #endif
     if (wc) {
-        srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
+        srv.Format=words[0]; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
         srv.Shader4ComponentMapping=words[2]; srv.Buffer.NumElements=words[6];
     } else if (kind==DSV) {
@@ -480,18 +480,18 @@ static HRESULT retain_wc_buffer(IUnknown *device,const void *va,UINT64 bytes,ID3
     return S_OK;
 }
 
-static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,const void *va,SIZE_T dest)
+static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,const void *va,SIZE_T dest,UINT element_bytes)
 {
     const SIZE_T pool_size=WC_POOL_BYTES;
     UINT64 first; memcpy(&first,w+4,sizeof first);
     if (((UINT_PTR)va&255) || !rd->Width || rd->Width>pool_size || (rd->Width&15) ||
         !w[6] || w[6]>(1u<<D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP) ||
-        first>rd->Width/2 || w[6]>rd->Width/2-first) return E_INVALIDARG;
+        first>rd->Width/element_bytes || w[6]>rd->Width/element_bytes-first) return E_INVALIDARG;
     ID3D12Resource *resource;
     UINT offset;
     HRESULT hr=retain_wc_buffer(device,va,rd->Width,&resource,&offset);
     if (FAILED(hr)) return hr;
-    first+=offset/2; memcpy(w+4,&first,sizeof first);
+    first+=offset/element_bytes; memcpy(w+4,&first,sizeof first);
     hr=write_view(device,SRV,NULL,w,dest,resource);
     ID3D12Resource_Release(resource);
     return hr;
@@ -514,6 +514,9 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
                 (UINT)rd.Flags!=0x300000 || memcmp(shape,w,sizeof shape)) return E_NOTIMPL;
         return write_tile_record(CONTAINING_RECORD(device,struct xbox_device,iface),NULL,TILE_RGB_SRV,va,dest,0,0);
     }
+    if(rd.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE1D && runtime_texture(&rd) && rd.Width==128 &&
+        rd.Height==1 && rd.Format==DXGI_FORMAT_A8_UNORM && !rd.Alignment && !rd.Layout)
+        return write_wc_address_view(device,A8_LINE_VIEW,w,dest);
     if (!rd.Alignment && (UINT)rd.Layout==SRGB_ROW_LAYOUT && is_srgb_row(&rd)) return write_wc_address_view(device,SRGB_ROW_VIEW,w,dest);
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
         if (is_layered_texel(&rd)) {
@@ -535,7 +538,9 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     if (w[7]) return E_NOTIMPL;
     UINT64 va; memcpy(&va,w+10,sizeof va);
     if (w[0]==DXGI_FORMAT_R16_UINT && !w[8])
-        return write_pool_srv(device,&rd,w,(const void *)va,dest);
+        return write_pool_srv(device,&rd,w,(const void *)va,dest,2);
+    if (rd.Width==0x4b000 && w[0]==DXGI_FORMAT_R8_UINT && !w[3] && !w[4] && !w[5] &&
+        w[6]==rd.Width && !w[8] && !w[9]) return write_pool_srv(device,&rd,w,(const void *)va,dest,1);
     if (rd.Width==160 && w[0]==DXGI_FORMAT_R32_TYPELESS)
         return write_wc_address_view(device,RAW38_VIEW,w,dest);
     if (rd.Width!=PLACED_WIDTH || w[0]!=DXGI_FORMAT_R32_TYPELESS || w[4] || w[5] || w[6]!=PLACED_WIDTH/4 || w[8]!=1)

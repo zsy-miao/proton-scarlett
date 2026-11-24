@@ -516,3 +516,17 @@ ordinary runs presented only token 1. Of 14 fixture launches, 13 passed;
 the first byte-buffer test package was missing a shader and its corrected
 retry passed. Three simultaneous scatter mappings and removal of the
 middle mapping passed on both GPUs; the third retail return is unverified.
+
+Pooled Direct `+c0(0)` records `OMSetStencilRef(0)` on the current list.
+The hardware test seeded a nonzero reference and checked the changed
+stencil comparisons. AMD then reached `+470`, return `+329e9`: the
+requested 64-bit value was all ones and the cached value was zero. The
+following blend-factor call was not reached.
+
+Four retail launches (two diagnostics and two ordinary); all eleven
+fixtures passed. The RTX diagnostic accepted the aligned 128-byte A8
+lookup row and the separate 307,200-byte `R8_UINT` buffer. A later A8
+row, at `0xd611fbd00`, was 256-byte aligned but not 512-byte aligned,
+and the direct copy-footprint path rejected it. RTX ordinary first
+stopped at the A8 view writer (`+4ecc821` from `+501f703`). Both ordinary
+runs issued tokens 1 and 2 and presented only token 1.
