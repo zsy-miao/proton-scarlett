@@ -9,24 +9,9 @@ work=$(mktemp -d "$(dirname "$out")/.build-scarlett.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 cd "$work"
 git clone -q --no-checkout https://github.com/ivall/xcl.git xcl
-git -C xcl fetch -q origin 52015d5019b6c7f9353a75abf812b034fcf9c752
-git -C xcl checkout -q --detach 956a476bf738a098f39df4f4c8acef682e43030f
-git -C xcl cherry-pick --no-commit 52015d5019b6c7f9353a75abf812b034fcf9c752
-test "$(git -C xcl write-tree)" = eb5ab66b2d262967e5a02805a12f3eb62a48c980
-git -C xcl apply "$here/native-heap.patch"
-git -C xcl apply "$here/native-fence.patch"
-git -C xcl apply "$here/native-rootsig.patch"
-git -C xcl apply "$here/native-pso.patch"
-git -C xcl apply -C2 "$here/native-descriptor-heap.patch"
-git -C xcl apply "$here/native-resource.patch"
-git -C xcl apply "$here/native-query-heap.patch"
-git -C xcl apply "$here/native-allocator.patch"
-git -C xcl apply "$here/native-command-list.patch"
-git -C xcl apply "$here/xcl-memory.patch"
-git -C xcl apply "$here/xcl-window.patch"
-git -C xcl add -u
-git -C xcl add crates/xcl/src/hle/d3d12x/{allocator_view,descriptor_view}.rs
-test "$(git -C xcl write-tree)" = df537b104ca9aa7ebe3c0e22f81e52110d7a71e2
+git -C xcl checkout -q --detach 7ebf1b8044bef8f0ef296eb36e85010cceb4633a
+git -C xcl apply --index "$here/native-on-7ebf1b8.patch"
+test "$(git -C xcl write-tree)" = 50118401cf3e98a47ee98350259851480139b1fe
 
 # Some MinGW toolchains (including the Nix host used for testing) lack static winpthreads.
 deb=mingw-w64-x86-64-dev_12.0.0-5_all.deb
