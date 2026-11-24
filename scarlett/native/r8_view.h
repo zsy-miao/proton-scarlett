@@ -103,7 +103,7 @@ static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,S
     DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==CUBE_PAIR_VIEW?2:array_view_layers(kind),0,0};
     if (memcmp(w,tex?texture:stride?structured:raw,sizeof texture) || w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
-    UINT alignment=kind==A8_LINE_VIEW?D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT:tex ? R8_ALIGNMENT : six_records ? 256 : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
+    UINT alignment=kind==A8_LINE_VIEW?D3D12_TEXTURE_DATA_PITCH_ALIGNMENT:tex ? R8_ALIGNMENT : six_records ? 256 : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
     if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;
@@ -190,7 +190,9 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=R8_BYTES,.Height=1,.MipLevels=1,
         .DepthOrArraySize=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
-    if (kind==R8_VIEW) {
+    BOOL rebase=kind==A8_LINE_VIEW && offset%D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+    if (kind==R8_VIEW || rebase) {
+        if (rebase) rd.Width=D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
         hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->rows);
         if (FAILED(hr)) goto fail;
     }
@@ -212,7 +214,8 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
      * on the consuming queue, including writes ordered after list submission. */
     r8_transition(l,u->source,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
     if (u->rows) {
-        for (UINT y=0;y<128;y++) for (UINT x=0;x<256;x+=16) {
+        if (rebase) ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,0,u->source,offset,rd.Width);
+        else for (UINT y=0;y<128;y++) for (UINT x=0;x<256;x+=16) {
             UINT tiled=((y/64)*4+x/64)*4096+(y%32)*16+(x&16)*32+(y&32)*32+(x&32)*64;
             ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,y*256+x,u->source,(UINT64)offset+tiled,16);
         }

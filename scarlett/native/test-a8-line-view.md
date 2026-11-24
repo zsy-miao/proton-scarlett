@@ -31,7 +31,18 @@ for the emulated A8 view, composes the requested component mapping, and
 handles `D3D12_SRV_DIMENSION_TEXTURE1D`. The fixture prints the adapter's
 format support and requires `TEXTURE1D|SHADER_SAMPLE` before creation.
 Only a fenced readback qualifies these host expectations on that adapter.
-The third output comes from the copied guest descriptor refreshed on the
-consuming queue. The measured `+501f703` wire uses mapping `0x1688`; the
-custom mapping is a host control only. Check all three outputs after the
-original pool is released and the VA reused.
+The third output comes from the copied guest descriptor. The fourth
+uses the next row, 256 bytes later, with complementary values. If a row
+is not 512-byte aligned, the consuming queue copies its 128 bytes to
+offset zero in a private buffer before copying to the texture. The
+measured `+501f703` wire uses mapping `0x1688`; the custom mapping is
+a host control only. Check all four outputs after the original pool is
+released and the VA reused.
+
+In an RTX retail diagnostic the copy and shader view for the row at
+`0xd611fbd00` matched the same WC section and offset `0x15ffbd00`; the
+view succeeded. Four fixture launches passed on AMD and RTX, including
+an independent check with different values in both adjacent rows.
+Four retail launches (two diagnostics and two matched ordinary runs).
+AMD issued tokens 1 and 2 before stopping at `+329e9`; RTX issued only
+token 1 before `+5707b8c`. Each ordinary run presented token 1 once.

@@ -16,9 +16,10 @@ extern "C" void xs_drop_texture_use(xs_texture_use *);
 using Make=HRESULT(WINAPI*)(IUnknown *,const void *,REFIID,void **);
 using Start=SIZE_T(WINAPI*)(IUnknown *);
 using Copier=void(WINAPI*)(IUnknown *,UINT,SIZE_T,SIZE_T,UINT);
+using Writer=void(WINAPI*)(IUnknown *,const void *,const void *,SIZE_T);
 static BYTE alpha(UINT pass,UINT x){return BYTE(2*((53*x+11)%128)+pass);}
 int main(){
-    constexpr UINT W=128,span=256,guard=256,total=2*guard+span,off=0xe6cf800,pool=0x89700000;
+    constexpr UINT W=128,span=256,guard=256,total=2*guard+2*span,off=0xe6cf800,pool=0x89700000;
     constexpr UINT plane=W*4*sizeof(float);
     auto xm=LoadLibraryW(L"xmem.dll"),xg=LoadLibraryW(L"xg_xs.dll"); CK(xm && xg);
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");
@@ -53,8 +54,20 @@ int main(){
     SIZE_T srcslot=SLOT(cpuheap.Get(),0x48,Start)(cpuheap.Get()),slot=SLOT(gpuheap.Get(),0x48,Start)(gpuheap.Get())+32;
     DWORD w[16]={fmt,2,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};memcpy(w+10,&at,8);
     HR(xs_write_address_srv(guest.Get(),xd,w,srcslot));
+    SLOT(guest.Get(),0x230,Writer)(guest.Get(),xd,w,slot);
+    UINT64 *tag=(UINT64*)slot,old[2]={tag[0],tag[1]};
+    const UINT64 *srcTag=(const UINT64*)srcslot;
+    CK(old[0] && srcTag[0] && old[0]!=srcTag[0] && old[1]==srcTag[1]);
+    SIZE_T second=slot+32;BYTE *unalignedRow=at+0x100;
+    memcpy(w+10,&unalignedRow,8);SLOT(guest.Get(),0x230,Writer)(guest.Get(),xd,w,second);
+    BYTE *misaligned=at+0x80;
+    memcpy(w+10,&misaligned,8);
+    CK(xs_write_address_srv(guest.Get(),xd,w,slot)==E_INVALIDARG && !memcmp(tag,old,sizeof old));
+    memcpy(w+10,&at,8);
     for(UINT i: {0u,1u,2u,3u,4u,5u,6u,7u,8u,9u,12u,13u,14u,15u}){w[i]^=1;CK(FAILED(xs_write_address_srv(guest.Get(),xd,w,srcslot)));w[i]^=1;}
-    SLOT(guest.Get(),0xc0,Copier)(guest.Get(),1,slot,srcslot,0);cpuheap.Reset();
+    SLOT(guest.Get(),0xc0,Copier)(guest.Get(),1,slot,srcslot,0);
+    const UINT64 copied=tag[0];
+    CK(copied && copied!=old[0] && copied!=srcTag[0] && tag[1]==old[1]);cpuheap.Reset();
     memset(at-guard,0xb7,total);
 
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
@@ -66,9 +79,9 @@ int main(){
     d->GetCopyableFootprints(&rd,0,1,off,&fp,&rows,&row,nullptr);
     CK(fp.Offset==off && rows==1 && row==W && fp.Footprint.RowPitch==span && fp.Footprint.Format==fmt);
     rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Format=DXGI_FORMAT_UNKNOWN;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    rd.Width=3*plane;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    rd.Width=4*plane;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&out)));
-    rd.Width=3*plane+total;rd.Flags=D3D12_RESOURCE_FLAG_NONE;hp.Type=D3D12_HEAP_TYPE_READBACK;
+    rd.Width=4*plane+total;rd.Flags=D3D12_RESOURCE_FLAG_NONE;hp.Type=D3D12_HEAP_TYPE_READBACK;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read)));
     ComPtr<ID3D12DescriptorHeap> src,dst;D3D12_DESCRIPTOR_HEAP_DESC hd={};hd.NumDescriptors=2;
     HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&src)));hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
@@ -115,16 +128,27 @@ int main(){
             l->SetComputeRootDescriptorTable(0,gpu);l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress()+j*plane);l->Dispatch(W/64,1,1);
         }
         ID3D12DescriptorHeap *refreshed=NULL;xs_texture_use *hold=NULL;
+        if(!pass){
+            tag[0]=old[0]; // Valid serial for this slot before the copy; kind is unchanged.
+            refreshed=dst.Get();hold=reinterpret_cast<xs_texture_use*>(dst.Get());
+            CK(FAILED(xs_refresh_wc_texture(gpuheap.Get(),slot,l.Get(),&refreshed,&hold)) && !refreshed && !hold);
+            tag[0]=copied;
+        }
         HR(xs_refresh_wc_texture(gpuheap.Get(),slot,l.Get(),&refreshed,&hold));
         l->SetDescriptorHeaps(1,&refreshed);l->SetComputeRootDescriptorTable(0,refreshed->GetGPUDescriptorHandleForHeapStart());
         l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress()+2*plane);l->Dispatch(W/64,1,1);
+        xs_texture_use *other=NULL;HR(xs_refresh_wc_texture(gpuheap.Get(),second,l.Get(),&refreshed,&other));
+        l->SetDescriptorHeaps(1,&refreshed);l->SetComputeRootDescriptorTable(0,refreshed->GetGPUDescriptorHandleForHeapStart());
+        l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress()+3*plane);l->Dispatch(W/64,1,1);
         barrier(tex.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
         barrier(out.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);
-        l->CopyBufferRegion(read.Get(),0,out.Get(),0,3*plane);l->CopyBufferRegion(read.Get(),3*plane,original,off-guard,total);
+        l->CopyBufferRegion(read.Get(),0,out.Get(),0,4*plane);l->CopyBufferRegion(read.Get(),4*plane,original,off-guard,total);
         HR(l->Close());HR(q->Wait(gate.Get(),pass+1));ID3D12CommandList *batch[]={l.Get()};q->ExecuteCommandLists(1,batch);
         HR(q->Signal(done.Get(),pass+1));HR(done->SetEventOnCompletion(pass+1,ev));CK(WaitForSingleObject(ev,0)==WAIT_TIMEOUT);
         BYTE stack[W];for(UINT x=0;x<W;x++)stack[x]=alpha(pass,x);
-        CK(copy(c,at,0,0,stack,W,W)==S_OK);SecureZeroMemory(stack,sizeof stack);MemoryBarrier();
+        CK(copy(c,at,0,0,stack,W,W)==S_OK);
+        for(UINT x=0;x<W;x++)stack[x]^=0xff;
+        CK(copy(c,unalignedRow,0,0,stack,W,W)==S_OK);SecureZeroMemory(stack,sizeof stack);MemoryBarrier();
         if(pass){
             CK(VirtualFree(b,0,MEM_RELEASE) && VirtualAlloc(window,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==window);
             memset(window,0xad,65536);CK(FAILED(copy(c,at,0,0,stack,W,W)));
@@ -132,14 +156,14 @@ int main(){
         HR(gate->Signal(pass+1));CK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
         BYTE *p;HR(read->Map(0,nullptr,(void**)&p));
         for(UINT x=0;x<W;x++){
-            float v=alpha(pass,x)/255.f,want[]={0,0,0,v,v,1,0,0,0,0,0,v};
-            for(UINT j=0;j<12;j++){float got;memcpy(&got,p+(j/4)*plane+16*x+4*(j%4),4);
+            float v=alpha(pass,x)/255.f,want[]={0,0,0,v,v,1,0,0,0,0,0,v,0,0,0,(255-alpha(pass,x))/255.f};
+            for(UINT j=0;j<16;j++){float got;memcpy(&got,p+(j/4)*plane+16*x+4*(j%4),4);
                 if(!(std::fabs(got-want[j])<=1e-7f)){fprintf(stderr,"pass=%u x=%u view=%u channel=%u got=%g want=%g\n",pass,x,j/4,j%4,got,want[j]);return 1;}}
         }
-        for(UINT i=0;i<total;i++)CK(p[3*plane+i]==(i>=guard && i<guard+W?alpha(pass,i-guard):0xb7));
-        read->Unmap(0,nullptr);xs_drop_texture_use(hold);
+        for(UINT i=0;i<total;i++)CK(p[4*plane+i]==(i>=guard && i<guard+W?alpha(pass,i-guard):i>=guard+span && i<guard+span+W?(255-alpha(pass,i-guard-span)):0xb7));
+        read->Unmap(0,nullptr);xs_drop_texture_use(hold);xs_drop_texture_use(other);
     }
     for(UINT i=0;i<65536;i++)CK(window[i]==0xad);
     CK(VirtualFree(window,0,MEM_RELEASE) && ((ULONG(WINAPI*)(void*))vt[1])(c)==0);CloseHandle(ev);HR(d->GetDeviceRemovedReason());
-    puts("PASS copied guest and host A8 Texture1D: 256 alpha codes, both copied mappings, original backing/guards across VA reuse");
+    puts("PASS copied guest and host A8 Texture1D: both row alignments, 256 alpha codes with complementary patterns, copied mappings, original backing/guards across VA reuse");
 }
