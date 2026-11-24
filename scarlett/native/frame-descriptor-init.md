@@ -126,14 +126,15 @@ From `scarlett/native` (with an installed matching tool):
 ```sh
 src=$PWD; w=$(mktemp -d); mkdir "$w/game"; cd "$w"
 for f in d3d12_device queue/queue; do
-  x86_64-w64-mingw32-gcc -DSCARLETT_DEVICE_BOOTSTRAP -Os -Wall -Wextra -Werror \
+  x86_64-w64-mingw32-gcc -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED -Os -Wall -Wextra -Werror \
     -c "$src/$f.c" -o "${f##*/}.o"
 done
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
+x86_64-w64-mingw32-g++ -DTEST_POOL_SRV -std=c++17 -O2 -Wall -Wextra -Werror -static \
   "$src/test-descriptor.cpp" d3d12_device.o queue.o -ld3d12 -o game/game_scarlett_master.exe
 cp "$tool/scarlett/xmem.dll" game/
 dxc -T cs_6_0 -E main -Fo game/test-view.dxil "$src/test-view.hlsl"
-SCARLETT_TEST_GPU=radv TMPDIR="$w" "$src/../test-launch-nixos.sh" "$w/game" "$tool"
+dxc -T cs_6_0 -E main -Fo game/pool-srv.dxil "$src/test-pool-srv.hlsl"
+SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway TMPDIR="$w" "$src/../test-launch-nixos.sh" "$w/game" "$tool"
 ```
 
 ### Descriptor writers (RVA evidence, native x64)
@@ -196,8 +197,17 @@ identity and a real host buffer, removing the registration before recycling
 the identity. The synthetic test supplies this producer; a retail resource
 factory has not yet been identified/connected. A recognized write retains
 the host buffer in the slot until overwrite or heap release. Foreign COM
-pointers are never queried or assumed to be desktop resources. The distinct
-`4ecc800` route and dimension 11 at `56ac05c` are not decoded.
+pointers are never queried or assumed to be desktop resources. Dimension 11
+at `56ac05c` is not decoded.
+
+The address-based `+0x230` route at `4ecc800` creates two typed buffer SRVs
+in visible slots 23 and 24. The title supplies a resource VA and byte width
+separately from the view's element range. For slot 24 the resource starts
+`0x1800` bytes into the marked WC allocation and spans `0x300` bytes, but the
+view exposes only `0x17a` 16-bit elements. The provider queries the live Wine
+section for the full resource window, compares section handles before reusing
+the device's cached pool buffer, and adds the resource offset in elements to
+the host SRV. Each descriptor retains its buffer across address reuse.
 
 `test-view.hlsl` reads from four descriptors after the synthetic resource
 owner is unregistered and its buffer reference dropped. Fenced readback

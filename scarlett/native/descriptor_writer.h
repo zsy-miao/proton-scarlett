@@ -139,6 +139,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
 #endif
     if (wc) {
         srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
+        memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
         srv.Shader4ComponentMapping=words[2]; srv.Buffer.NumElements=words[6];
     } else if (kind==RTV) {
         if (!object || words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM || words[1]!=D3D12_RTV_DIMENSION_TEXTURE2D ||
@@ -323,27 +324,49 @@ static void WINAPI write_srv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T des
 }
 #ifdef SCARLETT_STAGED_PLACED
 #include "xmem/marked_section.h"
-/* 1f772cb -> 221ad20 selects pool 2. The observed SRV covers its first 0x1800 bytes. */
-static HRESULT write_pool_srv(IUnknown *device,const D3D12_RESOURCE_DESC *rd,const DWORD *w,const void *va,SIZE_T dest)
+/* Each lookup pins the live section; a reused VA cannot hit another generation's import. */
+static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,const void *va,SIZE_T dest)
 {
+    const SIZE_T pool_size=0x89700000;
+    UINT64 first; memcpy(&first,w+4,sizeof first);
+    if (((UINT_PTR)va&255) || !rd->Width || rd->Width>pool_size || (rd->Width&15) ||
+        !w[6] || w[6]>(1u<<D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP) ||
+        first>rd->Width/2 || w[6]>rd->Width/2-first) return E_INVALIDARG;
     struct scarlett_section_info i;
     HRESULT hr=scarlett_query_section(0x53430005,va,rd->Width,&i);
     if (FAILED(hr)) return hr;
-    ID3D12Device *host=CONTAINING_RECORD(device,struct xbox_device,iface)->host;
-    HRESULT (WINAPI *open_wc)(ID3D12Device *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **)=
-        (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");
-    ID3D12Heap *heap=NULL;
-    if (i.base!=va || i.offset || i.view_size!=0x89700000 || !i.section) hr=E_INVALIDARG;
-    else hr=open_wc ? open_wc(host,i.view_size,i.section,NULL,&heap) : E_NOTIMPL;
-    CloseHandle(i.section);
-    if (FAILED(hr)) return hr;
-    ID3D12Resource *resource;
-    hr=ID3D12Device_CreatePlacedResource(host,heap,0,rd,D3D12_RESOURCE_STATE_COMMON,NULL,&IID_ID3D12Resource,(void **)&resource);
-    ID3D12Heap_Release(heap);
-    if (SUCCEEDED(hr)) {
-        hr=write_view(device,SRV,NULL,w,dest,resource);
-        ID3D12Resource_Release(resource);
+    if (!i.section) return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
+    ID3D12Resource *resource=NULL;
+    if (i.view_size!=pool_size || i.offset!=(UINT_PTR)va-(UINT_PTR)i.base ||
+        i.offset>pool_size-rd->Width) hr=E_INVALIDARG;
+    else {
+        AcquireSRWLockExclusive(&d->descriptor_lock);
+        BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+        if (!d->pool_section || !same || !same(i.section,d->pool_section)) {
+            HRESULT (WINAPI *open_wc)(ID3D12Device *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **)=
+                (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");
+            ID3D12Heap *heap=NULL;
+            hr=open_wc ? open_wc(d->host,pool_size,i.section,NULL,&heap) : E_NOTIMPL;
+            if (SUCCEEDED(hr)) {
+                rd->Width=pool_size;
+                hr=ID3D12Device_CreatePlacedResource(d->host,heap,0,rd,D3D12_RESOURCE_STATE_COMMON,NULL,&IID_ID3D12Resource,(void **)&resource);
+                ID3D12Heap_Release(heap);
+                if (SUCCEEDED(hr)) {
+                    if (d->pool_buffer) ID3D12Resource_Release(d->pool_buffer);
+                    if (d->pool_section) CloseHandle(d->pool_section);
+                    d->pool_buffer=resource; d->pool_section=i.section; i.section=NULL;
+                }
+            }
+        }
+        if (SUCCEEDED(hr)) { resource=d->pool_buffer; ID3D12Resource_AddRef(resource); }
+        ReleaseSRWLockExclusive(&d->descriptor_lock);
     }
+    if (i.section) CloseHandle(i.section);
+    if (FAILED(hr)) return hr;
+    first+=i.offset/2; memcpy(w+4,&first,sizeof first);
+    hr=write_view(device,SRV,NULL,w,dest,resource);
+    ID3D12Resource_Release(resource);
     return hr;
 }
 
@@ -357,11 +380,11 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment ||
         rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
         rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Layout!=D3D12_TEXTURE_LAYOUT_ROW_MAJOR || rd.Flags ||
-        w[1]!=1 || w[2]!=0x1688 || w[4] || w[5] || w[7] || w[12] || w[13] || w[14] || w[15]) return E_NOTIMPL;
+        w[1]!=1 || w[2]!=0x1688 || w[7] || w[12] || w[13] || w[14] || w[15]) return E_NOTIMPL;
     UINT64 va; memcpy(&va,w+10,sizeof va);
-    if (rd.Width==0x1800 && w[0]==DXGI_FORMAT_R16_UINT && w[6]==0xc00 && !w[8])
+    if (w[0]==DXGI_FORMAT_R16_UINT && !w[8])
         return write_pool_srv(device,&rd,w,(const void *)va,dest);
-    if (rd.Width!=PLACED_WIDTH || w[0]!=DXGI_FORMAT_R32_TYPELESS || w[6]!=PLACED_WIDTH/4 || w[8]!=1)
+    if (rd.Width!=PLACED_WIDTH || w[0]!=DXGI_FORMAT_R32_TYPELESS || w[4] || w[5] || w[6]!=PLACED_WIDTH/4 || w[8]!=1)
         return E_NOTIMPL;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct placed_backing *found=NULL;

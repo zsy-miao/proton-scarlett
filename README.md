@@ -13,7 +13,9 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder completes 53 pipeline creations for 52 distinct shaders, including all four [decompression stages](scarlett/native/bvh-decompress.md). The postbuild size query is created twice. Retail creates the occlusion query heap and its 19,680-byte readback buffer. Retail also creates the [CPU-only heap of 3,128 descriptors](scarlett/native/frame-descriptor-init.md). Device `+0x230` creates a 3,072-element `R16_UINT` view at the start of the write-combined pool. The next request uses the same format 6,144 bytes into the pool and is rejected (title return RVA `+0x4ecc821`). **No retail builder dispatch or presented frame has been observed.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder completes 53 pipeline creations for 52 distinct shaders, including all four [decompression stages](scarlett/native/bvh-decompress.md). The postbuild size query is created twice. Retail creates the occlusion query heap, its 19,680-byte readback buffer and the [CPU-only heap of 3,128 descriptors](scarlett/native/frame-descriptor-init.md).
+
+Retail now creates both `R16_UINT` views in the write-combined pool: 3,072 elements at its base and 378 elements at byte offset `0x1800`. A [RADV GPU test](scarlett/native/test-pool-srv.hpp) read every element after the CPU address was freed and reused; the six reads into the second resource's padding returned zero. Retail next stops at device `+0x1e8` (title return RVA `+0x12b981e`). **No retail builder dispatch or presented frame has been observed.**
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
@@ -42,8 +44,6 @@ A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 w
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 
 An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent virtual A, forward movement, and left camera inputs to a synthetic game window on RADV. The installed GameInput provider reported each action and returned to neutral after each release. The decoded recording showed a distinct color for each action. Retail input has not yet been exercised.
-
-The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 
 **Disclaimer:** scarlett-proton is an independent compatibility project, unaffiliated with Valve, Microsoft,
 Rockstar Games, or Take-Two Interactive. It includes no game files or console firmware. Use your

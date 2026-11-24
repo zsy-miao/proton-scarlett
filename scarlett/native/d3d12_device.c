@@ -50,6 +50,8 @@ struct xbox_device {
     struct color_resource *colors; /* weak registry under descriptor_lock */
 #ifdef SCARLETT_STAGED_PLACED
     struct placed_backing *placed; /* weak, guarded by descriptor_lock */
+    HANDLE pool_section;
+    ID3D12Resource *pool_buffer;
 #endif
     UINT64 descriptor_serial;
     struct frame_clock clock;
@@ -110,6 +112,10 @@ static ULONG WINAPI device_release(IUnknown *iface)
     if (!refs) {
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
         frame_clear(&device->clock);
+#ifdef SCARLETT_STAGED_PLACED
+        if (device->pool_buffer) ID3D12Resource_Release(device->pool_buffer);
+        if (device->pool_section) CloseHandle(device->pool_section);
+#endif
 #endif
         ID3D12Device_Release(device->host);
         HeapFree(GetProcessHeap(), 0, device);
