@@ -21,7 +21,7 @@ struct startup_list {
     BOOL single_use,consumed;
     struct startup_list *ordered_next;
     struct adapter *ordered_queue;
-    IUnknown *ordered_id,*ordered_lease,*primary_key;
+    IUnknown *ordered_id,*ordered_lease;
 #endif
     struct om_views om;
     struct xs_clear_source previous_vb,vb,source;
@@ -125,7 +125,6 @@ static ULONG WINAPI sl_release(IUnknown *i)
         }
         ReleaseSRWLockExclusive(&a->submit_lock);
         if (!refs) {
-            if (s->primary_key) IUnknown_Release(s->primary_key);
             IUnknown_Release(s->ordered_lease);
             IUnknown_Release(&a->iface);
         }

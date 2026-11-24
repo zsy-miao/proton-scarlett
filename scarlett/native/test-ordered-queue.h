@@ -40,7 +40,7 @@ HRESULT xs_ordered_record(IUnknown *iface,HRESULT (*record)(IUnknown *,void *),v
     if (hr==S_OK) hr=ordered_ready(s);
     if (hr==S_OK && (primary_key || s->primary)) {
         ID3D12Resource *named=xs_retain_primary(s->pool_owner,primary_key);
-        if (!named || named!=s->primary) hr=E_INVALIDARG;
+        if (!named || named!=s->primary || primary_key!=s->primary_pin) hr=E_INVALIDARG;
         if (named) ID3D12Resource_Release(named);
     }
     /* Guest inline cache is the only writable ABI page on a closed pooled list. */
@@ -50,7 +50,6 @@ HRESULT xs_ordered_record(IUnknown *iface,HRESULT (*record)(IUnknown *,void *),v
     if (hr!=S_OK) {IUnknown_Release(list);return hr;}
     s->ordered_queue=a;IUnknown_AddRef(iface);
     s->ordered_id=list;s->ordered_lease=lease;IUnknown_AddRef(lease);
-    if ((s->primary_key=primary_key)) IUnknown_AddRef(primary_key);
     AcquireSRWLockExclusive(&a->submit_lock);
     s->ordered_next=a->ordered;a->ordered=s;
     ReleaseSRWLockExclusive(&a->submit_lock);
