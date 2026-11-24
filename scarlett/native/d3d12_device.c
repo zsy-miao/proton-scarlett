@@ -1088,7 +1088,7 @@ HRESULT xs_pin_attachment_pair(IUnknown *owner,ID3D12Device *hd,const D3D12_TEXT
 done:
     ReleaseSRWLockShared(&d->descriptor_lock);return hr;
 }
-HRESULT xs_copy_clear_source(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,struct xs_clear_source *out)
+static HRESULT copy_pass_span(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,UINT offset,UINT bytes,D3D12_RESOURCE_STATES after,IUnknown *expected,struct xs_clear_source *out)
 {
 #ifdef SCARLETT_STAGED_PLACED
     if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return E_INVALIDARG;
@@ -1097,26 +1097,47 @@ HRESULT xs_copy_clear_source(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsComm
     struct placed_backing *p=NULL;
     AcquireSRWLockShared(&d->descriptor_lock);
     for(struct placed_backing *it=d->placed;it;it=it->next){
-        if(va-it->guest_va!=0x3ff80 || !it->matches(it->capture,(void*)it->guest_va))continue;
+        if(va-it->guest_va!=offset || !it->matches(it->capture,(void*)it->guest_va))continue;
         if(p){p=NULL;break;}p=it;
     }
+    if(p && expected && expected!=&p->title->iface)p=NULL;
     if(p)placed_addref(&p->title->iface);
     ReleaseSRWLockShared(&d->descriptor_lock);
     if(!p)return E_INVALIDARG;
     D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
-    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=100,.Height=1,.DepthOrArraySize=1,
+    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=bytes,.Height=1,.DepthOrArraySize=1,
         .MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
     ID3D12Resource *dst=NULL;struct XsPlacedCapture *hold=NULL;
     HRESULT hr=ID3D12Device_CreateCommittedResource(hd,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&dst);
-    if(SUCCEEDED(hr))hr=p->copy(p->capture,0x3ff80,100,(ID3D12GraphicsCommandList*)list,dst,0,&hold);
+    if(SUCCEEDED(hr))hr=p->copy(p->capture,offset,bytes,(ID3D12GraphicsCommandList*)list,dst,0,&hold);
     if(FAILED(hr)){if(dst)ID3D12Resource_Release(dst);placed_release(&p->title->iface);return hr;}
     p->drop(hold); /* out->placed owns the same capture through discard/retirement. */
-    D3D12_RESOURCE_BARRIER b={.Transition={dst,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE}};
+    D3D12_RESOURCE_BARRIER b={.Transition={dst,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_COPY_DEST,after}};
     ID3D12GraphicsCommandList7_ResourceBarrier(list,1,&b);
     *out=(struct xs_clear_source){&p->title->iface,dst};return S_OK;
 #else
-    (void)owner;(void)hd;(void)list;(void)va;(void)out;return E_NOTIMPL;
+    (void)owner;(void)hd;(void)list;(void)va;(void)offset;(void)bytes;(void)after;(void)expected;(void)out;return E_NOTIMPL;
 #endif
+}
+HRESULT xs_copy_clear_source(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,struct xs_clear_source *out)
+{
+    return copy_pass_span(owner,hd,list,va,0x3ff80,100,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,NULL,out);
+}
+HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,IUnknown *expected,struct xs_clear_source *out)
+{
+    if(!expected)return E_INVALIDARG;
+    return copy_pass_span(owner,hd,list,va,0x3ef30,4080,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,expected,out);
+}
+/* The active heap is pinned by this recording; no title descriptor memory is read. */
+HRESULT xs_b27_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT *slot)
+{
+    if(!active || active->lpVtbl!=&desc_vtbl.unknown)return E_INVALIDARG;
+    struct desc_heap *h=CONTAINING_RECORD(active,struct desc_heap,iface);
+    if(!h->owner || owner!=&h->owner->iface || !h->visible || !h->tail || h->stride!=32 ||
+        h->count!=DESC_STARTUP_COUNT || handle<h->start)return E_INVALIDARG;
+    UINT64 offset=handle-h->start;
+    if(offset%32 || offset/32>=DESC_BANK)return E_INVALIDARG;
+    *slot=(UINT)(offset/32);return S_OK;
 }
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
 {

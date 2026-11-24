@@ -18,7 +18,9 @@ _Static_assert(offsetof(struct direct_prefix,put)==0x18 && offsetof(struct direc
 #include "../om-views.h"
 struct startup_list {
     struct om_views om;
-    struct xs_clear_source source;
+    struct xs_clear_source vb,source;
+    /* Borrow the recording's strong heap and root references. Only root parameter 0 is admitted. */
+    struct {IUnknown *heap,*root;UINT slot;} b27;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     enum batch_phase phase;
     IUnknown *sync_owner;
@@ -85,6 +87,11 @@ static void bind_source(ID3D12GraphicsCommandList7 *host,const struct xs_clear_s
 {
     ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView(host,0,ID3D12Resource_GetGPUVirtualAddress(p->buffer));
 }
+static void bind_colour_vb(ID3D12GraphicsCommandList7 *host,const struct xs_clear_source *vb)
+{
+    D3D12_VERTEX_BUFFER_VIEW view={ID3D12Resource_GetGPUVirtualAddress(vb->buffer),4080,24};
+    ID3D12GraphicsCommandList7_IASetVertexBuffers(host,0,1,&view);
+}
 static void drop_split(struct startup_list *s)
 {
     drop_marker(s->post); s->post=NULL;
@@ -99,7 +106,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
-        drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
+        memset(&s->b27,0,sizeof s->b27);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
         drop_split(s); drop_timestamp(s->stamp);
         drop_marker(s->marker);
         if (s->primary) ID3D12Resource_Release(s->primary);
@@ -194,7 +201,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
-    drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
+    memset(&s->b27,0,sizeof s->b27);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
     AcquireSRWLockExclusive(&s->borrow_lock);
     if(s->prior_pso){IUnknown_Release(s->prior_pso);s->prior_pso=NULL;}
     if(s->prior_root){IUnknown_Release(s->prior_root);s->prior_root=NULL;}
@@ -243,6 +250,7 @@ static HRESULT bind_initial_heaps(struct startup_list *s,UINT count,IUnknown *co
     if (s->heaps[0] && memcmp(s->heaps,pair,sizeof pair)) return E_NOTIMPL;
     HRESULT hr=xs_initial_heap_banks(s->pool_owner,pair,banks);
     if (FAILED(hr)) return hr;
+    if(s->b27.heap && s->b27.heap!=pair[0])memset(&s->b27,0,sizeof s->b27);
     if (!s->heaps[0]) for (unsigned i=0;i<2;i++) { IUnknown_AddRef(pair[i]); s->heaps[i]=pair[i]; }
     ID3D12GraphicsCommandList7_SetDescriptorHeaps(s->host,2,banks);
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
@@ -354,6 +362,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr) && s->full_vp) ID3D12GraphicsCommandList7_RSSetViewports(tail,1,&clear_viewport);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
     if (SUCCEEDED(hr) && !s->prior_pso && s->source.buffer)bind_source(tail,&s->source);
+    if(SUCCEEDED(hr) && s->vb.buffer)bind_colour_vb(tail,&s->vb);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
         if (SUCCEEDED(hr)) ID3D12GraphicsCommandList7_SetDescriptorHeaps(tail,2,banks);
@@ -469,6 +478,7 @@ static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT fla
 #endif
 enum { XS_RECTLIST=17 };
 static void recorded_direct_state(struct startup_list *s);
+static BOOL pending_colour_inputs(struct startup_list *s);
 static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER_GROUP *g)
 {
     if(!s->pending_470 || !s->depth_zero_pending || s->host_exposed)return E_NOTIMPL;
@@ -479,8 +489,7 @@ static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER
      * guest descriptor slots; do not resolve either slot again here. */
     if(s->attachments[0].identity){
         const struct xs_attachment_pin *rt=&s->attachments[0];
-        if(!s->clear4_drew || s->guest_topology!=XS_RECTLIST || !s->prior_pso || !s->prior_root ||
-           s->graphics_identity!=s->required_root || !s->graphics_identity || s->rt_roundtripped ||
+        if(!pending_colour_inputs(s) || !s->vb.buffer || s->rt_roundtripped ||
            !s->om.heap[0] || !s->om.heap[1] ||
            !rt->host || rt->host==s->primary)return E_NOTIMPL;
         for(UINT k=0;k<2;k++)if(b[k].pResource!=(ID3D12Resource*)rt->identity ||
@@ -563,7 +572,7 @@ static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER
 /* shortcut: first full transparent-black clear after this recording's primary transition. */
 static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
 {
-    if (s->prior_pso || s->pending_470) return E_ACCESSDENIED;
+    if (s->b27.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     if (!s->primary || s->closed || FAILED(s->error) || s->host_exposed || s->primary_cleared || count || rects) return E_NOTIMPL;
     UINT bits[4]; SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),color,bits,sizeof bits,&n) || n!=sizeof bits) return E_POINTER;
@@ -680,6 +689,7 @@ static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
         if(!s->graphics_root)return E_INVALIDARG;
         s->graphics_identity=identity;
     }
+    if(s->b27.heap && s->b27.root!=identity)memset(&s->b27,0,sizeof s->b27);
     ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,s->graphics_root);
     if(!s->prior_pso && s->source.buffer)bind_source(s->host,&s->source);
     recorded_direct_state(s);return S_OK;
@@ -825,6 +835,40 @@ static void WINAPI pool_clear4_draw(IUnknown *i,UINT n,UINT instances,UINT first
 {
     if(FAILED(record_clear4_draw(sl(i),n,instances,first,base)))xs_stop();
 }
+/* Initial mode-15 inputs are flushed with the previous draw pinned, before explicit +c8. */
+static BOOL pending_colour_inputs(struct startup_list *s)
+{
+    return open_direct_state(s) && s->clear4_drew && s->prior_pso && s->prior_root && s->pending_470 &&
+        s->guest_topology==XS_RECTLIST && s->graphics_root && s->graphics_identity==s->required_root &&
+        s->source.placed && !s->bound && !s->pipeline;
+}
+static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *input)
+{
+    if(!pending_colour_inputs(s)||slot||count!=1||s->vb.buffer)return E_NOTIMPL;
+    D3D12_VERTEX_BUFFER_VIEW v;SIZE_T got;if(!ReadProcessMemory(GetCurrentProcess(),input,&v,sizeof v,&got)||got!=sizeof v)return E_POINTER;
+    if(v.SizeInBytes!=4080 || v.StrideInBytes!=24)return E_NOTIMPL;
+    HRESULT hr=xs_copy_colour_vb(s->pool_owner,s->device,s->host,v.BufferLocation,s->source.placed,&s->vb);
+    if(SUCCEEDED(hr)){bind_colour_vb(s->host,&s->vb);recorded_direct_state(s);}return hr;
+}
+static void WINAPI pool_colour_vb(IUnknown *i,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *v)
+{
+    if(FAILED(record_colour_vb(sl(i),slot,count,v)))xs_stop();
+}
+static HRESULT record_b27(struct startup_list *s,UINT index,UINT64 handle)
+{
+    if(!pending_colour_inputs(s) || !s->rt_roundtripped || index ||
+        !s->vb.buffer || s->vb.placed!=s->source.placed || !s->heaps[0])return E_NOTIMPL;
+    UINT slot;HRESULT hr=xs_b27_slot(s->pool_owner,s->heaps[0],handle,&slot);
+    if(SUCCEEDED(hr)){
+        s->b27.heap=s->heaps[0];s->b27.root=s->graphics_identity;s->b27.slot=slot;
+        recorded_direct_state(s);
+    }
+    return hr;
+}
+static void WINAPI pool_b27(IUnknown *i,UINT index,UINT64 handle)
+{
+    if(FAILED(record_b27(sl(i),index,handle)))xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static void WINAPI pool_470(IUnknown *,UINT64);
 static const struct {
@@ -835,8 +879,8 @@ static const struct {
     __typeof__(&pool_topology) topology;
     __typeof__(&pool_vp) vp;__typeof__(&pool_rect) rect; __typeof__(&pool_blend) blend; __typeof__(&pool_stencil) stencil; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
-    xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[9]; __typeof__(&pool_source) source; xs_stop_fn gap168[2];
-    __typeof__(&pool_index) index; xs_stop_fn gap180[2];__typeof__(&pool_om) om;xs_stop_fn gap198;
+    xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118; __typeof__(&pool_b27) b27; xs_stop_fn gap128[7]; __typeof__(&pool_source) source; xs_stop_fn gap168[2];
+    __typeof__(&pool_index) index; __typeof__(&pool_colour_vb) vb;xs_stop_fn gap188;__typeof__(&pool_om) om;xs_stop_fn gap198;
     __typeof__(&sl_primary_clear) clear;
     xs_stop_fn gap1a8[17];__typeof__(&pool_bounds) bounds;
     __typeof__(&sl_marker) marker;
@@ -853,8 +897,9 @@ static const struct {
     xs_stop_fn gap460[2]; __typeof__(&pool_470) state470; xs_stop_fn gap478[3];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {xs_stop,xs_stop},pool_clear4_draw,{[0 ... 6]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 8]=xs_stop},pool_source,{xs_stop,xs_stop},pool_index,{xs_stop,xs_stop},pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {xs_stop,xs_stop},pool_clear4_draw,{[0 ... 6]=xs_stop}, pool_topology,pool_vp,pool_rect,pool_blend,pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root,xs_stop,pool_b27,{[0 ... 6]=xs_stop},pool_source,{xs_stop,xs_stop},pool_index,pool_colour_vb,xs_stop,pool_om,xs_stop, sl_primary_clear, {[0 ... 16]=xs_stop},pool_bounds, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),b27)==0x120 && offsetof(__typeof__(pool_vtbl),vb)==0x180,"colour inputs ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),draw)==0x60,"#4 draw ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),blend)==0xb8,"blend factor ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),om)==0x190,"OM ABI");
@@ -1079,7 +1124,7 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
         (vt!=&sl_vtbl.prefix && vt!=&pool_vtbl.prefix)) return E_INVALIDARG;
     struct startup_list *s = sl(list);
     if (!s->closed || FAILED(s->error)) return E_INVALIDARG;
-    if (s->prior_pso || s->pending_470) return E_ACCESSDENIED;
+    if (s->b27.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;
     q->lpVtbl->GetDesc(q, &desc);
     ID3D12Device *device;

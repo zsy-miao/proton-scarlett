@@ -1,4 +1,18 @@
 // Fixture-only native recorder for checking the two barriers captured from the guest list.
+#ifdef TEST_INLINE_B27
+extern "C" {
+__declspec(dllimport) void *WINAPI XMemAllocDefault(SIZE_T,UINT64);
+__declspec(dllimport) void WINAPI XMemFreeDefault(void*,UINT64);
+static BYTE *inline_arena;
+static void *WINAPI take_inline(SIZE_T n,UINT64 attr){
+    if(n==0x130000ull*32 && attr==0x800004 && inline_arena)return inline_arena;
+    return XMemAllocDefault(n,attr);
+}
+static void WINAPI drop_inline(void *v,UINT64 a){if(v!=inline_arena)XMemFreeDefault(v,a);}
+__declspec(dllexport) struct {decltype(&take_inline) a;decltype(&drop_inline) f;} __XMemAllocationHooks__={take_inline,drop_inline};
+IUnknown *inline_pair[2];
+}
+#endif
 extern "C" BOOL test_pair_record(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,ID3D12GraphicsCommandList7*,ID3D12Resource**,IUnknown**,UINT64,IUnknown*);
 extern "C" BOOL test_source_lifetime(ID3D12Device*,IUnknown*,IUnknown*,UINT64,IUnknown*,void(*)(void*),void*);
 extern "C" IUnknown *test_texture(IUnknown *,ID3D12Resource *,BOOL);
@@ -46,10 +60,18 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     UINT64 va=(UINT64)control.at[2]+0x3ff80;ComPtr<IUnknown> placed,duplicate;
     auto make_arena=[&](ComPtr<IUnknown>& out){HR(((Place)vt[0x428/8])(owner,(UINT64)control.at[2],&arena,UINT_MAX,nullptr,IID_ID3D12Resource,(void**)out.GetAddressOf()));};
     make_arena(placed);make_arena(duplicate);
+#ifdef TEST_INLINE_B27
+    inline_arena=control.at[0];
+    ComPtr<IUnknown> banks[2];
+    UINT shapes[][4]={{0,0x130000,1,1},{1,128,1,1}};
+    for(UINT j=0;j<2;j++)HR(((Make)vt[0x70/8])(owner,shapes[j],IID_ID3D12DescriptorHeap,(void**)banks[j].GetAddressOf()));
+    inline_pair[0]=banks[0].Get();inline_pair[1]=banks[1].Get();
+#endif
     control.write({.125f,.375f,.625f,.875f});memcpy((void*)va,control.record(),100);MemoryBarrier();
     CK(test_pair_record(d,owner,pso,root,ids,slots,l.Get(),images,sid,va,duplicate.Detach()));
     memset((void*)va,0x11,100);
-    auto replace=[](void *arg){auto c=(ClearSourceControl*)arg;BYTE *src=c->at[2]+0x3ff80;for(UINT k=0;k<100;k++)src[k]=(BYTE)(7+3*k);MemoryBarrier();c->replace();memset(src,0xcd,100);MemoryBarrier();};
+    auto replace=[](void *arg){auto c=(ClearSourceControl*)arg;BYTE *src=c->at[2]+0x3ff80;
+        for(UINT k=0;k<100;k++){src[k]=(BYTE)(7+3*k);}MemoryBarrier();c->replace();memset(src,0xcd,100);MemoryBarrier();};
     CK(test_source_lifetime(d,owner,other,va,placed.Detach(),replace,&control));
     for(UINT k=0;k<2;k++){b[k].SyncAfter=D3D12_BARRIER_SYNC_COPY;b[k].LayoutAfter=D3D12_BARRIER_LAYOUT_COPY_SOURCE;b[k].AccessAfter=D3D12_BARRIER_ACCESS_COPY_SOURCE;}l->Barrier(1,&g);
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;

@@ -4,6 +4,12 @@ static BOOL guarded_depth_slots(IUnknown *list)
      * Check the actual guest table (including newer console slots), not a mock PSO. */
     for (size_t off=0x60;off<sizeof(pool_vtbl);off+=sizeof(void *)) {
         switch (off) {
+        case 0x120:
+            if(pool_vtbl.b27!=pool_b27 || SUCCEEDED(record_b27(sl(list),0,0)))return FALSE;
+            continue;
+        case 0x180:
+            if(pool_vtbl.vb!=pool_colour_vb || SUCCEEDED(record_colour_vb(sl(list),0,1,NULL)))return FALSE;
+            continue;
         case 0x60: {
             __typeof__(&pool_clear4_draw) fn;memcpy(&fn,(const BYTE *)list->lpVtbl+off,sizeof fn);
             if(fn!=pool_clear4_draw || SUCCEEDED(record_clear4_draw(sl(list),3,1,0,0)))return FALSE;

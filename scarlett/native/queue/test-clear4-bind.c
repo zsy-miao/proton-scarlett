@@ -62,6 +62,27 @@ static HRESULT probe_create(ID3D12Device *d,UINT node,D3D12_COMMAND_LIST_TYPE t,
 #undef ID3D12GraphicsCommandList7_SetPipelineState
 #define ID3D12GraphicsCommandList7_SetPipelineState probe_pso
 #endif
+static UINT vb_calls;static ID3D12GraphicsCommandList7 *vb_rec;static D3D12_VERTEX_BUFFER_VIEW last_vb;
+static void probe_vb(ID3D12GraphicsCommandList7 *l,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *v){if(!slot && count==1){++vb_calls;vb_rec=l;last_vb=*v;}ID3D12GraphicsCommandList7_IASetVertexBuffers(l,slot,count,v);}
+#undef ID3D12GraphicsCommandList7_IASetVertexBuffers
+#define ID3D12GraphicsCommandList7_IASetVertexBuffers probe_vb
+#ifdef TEST_INLINE_B27
+extern IUnknown *inline_pair[2];
+static ID3D12DescriptorHeap *bank_pair[2];static UINT tables;
+static ID3D12GraphicsCommandList7 *table_rec;
+static D3D12_GPU_DESCRIPTOR_HANDLE table_gpu;
+static void probe_pair(ID3D12GraphicsCommandList7 *l,UINT n,ID3D12DescriptorHeap *const *banks){
+    if(n==2)memcpy(bank_pair,banks,sizeof bank_pair);
+    ID3D12GraphicsCommandList7_SetDescriptorHeaps(l,n,banks);
+}
+static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GPU_DESCRIPTOR_HANDLE g){
+    if(!index){tables++;table_rec=l;table_gpu=g;}ID3D12GraphicsCommandList7_SetGraphicsRootDescriptorTable(l,index,g);
+}
+#undef ID3D12GraphicsCommandList7_SetDescriptorHeaps
+#define ID3D12GraphicsCommandList7_SetDescriptorHeaps probe_pair
+#undef ID3D12GraphicsCommandList7_SetGraphicsRootDescriptorTable
+#define ID3D12GraphicsCommandList7_SetGraphicsRootDescriptorTable probe_table
+#endif
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
@@ -197,6 +218,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],FALSE));
     s->marker=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *s->marker);struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);REQUIRE(s->marker && post);s->marker->refs=1;
 #ifdef TEST_LATE_COLOUR
+    D3D12_VERTEX_BUFFER_VIEW v={va-0x1050,4080,24};REQUIRE(FAILED(record_colour_vb(s,0,1,&v)));
     UINT old_psos=psos,old_roots=roots;IUnknown *colour=late_root_id(FALSE);
     REQUIRE(FAILED(record_graphics_root(s,late_root_id(TRUE))) && !s->prior_pso);
     UINT old_creates=creates;struct xs_clear_source held=s->source;
@@ -204,21 +226,49 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     pool_vtbl.root(l,colour);REQUIRE(s->prior_pso==pso && s->prior_root==root && s->graphics_identity==colour && !s->pipeline && !s->bound && roots==old_roots+1 && seen_rec==s->host && seen_root==s->graphics_root && FAILED(record_clear4(s,pso)));
     REQUIRE(s->guest_topology==17 && !memcmp(&held,&s->source,sizeof held) && binds==1 &&
             FAILED(record_clear4_draw(s,3,1,0,0)) && FAILED(record_470(l,UINT64_MAX)));
+    REQUIRE(FAILED(record_colour_vb(s,1,1,&v)) && FAILED(record_colour_vb(s,0,2,&v)));v.BufferLocation++;REQUIRE(FAILED(record_colour_vb(s,0,1,&v)));v.BufferLocation--;
+    v.SizeInBytes=72;REQUIRE(FAILED(record_colour_vb(s,0,1,&v)));v.SizeInBytes=4080;pool_vtbl.vb(l,0,1,&v);REQUIRE(s->vb.placed==s->source.placed && s->vb.buffer && FAILED(record_colour_vb(s,0,1,&v)));
+#ifdef TEST_INLINE_B27
+    UINT64 *slot=(UINT64*)(va-0x1080);UINT64 handle=(SIZE_T)slot;
+    memset(slot,0,32);MemoryBarrier();
+    REQUIRE(FAILED(record_b27(s,0,handle)));pool_vtbl.bind(l,2,inline_pair);
+    ID3D12DescriptorHeap *orig[2];memcpy(orig,bank_pair,sizeof orig);
+    REQUIRE(FAILED(record_b27(s,0,handle)));
+#endif
+    REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],TRUE));
+#ifdef TEST_INLINE_B27
+    REQUIRE(FAILED(record_b27(s,1,handle)) && FAILED(record_b27(s,0,handle+1)) && FAILED(record_b27(s,0,UINT64_MAX)));
+    pool_vtbl.b27(l,0,handle+32);REQUIRE(s->b27.slot==368505);
+    pool_vtbl.b27(l,0,handle);REQUIRE(s->b27.slot==368504 && s->b27.heap==inline_pair[0] && s->b27.root==colour && !tables);
+    REQUIRE(FAILED(record_b27(s,0,0)) && s->b27.slot==368504 && !s->bound);
+    memset(slot,0xa5,32);MemoryBarrier(); // a volatile rewrite must not leave a materialized CBV
+
+#endif
 #endif
     REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
     REQUIRE(s->guest_topology==17 && topo_calls==nia+2 && ia_list==s->host && ia_list!=s->head && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
-    REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],s->prior_pso!=NULL) && !xs_list_host(l));
+    REQUIRE(!xs_list_host(l));
     REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));sample_quad(s->host,images[0],quad_rb,3);
     REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
 #ifdef TEST_LATE_COLOUR
     REQUIRE(binds==1 && src_host==s->head && roots==old_roots+2 && seen_rec==s->host && seen_root==s->graphics_root && !s->pipeline && psos==old_psos);
+    REQUIRE(vb_calls==2 && vb_rec==s->host && last_vb.BufferLocation==ID3D12Resource_GetGPUVirtualAddress(s->vb.buffer) && last_vb.BufferLocation!=v.BufferLocation && last_vb.SizeInBytes==4080 && last_vb.StrideInBytes==24);
+#ifdef TEST_INLINE_B27
+    REQUIRE(!tables && s->b27.slot==368504 && s->b27.heap==inline_pair[0] && s->b27.root==colour &&
+        bank_pair[0]==orig[0] && bank_pair[1]==orig[1] && slot[0]==0xa5a5a5a5a5a5a5a5ull);
+#endif
+    puts("PASS +180 exact VB: placed owner, guarded view/extent, private host address replayed on tail");
     REQUIRE(creates==old_creates+1 && !last_initial &&
             s->clear4_lanes==0xffff00000000ffffULL && s->prior_pso==pso && s->prior_root==root &&
             !memcmp(&held,&s->source,sizeof held));
     IUnknown *ready=publish_late();REQUIRE(ready && !s->pipeline && !s->bound && !xs_list_host(l));
     pool_vtbl.pipeline(l,ready);REQUIRE(s->bound==ready && psos==old_psos+1 && seen_rec==s->host && s->required_root==colour && FAILED(record_graphics_root(s,root)));
+#ifdef TEST_INLINE_B27
+    REQUIRE(!tables && s->b27.heap==inline_pair[0] && s->b27.root==colour && s->b27.slot==368504 && FAILED(record_b27(s,0,handle)));
+    puts("PASS logical b27: empty descriptor accepted with NULL PSO, rebind/rewrite, original heaps on split, explicit PSO leaves table unresolved");
+#endif
     REQUIRE(s->pipeline!=diag && s->pipeline!=full && FAILED(record_470(l,UINT64_MAX)) && FAILED(record_clear4_draw(s,3,1,0,0)) &&
             s->prior_pso==pso && s->prior_root==root && topo_calls==nia+2 && binds==1);
 #else
@@ -236,6 +286,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->guest_topology==17 && !can_set_topology(s,17));
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
 #ifdef TEST_LATE_COLOUR
+    REQUIRE(!s->b27.heap && !s->vb.placed && !s->vb.buffer);
     REQUIRE(!s->prior_pso && !s->prior_root && !s->graphics_identity && !s->pipeline && !s->bound);puts("PASS controlled late worker: root on current and split recorder, source not rebound under CBV table, publication alone ineffective, explicit PSO on tail, denied submit and reset");
 #endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
@@ -260,7 +311,8 @@ BOOL test_source_lifetime(ID3D12Device *hd,IUnknown *owner,IUnknown *other,UINT6
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && xs_shared_fence(hd,&gate)==S_OK && xs_shared_fence(hd,&done)==S_OK);
     REQUIRE(xs_queue_wait(q,gate,1)==S_OK && checked_startup_submit(q,1,&l,0,0)==S_OK && ID3D12CommandQueue_Signal(as_queue(q),as_fence(done),1)==S_OK);
     REQUIRE(sl_reset(l,b,NULL,0)==S_OK && !s->source.buffer && !ID3D12Fence_GetCompletedValue(as_fence(done)));
-    replace(arg);REQUIRE(FAILED(xs_copy_clear_source(owner,hd,s->host,va,&s->source)) && IUnknown_Release(placed)==1);
+    replace(arg);REQUIRE(FAILED(xs_copy_clear_source(owner,hd,s->host,va,&s->source)));
+    REQUIRE(IUnknown_Release(placed)==1);
     IUnknown_Release(l);HANDLE e=CreateEventW(NULL,FALSE,FALSE,NULL);REQUIRE(e && xs_fence_event(done,1,e)==S_OK && xs_cpu_signal(gate,1)==S_OK && WaitForSingleObject(e,10000)==WAIT_OBJECT_0);
     REQUIRE(SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&bytes)));for(UINT k=0;k<128;k++)REQUIRE(bytes[k]==(k>=12 && k<112?(BYTE)(7+3*(k-12)):0xe7));ID3D12Resource_Unmap(rb,0,NULL);
     CloseHandle(e);ID3D12Resource_Release(rb);IUnknown_Release(q);IUnknown_Release(gate);IUnknown_Release(done);IUnknown_Release(a);IUnknown_Release(b);

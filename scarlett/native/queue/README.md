@@ -818,3 +818,24 @@ In a separate AMD diagnostic the destination was in the active visible
 heap, but eleven nonvisible heaps met the producer search criteria.
 The candidate rejected the bind before its transactional read. The colour
 PSO was still null. No draw or skip after this call was observed.
+
+### First composite vertex bind
+
+The `+120` setter now records the selected slot in the pinned active heap.
+It reads no descriptor bytes and needs no CPU transaction. The focused
+fixture passed on both adapters, including an empty slot, a later rewrite,
+split replay and a delayed pipeline bind.
+
+Both ordinary runs then stopped at a **second** vertex-buffer bind, list
+`+180`, return `+32966`. The caller chain `+1263f0 ← +4fd1e7b` puts this
+call in the alternate composite pass. On each GPU it was the first
+process and recorder stop. Each recorded one offscreen clear, issued
+tokens 1 and 2 and presented only token 1 (display count 0→1).
+
+In the separate AMD diagnostic, the colour-table setter returned `S_OK`.
+The game tested the pipeline it had selected for the preceding colour
+rectangle: it was still null, so the game **skipped** that draw and entered
+the composite. The same list requested a new 4,080-byte vertex range
+at `0x1143df10` while its first range at `0x1143ef30` was still pinned.
+The recorder rejected that replacement. Neither the composite's output
+generation nor a rendering submission for token 2 has been observed.
