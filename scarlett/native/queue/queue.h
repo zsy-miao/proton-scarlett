@@ -14,7 +14,8 @@ ID3D12CommandSignature *xs_signature_host(IUnknown *iface);
 HRESULT xs_allocator(ID3D12Device *host, D3D12_COMMAND_LIST_TYPE type, IUnknown **out);
 /* Borrowed; for host list constructors only. Caller holds the Xbox reference. */
 ID3D12CommandAllocator *xs_allocator_host(IUnknown *allocator, D3D12_COMMAND_LIST_TYPE type);
-HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *allocator, IUnknown **out);
+extern const IID xs_sync_list_id, xs_pool_list_id;
+HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *allocator, BOOL pooled, IUnknown **out);
 /* Borrowed recorder, for internal typed command translation only. */
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *list);
 #endif

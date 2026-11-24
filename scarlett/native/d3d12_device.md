@@ -131,6 +131,31 @@ at `0x17f6d34` uses `(type,6,1,0)`, requests a different list IID
 `{5b160d0f-ac1b-4185-8ba8-b3ae42a5a455}`, and closes the result at
 `0x17f6d48`. Neither description establishes the semantics of words 1–3.
 
+**Pooled generation.** Its IID matches desktop `IID_ID3D12GraphicsCommandList`
+byte-for-byte, but the pooled Reset slot and inline packet ABI are not the
+desktop interface. This IID accepts only `(Direct|Compute,6,1,0)`,
+null initial state and a matching allocator. The title constructs a pool of
+512 Direct entries (`2478d11`) and 64 Compute entries (`2478d6f`).
+`17f6ba0` creates one allocator per pool; its loop passes that allocator to
+the constructor, immediately closes each recording list, stores the pointer
+in a 16-byte title-owned entry, and releases the seed allocator at `17f6c65`.
+Thus each list owns a separate real recorder and a reference to its current
+allocator. Checkout (`2474c37`–`2474cce`) resets the entry's list with a new
+allocator and two zeros. Teardown (`247aae0`) releases each entry's pointer.
+The pooled vtable exposes IUnknown, Close `+0x48`, and Reset `+0x458` only;
+it does not advertise the startup IID or its synchronization slots.
+
+The pool entry is **not** the list's object layout. On Compute checkout the
+list pointer is installed at `context+0x12348`; `248c705` and `248c712`
+write vectors at **list** `+0x544` and `+0x554`, and `248c71a` compares a
+cursor at `+0x18` against a limit at `+0x30`. Those recording operations
+need a packet translator. The adapter ends its accessible storage at the
+vtable pointer and reserves an inaccessible page immediately after it:
+these observed inline accesses fault rather than modifying internal state
+or emitting untranslated packets. The linked test submits a checked-out,
+closed list and waits for GPU retirement before allocator reset; both PE
+tests exercise full-sized pool construction, COM identity and teardown.
+
 #### What the two pre-Close calls consume
 
 All four initialization call sites reload RCX from the list output at

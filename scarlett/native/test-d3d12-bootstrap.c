@@ -84,6 +84,57 @@ typedef void (WINAPI *Sync)(IUnknown *, UINT, UINT, UINT64, UINT64);
 typedef HRESULT (WINAPI *ResetList)(IUnknown *, IUnknown *, IUnknown *, UINT);
 typedef void (WINAPI *Submit)(IUnknown *, UINT, IUnknown *const *, UINT64, UINT);
 
+static int test_pool(IUnknown *device, IUnknown *queue, UINT type)
+{
+    static const IID pooled = {0x5b160d0f,0xac1b,0x4185,{0x8b,0xa8,0xb3,0xae,0x42,0xa5,0xa4,0x55}};
+    CHECK(IsEqualIID(&pooled,&IID_ID3D12GraphicsCommandList));
+    IUnknown *items[512], *seed, *next;
+    UINT count = type ? 64 : 512;
+    UINT desc[] = {type,6,1,0};
+    void *p;
+    Allocator alloc = METHOD(device,0x48,Allocator);
+    List make = METHOD(device,0x248,List);
+    CHECK(alloc(device,type,&IID_ID3D12CommandAllocator,(void **)&seed) == S_OK);
+    CHECK(make(device,desc,seed,NULL,&list_id,&p) == E_NOTIMPL && !p);
+    desc[1] = 2;
+    CHECK(make(device,desc,seed,NULL,&pooled,&p) == E_NOTIMPL && !p);
+    desc[1] = 6;
+    for (UINT n=0;n<count;++n) {
+        CHECK(make(device,desc,seed,NULL,&pooled,(void **)&items[n]) == S_OK);
+        CHECK(METHOD(items[n],0x48,ResetAllocator)(items[n]) == S_OK);
+    }
+    IUnknown_Release(seed); /* Title releases its one factory reference after pool fill. */
+    IUnknown *l = items[count-1];
+    CHECK(l != items[0] && IUnknown_QueryInterface(l,&pooled,&p) == S_OK && p == l);
+    IUnknown_Release(l);
+    CHECK(IUnknown_QueryInterface(l,&IID_IUnknown,&p) == S_OK && p == l);
+    IUnknown_Release(l);
+    CHECK(IUnknown_QueryInterface(l,&list_id,&p) == E_NOINTERFACE && !p);
+    MEMORY_BASIC_INFORMATION mb;
+    CHECK(VirtualQuery((BYTE *)l+0x544,&mb,sizeof(mb)) && mb.State == MEM_RESERVE);
+    CHECK(alloc(device,type,&IID_ID3D12CommandAllocator,(void **)&next) == S_OK);
+    CHECK(METHOD(l,0x458,ResetList)(l,next,NULL,1) == E_NOTIMPL);
+    CHECK(METHOD(l,0x458,ResetList)(l,next,NULL,0) == S_OK);
+    CHECK(METHOD(l,0x48,ResetAllocator)(l) == S_OK);
+#ifdef XS_TEST_LINKED
+    IUnknown *f;
+    HANDLE event = CreateEventW(NULL,FALSE,FALSE,NULL);
+    CHECK(event && METHOD(device,0x120,Fence)(device,0,D3D12_FENCE_FLAG_SHARED,&IID_ID3D12Fence,(void **)&f)==S_OK);
+    METHOD(queue,0x118,Submit)(queue,1,&l,0,0);
+    CHECK(METHOD(queue,0x80,Signal)(queue,f,1ull<<40)==S_OK);
+    CHECK(xs_fence_event(f,1ull<<40,event)==S_OK && WaitForSingleObject(event,5000)==WAIT_OBJECT_0);
+    CloseHandle(event); IUnknown_Release(f);
+#else
+    (void)queue;
+#endif
+    CHECK(METHOD(next,0x40,ResetAllocator)(next)==S_OK);
+    for (UINT n=count;n;--n) CHECK(!IUnknown_Release(items[n-1]));
+    CHECK(!IUnknown_Release(next));
+    printf("PASS pooled %s: %u retained lists, shared seed, replacement allocator and teardown\n",
+            type ? "Compute" : "Direct", count);
+    return 0;
+}
+
 #ifdef XS_TEST_LINKED
 static HRESULT buffer(ID3D12Device *d, D3D12_HEAP_TYPE type, ID3D12Resource **out)
 {
@@ -198,6 +249,7 @@ int main(void)
     CHECK(extended(d, compute, &IID_ID3D12CommandQueue, (void **)&cq) == S_OK && cq != q);
     CHECK(METHOD(cq,0x80,Signal)(cq, f, 0x100000002ull) == S_OK);
     CHECK(!test_indexed(host, d, q, cq));
+    CHECK(!test_pool(d,q,0) && !test_pool(d,cq,2));
 #ifdef XS_TEST_LINKED
     /* Queue both sides of a dependency before opening the CPU gate. */
     const UINT64 n = 1ull << 42;
@@ -247,7 +299,8 @@ int main(void)
         CHECK(new_list(d, desc, a, NULL, &list_id, &p) == E_NOTIMPL && !p);
         desc[1] = 2;
         CHECK(new_list(d, desc, q, NULL, &list_id, &p) == E_INVALIDARG && !p);
-        CHECK(new_list(d, desc, a, NULL, &IID_ID3D12GraphicsCommandList, &p) == E_NOINTERFACE && !p);
+        CHECK(new_list(d, desc, a, NULL, &IID_ID3D12GraphicsCommandList, &p) == E_NOTIMPL && !p);
+        CHECK(new_list(d, desc, a, NULL, &IID_ID3D12GraphicsCommandList7, &p) == E_NOINTERFACE && !p);
         desc[0] ^= 2;
         CHECK(new_list(d, desc, a, NULL, &list_id, &p) == E_INVALIDARG && !p);
         CHECK(!IUnknown_Release(a));

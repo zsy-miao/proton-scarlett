@@ -1,6 +1,6 @@
 /* Private to queue.c: only the recording and submission shapes used by the startup lists. */
 struct startup_list {
-    IUnknown iface;
+    void *reservation;
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
     ID3D12Device *device; /* Kept alive by host. */
@@ -8,7 +8,17 @@ struct startup_list {
     D3D12_COMMAND_LIST_TYPE type;
     HRESULT error;
     BOOL closed;
+    IUnknown iface; /* Last: pooled callers' inline packet fields are not host bookkeeping. */
 };
+_Static_assert(offsetof(struct startup_list,iface)+sizeof(IUnknown)==sizeof(struct startup_list),"interface at end");
+const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
+const IID xs_pool_list_id = {0x5b160d0f,0xac1b,0x4185,{0x8b,0xa8,0xb3,0xae,0x42,0xa5,0xa4,0x55}};
+
+static void sl_free(struct startup_list *s)
+{
+    if (s->reservation) VirtualFree(s->reservation, 0, MEM_RELEASE);
+    else HeapFree(GetProcessHeap(), 0, s);
+}
 static struct startup_list *sl(IUnknown *i) { return CONTAINING_RECORD(i, struct startup_list, iface); }
 static ULONG WINAPI sl_addref(IUnknown *i) { return InterlockedIncrement(&sl(i)->refs); }
 static ULONG WINAPI sl_release(IUnknown *i)
@@ -18,17 +28,17 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
-        HeapFree(GetProcessHeap(), 0, s);
+        sl_free(s);
     }
     return refs;
 }
 static HRESULT WINAPI sl_query(IUnknown *i, REFIID iid, void **out)
 {
-    static const IID id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
     if (!out) return E_POINTER;
     *out = NULL;
     if (!iid) return E_INVALIDARG;
-    if (!IsEqualIID(iid, &id) && !IsEqualIID(iid, &IID_IUnknown)) return E_NOINTERFACE;
+    if (!IsEqualIID(iid, sl(i)->reservation ? &xs_pool_list_id : &xs_sync_list_id)
+            && !IsEqualIID(iid, &IID_IUnknown)) return E_NOINTERFACE;
     sl_addref(i);
     *out = i;
     return S_OK;
@@ -108,7 +118,20 @@ static const struct sl_table sl_vtbl = {
     {[0 ... 120]=xs_stop}, sl_418, sl_420, {[0 ... 5]=xs_stop}, sl_reset
 };
 
-HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *alloc, IUnknown **out)
+/* Only these slots have been traced on the pool's returned pointer. */
+static const struct {
+    IUnknownVtbl prefix;
+    xs_stop_fn gap18[6];
+    __typeof__(&sl_close) close;
+    xs_stop_fn gap50[129];
+    __typeof__(&sl_reset) reset;
+} pool_vtbl = {
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 128]=xs_stop}, sl_reset
+};
+_Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
+        "pooled list ABI");
+
+HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *alloc, BOOL pooled, IUnknown **out)
 {
     if (!out) return E_POINTER;
     *out = NULL;
@@ -118,11 +141,26 @@ HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnk
     HRESULT hr = ID3D12Device_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS12, &options, sizeof(options));
     if (FAILED(hr)) return hr;
     if (!options.EnhancedBarriersSupported) return DXGI_ERROR_UNSUPPORTED;
-    struct startup_list *s = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*s));
-    if (!s) return E_OUTOFMEMORY;
+    struct startup_list *s;
+    if (pooled) {
+        /* +0x18/+0x30 are packet cursors, +0x544/+0x554 are inline writes. Trap until translated. */
+        SYSTEM_INFO info;
+        GetSystemInfo(&info);
+        BYTE *base = VirtualAlloc(NULL, 2 * info.dwPageSize, MEM_RESERVE, PAGE_NOACCESS);
+        if (!base) return E_OUTOFMEMORY;
+        if (!VirtualAlloc(base, info.dwPageSize, MEM_COMMIT, PAGE_READWRITE)) {
+            VirtualFree(base,0,MEM_RELEASE);
+            return E_OUTOFMEMORY;
+        }
+        s = (struct startup_list *)(base + info.dwPageSize - sizeof(*s));
+        s->reservation = base;
+    } else {
+        s = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*s));
+        if (!s) return E_OUTOFMEMORY;
+    }
     hr = ID3D12Device_CreateCommandList(device, 1, type, a, NULL, &IID_ID3D12GraphicsCommandList7, (void **)&s->host);
-    if (FAILED(hr)) { HeapFree(GetProcessHeap(), 0, s); return hr; }
-    s->iface.lpVtbl = &sl_vtbl.prefix;
+    if (FAILED(hr)) { sl_free(s); return hr; }
+    s->iface.lpVtbl = pooled ? &pool_vtbl.prefix : &sl_vtbl.prefix;
     s->refs = 1;
     s->device = device;
     s->type = type;
@@ -133,7 +171,7 @@ HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnk
 }
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 {
-    return i && i->lpVtbl == &sl_vtbl.prefix ? sl(i)->host : NULL;
+    return i && (i->lpVtbl == &sl_vtbl.prefix || i->lpVtbl == &pool_vtbl.prefix) ? sl(i)->host : NULL;
 }
 
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
