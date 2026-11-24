@@ -1,7 +1,7 @@
 enum bvh_root_kind {
     ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC, ROOT_RADIX, ROOT_PREFIX, ROOT_REARRANGE,
     ROOT_COPY, ROOT_DECOMPRESS, ROOT_APEX, ROOT_BVH4, ROOT_HIERARCHY, ROOT_LOAD_INSTANCES,
-    ROOT_LOAD_PRIMITIVES, ROOT_POSTBUILD, ROOT_SPLIT_INSTANCES, ROOT_TREELET, ROOT_SRV_SPACE3
+    ROOT_LOAD_PRIMITIVES, ROOT_POSTBUILD, ROOT_SPLIT_INSTANCES, ROOT_TREELET, ROOT_SRV_SPACE3, ROOT_BINK_GROUP
 };
 
 /* Root parameter index is part of the ABI; register order need not be ascending. */
@@ -39,6 +39,18 @@ static const struct {
 #undef U
 #undef T
 
+/* Slot 1 of the measured rage_bink group: one table, register order is significant. */
+static D3D12_ROOT_SIGNATURE_DESC1 bink_group_layout(void)
+{
+#define RANGE(type,reg) {D3D12_DESCRIPTOR_RANGE_TYPE_##type,1,reg,1,D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND}
+    static const D3D12_DESCRIPTOR_RANGE1 ranges[]={RANGE(SRV,2),RANGE(SRV,6),RANGE(SRV,5),RANGE(SRV,7),RANGE(SRV,10),RANGE(CBV,0),RANGE(CBV,3)};
+#undef RANGE
+    static const D3D12_ROOT_PARAMETER1 table={.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,.DescriptorTable={ARRAYSIZE(ranges),ranges}};
+    static const D3D12_STATIC_SAMPLER_DESC sampler={D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,0,1,D3D12_COMPARISON_FUNC_NEVER,
+        D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,0,12,3,1,D3D12_SHADER_VISIBILITY_ALL};
+    return (D3D12_ROOT_SIGNATURE_DESC1){1,&table,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
+}
 /* The title sees only the console wrapper. */
 struct bvh_root {
     IUnknown iface;
@@ -80,7 +92,7 @@ static HRESULT WINAPI root_query(IUnknown *i,REFIID iid,void **out)
 static HRESULT WINAPI root_name(IUnknown *i,const WCHAR *name)
 {
     struct bvh_root *r=CONTAINING_RECORD(i,struct bvh_root,iface);
-    const WCHAR *expected=root_schemas[r->kind].name;
+    const WCHAR *expected=r->kind<ARRAYSIZE(root_schemas)?root_schemas[r->kind].name:NULL;
     if (!expected) return E_NOTIMPL;
     WCHAR copy[32];
     SIZE_T bytes=(wcslen(expected)+1)*sizeof(WCHAR);
@@ -105,26 +117,31 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
     IID id;
     if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
     if (!IsEqualIID(&id,&IID_ID3D12RootSignature)) return E_NOINTERFACE;
-    /* Canonical single-chunk DXBC: 68 fixed bytes, 24 per v1.1 descriptor/constant. */
-    BYTE wire[68+9*24];
-    if (node!=1 || n<68+24 || n>sizeof wire || (n-68)%24) return E_NOTIMPL;
+    /* Canonical serialized signatures. Tables and static samplers have a different wire size. */
+    BYTE wire[308];
+    if (node!=1 || (n!=308 && (n<68+24 || n>68+9*24 || (n-68)%24))) return E_NOTIMPL;
     if (!copy_in(wire,blob,n)) return E_POINTER;
     ID3DBlob *serialized=NULL;
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1};
     HRESULT hr;
     enum bvh_root_kind kind;
-    for (kind=0;kind<ARRAYSIZE(root_schemas);++kind) {
-        if (root_schemas[kind].count!=(n-68)/24) continue;
-        desc.Desc_1_1=(D3D12_ROOT_SIGNATURE_DESC1){root_schemas[kind].count,root_schemas[kind].params,
-                0,NULL,kind==ROOT_SRV_SPACE3 ? D3D12_ROOT_SIGNATURE_FLAG_NONE : (D3D12_ROOT_SIGNATURE_FLAGS)0x03000000};
+    for (kind=0;kind<=ROOT_BINK_GROUP;++kind) {
+        if(kind==ROOT_BINK_GROUP){
+            if(n!=308)continue;
+            desc.Desc_1_1=bink_group_layout();
+        }else{
+            if (root_schemas[kind].count!=(n-68)/24 || n==308) continue;
+            desc.Desc_1_1=(D3D12_ROOT_SIGNATURE_DESC1){root_schemas[kind].count,root_schemas[kind].params,
+                    0,NULL,kind==ROOT_SRV_SPACE3 ? D3D12_ROOT_SIGNATURE_FLAG_NONE : (D3D12_ROOT_SIGNATURE_FLAGS)0x03000000};
+        }
         hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
         if (FAILED(hr)) return hr;
         BOOL match=n==ID3D10Blob_GetBufferSize(serialized) && !memcmp(wire,ID3D10Blob_GetBufferPointer(serialized),n);
         ID3D10Blob_Release(serialized);
         if (match) break;
     }
-    if (kind==ARRAYSIZE(root_schemas)) return E_NOTIMPL;
-    desc.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    if (kind>ROOT_BINK_GROUP) return E_NOTIMPL;
+    if(kind!=ROOT_BINK_GROUP)desc.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
     if (FAILED(hr)) return hr;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);

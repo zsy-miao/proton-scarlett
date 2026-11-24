@@ -927,6 +927,24 @@ static void WINAPI sampler_copy(IUnknown *iface,UINT count,SIZE_T dest,SIZE_T sr
     if (!ok) xs_stop();
 }
 
+/* Warm-up worker consumes a failed HRESULT by advancing to the next PSO record. */
+static HRESULT WINAPI cached_graphics_pipeline(IUnknown *device,const void *record,REFIID iid,void **out)
+{
+    IID id;
+    IUnknown *root=NULL;
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!copy_in(&id,iid,sizeof id) || !copy_in(&root,record,sizeof root)) return E_POINTER;
+    if (!IsEqualIID(&id,&IID_ID3D12PipelineState)) return E_NOINTERFACE;
+    struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct bvh_root *r=d->bvh_roots;
+    while (r && &r->iface!=root) r=r->next;
+    /* No desktop pipeline can be constructed from the root alone. */
+    HRESULT hr=r?E_NOTIMPL:E_INVALIDARG;
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    return hr;
+}
 struct bootstrap_vtbl {
     IUnknownVtbl unknown;
     xs_stop_fn gap18[5];
@@ -954,7 +972,9 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_signature) signature;
     xs_stop_fn gap150[6];
     __typeof__(&bootstrap_extended) extended;
-    xs_stop_fn gap188[12];
+    xs_stop_fn gap188[8];
+    __typeof__(&cached_graphics_pipeline) cached_graphics;
+    xs_stop_fn gap1d0[3];
     __typeof__(&sampler_write) sampler;
     __typeof__(&bootstrap_bvh_pipeline) bvh_pipeline;
     xs_stop_fn gap1f8[7];
@@ -1001,6 +1021,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
                offsetof(struct bootstrap_vtbl, allocation_info1) == 0x360 &&
                offsetof(struct bootstrap_vtbl, root) == 0x80 &&
+               offsetof(struct bootstrap_vtbl, cached_graphics) == 0x1c8 &&
                offsetof(struct bootstrap_vtbl, bvh_pipeline) == 0x1f0 &&
                offsetof(struct bootstrap_vtbl, rtv) == 0xa0 && offsetof(struct bootstrap_vtbl, dsv) == 0xa8 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
@@ -1163,7 +1184,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap128 = { xs_stop, xs_stop }, .query_heap = bootstrap_query_heap, .gap140 = xs_stop,
     .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 11] = xs_stop }, .sampler=sampler_write, .bvh_pipeline = builder_pipeline_call,
+    .gap188 = { [0 ... 7] = xs_stop }, .cached_graphics=cached_graphics_pipeline,.gap1d0={ [0 ... 2]=xs_stop },
+    .sampler=sampler_write, .bvh_pipeline = builder_pipeline_call,
     .gap1f8 = { [0 ... 6] = xs_stop },
 #ifdef SCARLETT_STAGED_PLACED
     .address_srv = write_address_srv,

@@ -461,3 +461,14 @@ the main thread first hit `+b5a5f8`: the `rage_bink` builder's 308-byte
 root signature had returned `E_NOTIMPL`. Accepting that layout in a
 diagnostic reached device `+1c8`; completed group creation is unverified.
 Both ordinary runs issued tokens 1 and 2 and presented only token 1.
+
+An RTX trace now ties the `rage_bink:bink_opaque` group in slot 1 to its
+accepted 308-byte root. The fixture exercised all seven table entries and
+static sampler `s3`: both GPUs read back 761, 805, 849, 849. The title
+handles `E_NOTIMPL` on the `+1c8` pipeline warm-up request by skipping
+that cache record. Publication of the group does not establish a retail draw.
+
+Four retail launches (two diagnostic and two ordinary). The ordinary
+workers stopped at `+258`, return `+32820`. The first RTX fault was again
+`+b5a5f8`, this time from the second technique lookup (`+5e50ffd`).
+Both runs issued tokens 1 and 2; neither presented token 2.
