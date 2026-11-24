@@ -9,7 +9,7 @@ struct descriptor_record {
 struct desc_heap {
     IUnknown iface;
     LONG refs;
-    ID3D12DescriptorHeap *host;
+    ID3D12DescriptorHeap *host, *tail;
     SIZE_T start;
     UINT count, stride, host_stride;
     BOOL visible;
@@ -20,6 +20,7 @@ struct desc_heap {
     void (WINAPI *xfree)(void *,UINT64);
 };
 enum { DESC_ATTR = (0x80 << 16) | 4 };
+enum { DESC_BANK = D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1, DESC_STARTUP_COUNT = 0x130000 };
 static const struct desc_table {
     IUnknownVtbl unknown;
     xs_stop_fn gap[6];
@@ -55,6 +56,7 @@ static ULONG WINAPI desc_release(IUnknown *i)
             HeapFree(GetProcessHeap(),0,h->records);
         }
         ID3D12DescriptorHeap_Release(h->host);
+        if (h->tail) ID3D12DescriptorHeap_Release(h->tail);
         if (h->xfree && h->start) h->xfree((void *)h->start,DESC_ATTR);
         else if (h->start) VirtualFree((void *)h->start,0,MEM_RELEASE);
         if (h->xmem) FreeLibrary(h->xmem);
@@ -111,13 +113,19 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
         (d.Type == 3 && d.NumDescriptors == 2048 && !d.Flags))) return E_NOTIMPL;
     struct desc_heap *h = HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *h);
     if (!h) return E_OUTOFMEMORY;
+    h->count = d.NumDescriptors;
+    if (d.Type == 0 && d.NumDescriptors == DESC_STARTUP_COUNT) d.NumDescriptors = DESC_BANK;
     HRESULT hr = ID3D12Device_CreateDescriptorHeap(host,&d,&IID_ID3D12DescriptorHeap,(void **)&h->host);
     if (FAILED(hr)) { HeapFree(GetProcessHeap(),0,h); return hr; }
     h->iface.lpVtbl = &desc_vtbl.unknown;
     h->refs = 1;
+    if (h->count != d.NumDescriptors) {
+        d.NumDescriptors = h->count - DESC_BANK;
+        hr = ID3D12Device_CreateDescriptorHeap(host,&d,&IID_ID3D12DescriptorHeap,(void **)&h->tail);
+        if (FAILED(hr)) { desc_release(&h->iface); return hr; }
+    }
     h->stride = descriptor_stride(device,d.Type);
     h->host_stride = ID3D12Device_GetDescriptorHandleIncrementSize(host,d.Type);
-    h->count = d.NumDescriptors;
     h->visible = d.Flags == 1;
     SIZE_T size = (SIZE_T)h->stride * h->count;
     if (!d.Type) {
@@ -148,22 +156,35 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
 
 /* Caller holds this heap until consuming commands retire. This resolves a slot address,
  * not the contents of a title slot. Only use the result with an evidenced descriptor writer. */
-HRESULT xs_descriptor_slot(IUnknown *i,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorHeap **bank,
+        D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 {
+    if (bank) *bank = NULL;
     if (cpu) cpu->ptr = 0;
     if (gpu) gpu->ptr = 0;
     if (!i || i->lpVtbl != &desc_vtbl.unknown || (!cpu && !gpu)) return E_INVALIDARG;
     struct desc_heap *h = CONTAINING_RECORD(i,struct desc_heap,iface);
     if (slot < h->start || (slot-h->start) % h->stride || (gpu && !h->visible)) return E_INVALIDARG;
     SIZE_T n = (slot-h->start) / h->stride;
-    if (n >= h->count) return E_INVALIDARG;
+    if (!count || n >= h->count || count > h->count-n) return E_INVALIDARG;
+    ID3D12DescriptorHeap *host=h->host;
+    if (h->tail) {
+        if (n >= DESC_BANK) { n-=DESC_BANK; host=h->tail; }
+        else if (count > DESC_BANK-n) return E_NOTIMPL; /* cannot bind this as one table */
+    }
+    if (bank) *bank=host; /* borrowed, same lifetime as the title heap */
     if (cpu) {
-        h->host->lpVtbl->GetCPUDescriptorHandleForHeapStart(h->host,cpu);
+        host->lpVtbl->GetCPUDescriptorHandleForHeapStart(host,cpu);
         cpu->ptr += n * h->host_stride;
     }
     if (gpu) {
-        h->host->lpVtbl->GetGPUDescriptorHandleForHeapStart(h->host,gpu);
+        host->lpVtbl->GetGPUDescriptorHandleForHeapStart(host,gpu);
         gpu->ptr += n * h->host_stride;
     }
     return S_OK;
+}
+
+HRESULT xs_descriptor_slot(IUnknown *i,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+{
+    return xs_descriptor_range(i,slot,1,NULL,cpu,gpu);
 }

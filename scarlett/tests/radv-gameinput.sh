@@ -17,25 +17,36 @@ trap 'kill "$launcher" 2>/dev/null || :' EXIT
 for i in {1..300}; do
     run=("$w"/scarlett-run.*)
     log=${run[0]}/logs/steam-999001.log
-    if grep -aqF 'GameInput buttons=0' "$log" 2>/dev/null; then break; fi
+    if grep -aqF 'GameInput step=1' "$log" 2>/dev/null; then break; fi
     kill -0 "$launcher"; sleep .1
 done
-grep -aqF 'GameInput buttons=0' "$log"
+grep -aqF 'GameInput step=1' "$log"
 # Leave multiple neutral samples for the recorder before the bounded hold.
 sleep .6
 timeout 3 bash -c 'printf "invalid 700\nspace 700\n" >"$1"' _ "${run[0]}/input.fifo"
+for step_key in '3 w' '5 Left'; do
+    read -r step key <<<"$step_key"
+    for i in {1..50}; do
+        grep -aqF "GameInput step=$step " "$log" && break
+        kill -0 "$launcher"; sleep .1
+    done
+    grep -aqF "GameInput step=$step " "$log"
+    sleep .5
+    timeout 3 bash -c 'printf "%s 700\n" "$2" >"$1"' _ "${run[0]}/input.fifo" "$key"
+done
 wait "$launcher"
 trap - EXIT
 grep -F 'refused input' "${run[0]}/logs/input.log"
 grep -F 'space held 700 ms' "${run[0]}/logs/input.log"
 test "$(readlink "${run[0]}/compat/scarlett-title/pfx/drive_c/windows/system32/gameinput.dll")" = /proton/scarlett/GameInput.dll
 grep -ai 'system32.*gameinput\.dll".*: native' "$log"
-grep -aF 'PASS synthetic GameInput DXGI: neutral, A, released' "$log"
+grep -aF 'PASS synthetic GameInput DXGI: A, forward, camera left; all returned to neutral' "$log"
 ffmpeg -v error -i "${run[0]}/display.mp4" -vf 'crop=2:2:400:300,scale=1:1,format=rgb24' -f rawvideo - |
     python3 -c 'import itertools, sys
 rgb=iter(sys.stdin.buffer.read())
 runs=[(k,len(list(v))) for k,v in itertools.groupby(
-    "blue" if b>245 and max(r,g)<10 else "green" if g>245 and max(r,b)<10 else "other"
+    "blue" if b>245 and max(r,g)<10 else "green" if g>245 and max(r,b)<10 else
+    "red" if r>245 and max(g,b)<10 else "yellow" if min(r,g)>245 and b<10 else "other"
     for r,g,b in zip(rgb,rgb,rgb))]
 print("Synthetic DXGI center pixel:", runs)
-if [k for k,n in runs if k!="other" and n>=2]!=["blue","green","blue"]: sys.exit(1)'
+if [k for k,n in runs if k!="other" and n>=2]!=["blue","green","blue","red","blue","yellow","blue"]: sys.exit(1)'

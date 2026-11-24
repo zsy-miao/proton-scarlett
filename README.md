@@ -19,11 +19,11 @@ A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines f
 
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
 
-An experimental build with the [placed-resource factory](scarlett/native/placed-arena.md) enabled passed the `+0x428` call in retail. The host then rejected a shader-visible heap of **1,245,184 descriptors** with `E_INVALIDARG`. The other four heaps succeeded before the title stopped at `+0x156c251` reading address `0x30`. The default build still rejects the placement.
+An experimental build with the [placed-resource factory](scarlett/native/placed-arena.md) enabled passed the `+0x428` call in retail. Two host heaps now back the title’s 1,245,184 descriptor slots. Retail gets past heap initialization and stops while writing the first null shader-resource view (`E_POINTER`, device `+0x90`, caller `+0x247905f`). The default build still rejects the placement.
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 
-An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent a 700 ms virtual A press to a synthetic game window on RADV. The installed GameInput provider reported neutral → A → released, and the recorded window changed blue → green → blue. Separate polling tests cover the movement and camera sticks. Retail input has not yet been exercised.
+An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent virtual A, forward movement, and left camera inputs to a synthetic game window on RADV. The installed GameInput provider reported each action and returned to neutral after each release. The decoded recording showed a distinct color for each action. Retail input has not yet been exercised.
 
 The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 

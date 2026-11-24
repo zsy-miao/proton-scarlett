@@ -78,8 +78,25 @@ call a hard-coded title address. The temporary callback context is never
 retained. A title that hands this heap to a deferred GPU consumer must still
 keep the arena alive and release the final COM reference under its free hook.
 
-The other four shapes own private committed title memory. Each wrapper owns
-a real host heap with the requested count and visibility. The shadow ABI uses
+The first heap's measured count is `0x130000` (1,245,184). The saved
+instrumented run `scarlett-run.klatP6vP`, `steam-999001.log:3838,3980–3981`,
+shows `+0x70` asking for `{0,1245184,1,1}` and vkd3d returning `E_INVALIDARG`
+(maximum 1,000,000); the four later creations succeeded. `1cf3312` returns
+before `1cf33a2` initializes the title owner at `75e7378`. `555e361` later
+calls the bump allocator with that global, and `156c251` reads its missing
+owner's stride. The AV is downstream of heap creation.
+
+For exactly that shape the title keeps one placement and all 38 MiB of
+32-byte slots. Two real shader-visible CBV/SRV/UAV heaps back the first
+1,000,000 and remaining 245,184 slots. The private `xs_descriptor_range`
+checks the entire requested range, returns the containing heap and
+heap-relative handles, and rejects a crossing. `xs_resolve_view` resolves
+one written slot. A recorder must bind that specific heap and check all
+tables used by one dispatch agree on the bank. Cross-bank tables and
+simultaneous binding of two CBV/SRV/UAV banks are unsupported.
+
+The other four shapes own private committed title memory and one real host
+heap with the requested count and visibility. The shadow ABI uses
 32/16/32/32-byte slots for types 0–3: these are adapter-selected increments,
 not recovered Xbox hardware sizes. The title computes offsets from the
 returned increment at `156c251`; it stores a DWORD link in slot byte zero

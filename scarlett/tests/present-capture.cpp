@@ -82,20 +82,26 @@ int main()
         HR(pad->GetCurrentReading(GameInputKindGamepad,nullptr,&reading));
         GameInputGamepadState state{};
         if (!reading->GetGamepadState(&state) || GetForegroundWindow()!=window) return 1;
-        int buttons=state.buttons;
-        if (buttons!=previous) {
-            if (buttons!=(transitions==1 ? GameInputGamepadA : 0) || transitions>=3) return 1;
-            previous=buttons;
+        if ((state.buttons && state.buttons!=GameInputGamepadA) ||
+            (state.leftThumbstickY!=0 && state.leftThumbstickY!=1) ||
+            (state.rightThumbstickX!=0 && state.rightThumbstickX!=-1) ||
+            state.leftThumbstickX || state.rightThumbstickY) return 1;
+        int action=(state.buttons?1:0) | (state.leftThumbstickY?2:0) | (state.rightThumbstickX?4:0);
+        const int sequence[]={0,1,0,2,0,4,0};
+        if (action!=previous) {
+            if (transitions>=7 || action!=sequence[transitions]) return 1;
+            previous=action;
             ++transitions;
             changed=GetTickCount64();
-            printf("GameInput buttons=%#x\n",buttons); fflush(stdout);
+            printf("GameInput step=%d buttons=%#x movementY=%.0f cameraX=%.0f\n",transitions,
+                unsigned(state.buttons),state.leftThumbstickY,state.rightThumbstickX); fflush(stdout);
         }
-        if (present({0,float(!!buttons),float(!buttons),1})) return 1;
-        if (transitions==3 && GetTickCount64()-changed>=500) break;
+        if (present({float(action==2 || action==4),float(action==1 || action==4),float(!action),1})) return 1;
+        if (transitions==7 && GetTickCount64()-changed>=500) break;
         Sleep(10);
     }
-    if (transitions!=3) return 1;
-    puts("PASS synthetic GameInput DXGI: neutral, A, released");
+    if (transitions!=7) return 1;
+    puts("PASS synthetic GameInput DXGI: A, forward, camera left; all returned to neutral");
 #else
     for (unsigned frame=0;frame<4;++frame) {
         if (present({float(frame<2),float(frame>=2),0,1})) return 1;

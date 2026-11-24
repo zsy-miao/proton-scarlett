@@ -4,6 +4,7 @@
 #include <initializer_list>
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_descriptor_slot(IUnknown *,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE *,D3D12_GPU_DESCRIPTOR_HANDLE *);
+extern "C" HRESULT xs_descriptor_range(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *,D3D12_GPU_DESCRIPTOR_HANDLE *);
 #define CK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); ExitProcess(1); } } while(0)
 #define HR(x) do { HRESULT h_=(x); if(FAILED(h_)){std::fprintf(stderr,"FAIL %d: %s hr=%#lx\n",__LINE__,#x,(unsigned long)h_);ExitProcess(1);} } while(0)
 #define SLOT(o,n,T) ((T)((*reinterpret_cast<void***>(o))[n/8]))
@@ -73,7 +74,7 @@ int main()
     HR(D3D12XboxCreateDevice(nullptr,p,id,(void **)&d));
     CK(((BYTE*)d)[0x18]==0);
     auto create=SLOT(d,0x70,Make); auto increment=SLOT(d,0x78,Stride);
-    UINT desc[][4]={{0,4096,1,1},{1,128,1,1},{1,128,0,1},{2,4096,0,1},{3,2048,0,1}};
+    UINT desc[][4]={{0,0x130000,1,1},{1,128,1,1},{1,128,0,1},{2,4096,0,1},{3,2048,0,1}};
     extent=desc[0][1]*increment(d,0); CK(extent>=65536);
     arena=(BYTE*)VirtualAlloc(nullptr,extent,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE); CK(arena);
     for (auto &v : desc) {
@@ -83,13 +84,27 @@ int main()
         HR(h->QueryInterface(IID_IUnknown,(void **)&qi)); CK(qi==h); qi->Release();
         auto cpu=SLOT(h,0x48,Start)(h), gpu=SLOT(h,0x50,Start)(h);
         UINT stride=increment(d,v[0]); CK(cpu && stride>=16 && (v[2]?gpu==cpu:!gpu));
-        if (!v[0]) { CK(cpu==(SIZE_T)arena && taken==1); test_writers(d,host,h,cpu,stride); }
+        if (!v[0]) {
+            CK(cpu==(SIZE_T)arena && gpu==cpu && taken==1 && extent==(38u<<20));
+            const SIZE_T boundary=cpu+1000000ull*stride;
+            ID3D12DescriptorHeap *first,*tail,*bad; D3D12_GPU_DESCRIPTOR_HANDLE handle;
+            HR(xs_descriptor_range(h,cpu,1000000,&first,nullptr,&handle));
+            HR(xs_descriptor_range(h,boundary,v[1]-1000000,&tail,nullptr,&handle));
+            CK(first!=tail && first->GetDesc().NumDescriptors==1000000 &&
+                tail->GetDesc().NumDescriptors==v[1]-1000000);
+            CK(xs_descriptor_range(h,boundary-stride,2,&bad,nullptr,&handle)==E_NOTIMPL && !bad && !handle.ptr);
+            // Same shader/recorder uses first bank's final four descriptors,
+            // then tail bank's final four descriptors.
+            test_writers(d,host,h,boundary-5*stride,stride);
+            test_writers(d,host,h,cpu+extent-5*stride,stride);
+        }
         SIZE_T last=cpu+(v[1]-1)*stride;
         *(UINT64*)last=0x10000000000000ull; *((UINT64*)last+1)=0x2403c00000000ull;
         D3D12_CPU_DESCRIPTOR_HANDLE c0,cl; D3D12_GPU_DESCRIPTOR_HANDLE g0,gl;
         HR(xs_descriptor_slot(h,cpu,&c0,v[2]?&g0:nullptr));
         HR(xs_descriptor_slot(h,last,&cl,v[2]?&gl:nullptr));
-        SIZE_T delta=(v[1]-1)*host->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)v[0]);
+        if (!v[0]) HR(xs_descriptor_slot(h,cpu+1000000ull*stride,&c0,&g0)); // tail-relative
+        SIZE_T delta=(v[1]-1-(v[0]?0:1000000))*host->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)v[0]);
         CK(cl.ptr-c0.ptr==delta && (!v[2] || gl.ptr-g0.ptr==delta) && cl.ptr!=last);
         if (v[0]==2) check_rtv(host,cl);
         CK(*(UINT64*)last==0x10000000000000ull && *((UINT64*)last+1)==0x2403c00000000ull);
@@ -110,5 +125,5 @@ int main()
     HR(xs_write_view(d,0x90,nullptr,nulls,stale)); HR(xs_resolve_view(fresh,stale,0x90,&desktop,&g));
     free_hook=true; CK(!fresh->Release()); free_hook=false; CK(returned==2);
     CK(VirtualFree(arena,0,MEM_RELEASE)); d->Release(); host->Release();
-    puts("PASS descriptor heaps: XMem placed base/free, five heap shapes, bounds, title writes isolated, final-slot RTV GPU clear/readback");
+    puts("PASS descriptor heaps: actual 0x130000 placed slots, two fenced host-bank dispatches, crossing rejected, exact XMem base/free and final-slot RTV readback");
 }

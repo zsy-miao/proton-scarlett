@@ -44,9 +44,10 @@ static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T st
     ID3D12DescriptorHeap *desktop;
     D3D12_GPU_DESCRIPTOR_HANDLE handles[4];
     HR(xs_resolve_view(heap,raw,0x90,&desktop,&handles[0]));
-    HR(xs_resolve_view(heap,null_srv,0x90,&desktop,&handles[1]));
-    HR(xs_resolve_view(heap,cb,0x88,&desktop,&handles[2]));
-    HR(xs_resolve_view(heap,null_uav,0x98,&desktop,&handles[3]));
+    ID3D12DescriptorHeap *bank;
+    HR(xs_resolve_view(heap,null_srv,0x90,&bank,&handles[1])); CK(bank==desktop);
+    HR(xs_resolve_view(heap,cb,0x88,&bank,&handles[2])); CK(bank==desktop);
+    HR(xs_resolve_view(heap,null_uav,0x98,&bank,&handles[3])); CK(bank==desktop);
     auto shader=CreateFileA("test-view.dxil",GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
     CK(shader!=INVALID_HANDLE_VALUE);
     BYTE code[8192]; DWORD n; CK(ReadFile(shader,code,sizeof code,&n,nullptr) && n && n<sizeof code); CloseHandle(shader);

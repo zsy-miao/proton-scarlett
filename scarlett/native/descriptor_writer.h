@@ -206,7 +206,8 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
 #endif
     AcquireSRWLockExclusive(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-    HRESULT hr=xs_descriptor_slot(heap,slot,&cpu,gpu);
+    ID3D12DescriptorHeap *bank;
+    HRESULT hr=xs_descriptor_range(heap,slot,1,&bank,&cpu,gpu);
     if (SUCCEEDED(hr)) {
         UINT64 bits[2];
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
@@ -226,7 +227,7 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
 #ifdef SCARLETT_STAGED_PLACED
         else if (r->placed) hr=E_NOTIMPL; /* no single desktop descriptor */
 #endif
-        if (SUCCEEDED(hr)) *host=h->host; /* borrowed */
+        if (SUCCEEDED(hr)) *host=bank; /* borrowed */
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
 #ifdef SCARLETT_STAGED_PLACED
