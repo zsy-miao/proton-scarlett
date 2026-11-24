@@ -260,6 +260,14 @@ static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
 {
+    if (rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==1280 && rd->Height==720 &&
+        rd->DepthOrArraySize==1 && rd->MipLevels==1 && rd->Format==DXGI_FORMAT_R32_UINT && rd->SampleDesc.Count==1 &&
+        !rd->SampleDesc.Quality && (UINT)rd->Layout==0x102 && (UINT)rd->Flags==0x300004) {
+        /* 160 x 90 complete 256-byte guest tiles. */
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){0x384000,256};
+        if(detail)*detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=256,.SizeInBytes=0x384000};
+        return S_OK;
+    }
     BOOL a8=rd->Format==DXGI_FORMAT_A8_UNORM, bgra=rd->Format==DXGI_FORMAT_B8G8R8A8_UNORM;
     BOOL fp=rd->Format==DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (fp) {
@@ -340,7 +348,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    if (msaa_desc(&rd) || rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
+    if ((rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) || rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
         rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL layered=is_layered_texel(&rd),texel32=layered || is_texel32(&rd);

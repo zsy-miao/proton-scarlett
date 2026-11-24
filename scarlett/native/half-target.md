@@ -34,6 +34,17 @@ its texture creation helper returned null (`+cc27e9`). Both logs separately
 show completion of the first primary clear. The failed texture creation
 does not by itself establish that either adapter ran out of memory.
 
+In separate placement experiments the game constructed the 1440p texture
+and its SRV, RTV and UAV on both adapters. Its next query described a
+1280×720 `R32_UINT` texture with layout `0x102` and flags `0x300004`.
+Its 160×90 tiles each hold 8×8 four-byte words: `0x384000` bytes at
+`0x100` alignment. RTX optimal image allocation requires `0x3c0000`
+bytes and would exceed the guest allocation. The title subsequently requested
+placement at WC offset `0x10e00000` on RTX, state `3`, no clear value.
+The [original-memory test](../tests/rtx-r32-tile.sh) reads and writes every
+word using a buffer and explicit tile addressing after exact VA reuse.
+It does not exercise a retail texture view.
+
 Only these two size probes and the observed 1440p detail probe are enabled.
 The latter uses a host RT+UAV optimal descriptor; nothing here maps a WC
 section, changes `+428`, chooses an initial state, or interprets high flags.
