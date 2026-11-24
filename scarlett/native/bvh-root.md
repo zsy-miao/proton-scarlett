@@ -52,6 +52,11 @@ the untouched parts of each partition. Build it like `test-bvh-root.cpp`,
 supplying the matching shaders as `private-builder.bin` and `private-offline.bin` beside the fixture outside the repository.
 The guest command-list dispatch path is still unqualified.
 
+Run `scarlett/tests/builder-pipelines.sh /path/to/XboxBvhBuilder.dll` on the
+test host to rebuild the adapter and run the builder regressions. The script
+verifies the DLL hash and uses private temporary shader inputs; the fixtures
+do not run the retail executable. The default test GPU is RADV.
+
 `bvh_init_dxil.h` contains only the compiled project shader. To regenerate
 from `scarlett/native` with DXC 1.9 (b106a961):
 
