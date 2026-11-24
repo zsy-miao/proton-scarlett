@@ -239,4 +239,9 @@ The compositor recording showed red/blue halves followed by green/magenta
 halves after producer references were released. Build and run as above,
 substituting `test-offscreen-present.c`; check the recording with
 `python3 scarlett/tests/offscreen-pixels.py path/to/display.mp4`.
+With `-DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE`, the same fixture ends its
+producer list with the full render-target release to host `COMMON`. The
+handoff uses that actual final state when copying to the DXGI buffer.
+Recordings on RADV and RTX decoded both color patterns in order; neither
+the release nor arming the handoff incremented the present count.
 Retail has not reached this handoff.

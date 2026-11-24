@@ -92,17 +92,28 @@ int main(void)
         RECT half={W/2,0,W,H};
         ID3D12GraphicsCommandList_ClearRenderTargetView(list,rtv,left[i],0,NULL);
         ID3D12GraphicsCommandList_ClearRenderTargetView(list,rtv,right[i],1,&half);
+        D3D12_RESOURCE_STATES handoff=D3D12_RESOURCE_STATE_RENDER_TARGET;
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+        ID3D12GraphicsCommandList7 *enhanced;
+        HR(ID3D12GraphicsCommandList_QueryInterface(list,&IID_ID3D12GraphicsCommandList7,(void**)&enhanced),S_OK);
+        D3D12_TEXTURE_BARRIER release={D3D12_BARRIER_SYNC_RENDER_TARGET,D3D12_BARRIER_SYNC_NONE,
+            D3D12_BARRIER_ACCESS_RENDER_TARGET,D3D12_BARRIER_ACCESS_NO_ACCESS,
+            D3D12_BARRIER_LAYOUT_RENDER_TARGET,D3D12_BARRIER_LAYOUT_COMMON,tex,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+        D3D12_BARRIER_GROUP bg={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&release};
+        ID3D12GraphicsCommandList7_Barrier(enhanced,1,&bg);ID3D12GraphicsCommandList7_Release(enhanced);
+        handoff=D3D12_RESOURCE_STATE_COMMON;
+#endif
         HR(ID3D12GraphicsCommandList_Close(list),S_OK);
         ID3D12CommandList *batch[]={(ID3D12CommandList *)list}; ID3D12CommandQueue_ExecuteCommandLists(producer,1,batch);
         key=&keys[i].i; wire[0]=token[i];
         #define ARM(queue_,hwnd_,state_,flags_,hf_) xs_display_arm_primary(q,queue_,hwnd_,token[i],&keys[i].i,tex,state_,flags_,hf_)
         HR(ARM(foreign,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),E_INVALIDARG);
         HR(ARM(producer,GetDesktopWindow(),D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),DXGI_ERROR_INVALID_CALL);
-        HR(ARM(producer,window,D3D12_RESOURCE_STATE_COMMON,0x300005,8),E_NOTIMPL);
+        HR(ARM(producer,window,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,0x300005,8),E_NOTIMPL);
         HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,0),E_NOTIMPL);
         HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x5,8),E_NOTIMPL);
-        HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),S_OK);
-        HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),DXGI_ERROR_INVALID_CALL);
+        HR(ARM(producer,window,handoff,0x300005,8),S_OK);
+        HR(ARM(producer,window,handoff,0x300005,8),DXGI_ERROR_INVALID_CALL);
         ID3D12Resource_Release(tex); CHECK(IUnknown_Release(key)==1);
         key=(IUnknown *)(UINT_PTR)1; HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL); key=&keys[i].i;
         wire[0]=~token[i]; HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL); wire[0]=token[i];

@@ -159,7 +159,7 @@ int main(void)
         #define ARM(queue_,hwnd_,state_,flags_,hf_) xs_display_arm_primary(q,queue_,hwnd_,token[i],&keys[i].i,tex,state_,flags_,hf_)
         HR(ARM(foreign,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),E_INVALIDARG);
         HR(ARM(producer,GetDesktopWindow(),D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),DXGI_ERROR_INVALID_CALL);
-        HR(ARM(producer,window,D3D12_RESOURCE_STATE_COMMON,0x300005,8),E_NOTIMPL);
+        HR(ARM(producer,window,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,0x300005,8),E_NOTIMPL);
         HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,0),E_NOTIMPL);
         HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x5,8),E_NOTIMPL);
         HR(ARM(producer,window,D3D12_RESOURCE_STATE_RENDER_TARGET,0x300005,8),S_OK);

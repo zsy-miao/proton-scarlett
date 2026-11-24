@@ -4,7 +4,12 @@ HRESULT xs_display_arm_primary(IUnknown *queue,ID3D12CommandQueue *producer,HWND
         UINT guest_flags,UINT guest_heap_flags)
 {
     if (!producer || as_queue(queue)!=producer || !window || !token || !key || !source) return E_INVALIDARG;
-    if (guest_flags!=0x300005 || guest_heap_flags!=8 || state!=D3D12_RESOURCE_STATE_RENDER_TARGET) return E_NOTIMPL;
+    if (guest_flags!=0x300005 || guest_heap_flags!=8) return E_NOTIMPL;
+    if (state!=D3D12_RESOURCE_STATE_RENDER_TARGET
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+        && state!=D3D12_RESOURCE_STATE_COMMON
+#endif
+        ) return E_NOTIMPL;
     D3D12_RESOURCE_DESC r;
     source->lpVtbl->GetDesc(source,&r);
     if (r.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || r.Width!=3840 || r.Height!=2160 ||
