@@ -6,14 +6,42 @@
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 #include "queue/queue.h"
 #include "queue/bootstrap_guard.h"
+#include "frame.h"
 #include <stddef.h>
 #include <stdio.h>
+#endif
+
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+struct frame_record {
+    UINT64 token;
+    LONGLONG origin, target;
+    IDXGISwapChain *chain;
+    UINT present_id;
+    HRESULT status; /* S_FALSE: issued but not presented; E_PENDING: present submitted. */
+    BOOL presenting;
+};
+struct frame_clock {
+    SRWLOCK lock;
+    CONDITION_VARIABLE change;
+    LONGLONG step, due, freq, base;
+    UINT period, registered, epoch, cursor;
+    struct frame_record history[16];
+};
+static void frame_clear(struct frame_clock *f)
+{
+    for (unsigned i=0; i<ARRAYSIZE(f->history); ++i)
+        if (f->history[i].chain) IDXGISwapChain_Release(f->history[i].chain);
+    memset(f->history, 0, sizeof(f->history));
+}
 #endif
 
 struct xbox_device {
     IUnknown iface;
     LONG refs;
     ID3D12Device *host;
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+    struct frame_clock clock;
+#endif
 };
 
 /* Private host-side operations. No console method returns a host interface. */
@@ -53,6 +81,9 @@ static ULONG WINAPI device_release(IUnknown *iface)
     struct xbox_device *device = CONTAINING_RECORD(iface, struct xbox_device, iface);
     ULONG refs = InterlockedDecrement(&device->refs);
     if (!refs) {
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+        frame_clear(&device->clock);
+#endif
         ID3D12Device_Release(device->host);
         HeapFree(GetProcessHeap(), 0, device);
     }
@@ -192,25 +223,7 @@ static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_S
     return hr;
 }
 
-static HRESULT WINAPI bootstrap_frame_interval(IUnknown *iface, IDXGIOutput *output, UINT us, UINT period, UINT flags)
-{
-    char msg[160];
-    (void)iface;
-    snprintf(msg, sizeof(msg), "scarlett: SetFrameIntervalX(output=%p, %u us, period=%u, flags=%#x) unsupported\n",
-            (void *)output, us, period, flags);
-    OutputDebugStringA(msg);
-    return E_NOTIMPL;
-}
-
-static HRESULT WINAPI bootstrap_frame_event(IUnknown *iface, UINT type, UINT offset_us, const void *signals, UINT flags)
-{
-    char msg[160];
-    (void)iface;
-    snprintf(msg, sizeof(msg), "scarlett: ScheduleFrameEventX(type=%u, offset=%u us, signals=%p, flags=%#x) unsupported\n",
-            type, offset_us, signals, flags);
-    OutputDebugStringA(msg);
-    return E_NOTIMPL;
-}
+#include "frame_clock.h"
 
 struct bootstrap_vtbl {
     IUnknownVtbl unknown;
@@ -230,12 +243,13 @@ struct bootstrap_vtbl {
     xs_stop_fn gap250[4];
     __typeof__(&bootstrap_frame_interval) frame_interval;
     __typeof__(&bootstrap_frame_event) frame_event;
-    xs_stop_fn gap280[2];
+    __typeof__(&bootstrap_frame_wait) frame_wait;
+    xs_stop_fn gap288;
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, frame_interval) == 0x270 &&
                offsetof(struct bootstrap_vtbl, frame_event) == 0x278 &&
-               offsetof(struct bootstrap_vtbl, gap280) == 0x280 &&
+               offsetof(struct bootstrap_vtbl, frame_wait) == 0x280 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
@@ -275,16 +289,26 @@ static HRESULT WINAPI device_query(IUnknown *iface, REFIID iid, void **out)
 
 static const IUnknownVtbl device_vtbl = { device_query, device_addref, device_release };
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+static UINT WINAPI bootstrap_missing_stride(IUnknown *iface, UINT type)
+{
+    char msg[96];
+    (void)iface;
+    snprintf(msg, sizeof(msg), "scarlett: GetDescriptorHandleIncrementSize(type=%u) unsupported\n", type);
+    OutputDebugStringA(msg);
+    xs_stop();
+}
+
 static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
-    .allocator = bootstrap_allocator, .gap50 = { [0 ... 15] = xs_stop }, .heap = bootstrap_heap,
+    .allocator = bootstrap_allocator, .gap50 = { [0 ... 4] = xs_stop,
+        [5] = (xs_stop_fn)bootstrap_missing_stride, [6 ... 15] = xs_stop }, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
     .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 3] = xs_stop },
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
-    .gap280 = { xs_stop, xs_stop }
+    .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop
 };
 #endif
 
@@ -306,7 +330,7 @@ __declspec(dllexport) HRESULT WINAPI D3D12XboxCreateDevice(
 #endif
     if (!IsEqualIID(iid, &IID_IUnknown)) return E_NOINTERFACE;
 
-    device = HeapAlloc(GetProcessHeap(), 0, sizeof(*device));
+    device = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*device));
     if (!device) return E_OUTOFMEMORY;
     hr = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_12_0, &IID_ID3D12Device, (void **)&device->host);
     if (FAILED(hr)) {

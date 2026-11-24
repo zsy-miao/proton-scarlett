@@ -216,9 +216,9 @@ int main(void)
     CHECK(D3D12XboxCreateDevice(NULL, params, &device_id, &p) == E_NOTIMPL && !p);
     params[1] = 0;
     CHECK(D3D12XboxCreateDevice(NULL, params, &device_id, (void **)&d) == S_OK);
-    CHECK(METHOD(d,0x270,Interval)(d,NULL,16667,3,0) == E_NOTIMPL);
-    CHECK(METHOD(d,0x278,Schedule)(d,0,17,NULL,0) == E_NOTIMPL);
-    CHECK(METHOD(d,0x278,Schedule)(d,2,0,NULL,0) == E_NOTIMPL);
+    CHECK(METHOD(d,0x270,Interval)(d,NULL,33333,3,0) == S_OK);
+    CHECK(METHOD(d,0x278,Schedule)(d,0,17,NULL,0) == S_OK);
+    CHECK(METHOD(d,0x278,Schedule)(d,2,0,NULL,0) == S_OK);
     CHECK(METHOD(d,0x278,Schedule)(d,2,123,(void *)(UINT_PTR)1,5) == E_NOTIMPL);
     CHECK(IUnknown_QueryInterface(d, &device_id, &p) == S_OK && p == d);
     IUnknown_Release((IUnknown *)p);

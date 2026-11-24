@@ -18,7 +18,39 @@ connects the wait to presentation. None of these establishes the name or signal 
 - `2482405`: wait `(2,INFINITE,NULL,0,&savedToken)`. The input qword came from a 16-entry frame history and is checked nonzero. `2482448`: `(ORIGIN,0,NULL,2,&currentToken)`; `2484637`: `(ORIGIN,INFINITE,NULL,0,&localToken)`, then returns that token. At `2482710` an older token is used with device `+0x288`, mask `0x11100`, count initialized to six, and an output array (consistent with GetFrameStatisticsX).
 - `2482313`–`2482338` put the current token in the first qword of each plane, followed by resource count 1 and a resource-pointer array. `24824c1` passes the plane count, plane array and parameter block to queue `+0x100` (consistent with PresentX). `24821dd` also passes the token to the existing queue submission slot `+0x118`.
 
-The diagnostic patch returns `E_NOTIMPL` for both setters. A timer independent of presentation would not establish completion for the older frame named by the type-2 wait. No success contract for that event is claimed.
+The scheduler accepts a null output, 16667/33333 µs, period 1–3, no interval flags.
+Origins use a monotonic host QPC time grid with bounded offsets; late callers skip
+missed ticks. They are not claimed to be phase-locked to a physical display.
+`period` sets the frame's target time (`origin + period * interval`), not the
+distance between successive origins. Registration is per-device. Reconfiguration
+invalidates history and wakes old waiters. The most recent 16 tokens are kept.
+The observed origin poll `(0,0,NULL,2)` is nonblocking; if no origin is due it
+returns `DXGI_ERROR_WAIT_TIMEOUT`, rather than fabricating a second token.
+
+**Type 2 policy:** the public name and exact Xbox signal point remain unknown.
+For `(2,0,NULL,0)` registration succeeds; `(2,timeout,NULL,0,&token)` can
+complete only for a known, individually presented token. `xs_frame_present`
+is a private presentation consumer: it actually calls `Present(1,0)` on the
+caller's serialized DXGI swapchain, associates the incremented present count,
+and the waiter requires that exact `GetFrameStatistics().PresentCount`.
+Failure, occlusion, unknown tokens and disjoint stats do not become success.
+This indicates host presentation feedback, not proof of physical scanout.
+Pinned [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton/blob/212991fc2c266bc0d59f4c4ce8f80f7126508d71/libs/vkd3d/swapchain.c#L2988-L3016)
+updates statistics in its presentation worker. Without a consumer, finite
+type-2 waits time out and infinite waits stay pending until reconfiguration.
+The retail queue's `PresentX` and nonzero submission tokens still need integration;
+this patch does not invent display surfaces from console resources.
+
+Reproduce the consumer test from the repo root:
+
+```sh
+s="$PWD/scarlett/native"; w=$(mktemp -d); mkdir "$w/game"
+x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP \
+  "$s/test-frame-clock.c" "$s/d3d12_device.c" "$s/queue/queue.c" -ld3d12 -ldxgi \
+  -o "$w/game/game_scarlett_master.exe"
+SCARLETT_TEST_GPU=nvidia TMPDIR="$w" "$s/../test-launch-nixos.sh" "$w/game"
+grep 'PASS frame clock' "$w"/scarlett-run.*/logs/steam-999001.log
+```
 
 ## Descriptor arena and heap ABI
 

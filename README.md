@@ -13,7 +13,9 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** The installed fork passes the 596 MiB write-back allocation, uses [same-adapter backing](https://github.com/rcx2135/proton-scarlett/tree/d0a22471/scarlett/tests/amd-control-memory) for the 64 KiB control page, and creates all four indexed Compute queues. Retail now gets past Direct and Compute command-list pool creation. It requests a 33,333 µs frame interval and then calls `ScheduleFrameEventX` for event type 2. That call returns `E_NOTIMPL`, and the game stops at `+0x2478dee` before presentation.
+**AMD (`1002:164e`, RADV 26.3.0):** Retail gets through memory initialization, all four indexed Compute queues, and the Direct and Compute command-list pools. It now sets a 33,333 µs frame interval and registers frame event 2. The next confirmed stop is `GetDescriptorHandleIncrementSize(0)` during descriptor arena setup. The title needs a stride consistent with the descriptors it reads and writes directly. **No retail frame has been presented.**
+
+The [scheduler test](scarlett/native/frame-descriptor-init.md) verified that an unpresented token times out and a real DXGI present wakes the waiter for that token. The private recorder also captured synthetic red and green frames on RADV using headless Sway and Xwayland.
 
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 
