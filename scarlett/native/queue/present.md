@@ -169,6 +169,14 @@ ownership. `test-offscreen-present.c` with `-DTEST_CAPTURE_HWND` checks
 the actual DXGI swapchain HWND and presents two independently decoded frames.
 Retail has not yet reached the swapchain handoff.
 
+At Direct queue creation, a new retail trace on each GPU found the live
+title HWND on its creator thread. The flags-zero submit used that exact guest
+queue on a different thread (RADV `1c8` → `1cc`, RTX `1e8` → `1f4`); RTX
+also used it for the flags-three batch. A window lookup performed for the
+first time by the submitter would therefore fail the creator-thread check.
+This gives the bridge a verified point to capture window identity, not a
+reason to open a swapchain for every Direct queue.
+
 ## Decision at future initialization
 
 Correlate the returned HWND with device/queue creation; record primary vs.
