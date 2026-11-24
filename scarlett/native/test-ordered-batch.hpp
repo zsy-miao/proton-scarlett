@@ -15,6 +15,11 @@ HRESULT test_tagged(IUnknown *,UINT,IUnknown *const *,UINT64,UINT);
 ID3D12GraphicsCommandList7 *test_clear_recorder(IUnknown *);
 UINT test_ordered_host_submissions();
 extern const IID xs_sync_list_id;
+#ifdef TEST_SAME_BATCH_RELEASE
+HRESULT test_export_rt(IUnknown *,UINT64 *);
+HRESULT test_record_successor(IUnknown *,IUnknown *,IUnknown *,SIZE_T,UINT64,const D3D12_TEXTURE_BARRIER *,IUnknown **);
+HRESULT test_intervening_write(IUnknown *,IUnknown *,SIZE_T);
+#endif
 }
 
 struct OrderedChunk final : IUnknown {
@@ -24,6 +29,14 @@ struct OrderedChunk final : IUnknown {
     ComPtr<IUnknown> views;
     IUnknown *key;
     SIZE_T slot;
+#ifdef TEST_PAIR_SPLIT
+    IUnknown **heaps;
+    BYTE *head;
+    volatile UINT *ctrl;
+#endif
+#ifdef TEST_SAME_BATCH_RELEASE
+    UINT64 serial;
+#endif
     HRESULT WINAPI QueryInterface(REFIID iid,void **out) override {
         if (!out) return E_POINTER;
         *out=nullptr;if(iid!=IID_IUnknown)return E_NOINTERFACE;
@@ -71,10 +84,14 @@ static HRESULT ordered_copy(IUnknown *list,void *ctx,bool last)
     transition(c.texture.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_BOX pixels={0,0,0,2,1,1};l->CopyTextureRegion(&read,0,0,0,&image,&pixels);
     transition(c.texture.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
+#ifdef TEST_SAME_BATCH_RELEASE
+    return test_export_rt(list,&c.serial);
+#else
     b.SyncBefore=D3D12_BARRIER_SYNC_RENDER_TARGET;b.SyncAfter=D3D12_BARRIER_SYNC_NONE;
     b.AccessBefore=D3D12_BARRIER_ACCESS_RENDER_TARGET;b.AccessAfter=D3D12_BARRIER_ACCESS_NO_ACCESS;
     b.LayoutBefore=D3D12_BARRIER_LAYOUT_RENDER_TARGET;b.LayoutAfter=(D3D12_BARRIER_LAYOUT)0x1f;
     SLOT(list,0x490,Barrier)(list,1,&g);return S_OK;
+#endif
 }
 
 #ifndef TEST_ORDERED_PRESENT

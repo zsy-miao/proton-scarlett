@@ -41,6 +41,9 @@ static DWORD WINAPI bridge_gui(void *ctx)
 template<class Recorder>
 #endif
 static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown **batches,
+#ifdef TEST_PAIR_SPLIT
+        IUnknown **heaps,BYTE *head,
+#endif
 #ifdef TEST_ORDERED_PRESENT
         ID3D12Resource *upload_buffer,IUnknown *views,Recorder &record_recycled,ComPtr<IUnknown> &recycled,
 #endif
@@ -109,12 +112,89 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&c->intermediate)));
     hp.Type=D3D12_HEAP_TYPE_READBACK;rd.Width=256;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&c->read)));
+#ifdef TEST_PAIR_SPLIT
+    c->heaps=heaps;c->ctrl=ctrl;c->head=head;
+    ComPtr<ID3D12Resource> split_read=c->read;
+    volatile UINT *sample=nullptr;HR(split_read->Map(0,nullptr,(void**)&sample));
+    sample[0]=sample[1]=0xabababab;ctrl[2]=ctrl[3]=~0u;ticks[0]=ticks[1]=0;
+    InterlockedExchange64((volatile LONG64*)ctrl,0);MemoryBarrier();
+#endif
     ComPtr<IUnknown> first,last,gate;
+#ifdef TEST_SAME_BATCH_RELEASE
+    auto make_rt=[&](IUnknown **out){
+        return xs_ordered_record(q.Get(),[](IUnknown*l,void*p){
+#ifdef TEST_PAIR_SPLIT
+            HRESULT hr;
+            auto &c=*(OrderedChunk*)p;
+            using Mark=void(WINAPI*)(IUnknown*,const volatile void*,UINT,UINT64,UINT);
+            using Stamp=void(WINAPI*)(IUnknown*,const void*,UINT64,UINT64,UINT);
+            if((hr=xs_bind_pool_heaps(l,2,c.heaps))!=S_OK)return hr;
+            SLOT(l,0x238,Mark)(l,c.ctrl+2,0,0,0);
+            if((hr=xs_bind_pool_heaps(l,2,c.heaps))!=S_OK)return hr;
+            if((hr=ordered_copy(l,p,false))!=S_OK)return hr;
+            SLOT(l,0x240,Stamp)(l,c.head,0,0,1);
+            SLOT(l,0x238,Mark)(l,c.ctrl+3,0x29a5ee15,0,0);
+            SLOT(l,0x250,Mark)(l,c.ctrl,7,1,1);
+#else
+            HRESULT hr=ordered_copy(l,p,false);
+#endif
+            return hr==S_OK?ordered_copy(l,p,true):hr;
+        },c,c,c->key,out);
+    };
+    D3D12_TEXTURE_BARRIER release={D3D12_BARRIER_SYNC_RENDER_TARGET,D3D12_BARRIER_SYNC_NONE,
+        D3D12_BARRIER_ACCESS_RENDER_TARGET,D3D12_BARRIER_ACCESS_NO_ACCESS,D3D12_BARRIER_LAYOUT_RENDER_TARGET,
+        (D3D12_BARRIER_LAYOUT)0x1f,(ID3D12Resource*)c->key,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    auto pair=[&](){
+        HRESULT hr=make_rt(first.ReleaseAndGetAddressOf());
+        return hr!=S_OK?hr:test_record_successor(q.Get(),first.Get(),c->key,c->slot,c->serial,&release,last.ReleaseAndGetAddressOf());
+    };
+    auto reject=[&](IUnknown *a,IUnknown *b){
+        IUnknown *v[]={a,b};ComPtr<ID3D12Fence> f;
+        return FAILED(xs_ordered_submit(q.Get(),2,v,token,3,f.GetAddressOf())) && !f && !test_ordered_host_submissions() &&
+            xs_frame_submission_query(dev,token,test_host_queue(q.Get()),TRUE)==S_FALSE;
+    };
+    HR(pair());
+    CK(reject(last.Get(),first.Get()) && reject(first.Get(),first.Get()));
+    ComPtr<IUnknown> other_rt,other_release,wrongq;
+    HR(make_rt(other_rt.GetAddressOf()));CK(reject(other_rt.Get(),last.Get()));
+    using Q=HRESULT(WINAPI*)(IUnknown*,const D3D12_COMMAND_QUEUE_DESC*,REFIID,void**);
+    D3D12_COMMAND_QUEUE_DESC qdesc={};qdesc.NodeMask=1;
+    HR(SLOT(dev,0x40,Q)(dev,&qdesc,IID_ID3D12CommandQueue,(void**)wrongq.GetAddressOf()));
+    CK(FAILED(test_record_successor(wrongq.Get(),first.Get(),c->key,c->slot,c->serial,&release,other_release.GetAddressOf())));
+    release.pResource=(ID3D12Resource*)keys[0];
+    CK(FAILED(test_record_successor(q.Get(),first.Get(),c->key,c->slot,c->serial,&release,other_release.GetAddressOf())));
+    // A genuine registered sibling and its current serial still cannot consume B's RT.
+    UINT64 sibling_serial;memcpy(&sibling_serial,(void*)dest,8);
+    HR(test_record_successor(q.Get(),first.Get(),keys[0],dest,sibling_serial,&release,other_release.GetAddressOf()));
+    CK(reject(first.Get(),other_release.Get()));other_release.Reset();
+    release.pResource=(ID3D12Resource*)c->key;
+    release.Subresources.IndexOrFirstMipLevel=0;
+    CK(FAILED(test_record_successor(q.Get(),first.Get(),c->key,c->slot,c->serial,&release,other_release.GetAddressOf())));
+    release.Subresources.IndexOrFirstMipLevel=UINT_MAX;
+    IUnknown *gap[]={first.Get(),other_rt.Get(),last.Get()};
+    CK(FAILED(xs_ordered_submit(q.Get(),3,gap,token,3,nullptr)) && !test_ordered_host_submissions());
+    // Even rewriting the SAME key into the SAME slot invalidates this closed pair.
+    DWORD rtv[]={28,4,0,0,0,0};HR(xs_write_view(dev,0xa0,c->key,rtv,c->slot));
+    CK(reject(first.Get(),last.Get()));HR(pair());
+    HR(test_intervening_write(q.Get(),c->key,c->slot));CK(reject(first.Get(),last.Get()));
+    other_rt.Reset();HR(pair());
+    puts("PASS same-batch admission: stale slot/writer, sibling, order, gap, predecessor, queue rejected before Execute");
+#else
     HR(xs_ordered_record(q.Get(),[](IUnknown*l,void*p){return ordered_copy(l,p,false);},c,c,nullptr,first.GetAddressOf()));
     HR(xs_ordered_record(q.Get(),[](IUnknown*l,void*p){return ordered_copy(l,p,true);},c,c,keys[1],last.GetAddressOf()));
+#endif
     IUnknown *ids[]={last.Get(),first.Get()};
     CK(FAILED(xs_ordered_submit(q.Get(),2,ids,token,3,nullptr)) && !test_ordered_host_submissions());
     ids[0]=first.Get();ids[1]=last.Get();
+#ifdef TEST_PAIR_SPLIT
+    // Drain the actual queue after all invalid arrays. A leaked prefix/head is observable here.
+    ComPtr<ID3D12Fence> drain;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&drain)));
+    HR(test_host_queue(q.Get())->Signal(drain.Get(),1));
+    HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(drain->SetEventOnCompletion(1,e));
+    CK(WaitForSingleObject(e,5000)==WAIT_OBJECT_0);CloseHandle(e);
+    CK(ctrl[2]==~0u && ctrl[3]==~0u && !ticks[1] && sample[0]==0xabababab &&
+       xs_frame_submission_query(dev,token,test_host_queue(q.Get()),FALSE)==S_OK);
+#endif
     HR(xs_shared_fence(d,gate.GetAddressOf()));HR(xs_queue_wait(q.Get(),gate.Get(),1));
     ComPtr<ID3D12Fence> end,impostor;HR(d->CreateFence(1,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&impostor)));
     CK(xs_ordered_submit(q.Get(),2,ids,token,3,end.GetAddressOf())==S_OK && test_ordered_host_submissions()==1);
@@ -126,7 +206,22 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     CK(present(q.Get(),token,keys[1])==DXGI_ERROR_INVALID_CALL);
     HR(test_replace_end(q.Get(),impostor.Get(),end.Get()));
     HR(test_bridge_count(q.Get(),&count));CK(count==1 && fw(dev,2,0,nullptr,0,&token)==DXGI_ERROR_WAIT_TIMEOUT);
-    HR(xs_cpu_signal(gate.Get(),1));CK(WaitForSingleObject(retired,10000)==WAIT_OBJECT_0 && end->GetCompletedValue()==1);
+    HR(xs_cpu_signal(gate.Get(),1));
+#ifdef TEST_PAIR_SPLIT
+    ULONGLONG deadline=GetTickCount64()+5000;
+    while((!ticks[1] || ctrl[3]!=0x29a5ee15) && GetTickCount64()<deadline)Sleep(1);
+    CK(ctrl[2]==0 && ctrl[3]==0x29a5ee15 && ticks[1] && !end->GetCompletedValue() &&
+       sample[0]==0xabababab && sample[1]==0xabababab && WaitForSingleObject(retired,0)==WAIT_TIMEOUT);
+    CK(xs_frame_submission_query(dev,token,test_host_queue(q.Get()),TRUE)==E_PENDING &&
+       present(q.Get(),token,keys[1])==DXGI_ERROR_WAS_STILL_DRAWING);
+    InterlockedExchange64((volatile LONG64*)ctrl,1);
+#endif
+    CK(WaitForSingleObject(retired,10000)==WAIT_OBJECT_0 && end->GetCompletedValue()==1);
+#ifdef TEST_PAIR_SPLIT
+    CK(sample[0]==0xff00ff00 && sample[1]==0xff00ff00 && fw(dev,2,0,nullptr,0,&token)==DXGI_ERROR_WAIT_TIMEOUT);
+    split_read->Unmap(0,nullptr);
+    puts("PASS split flags-3: rejection drained clean; sync done; prefix, head timestamp, post visible with tail blocked; tail pixels and one batch end before flip");
+#endif
     CK(test_generation(q.Get())==generation && flip(keys[1])==S_OK);
     CK(fw(dev,2,5000,nullptr,0,&token)==S_OK && present(q.Get(),token,keys[1])==DXGI_ERROR_INVALID_CALL);
     HR(test_bridge_count(q.Get(),&count));CK(count==2);CloseHandle(retired);

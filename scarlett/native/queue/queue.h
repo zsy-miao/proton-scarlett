@@ -43,6 +43,9 @@ HRESULT xs_freeze_primary_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,U
 BOOL xs_live_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64);
 ID3D12CommandQueue *xs_release_clock(IUnknown *,UINT64 *,UINT *);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+#ifdef TEST_SAME_BATCH_RELEASE
+HRESULT xs_pair_writer(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,ID3D12CommandQueue *,UINT64 *,BOOL);
+#endif
 HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);
 IUnknown *xs_claim_view(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,SIZE_T,UINT64,BOOL);
 void xs_finish_flip(IUnknown *);

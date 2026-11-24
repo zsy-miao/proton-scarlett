@@ -22,6 +22,12 @@ struct startup_list {
     struct startup_list *ordered_next;
     struct adapter *ordered_queue;
     IUnknown *ordered_id,*ordered_lease;
+#ifdef TEST_SAME_BATCH_RELEASE
+    BOOL exports_rt;
+    IUnknown *requires_rt; /* The successor's ordered_lease owns this generation. */
+    D3D12_TEXTURE_BARRIER release_wire;
+    UINT64 writer_epoch;
+#endif
 #endif
     struct om_views om;
     struct xs_clear_source previous_vb,vb,source;
@@ -1217,6 +1223,10 @@ static void execute_recording(ID3D12CommandQueue *q,struct startup_list *s,struc
     }
     ID3D12CommandList *tail=(ID3D12CommandList *)s->host;
     ID3D12CommandQueue_ExecuteCommandLists(q,1,&tail);
+#ifdef TEST_PAIR_SPLIT
+    /* The ordered collector signals once, after its successor. */
+    if (r && !r->fence) return;
+#endif
     if (r && FAILED(ID3D12CommandQueue_Signal(q,r->fence,1))) xs_stop();
 }
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH

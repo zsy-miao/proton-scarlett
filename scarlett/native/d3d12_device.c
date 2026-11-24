@@ -1232,10 +1232,45 @@ HRESULT xs_primary_writer(IUnknown *owner,ID3D12Resource *src,ID3D12CommandQueue
         if(r->flipping){hr=DXGI_ERROR_WAS_STILL_DRAWING;break;}
         if(!r->writer){r->writer=q;ID3D12CommandQueue_AddRef(q);}
         else if(r->writer!=q){if(r->claimed)hr=E_ACCESSDENIED;else r->multi_writer=TRUE;}
+#ifdef TEST_SAME_BATCH_RELEASE
+        if(SUCCEEDED(hr))r->writer_epoch++;
+#endif
         break;
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
 }
+#ifdef TEST_SAME_BATCH_RELEASE
+/* Snapshot or atomically claim this exact view and writer generation. Called
+ * with the submission lock held on commit. No mutation on failed checks. */
+HRESULT xs_pair_writer(IUnknown *owner,IUnknown *key,ID3D12Resource *src,SIZE_T slot,UINT64 serial,
+        ID3D12CommandQueue *q,UINT64 *epoch,BOOL commit)
+{
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    HRESULT hr=E_ACCESSDENIED;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    struct color_resource *r=d->colors;while(r && &r->iface!=key)r=r->next;
+    if(r && r->slice && !r->msaa && r->host==src && !r->flipping && !r->multi_writer &&
+       (!r->writer || r->writer==q) && serial && (!commit || *epoch==r->writer_epoch)){
+        UINT matches=0;BOOL exact=FALSE;
+        for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){
+            D3D12_CPU_DESCRIPTOR_HANDLE p;
+            if(FAILED(descriptor_slot(&h->iface,slot,&p,NULL)))continue;
+            matches++;
+            if(attachment_locked(h,slot,RTV,&p)!=src)continue;
+            struct descriptor_record *rec=&h->records[(slot-h->start)/h->stride];
+            exact=rec->rtv_key==(UINT_PTR)key && rec->serial==serial;
+        }
+        if(matches==1 && exact){
+            if(commit){
+                if(!r->writer){r->writer=q;ID3D12CommandQueue_AddRef(q);}
+                r->claimed=TRUE;r->writer_epoch++;
+            }else *epoch=r->writer_epoch;
+            hr=S_OK;
+        }
+    }
+    ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
+}
+#endif
 IUnknown *xs_claim_view(IUnknown *owner,IUnknown *key,ID3D12Resource *src,ID3D12CommandQueue *q,SIZE_T slot,UINT64 serial,BOOL flip)
 {
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);IUnknown *pin=NULL;

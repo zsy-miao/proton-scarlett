@@ -14,8 +14,14 @@
 /* One exposed queue or recorder can reach other primaries. Fail closed across this provider. */
 static SRWLOCK escape_lock=SRWLOCK_INIT;
 static BOOL bridge_escaped;
+#ifdef TEST_SAME_BATCH_RELEASE
+static LONG pair_inflight;
+#endif
 static BOOL escape_native(void) {
     if(!TryAcquireSRWLockExclusive(&escape_lock))return FALSE;
+#ifdef TEST_SAME_BATCH_RELEASE
+    if(pair_inflight){ReleaseSRWLockExclusive(&escape_lock);return FALSE;}
+#endif
     bridge_escaped=TRUE;ReleaseSRWLockExclusive(&escape_lock);return TRUE;
 }
 #endif

@@ -15,6 +15,40 @@ HRESULT test_bridge_count(IUnknown *q,UINT *count)
 ID3D12CommandQueue *test_host_queue(IUnknown *q){return as_queue(q);}
 #ifdef TEST_ORDERED_BATCH
 #include "test-ordered-queue.h"
+#ifdef TEST_SAME_BATCH_RELEASE
+/* Real intervening writer through the ordinary tracked submit path. Restore
+ * the fixture's UAV input layout so a newly recorded pair can retry. */
+HRESULT test_intervening_write(IUnknown *iface,IUnknown *key,SIZE_T slot)
+{
+    struct adapter *a=CONTAINING_RECORD(iface,struct adapter,iface);
+    ID3D12Device *d=NULL;IUnknown *alloc=NULL,*list=NULL;ID3D12Fence *done=NULL;
+    HRESULT hr=ID3D12CommandQueue_GetDevice(a->host.queue,&IID_ID3D12Device,(void**)&d);
+    if(FAILED(hr))return hr;
+    if(FAILED(hr=xs_allocator(d,D3D12_COMMAND_LIST_TYPE_DIRECT,&alloc)) ||
+       FAILED(hr=xs_device_list(d,D3D12_COMMAND_LIST_TYPE_DIRECT,alloc,TRUE,a->display.owner,&list)) ||
+       FAILED(hr=ID3D12Device_CreateFence(d,0,0,&IID_ID3D12Fence,(void**)&done)))goto out;
+    struct startup_list *s=sl(list);
+    D3D12_TEXTURE_BARRIER b={D3D12_BARRIER_SYNC_ALL_SHADING,D3D12_BARRIER_SYNC_RENDER_TARGET,
+        D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,D3D12_BARRIER_ACCESS_RENDER_TARGET,
+        D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,D3D12_BARRIER_LAYOUT_RENDER_TARGET,
+        (ID3D12Resource*)key,{.IndexOrFirstMipLevel=UINT_MAX},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    D3D12_BARRIER_GROUP g={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&b};
+    if(FAILED(hr=record_primary_barrier(s,1,&g)) ||
+       FAILED(hr=record_primary_clear(s,slot,(FLOAT[4]){0},0,NULL)))goto out;
+    b.SyncBefore=D3D12_BARRIER_SYNC_RENDER_TARGET;b.SyncAfter=D3D12_BARRIER_SYNC_ALL_SHADING;
+    b.AccessBefore=D3D12_BARRIER_ACCESS_RENDER_TARGET;b.AccessAfter=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+    b.LayoutBefore=D3D12_BARRIER_LAYOUT_RENDER_TARGET;b.LayoutAfter=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS;
+    b.pResource=s->primary;ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
+    if(FAILED(hr=sl_close(list)) || FAILED(hr=checked_startup_submit(iface,1,&list,0,0)))goto out;
+    if(FAILED(ID3D12CommandQueue_Signal(a->host.queue,done,1)) ||
+       FAILED(ID3D12Fence_SetEventOnCompletion(done,1,NULL)))xs_stop();
+out:
+    if(done)ID3D12Fence_Release(done);
+    if(list)IUnknown_Release(list);
+    if(alloc)IUnknown_Release(alloc);
+    ID3D12Device_Release(d);return hr;
+}
+#endif
 #ifdef TEST_ORDERED_PRESENT
 UINT test_ring_index(IUnknown *q)
 {

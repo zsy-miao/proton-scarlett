@@ -255,6 +255,9 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
 #endif
     IUnknown *keys[]={surface,other},*batches[]={list.Get(),second.Get()};ID3D12Resource *sources[]={texture.Get(),sibling.Get()};
     int checked=bridge_fixture(d,dev,keys,batches,
+#ifdef TEST_PAIR_SPLIT
+            pair,head,
+#endif
 #ifdef TEST_ORDERED_PRESENT
             upload.Get(),views.Get(),record_recycled,second,
 #endif
