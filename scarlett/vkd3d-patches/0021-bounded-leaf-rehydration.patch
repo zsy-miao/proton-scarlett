@@ -1,0 +1,58 @@
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1259,7 +1259,7 @@
+     unsigned int heuristic_min_wave_size;
+     unsigned int heuristic_max_wave_size;
+     bool treelet_window = false;
+-    bool treelets, refit, triangles, load_pass, read_only, instances, boxes, morton, bitonic, header_read;
++    bool leaf, treelets, refit, triangles, load_pass, read_only, instances, boxes, morton, bitonic, header_read;
+     dxil_spv_converter converter = NULL;
+     dxil_spv_parsed_blob blob = NULL;
+     dxil_spv_compiled_spirv compiled;
+@@ -1375,10 +1375,11 @@
+         }
+     }
+ 
++    leaf = dxbc->size == 0x9568 && hash == UINT64_C(0x3ba08d9e2f0a0afe) && stage == DXIL_SPV_STAGE_COMPUTE;
+     treelets = dxbc->size == 0x4dd8 && hash == UINT64_C(0x3b1bb5613f9b7419) && stage == DXIL_SPV_STAGE_COMPUTE;
+-    if (treelets)
+-    {
+-        const dxil_spv_option_shader_quirk q = {{DXIL_SPV_OPTION_SHADER_QUIRK}, DXIL_SPV_SHADER_QUIRK_XBOX_TREELETS};
++    if (leaf || treelets)
++    {
++        const dxil_spv_option_shader_quirk q = {{DXIL_SPV_OPTION_SHADER_QUIRK}, leaf ? DXIL_SPV_SHADER_QUIRK_XBOX_LEAF : DXIL_SPV_SHADER_QUIRK_XBOX_TREELETS};
+         if (compiler_args->min_subgroup_size > 32 || compiler_args->max_subgroup_size < 32 ||
+                 dxil_spv_converter_add_option(converter, &q.base) != DXIL_SPV_SUCCESS)
+         {
+@@ -1418,7 +1419,7 @@
+             (dxbc->size == 0x2204 && hash == UINT64_C(0xd94c62f47a4dc2cf)) ||
+             (dxbc->size == 0x1554 && hash == UINT64_C(0x6418df8f45aa5520)) ||
+             (dxbc->size == 0x2094 && hash == UINT64_C(0xbe761fb667184255));
+-    header_read = treelets || (dxbc->size == 0x14a4 && hash == UINT64_C(0x827443b28f6865ee)) ||
++    header_read = leaf || treelets || (dxbc->size == 0x14a4 && hash == UINT64_C(0x827443b28f6865ee)) ||
+             (dxbc->size == 0x1c80 && hash == UINT64_C(0x338965854453d35d)) ||
+             (dxbc->size == 0x1794 && hash == UINT64_C(0x8a1f344edf785181)) ||
+             (dxbc->size == 0x1e68 && hash == UINT64_C(0xb79d27d4432d86ec)) ||
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1324,6 +1324,7 @@
+ void WINAPI DLLEXPORT ScarlettBoundedLoadPassV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedTreeletsV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBVH4V1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedLeafRehydrationV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedApexV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedProceduralsV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedTrianglesV1(void) {}
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -3,6 +3,7 @@
+ EXPORTS
+     ScarlettBoundedTreeletsV1
+     ScarlettBoundedBVH4V1
++    ScarlettBoundedLeafRehydrationV1
+     ScarlettBoundedApexV1
+     ScarlettBoundedProceduralsV1
+     ScarlettBoundedTrianglesV1

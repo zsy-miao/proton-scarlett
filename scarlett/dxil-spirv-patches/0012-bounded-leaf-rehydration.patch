@@ -1,0 +1,166 @@
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6315,6 +6315,7 @@
+ static unsigned xbox_memory_opcode(llvm::Function *fn)
+ {
+ 	if (fn->begin() != fn->end()) return 0;
++	if (fn->getName() == "xbox.TypedLoad.i32") return 138;
+ 	if (fn->getName() == "xbox.Min3_U32") return 14;
+ 	if (fn->getName() == "xbox.Max3_U32") return 15;
+ 	if (fn->getName() == "xbox.Med3_U32") return 16;
+@@ -6391,8 +6392,59 @@
+ 	impl.add(ret); return true;
+ }
+ 
++// The compact stream has byte fields and 4-aligned (not 8-aligned) qwords.
++static bool emit_leaf_stream(Converter::Impl &impl, const llvm::CallInst &call, bool byte)
++{
++    auto con = [&](unsigned i, unsigned n) {
++        auto *c = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(i));
++        return c && c->getUniqueInteger().getZExtValue() == n;
++    };
++    auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };
++    auto *ret = llvm::dyn_cast<llvm::StructType>(call.getType());
++    if (!ret || ret->getNumElements()!=5 || !u32(call.getOperand(2)->getType()) ||
++        call.getNumOperands() != (byte ? 4u : 6u) || !con(0, byte ? 138 : 139) ||
++        (byte ? !con(3, 65) : (!llvm::isa<llvm::UndefValue>(call.getOperand(3)) || !con(4, 1) || !con(5, 4))) ||
++        impl.llvm_composite_meta[&call].access_mask != 1) return false;
++    for (unsigned i=0;i<5;i++) {
++        auto *elem=ret->getElementType(i);
++        if (!elem->isIntegerTy() || elem->getIntegerBitWidth() != (byte || i==4 ? 32u : 64u)) return false;
++    }
++    auto id = impl.get_id_for_value(call.getOperand(1));
++    const auto &meta = impl.handle_to_resource_meta[id];
++    if (meta.storage != spv::StorageClassStorageBuffer || meta.kind != DXIL::ResourceKind::RawBuffer ||
++        meta.component_type != DXIL::ComponentType::U32 || meta.aliased || meta.raw_component_vecsize != RawVecSize::V1) return false;
++    auto &b = impl.builder(); auto t = b.makeUintType(32);
++    auto op = [&](spv::Op ins, spv::Id type, std::initializer_list<spv::Id> ids) {
++        auto *o = impl.allocate(ins, type); for (auto v : ids) o->add_id(v); impl.add(o); return o->id;
++    };
++    auto addr = impl.get_id_for_value(call.getOperand(2));
++    auto word = op(spv::OpShiftRightLogical, t, {addr, b.makeUintConstant(2)});
++    auto load = [&](spv::Id idx) {
++        // Non-aliased offset buffers carry element offset and element count.
++        if (meta.index_offset_id) {
++            auto elem = [&](unsigned i) { auto *o = impl.allocate(spv::OpCompositeExtract,t);
++                o->add_id(meta.index_offset_id); o->add_literal(i); impl.add(o); return o->id; };
++            auto ok = op(spv::OpULessThan,b.makeBoolType(),{idx,elem(1)});
++            idx = op(spv::OpSelect,t,{ok,op(spv::OpIAdd,t,{idx,elem(0)}),b.makeUintConstant(0x3ffffffc)});
++        }
++        auto ptr = op(spv::OpAccessChain,b.makePointer(meta.storage,t),{id,b.makeUintConstant(0),idx});
++        return op(spv::OpLoad,t,{ptr});
++    };
++    auto lo = load(word); spv::Id result;
++    if (byte) {
++        auto shift = op(spv::OpBitwiseAnd,t,{op(spv::OpShiftLeftLogical,t,{addr,b.makeUintConstant(3)}),b.makeUintConstant(24)});
++        result = op(spv::OpBitwiseAnd,t,{op(spv::OpShiftRightLogical,t,{lo,shift}),b.makeUintConstant(255)});
++    } else {
++        auto hi = load(op(spv::OpIAdd,t,{word,b.makeUintConstant(1)}));
++        result = op(spv::OpBitcast,b.makeUintType(64),{op(spv::OpCompositeConstruct,b.makeVectorType(t,2),{lo,hi})});
++    }
++    impl.llvm_composite_meta[&call].forced_composite = false;
++    impl.rewrite_value(&call,result); return true;
++}
++
+ static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
+ {
++	if (opnum == 138) return false; // Only the exact bounded leaf stream handler may consume it.
+ 	const bool treelets = impl.xbox_math == Converter::Impl::XboxMath::Treelets;
+ 	if (treelets && (opnum == 50 || opnum == 113))
+ 	{
+@@ -6421,14 +6473,14 @@
+ 	if (opnum == 113 || call.getCalledFunction()->getName() == "xbox.MakeUniform.i64") return false;
+ 	if (opnum == 25 || opnum == 50) return emit_radix_count_wave(impl, call, opnum);
+ 	const bool counter = opnum == 355 || opnum == 367;
+-	if ((counter || opnum == 357) && !impl.xbox_load_pass) return false;
++	if ((counter || (opnum == 357 && impl.xbox_math != Converter::Impl::XboxMath::Leaf)) && !impl.xbox_load_pass) return false;
+ 	const bool atomic = counter || opnum >= 368;
+ 	const bool read = !counter && (opnum < 360 || opnum == 364);
+ 	if (opnum == 364 && !impl.xbox_scalar_read) return false;
+ 	if (opnum == 332)
+ 	{
+ 		auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };
+-		if (!impl.xbox_load_pass || !impl.xbox_scalar_read || call.getNumOperands() != 4 || !u32(call.getType())) return false;
++		if ((!impl.xbox_load_pass && impl.xbox_math != Converter::Impl::XboxMath::Leaf) || !impl.xbox_scalar_read || call.getNumOperands() != 4 || !u32(call.getType())) return false;
+ 		for (unsigned i = 0; i < 4; ++i) if (!u32(call.getOperand(i)->getType())) return false;
+ 		auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 		if (!opcode || opcode->getUniqueInteger().getZExtValue() != opnum) return false;
+@@ -6641,6 +6693,13 @@
+ 	if (auto *call_inst = llvm::dyn_cast<llvm::CallInst>(&instruction))
+ 	{
+ 		auto *called_function = call_inst->getCalledFunction();
++		if (xbox_math == XboxMath::Leaf && call_inst->getNumOperands() >= 3 &&
++		    (called_function->getName() == "xbox.TypedLoad.i32" || called_function->getName() == "dx.op.rawBufferLoad.i64"))
++		{
++			auto it = llvm_value_to_uav_resource_index_map.find(call_inst->getOperand(1));
++			if (it != llvm_value_to_uav_resource_index_map.end() && it->second == 0)
++				return emit_leaf_stream(*this, *call_inst, called_function->getName() == "xbox.TypedLoad.i32");
++		}
+ 		if (strncmp(called_function->getName().data(), "dx.op", 5) == 0)
+ 		{
+ 			return emit_dxil_instruction(*this, call_inst);
+@@ -9870,6 +9929,9 @@
+ 			xbox_math = XboxMath::BVH4;
+ 			break;
+ 
++		case ShaderQuirk::XboxLeaf:
++			xbox_math = XboxMath::Leaf;
++			break;
+ 		case ShaderQuirk::XboxTreelets:
+ 			xbox_math = XboxMath::Treelets;
+ 			options.quirks.group_shared_auto_barrier = true;
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -774,7 +774,7 @@
+ 	PreciseFMA,
+ 	XboxRadixCount,
+ 	XboxBVH4Math,
+-	XboxTreelets
++	XboxTreelets, XboxLeaf
+ };
+ 
+ struct OptionShaderQuirk : OptionBase
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -243,6 +243,7 @@
+ 	DXIL_SPV_SHADER_QUIRK_XBOX_RADIX_COUNT = 14,
+ 	DXIL_SPV_SHADER_QUIRK_XBOX_BVH4_MATH = 15,
+ 	DXIL_SPV_SHADER_QUIRK_XBOX_TREELETS = 16,
++	DXIL_SPV_SHADER_QUIRK_XBOX_LEAF = 17,
+ 	DXIL_SPV_SHADER_QUIRK_INT_MAX = 0x7fffffff
+ } dxil_spv_shader_quirk;
+ 
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -477,7 +477,7 @@
+ 	bool xbox_load_pass = false, xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
+ 	bool root_constant_arrayed = false;
+ 	bool xbox_scalar_read = false;
+-	enum class XboxMath : uint8_t { None, BVH4, Treelets };
++	enum class XboxMath : uint8_t { None, BVH4, Treelets, Leaf };
+ 	XboxMath xbox_math = XboxMath::None;
+ 	unsigned patch_location_offset = ~0u;
+ 	unsigned descriptor_qa_counter = 0;
+diff --git a/opcodes/opcodes_dxil_builtins.cpp b/opcodes/opcodes_dxil_builtins.cpp
+--- a/opcodes/opcodes_dxil_builtins.cpp
++++ b/opcodes/opcodes_dxil_builtins.cpp
+@@ -768,7 +768,15 @@
+ 	// In DXIL, whether or not an opcode is sparse depends on if the 4th argument is statically used by SSA ...
+ 	auto itr = impl.llvm_value_to_uav_resource_index_map.find(instruction->getOperand(1));
+ 	if (itr != impl.llvm_value_to_uav_resource_index_map.end())
++	{
+ 		tracking = &impl.uav_access_tracking[itr->second];
++		if (impl.xbox_math == Converter::Impl::XboxMath::Leaf && itr->second == 0 && opcode == DXIL::Op::RawBufferLoad)
++		{
++			tracking->has_read = true;
++			tracking->raw_access_buffer_declarations[int(RawType::Integer)][int(RawWidth::B32)][int(RawVecSize::V1)] = true;
++			return;
++		}
++	}
+ 
+ 	if (!tracking)
+ 	{
