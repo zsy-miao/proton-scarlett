@@ -238,6 +238,14 @@ int main()
     D3D12_HEAP_PROPERTIES wbProps; D3D12_HEAP_FLAGS wf;
     HR(wb.resource()->GetHeapProperties(&wbProps,&wf));
     CHECK(wbProps.CPUPageProperty==D3D12_CPU_PAGE_PROPERTY_WRITE_BACK);
+    {
+        scarlett_section_info wi;
+        HR(scarlett_query_section(0x5343000c,wbLast,4,&wi));
+        ImportedBuffer wrong;
+        CHECK(FAILED(wrong.wc(d,100u<<20,wi.section,nullptr)) && !wrong.resource());
+        CHECK(FAILED(wrong.wc(d,10u<<20,wi.section,nullptr,false,true,true)) && !wrong.resource());
+        CHECK(CloseHandle(wi.section));
+    }
     auto out=(volatile DWORD *)at[4];
     auto aLast=(DWORD *)(at[0]+counts[0]*pg-4), bLast=(DWORD *)(at[1]+counts[1]*pg-4);
     ImportedReadSpan ra,rb;

@@ -93,6 +93,12 @@ the actual layout, all five maps, last-word GPU reads and writes permitted by
 the translated operations, rejected writable imports of source-only VAs,
 conflicting aliases, lifetime and teardown. The two smaller dedicated WB heaps
 use `ScarlettWbPagesHeapV1` independently of the existing WB pool size contract.
+On RTX 3070 / 595.112.07, the 100 MiB data heap and 10 MiB read-source heap
+use dedicated host-cached memory type 4. Wine checks the DMA-BUF's tag and
+full allocation size on reimport, and checks that the WB type is compatible.
+The five-range fixture passed on RTX and RADV, including two indirect
+dispatches after address reuse and rejection of wrong-policy and wrong-size
+imports.
 Wine's `0x5343000d` maps a WB slice; `0x5343000e/0f` map WB/WC source-only
 views. The ordinary acquire operations refuse the latter. `ImportedReadSpan`
 uses `0x53430010/11` privately and only records bounded source copies. This is

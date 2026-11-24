@@ -1,0 +1,82 @@
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+index bf737f1..fe69559 100644
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -1982,6 +1982,12 @@ failed:
+ 
+ /* open a D3DKMT global or shared resource */
+ D3DKMT_HANDLE d3dkmt_open_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local, D3DKMT_HANDLE *sync_local )
++{
++    return d3dkmt_open_tagged_resource( global, shared, mutex_local, sync_local, NULL );
++}
++
++D3DKMT_HANDLE d3dkmt_open_tagged_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local,
++                                           D3DKMT_HANDLE *sync_local, const UINT64 expected[2] )
+ {
+     struct d3dkmt_object *allocation = NULL, *mutex = NULL, *sync = NULL;
+     UINT runtime_size, mutex_size = 0, sync_size = 0;
+@@ -2000,6 +2006,11 @@ D3DKMT_HANDLE d3dkmt_open_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_
+     if ((status = d3dkmt_object_alloc( sizeof(*resource), D3DKMT_RESOURCE, (void **)&resource ))) goto failed;
+     if ((status = d3dkmt_object_alloc( sizeof(*allocation), D3DKMT_ALLOCATION, (void **)&allocation ))) goto failed;
+     if ((status = d3dkmt_object_open( &resource->obj, global, shared, runtime_data, &runtime_size ))) goto failed;
++    if (expected && (runtime_size != 2 * sizeof(UINT64) || memcmp(runtime_data,expected,runtime_size)))
++    {
++        status = STATUS_INVALID_PARAMETER;
++        goto failed;
++    }
+     if (runtime_size == 2 * sizeof(UINT64) && ((UINT64 *)runtime_data)[0] == 0x5343435000000001ull)
+     {
+         status = STATUS_ACCESS_DENIED;
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 7ab35f4..ec9fff3 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1147,7 +1147,12 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+                 else return VK_ERROR_FEATURE_NOT_PRESENT;
+                 cpu_control = export_info->handleTypes == SCARLETT_CPU_CONTROL_HANDLE;
+                 if (cpu_control && (wc_type != 3 || alloc_info->allocationSize != 65536)) return VK_ERROR_FEATURE_NOT_PRESENT;
+-                if ((wb = export_info->handleTypes == SCARLETT_WB_HANDLE)) { if (wc_type != 2) return VK_ERROR_FEATURE_NOT_PRESENT; wc_type = 5; }
++                if ((wb = export_info->handleTypes == SCARLETT_WB_HANDLE))
++                {
++                    if (wc_type == 3 && alloc_info->allocationSize != 0x6400000 && alloc_info->allocationSize != 0xa00000)
++                        return VK_ERROR_FEATURE_NOT_PRESENT;
++                    wc_type = wc_type == 3 ? 4 : 5;
++                }
+                 if (!device->extensions.has_VK_EXT_external_memory_dma_buf || alloc_info->memoryTypeIndex != wc_type ||
+                     physical_device->memory_properties.memoryTypeCount <= wc_type ||
+                     physical_device->memory_properties.memoryTypes[wc_type].propertyFlags !=
+@@ -1219,8 +1224,20 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+         }
+         case SCARLETT_WB_HANDLE:
+         case SCARLETT_DMA_HANDLE:
+-            memory->local = d3dkmt_open_resource( 0, import_win32->handle, &memory->mutex, &memory->sync );
++        {
++            BOOL cached = import_win32->handleType == SCARLETT_WB_HANDLE;
++            const UINT64 tag[2] = {cached ? 0x5343574200000001ull : 0x5343574300000001ull, alloc_info->allocationSize};
++            memory->local = d3dkmt_open_tagged_resource( 0, import_win32->handle, &memory->mutex, &memory->sync, tag );
++            if (!memory->local) goto failed;
++            if (cached)
++            {
++                VkMemoryFdPropertiesKHR props = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
++                if ((control_fd = d3dkmt_object_get_fd( memory->local )) < 0 || !device->p_vkGetMemoryFdPropertiesKHR ||
++                    device->p_vkGetMemoryFdPropertiesKHR( device->host.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++                        control_fd, &props ) || !(props.memoryTypeBits & (1u << alloc_info->memoryTypeIndex))) goto failed;
++            }
+             break;
++        }
+         case SCARLETT_CONTROL_HANDLE:
+         {
+             VkMemoryFdPropertiesKHR fd_props = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index d908c77..a28c955 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -227,6 +227,8 @@ extern HANDLE open_shared_semaphore_from_name( const WCHAR *name );
+ 
+ extern D3DKMT_HANDLE d3dkmt_create_resource( int fd, D3DKMT_HANDLE *global, const void *runtime, UINT len );
+ extern D3DKMT_HANDLE d3dkmt_open_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local, D3DKMT_HANDLE *sync_local );
++extern D3DKMT_HANDLE d3dkmt_open_tagged_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local,
++                                                  D3DKMT_HANDLE *sync_local, const UINT64 expected[2] );
+ extern NTSTATUS d3dkmt_destroy_resource( D3DKMT_HANDLE local );
+ 
+ extern D3DKMT_HANDLE d3dkmt_create_sync( int fd, D3DKMT_HANDLE *global );

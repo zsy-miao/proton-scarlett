@@ -1,0 +1,34 @@
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index b96ad79..ef80160 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7892,9 +7892,9 @@ static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HAND
+                 device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV) wc_type = 2;
+         else return DXGI_ERROR_UNSUPPORTED;
+         if (wb) {
+-            if (wc_type == 3) return E_NOINTERFACE; /* qualified NVIDIA system-section path */
++            if (wc_type == 3 && !pages) return E_NOINTERFACE; /* large NVIDIA system-section path */
+             if (pages ? (size != 0x6400000 && size != 0xa00000) : (size < 0x23300000 || size > 0x49400000)) return DXGI_ERROR_UNSUPPORTED;
+-            wc_type = 5;
++            wc_type = wc_type == 3 ? 4 : 5;
+         }
+         if (device->memory_properties.memoryTypeCount <= wc_type || device->memory_properties.memoryTypes[wc_type].propertyFlags !=
+                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | (wb ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0)) ||
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+index ef00e21..96e6548 100644
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -2165,7 +2165,12 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+                 if (device->memory_properties.memoryTypes[i].propertyFlags == 0xc6)
+                     alloc_info.memory_requirements.memoryTypeBits |= 1u << i;
+         }
+-        else alloc_info.memory_requirements.memoryTypeBits = 1u << (device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV ? (info->heap_desc.Properties.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ? 5 : 2) : 3);
++        else
++        {
++            bool radv = device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV;
++            alloc_info.memory_requirements.memoryTypeBits = 1u << (info->heap_desc.Properties.CPUPageProperty ==
++                    D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ? (radv ? 5 : 4) : (radv ? 2 : 3));
++        }
+         alloc_info.flags |= VKD3D_ALLOCATION_FLAG_DEDICATED | VKD3D_ALLOCATION_FLAG_NO_FALLBACK;
+         alloc_info.heap_flags |= control ? SCARLETT_CONTROL_BUFFER : SCARLETT_EXTERNAL_BUFFER;
+     }
