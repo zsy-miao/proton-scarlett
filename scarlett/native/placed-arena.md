@@ -70,3 +70,24 @@ including writes to code. Retain the bindings through list/queue retirement.
 No such whole-view consumer exists on this baseline. The range test exercises
 the operand translation, not the startup descriptor/command-list ABI;
 the production factory should continue to fail with null output.
+
+### Reproducing the shader access test
+
+The [shader](../tests/placed-arena/logical.hlsl) selects among three
+fixture-owned buffers by logical offset. It gets only a read descriptor for
+the first 27 MiB. On RADV and RTX 3070 the fenced readback verified all
+45,613,056 words: the protected prefix was unchanged and every writable
+word changed. The test also checks a two-word store at each boundary.
+Rejecting a partly protected store before either write is the fixture's
+policy; retail fault semantics, shader translation and live XMem aliasing
+are not established by this test.
+
+From the repository root, with DXC and MinGW on `PATH`:
+
+```sh
+d=scarlett/tests/placed-arena; game=$(mktemp -d)
+dxc -WX -T cs_6_0 -E main -Qstrip_debug -Fo "$game/logical.dxil" "$d/logical.hlsl"
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
+    "$d/fixture.cpp" -ld3d12 -o "$game/game_scarlett_master.exe"
+SCARLETT_TEST_GPU=radv ./scarlett/test-launch-nixos.sh "$game"
+```
