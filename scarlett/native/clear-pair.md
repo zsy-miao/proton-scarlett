@@ -29,7 +29,7 @@ DXC `1.9(dev;4950-b106a961)` using
 `dxc -Ges -Gis -O3 -Qstrip_debug -Qstrip_reflect -T ${stage}_6_0 -E $stage -Fo $stage.dxil clear_pair.hlsl`.
 Use the resulting file bytes in the `clear_vs_dxil` and `clear_ps_dxil` arrays.
 
-**AMD test.** Put the local `stream.bin`, `vs.bin`, `ps.bin` captures in
+**GPU test.** Put the local `stream.bin`, `vs.bin`, `ps.bin` captures in
 a scratch `game` directory. Build from the patched tree:
 
 ```sh
@@ -53,8 +53,17 @@ UNORM thresholds if converted directly or via nearest half instead of RTZ.
 Three fenced readbacks check every channel (384 pixels total), including black
 with the wrong color tag and no coverage with the wrong position tag.
 
-**RTX 3070:** The same fixture created the PSO but failed the strict RADV
-pixel oracle. For the first triangle, the input green value was exactly 0.5;
-21 pixels read back green 127 instead of 128. A diagnostic comparison found
-no other byte differences across the three draws. RTX retail has not reached
-this PSO.
+**UNORM export.** After half-RTZ, clamp to [0,1] and select the nearest
+byte with ties to even. Multiplication by 255 is exact in float32 for
+clamped half values. The only half exactly halfway between byte codes is
+0.5: 127.5 rounds to 128. Returning the selected byte divided by 255 puts
+the host export away from the rounding boundary. This relies on the pinned
+RGBA8_UNORM target and disabled blending.
+
+The unchanged 384-pixel fixture passes on RADV and RTX 3070 (use
+`SCARLETT_TEST_GPU=nvidia SCARLETT_TEST_DISPLAY=xvfb` for RTX). A separate
+128×128 draw supplied four successive binary16 encodings per pixel, widened
+to float32 (NaNs canonicalized). The original RADV shader and the patched
+shader on both GPUs produced identical bytes for all 65,536 channels. An
+independent CPU oracle picked the closest byte by exact rational distance,
+clamping out-of-range inputs and mapping NaN to zero; it matched every byte.

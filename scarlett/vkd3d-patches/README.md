@@ -63,3 +63,7 @@ RADV run `test-control64.cpp` to check the existing GPU-visible path.
 For the RTX 185 MiB descriptor arena, apply `0023` after `0022` with Wine
 patch `0010`. Rebuild the x64 graphics core and `win32u.so` together. Run
 `test-descriptor-pages.cpp` on RTX and RADV to verify the five maps.
+
+For the RTX primary textures apply `0024` after `0023` and rebuild the x64
+core. `test-allocation-info.cpp` exercises the original backing and final
+release on both GPUs.

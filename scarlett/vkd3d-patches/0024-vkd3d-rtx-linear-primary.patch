@@ -1,0 +1,94 @@
+diff --git a/libs/vkd3d/scarlett_primary_image.h b/libs/vkd3d/scarlett_primary_image.h
+index 2c19fe8..09e2102 100644
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -33,7 +33,7 @@ static void scarlett_drop_slice(struct d3d12_resource *resource)
+     scarlett_remove_slice(s);
+ }
+ 
+-static HRESULT scarlett_primary_image(struct d3d12_device *d, VkImage *image, VkMemoryRequirements *req)
++static HRESULT scarlett_primary_image(struct d3d12_device *d, VkImage *image, VkMemoryRequirements *req, uint32_t *type_index)
+ {
+     const struct vkd3d_vk_device_procs *vk_procs = &d->vk_procs;
+     const VkPhysicalDeviceProperties *p = &d->device_info.properties2.properties;
+@@ -50,12 +50,17 @@ static HRESULT scarlett_primary_image(struct d3d12_device *d, VkImage *image, Vk
+     VkImageMemoryRequirementsInfo2 info = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};
+     VkMemoryDedicatedRequirements dedicated = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+     VkMemoryRequirements2 mr = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,&dedicated};
++    VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT,0,0};
++    VkSubresourceLayout layout;
+     VkResult vr;
+-    if (p->vendorID != 0x1002 || p->deviceID != 0x164e || p->driverVersion != 0x06803000 ||
+-            d->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_MESA_RADV ||
+-            !d->vk_info.EXT_external_memory_host || !vk_procs->vkGetMemoryHostPointerPropertiesEXT ||
++    if (p->vendorID == 0x1002 && p->deviceID == 0x164e && p->driverVersion == 0x06803000 &&
++            d->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV) *type_index = 5;
++    else if (p->vendorID == 0x10de && p->deviceID == 0x2484 && p->driverVersion == ((595u<<22)|(112u<<14)|(7u<<6)) &&
++            d->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY) *type_index = 4;
++    else return DXGI_ERROR_UNSUPPORTED;
++    if (!d->vk_info.EXT_external_memory_host || !vk_procs->vkGetMemoryHostPointerPropertiesEXT ||
+             d->device_info.external_memory_host_properties.minImportedHostPointerAlignment != 4096 ||
+-            d->memory_properties.memoryTypeCount <= 5 || d->memory_properties.memoryTypes[5].propertyFlags != 0xe)
++            d->memory_properties.memoryTypeCount <= *type_index || d->memory_properties.memoryTypes[*type_index].propertyFlags != 0xe)
+         return DXGI_ERROR_UNSUPPORTED;
+     if (VK_CALL(vkGetPhysicalDeviceImageFormatProperties2(d->vk_physical_device,&fmt,&props)) ||
+             !(external.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) ||
+@@ -65,8 +70,9 @@ static HRESULT scarlett_primary_image(struct d3d12_device *d, VkImage *image, Vk
+     info.image = *image;
+     VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&info,&mr));
+     *req = mr.memoryRequirements;
++    VK_CALL(vkGetImageSubresourceLayout(d->vk_device,*image,&sub,&layout));
+     if (dedicated.requiresDedicatedAllocation || req->size != 0x1fa4000 || req->alignment > 65536 ||
+-            !(req->memoryTypeBits & (1u<<5))) {
++            layout.offset || layout.rowPitch != 3840u * 4 || !(req->memoryTypeBits & (1u<<*type_index))) {
+         VK_CALL(vkDestroyImage(d->vk_device,*image,NULL));
+         return DXGI_ERROR_UNSUPPORTED;
+     }
+@@ -79,12 +85,13 @@ HRESULT WINAPI ScarlettPrimaryImageInfoV1(d3d12_device_iface *iface,D3D12_RESOUR
+     struct d3d12_device *d;
+     VkMemoryRequirements mr;
+     VkImage image;
++    uint32_t type_index;
+     HRESULT hr;
+     if (!out) return E_POINTER;
+     memset(out,0,sizeof(*out));
+     if (!iface) return E_INVALIDARG;
+     d=impl_from_ID3D12Device(iface); vk_procs=&d->vk_procs;
+-    if (FAILED(hr=scarlett_primary_image(d,&image,&mr))) return hr;
++    if (FAILED(hr=scarlett_primary_image(d,&image,&mr,&type_index))) return hr;
+     VK_CALL(vkDestroyImage(d->vk_device,image,NULL));
+     out->Alignment=65536; out->SizeInBytes=align(mr.size,out->Alignment);
+     return S_OK;
+@@ -110,6 +117,7 @@ HRESULT WINAPI ScarlettPrimaryImageV1(d3d12_device_iface *iface,void *base,SIZE_
+     MEMORY_BASIC_INFORMATION mbi;
+     struct d3d12_resource *r;
+     uintptr_t begin=(uintptr_t)base;
++    uint32_t type_index;
+     SIZE_T slice;
+     VkResult vr;
+     HRESULT hr;
+@@ -120,13 +128,13 @@ HRESULT WINAPI ScarlettPrimaryImageV1(d3d12_device_iface *iface,void *base,SIZE_
+             mbi.Type!=MEM_PRIVATE || mbi.AllocationBase!=base || mbi.BaseAddress!=base || mbi.RegionSize<capacity)
+         return E_INVALIDARG;
+     d=impl_from_ID3D12Device(iface); vk_procs=&d->vk_procs;
+-    if (FAILED(hr=scarlett_primary_image(d,&image,&mr))) return hr;
++    if (FAILED(hr=scarlett_primary_image(d,&image,&mr,&type_index))) return hr;
+     slice=align(mr.size,65536);
+     hr=E_INVALIDARG;
+     if ((offset && offset!=slice) || offset>capacity || slice>capacity-offset) goto fail_image;
+     imp.pHostPointer=(void *)(begin+offset);
+     if (VK_CALL(vkGetMemoryHostPointerPropertiesEXT(d->vk_device,imp.handleType,imp.pHostPointer,&props)) ||
+-            !(props.memoryTypeBits & mr.memoryTypeBits & (1u<<5))) { hr=DXGI_ERROR_UNSUPPORTED; goto fail_image; }
++            !(props.memoryTypeBits & mr.memoryTypeBits & (1u<<type_index))) { hr=DXGI_ERROR_UNSUPPORTED; goto fail_image; }
+     if (!(s=vkd3d_calloc(1,sizeof(*s)))) { hr=E_OUTOFMEMORY; goto fail_image; }
+     s->start=begin+offset; s->end=s->start+slice;
+     s->lease=lease; IUnknown_AddRef(lease);
+@@ -135,7 +143,7 @@ HRESULT WINAPI ScarlettPrimaryImageV1(d3d12_device_iface *iface,void *base,SIZE_
+     if (!it) { s->next=scarlett_slices; scarlett_slices=s; }
+     pthread_mutex_unlock(&scarlett_slice_lock);
+     if (it) { IUnknown_Release(lease); vkd3d_free(s); hr=DXGI_ERROR_INVALID_CALL; goto fail_image; }
+-    ai.allocationSize=slice; ai.memoryTypeIndex=5;
++    ai.allocationSize=slice; ai.memoryTypeIndex=type_index;
+     if ((vr=VK_CALL(vkAllocateMemory(d->vk_device,&ai,NULL,&s->memory)))==VK_SUCCESS) {
+         bi.memory=s->memory; bi.image=image;
+         vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi));

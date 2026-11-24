@@ -1,5 +1,12 @@
 # Device +0xc8: startup color texture allocation info
 
+On RTX 3070 / 595.112.07, the linear image reports row pitch `0x3c00` and
+size `0x1fa4000`. Rounding to 64 KiB gives the retail slot size `0x1fb0000`.
+Both images use host-cached type 4, at offsets 0 and `0x1fb0000` of the same
+original allocation. Fenced clears changed every expected pixel and left the
+last 640 KiB untouched. The optimal image size (`0x1fe0000`) does not fit
+this slot.
+
 `344182` calls with RCX = hidden 16-byte output, RDX = device, R8D = node
 mask 1, R9D = count 1, and the description as the fifth argument. `344188`
 copies both qwords to the caller; `344190` requires the size's high DWORD

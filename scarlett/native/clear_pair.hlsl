@@ -25,5 +25,7 @@ float rtz(float v) {
     return f16tof32(h);
 }
 float4 ps(Vertex v) : SV_Target0 {
-    return float4(rtz(v.attr.x),rtz(v.attr.y),rtz(v.attr.z),rtz(v.attr.w));
+    float4 h = float4(rtz(v.attr.x),rtz(v.attr.y),rtz(v.attr.z),rtz(v.attr.w));
+    // The qualified no-blend RGBA8 target permits selecting the byte before host export.
+    return round(saturate(h) * 255.0) / 255.0;
 }
