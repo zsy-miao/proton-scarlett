@@ -22,6 +22,15 @@ DXC rejects the former (missing VS `b0`, PS `s14`) and accepts the latter.
 The group's pending request had no published PSO at the sample. This
 doesn't identify the shader stream eventually supplied to the worker.
 
+A CPU replay found one way these roots can alias. The two colour shaders
+and the two textured shaders all have inner lookup key `0x00010001`.
+With the colour root already in the cache, all four retrieved that
+wrapper without invoking the decoder. On a miss the layouts differed:
+the 16-byte colour payload decoded to `b27` alone; the 220-byte textured
+payload decoded to one table (`t7`, `t277`, `b0`, in order) and 22 static
+samplers, including `s14`. The retail trace established the shared
+wrapper, but did not identify which cache supplied it.
+
 | Stage | Register | Consumer |
 |---|---|---|
 | VS | `t7` | Structured SRV, stride 64, first **view-relative** element. Four float4 rows at bytes 0,16,32,48. Only XYZ used: start with translation, accumulate X, Y, Z by FMA. Row W is ignored even when nonzero. |
