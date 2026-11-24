@@ -7,6 +7,7 @@ using Microsoft::WRL::ComPtr;
 #define CK(x) do{if(!(x)){fprintf(stderr,"FAIL %d %s err=%lu\n",__LINE__,#x,GetLastError());ExitProcess(1);}}while(0)
 #define HR(x) do{HRESULT h_=(x);if(FAILED(h_)){fprintf(stderr,"FAIL %d %s hr=%08lx\n",__LINE__,#x,(unsigned long)h_);ExitProcess(1);}}while(0)
 extern "C" __declspec(dllimport) HRESULT WINAPI XGCreateTextureComputer(const void *,void **);
+extern "C" __declspec(dllimport) HRESULT WINAPI XGSuggestSwizzleMode(const void *,uintptr_t,DWORD *);
 using Alloc=void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD);
 using Copy=HRESULT(WINAPI*)(void*,void*,UINT,UINT,const void*,UINT,UINT);
 static constexpr UINT N=32768,Bytes=4*N;
@@ -15,7 +16,9 @@ int main(){
     auto alloc=(Alloc)(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc"); CK(alloc);
     BYTE *s=(BYTE*)alloc(nullptr,0x49400000,0x20003000,0x183,0x22004);
     BYTE *b=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404);CK(s&&b);
-    DWORD desc[]={3,0,4096,0,256,0,128,0x10001,61,1,0,0x105,0x300000};
+    DWORD desc[]={3,0,0,0,256,0,128,0x10001,61,1,0,0,0x300000};
+    CK(XGSuggestSwizzleMode(desc,0,&desc[11])==S_OK && desc[11]==0x105);
+    desc[2]=4096;
     void **c=nullptr;HR(XGCreateTextureComputer(desc,(void**)&c));auto v=*(void***)c;auto copy=(Copy)v[8];
     ComPtr<ID3D12Device3>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     scarlett_section_info held;HR(scarlett_query_section(0x53430005,b+offset,N,&held));CK(held.section&&held.base==b&&held.offset==offset&&held.view_size==span);

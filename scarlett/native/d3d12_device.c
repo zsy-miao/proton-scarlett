@@ -8,6 +8,7 @@
 #include "queue/present.h"
 #include "queue/bootstrap_guard.h"
 #include "frame.h"
+#include "xg/r8_layout.h"
 #include <stddef.h>
 #include <stdio.h>
 #endif
@@ -226,14 +227,13 @@ static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
-        out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality ||
-        out->Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;
+        out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
     return S_OK;
 }
 
 static BOOL primary_desc(const D3D12_RESOURCE_DESC *rd)
 {
-    return !rd->Alignment && rd->Width==3840 && rd->Height==2160 &&
+    return rd->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && !rd->Alignment && rd->Width==3840 && rd->Height==2160 &&
         rd->Format==DXGI_FORMAT_R8G8B8A8_UNORM && (UINT)rd->Flags==0x300005;
 }
 
@@ -265,8 +265,13 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     if (primary_desc(&rd)) return primary_info(host,out);
-    if (rd.Width!=256 || rd.Height!=128 || rd.Format!=DXGI_FORMAT_R8_UNORM ||
-        (UINT)rd.Flags!=0x300000 || (rd.Alignment && rd.Alignment!=4096)) return E_NOTIMPL;
+    if (!is_r8(&rd) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
+    if ((UINT)rd.Layout==R8_LAYOUT && rd.Alignment==R8_ALIGNMENT) {
+        /* Eight 64x64 byte tiles in the WC pool, independent of native image tiling. */
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){R8_BYTES,R8_ALIGNMENT};
+        return S_OK;
+    }
+    if (rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;
     rd.Flags=D3D12_RESOURCE_FLAG_NONE;
     host->lpVtbl->GetResourceAllocationInfo(host,out,node,1,&rd);
     /* +34414d compares Alignment only. Never let a failed probe masquerade as small. */

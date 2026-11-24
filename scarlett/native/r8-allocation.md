@@ -38,7 +38,13 @@ SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway \
   "$n/../test-launch-nixos.sh" game /path/to/scratch-tool
 ```
 
-**Retail boundary.** The two observed queries both receive small alignment
+For explicit `0x105` with the same descriptor and alignment 4096, `+c8`
+returns `{32768,4096}` directly: the converter addresses eight 64×64
+one-byte tiles. It does not query a host image or round up its size. The
+explicit mode with default alignment, or on the primary descriptor, is
+unsupported. The original UNKNOWN-layout host probe remains unchanged.
+
+**Before the R8 recommendation.** The two observed queries both receive small alignment
 and succeed. Between them `4eccca2` calls XGSuggestSwizzleMode with default
 alignment and layout 0. It does not select a verified swizzle. `16f7141`
 then calls XGCreateTextureComputer with layout still 0 and alignment 4096.
@@ -54,6 +60,6 @@ the full 32,768-byte destination with the WC query (`0x53430005`), at offset
 `0x2000` in the `0x89700000`-byte pool. The WB query (`0x5343000c`) acquired
 the source in the `0x49400000`-byte pool. Swapping the queries failed for both.
 
-The section handles identify the original allocations. Neither that lookup
-nor the hardware placement test establishes the guest texel address equation. No
-XG success, raw linear copy or detached host texture is substituted here.
+The section handles identify the original allocations. See the
+[XG copy and original-backing tests](xg/README.md) for the byte order
+and current retail stop.

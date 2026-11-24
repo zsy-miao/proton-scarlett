@@ -17,7 +17,21 @@ int main(void)
         d[i]^=1; CK(FAILED(XGCreateTextureComputer(d,(void **)&c)) && !c); d[i]^=1;
     }
     d[11]=0; CK(FAILED(XGCreateTextureComputer(d,(void **)&c)) && !c);
-    d[2]=0; CK(FAILED(XGSuggestSwizzleMode(d,0,&d[11])) && !d[11]); d[11]=0x105; d[2]=4096;
+    d[2]=0;
+    CK(XGSuggestSwizzleMode(d,1,&d[11])==E_NOTIMPL && !d[11]);
+    for (UINT i=0;i<13;i++) if (i!=1) {
+        DWORD before[14];
+        d[i]^=1; memcpy(before,d,sizeof d);
+        CK(XGSuggestSwizzleMode(d,0,&d[11])==E_NOTIMPL && !memcmp(before,d,sizeof d));
+        d[i]^=1;
+    }
+    DWORD mode=0;
+    DWORD primary[]={3,0,0,0,3840,0,2160,0x10001,28,1,0,0,0x300005};
+    CK(XGSuggestSwizzleMode(primary,0,&mode)==E_NOTIMPL && !mode);
+    CK(XGSuggestSwizzleMode(d,0,&mode)==S_OK && mode==0x105 && !d[11]);
+    CK(XGSuggestSwizzleMode(d,0,&d[11])==S_OK && d[11]==mode);
+    CK(XGCreateTextureComputer(d,(void **)&c)==E_NOTIMPL && !c);
+    d[2]=4096;
     CK(SUCCEEDED(XGCreateTextureComputer(d,(void **)&c)) && c);
     void **vt=* (void ***)c;
     CK(((ref_fn)vt[0])(c)==2 && ((ref_fn)vt[1])(c)==1);

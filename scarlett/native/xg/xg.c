@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "../xmem/marked_section.h"
 #include "../queue/bootstrap_guard.h"
+#include "r8_layout.h"
 
 _Static_assert(sizeof(void *) == 8 && sizeof(D3D12_RESOURCE_DESC) == 0x38,
                "requires the x64 descriptor ABI");
@@ -13,6 +14,11 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
     const D3D12_RESOURCE_DESC *d, uintptr_t option, D3D12_TEXTURE_LAYOUT *out)
 {
     if (!d || !out) return E_POINTER;
+    /* Project recommendation for the runtime-created texture copied by copy_r8. */
+    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && is_r8(d)) {
+        *out=(D3D12_TEXTURE_LAYOUT)R8_LAYOUT;
+        return S_OK;
+    }
     /* shortcut: restrict suggestions to the published sample descriptors until more are verified. */
     if (option || d->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
         (d->Alignment && d->Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) ||
@@ -33,7 +39,6 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
     }
 }
 
-enum { R8_LAYOUT=0x105, R8_BYTES=256*128 };
 struct computer { const void *vt; LONG refs; };
 static ULONG WINAPI add_ref(struct computer *c) { return InterlockedIncrement(&c->refs); }
 static ULONG WINAPI release(struct computer *c)
@@ -41,12 +46,6 @@ static ULONG WINAPI release(struct computer *c)
     LONG refs=InterlockedDecrement(&c->refs);
     if (!refs) HeapFree(GetProcessHeap(),0,c);
     return refs;
-}
-static BOOL is_r8(const D3D12_RESOURCE_DESC *d)
-{
-    return d->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && d->Width==256 && d->Height==128 &&
-        d->DepthOrArraySize==1 && d->MipLevels==1 && d->Format==DXGI_FORMAT_R8_UNORM &&
-        d->SampleDesc.Count==1 && !d->SampleDesc.Quality && (UINT)d->Flags==0x300000;
 }
 
 /* Acquire the original section, then map by HANDLE; the title VA can be released
@@ -118,7 +117,7 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     D3D12_RESOURCE_DESC desc={0};
     SIZE_T n=offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof desc.Flags,got;
     if (!d || !ReadProcessMemory(GetCurrentProcess(),d,&desc,n,&got) || got!=n) return E_POINTER;
-    if (!is_r8(&desc) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=4096) return E_NOTIMPL;
+    if (!is_r8(&desc) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
     *c=(struct computer){&methods,1};

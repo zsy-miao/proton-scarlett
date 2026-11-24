@@ -5,7 +5,9 @@
 sample, quality zero, unknown input layout, no resource flags, and default
 placement alignment (0 or 65536). The second argument must be zero. It writes
 one 32-bit layout on success, including when the output aliases `desc.Layout`.
-For other requests it returns `E_NOTIMPL` without modifying the output.
+For the runtime-created 256×128 R8 texture described below, the project
+recommends `0x105` only for option zero, unknown input layout and alignment
+zero. Other requests return `E_NOTIMPL` without modifying the output.
 Null required pointers return `E_POINTER`. These failure codes are local policy.
 
 `XGCreateTextureComputer` accepts **explicit** layout `0x105` (4KB_S),
@@ -35,19 +37,13 @@ corresponding backing was `0xd4b202000`; the view carried that address.
 Both runs completed the copy before the buffer-only SRV writer stopped at
 title return `4ecc821`. No shader sampled the view in these runs.
 
-This confirms that this caller passes the provider's result on, and that
-the choice must be deterministic on repeated requests. It does not
-establish that the API permits *any* legal swizzle or that the final GPU
-consumer interprets the bytes correctly. Microsoft's DirectXTex
-`Auxiliary/DirectXTexXboxTile.cpp` shows an explicit mode or a call to
-**XGComputeOptimalSwizzleMode**, a different entry point. To
-enable a project recommendation, establish the contract for `Option=0`
-and validate the address-SRV consumer against the original bytes; or
-qualify the specific result using the matching version's suggestion and
-copy. The R8 suggestion and auto-layout creation
-remain unsupported. The experimental query/selection was not included.
+The recommendation applies to this runtime-created descriptor. Device `+c8`
+sizes the explicit mode with alignment 4096 as eight 4 KiB tiles; the texture
+computer writes them into the original WC backing. Creation with unknown
+layout remains unsupported. The original-backing readback below qualifies
+the byte order on both GPUs; retail stops at the unsupported texture SRV.
 
-To measure the missing recommendation with a matching x64 reference library,
+To probe a particular x64 library's recommendation,
 build `test-r8-suggest.c` with `x86_64-w64-mingw32-gcc -std=c11 -municode
 -Wall -Wextra -Werror test-r8-suggest.c -o test-r8-suggest.exe`.
 Pass the DLL's full Windows path as the only argument. The probe prints the
@@ -132,3 +128,9 @@ same R8 byte in all 393,216 comparisons per GPU, including negative coordinates
 and wrap seams. Manual bilinear interpolation differed from native sampling:
 the largest absolute differences on a [0,1] scale were 0.00229821 on RTX 3070
 and 0.00128252 on RADV. This rules out assuming those paths are bit-identical.
+
+Refreshing a native texture from the original buffer on the GPU immediately
+before sampling gave a bitwise match at all 393,216 point-wrap samples and
+393,216 linear-wrap samples per adapter. The test covered explicit mip zero
+and kept the refreshed texture alive through the fence. It must be refreshed
+again if the source changes before another draw.

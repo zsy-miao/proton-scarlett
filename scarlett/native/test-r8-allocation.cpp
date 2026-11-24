@@ -42,6 +42,22 @@ int main()
         w[k]^=1; CK(deny(1,1,w)); w[k]^=1;
     }
     CK(deny(0,1,prefix) && deny(1,2,prefix) && deny(1,1,prefix+1));
+    w[11]=0x105; memcpy(prefix,w,sizeof w);
+    CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
+    CK(got.info.SizeInBytes==32768 && got.info.Alignment==4096);
+    for (UINT k:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
+        w[k]^=1; CK(deny(1,1,w)); w[k]^=1;
+    }
+    w[2]=0; CK(deny(1,1,w));
+    DWORD primary[]={3,0,0,0,3840,0,2160,0x10001,28,1,0,0x105,0x300005};
+    CK(deny(1,1,primary));
+    using Committed=HRESULT (WINAPI *)(IUnknown *,const void *,UINT,const void *,UINT,const void *,
+            const void *,UINT,const void *,REFIID,void **);
+    auto committed=(Committed)((*reinterpret_cast<void***>(dev.Get()))[0x3f8/8]);
+    void *resource=primary;
+    CK(committed(dev.Get(),nullptr,8,primary,3,primary,nullptr,0,nullptr,__uuidof(ID3D12Resource),&resource)
+            ==E_NOTIMPL && !resource);
+    puts("PASS explicit +c8: 32768/4096; descriptor mutations and explicit primary query/create rejected");
     CK(VirtualFree(pages,0,MEM_RELEASE));
 
     // Three adjacent small placements, none at a 64 KiB boundary. Seed the guards
