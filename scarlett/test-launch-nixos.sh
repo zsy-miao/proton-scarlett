@@ -8,6 +8,8 @@ test -r "$game/game_scarlett_master.exe" && test -f "$tool/scarlett/d3d12_xs.dll
 # The adapters share system RAM. Take one user-wide lock before starting either sandbox.
 exec 9>"${XDG_RUNTIME_DIR:?}/scarlett-proton-gpu-test.lock"
 flock -n 9 || { echo "Another scarlett GPU test is running; refusing concurrent launch." >&2; exit 1; }
+awk '$1=="MemAvailable:" && $2~/^[0-9]+$/ && $3=="kB" {ok=($2>=20*1024*1024)} END {exit !ok}' /proc/meminfo ||
+    { echo "GPU tests require at least 20 GiB MemAvailable; refusing launch." >&2; exit 75; }
 closure=$(nix-store -qR "$(realpath "$(command -v steam-run)")")
 fhs=$(grep -E '/[^/]+-steam-run-[^/]+-fhsenv-rootfs$' <<<"$closure")
 bwrap=$(grep -E '/[^/]+-bubblewrap-[0-9.]+$' <<<"$closure")/bin/bwrap
