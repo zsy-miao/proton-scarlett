@@ -41,7 +41,7 @@ int main(void)
     SetLastError(ERROR_SUCCESS);
     CHECK(!XMemVirtualAlloc(NULL, 4096, MEM_COMMIT, cpu, PAGE_EXECUTE_READWRITE));
     CHECK(GetLastError() == ERROR_NOT_SUPPORTED);
-    CHECK(!GetProcAddress(GetModuleHandleA("xmem.dll"), "XMemAllocatePhysicalPages"));
+    CHECK(!GetProcAddress(GetModuleHandleA("xmem.dll"), "XMemTransferMemory"));
     puts("xmem CPU page allocation tests passed");
     return 0;
 }

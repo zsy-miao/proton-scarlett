@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
+#include "pages.h"
 
 #if !defined(__x86_64__) || !defined(_WIN64)
 #error This DLL implements only the Windows x64 ABI.
@@ -26,6 +27,7 @@ BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, LPVOID reserved)
             hooks = *exported;
             invalid_hooks = !hooks.alloc || !hooks.free;
         }
+        bind_page_apis();
     }
     return TRUE;
 }
@@ -100,11 +102,34 @@ __declspec(dllexport) BOOL WINAPI XMemIsToolsMemAvailable(void)
 __declspec(dllexport) PVOID WINAPI XMemVirtualAlloc(PVOID base, SIZE_T size,
         DWORD type, ULONGLONG flags, DWORD protect)
 {
+    if (type == (0x20400000u | MEM_RESERVE) &&
+        ((flags == (XMEM_CPU | 0x20) && protect == PAGE_READWRITE) ||
+         (flags == 3 && protect == 0x801))) {
+        if (!size || ((size | (UINT_PTR)base) & (XMEM_PAGE - 1))) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return NULL;
+        }
+        /* The GPU form is VA only. It must never accept a section view. */
+        if (flags == 3)
+            return VirtualAlloc(base, size, MEM_RESERVE, PAGE_NOACCESS);
+        if (!reserve2 || !map3 || !unmap2) {
+            SetLastError(ERROR_NOT_SUPPORTED);
+            return NULL;
+        }
+        return reserve_cpu_arena(base, size);
+    }
     if (flags != XMEM_CPU ||
         (type != MEM_RESERVE && type != MEM_COMMIT && type != (MEM_RESERVE | MEM_COMMIT)) ||
         (protect != PAGE_READONLY && protect != PAGE_READWRITE)) {
         SetLastError(ERROR_NOT_SUPPORTED);
         return NULL;
+    }
+    if (base && type == MEM_COMMIT) {
+        MEMORY_BASIC_INFORMATION m;
+        if (VirtualQuery(base, &m, sizeof m) && m.AllocationProtect == PAGE_NOACCESS) {
+            SetLastError(ERROR_NOT_SUPPORTED);
+            return NULL;
+        }
     }
     return VirtualAlloc(base, size, type, protect);
 }
