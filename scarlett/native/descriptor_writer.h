@@ -75,7 +75,7 @@ static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
 }
 
 #ifdef SCARLETT_STAGED_PLACED
-static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T);
+static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T,UINT,UINT);
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
 static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,const DWORD *w,SIZE_T dest)
 {
@@ -133,10 +133,16 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     if (object && (kind==UAV || kind==SRV) && !ms_srv && words[1]!=D3D12_SRV_DIMENSION_TEXTURE2D &&
         !copy_in(words,input,sizeof words)) return E_POINTER;
 #ifdef SCARLETT_STAGED_PLACED
+    if (object && words[0]==DXGI_FORMAT_R11G11B10_FLOAT && words[1]==4 && (kind==SRV || kind==UAV)) {
+        UINT mip=kind==UAV?words[2]:words[4], levels=kind==UAV?1:words[5];
+        const DWORD sw[]={26,4,0x1688,0,mip,levels,0,0},uw[]={26,4,mip,0};
+        if (mip>=5 || (kind==SRV ? (levels!=1 && !(mip==0 && levels==5)) || memcmp(words,sw,sizeof sw) : memcmp(words,uw,sizeof uw))) return E_NOTIMPL;
+        return write_tile_record(d,object,kind==SRV?TILE_R11_SRV:TILE_R11_UAV,0,dest,mip,levels);
+    }
     if (object && words[0]==DXGI_FORMAT_R32_UINT && words[1]==4 && (kind==SRV || kind==UAV)) {
         const DWORD sw[]={42,4,0x1688,0,0,1,0,0},uw[]={42,4,0,0};
         if (kind==SRV ? memcmp(words,sw,sizeof sw) : memcmp(words,uw,sizeof uw)) return E_NOTIMPL;
-        return write_tile_record(d,object,kind==SRV?TILE_UINT_SRV:TILE_UINT_UAV,0,dest);
+        return write_tile_record(d,object,kind==SRV?TILE_UINT_SRV:TILE_UINT_UAV,0,dest,0,0);
     }
     IUnknown *old_placed=NULL;
     if (object && (kind==SRV || kind==UAV)) {
@@ -211,7 +217,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     AcquireSRWLockExclusive(&d->descriptor_lock);
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !c->tiled_r32 && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+            if (&c->iface==object && !c->tiled_r32 && !c->tiled_r11 && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
                 c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }
@@ -473,7 +479,7 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
         if (!va || rd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Alignment || rd.Width!=1280 || rd.Height!=720 ||
                 rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality ||
                 (UINT)rd.Flags!=0x300000 || memcmp(shape,w,sizeof shape)) return E_NOTIMPL;
-        return write_tile_record(CONTAINING_RECORD(device,struct xbox_device,iface),NULL,TILE_RGB_SRV,va,dest);
+        return write_tile_record(CONTAINING_RECORD(device,struct xbox_device,iface),NULL,TILE_RGB_SRV,va,dest,0,0);
     }
     if (!rd.Alignment && (UINT)rd.Layout==SRGB_ROW_LAYOUT && is_srgb_row(&rd)) return write_wc_address_view(device,SRGB_ROW_VIEW,w,dest);
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {

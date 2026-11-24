@@ -51,11 +51,11 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     D3D12_SHADER_RESOURCE_VIEW_DESC null_view=address_srv_desc(kind,elements,stride);
     if (tile_view(kind)) {
         /* Inert host slot even on reuse; only a separately lowered table may expose the buffer. */
-        if (kind==TILE_UINT_UAV) {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC u={.Format=DXGI_FORMAT_R32_UINT,.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D};
+        if (kind==TILE_UINT_UAV || kind==TILE_R11_UAV) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC u={.Format=kind==TILE_R11_UAV?DXGI_FORMAT_R11G11B10_FLOAT:DXGI_FORMAT_R32_UINT,.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D};
             ID3D12Device_CreateUnorderedAccessView(d->host,NULL,NULL,&u,cpu);
         } else {
-            null_view.Format=kind==TILE_RGB_SRV?DXGI_FORMAT_R9G9B9E5_SHAREDEXP:DXGI_FORMAT_R32_UINT;
+            null_view.Format=kind==TILE_R11_SRV?DXGI_FORMAT_R11G11B10_FLOAT:kind==TILE_RGB_SRV?DXGI_FORMAT_R9G9B9E5_SHAREDEXP:DXGI_FORMAT_R32_UINT;
             ID3D12Device_CreateShaderResourceView(d->host,NULL,&null_view,cpu);
         }
     } else if (kind==RAW38_VIEW) {
@@ -68,18 +68,19 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     *r=(struct descriptor_record){.serial=tag[0],.kind=kind,.offset=offset,.resource=buffer,.elements=elements,.stride=stride};
     return S_OK;
 }
-static HRESULT write_tile_record(struct xbox_device *d,IUnknown *id,UINT kind,UINT_PTR va,SIZE_T dest)
+static HRESULT write_tile_record(struct xbox_device *d,IUnknown *id,UINT kind,UINT_PTR va,SIZE_T dest,UINT mip,UINT levels)
 {
     struct descriptor_record old={0};
     ID3D12Resource *buffer=NULL;
     HRESULT hr=E_INVALIDARG;
     AcquireSRWLockExclusive(&d->descriptor_lock);
     for (struct color_resource *c=d->colors;c;c=c->next) {
-        if (!c->tiled_r32 || (id ? &c->iface!=id : c->tile_va!=va) || !tile_mapping(c)) continue;
+        if ((kind==TILE_R11_SRV || kind==TILE_R11_UAV) ? !c->tiled_r11 : !c->tiled_r32) continue;
+        if ((id ? &c->iface!=id : c->tile_va!=va) || !tile_mapping(c)) continue;
         if (buffer) goto done;
         buffer=c->host;
     }
-    if (buffer) hr=store_address_view(d,kind,dest,buffer,0,0,0,FALSE,&old);
+    if (buffer) hr=store_address_view(d,kind,dest,buffer,mip,levels,0,FALSE,&old);
 done:
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     drop_record(old);

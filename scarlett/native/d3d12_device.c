@@ -280,7 +280,7 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
      * not the size of a linear array of guest texels (notably for depth/stencil). */
     static const struct { UINT width,height,ds_flags; UINT bgra_pages[2],ds_pages[2]; } groups[]={
         {1024,1024,2,{0,0},{128,82}}, {994,624,0x800002,{40,41},{79,53}},
-        {3840,2160,0x800002,{510,513},{1020,655}}
+        {2560,1440,0x800002,{0,0},{480,304}}, {3840,2160,0x800002,{510,513},{1020,655}}
     };
     const UINT *pages=NULL;
     BOOL ds=rd->Format==DXGI_FORMAT_R32G8X24_TYPELESS;
@@ -634,7 +634,8 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_RESOURCE_DESC rd={0};
     BOOL read=copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags);
-    if (read && tiled_r32_desc(&rd)) return create_tiled_r32(d,address,state,clear,iid,out);
+    if (read && rd.MipLevels==5 && tiled_r11_chain(&rd)) return create_tiled_buffer(d,TRUE,address,state,clear,iid,out);
+    if (read && tiled_r32_desc(&rd)) return create_tiled_buffer(d,FALSE,address,state,clear,iid,out);
     if (read && (msaa_desc(&rd) || single_desc(&rd)))
         return create_target(d,address,rd.Format,state,clear,iid,out);
     return placed_create(d,address,desc,state,clear,iid,out);

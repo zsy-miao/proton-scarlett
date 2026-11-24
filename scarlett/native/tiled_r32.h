@@ -1,8 +1,8 @@
 /* Private 0032 ABI. Resolve the allocation by guest VA each time; callers own the returned buffer. */
-static HRESULT open_r32_buffer(struct xbox_device *d,UINT64 va,struct color_resource *r)
+static HRESULT open_tiled_buffer(struct xbox_device *d,UINT64 va,struct color_resource *r)
 {
-    const UINT span=0x384000;ID3D12Heap *heap=NULL;UINT off=0;HANDLE section=NULL;
-    HRESULT (WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettTiledR32BufferV1");
+    const UINT span=r->tiled_r11?0x4b1400:0x384000;ID3D12Heap *heap=NULL;UINT off=0;HANDLE section=NULL;
+    HRESULT (WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),r->tiled_r11?"ScarlettTiledR11FiveV1":"ScarlettTiledR32BufferV1");
     if(!place)return DXGI_ERROR_UNSUPPORTED;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&heap,NULL,&off);
     if(hr==S_FALSE){
@@ -19,7 +19,7 @@ static HRESULT open_r32_buffer(struct xbox_device *d,UINT64 va,struct color_reso
     return hr;
 }
 /* Included by d3d12_device.c, only for the observed WC swizzle 0x102 resource. */
-static HRESULT create_tiled_r32(struct xbox_device *d,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
+static HRESULT create_tiled_buffer(struct xbox_device *d,BOOL r11,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
     *out=NULL;IID id;
@@ -28,9 +28,10 @@ static HRESULT create_tiled_r32(struct xbox_device *d,UINT64 va,UINT state,const
     if (!va || state!=3 || clear) return E_INVALIDARG;
     struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r)return E_OUTOFMEMORY;
-    HRESULT hr=open_r32_buffer(d,va,r);
+    r->tiled_r11=r11;
+    HRESULT hr=open_tiled_buffer(d,va,r);
     if (FAILED(hr)) {HeapFree(GetProcessHeap(),0,r);return hr;}
-    r->iface.lpVtbl=&color_vtbl.unknown;r->refs=1;r->owner=d;r->tiled_r32=TRUE;IUnknown_AddRef(&d->iface);
+    r->iface.lpVtbl=&color_vtbl.unknown;r->refs=1;r->owner=d;r->tiled_r32=!r11;IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);r->next=d->colors;d->colors=r;ReleaseSRWLockExclusive(&d->descriptor_lock);
     *out=&r->iface;return S_OK;
 }
@@ -87,3 +88,55 @@ HRESULT xs_r32_texel_table(IUnknown *owner,IUnknown *heap,SIZE_T slot,ID3D12Desc
 /* Slot 2 is uint; only a shader that explicitly decodes RGB9E5 may use this table. */
 HRESULT xs_r32_packed_uint_table(IUnknown *owner,IUnknown *heap,SIZE_T slot,ID3D12DescriptorHeap **out)
 {return r32_texel_table(owner,heap,slot,DXGI_FORMAT_R32_UINT,out);}
+
+/* Private explicit-tile ABI: full SRV, five mip SRVs, five packed-word UAVs.
+ * As with the R32 table, the recorder retains the snapshot until the fence. */
+HRESULT xs_r11_mip_table(IUnknown *owner,IUnknown *heap,SIZE_T slot,ID3D12DescriptorHeap **out)
+{
+    static const GUID backing={0xb50d8703,0xb544,0x4b5a,{0x8c,0x84,0x9f,0x61,0x66,0xab,0x93,0x1f}};
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!owner || !heap) return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    ID3D12Resource *buffer=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for (struct desc_heap *h=d->heaps;h;h=h->next) if (&h->iface==heap && h->visible) {
+        D3D12_GPU_DESCRIPTOR_HANDLE unused;
+        if (FAILED(descriptor_range(heap,slot,11,NULL,NULL,&unused))) break;
+        const struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
+        UINT i;
+        for (i=0;i<11;i++) if (!valid_address_record(r+i,slot+i*h->stride,i<6?TILE_R11_SRV:TILE_R11_UAV) ||
+                r[i].resource!=r->resource || r[i].offset!=(i?(i-1)%5:0) || r[i].elements!=(i?1u:5u)) break;
+        if (i==11) {buffer=r->resource; ID3D12Resource_AddRef(buffer);} break;
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if (!buffer) return E_INVALIDARG;
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT f={.Format=DXGI_FORMAT_R11G11B10_FLOAT},u={.Format=DXGI_FORMAT_R32_UINT};
+    HRESULT hr=ID3D12Device_CheckFeatureSupport(d->host,D3D12_FEATURE_FORMAT_SUPPORT,&f,sizeof f);
+    if (SUCCEEDED(hr)) hr=ID3D12Device_CheckFeatureSupport(d->host,D3D12_FEATURE_FORMAT_SUPPORT,&u,sizeof u);
+    UINT loads=D3D12_FORMAT_SUPPORT1_BUFFER|D3D12_FORMAT_SUPPORT1_SHADER_LOAD;
+    UINT writes=D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD|D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE;
+    if (SUCCEEDED(hr) && ((f.Support1&loads)!=loads || !(u.Support1&D3D12_FORMAT_SUPPORT1_BUFFER) ||
+            !(u.Support1&D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) || (u.Support2&writes)!=writes)) hr=DXGI_ERROR_UNSUPPORTED;
+    ID3D12DescriptorHeap *table=NULL;
+    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,11,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
+    if (SUCCEEDED(hr)) hr=ID3D12Device_CreateDescriptorHeap(d->host,&hd,&IID_ID3D12DescriptorHeap,(void**)&table);
+    if (SUCCEEDED(hr)) hr=ID3D12DescriptorHeap_SetPrivateDataInterface(table,&backing,(IUnknown*)buffer);
+    if (SUCCEEDED(hr)) {
+        UINT stride=ID3D12Device_GetDescriptorHandleIncrementSize(d->host,hd.Type);
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu;table->lpVtbl->GetCPUDescriptorHandleForHeapStart(table,&cpu);
+        for (UINT i=0;i<11;i++,cpu.ptr+=stride) {
+            UINT level=i?(i-1)%5:0, first=i?r11_end[4-level]/4:0, count=r11_end[5-level]/4-first;
+            if (i<6) {
+                D3D12_SHADER_RESOURCE_VIEW_DESC srv={.Format=f.Format,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
+                    .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Buffer={first,count}};
+                ID3D12Device_CreateShaderResourceView(d->host,buffer,&srv,cpu);
+            } else {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC uv={.Format=u.Format,.ViewDimension=D3D12_UAV_DIMENSION_BUFFER,.Buffer={first,count}};
+                ID3D12Device_CreateUnorderedAccessView(d->host,buffer,NULL,&uv,cpu);
+            }
+        }
+        *out=table;
+    } else if (table) ID3D12DescriptorHeap_Release(table);
+    ID3D12Resource_Release(buffer);return hr;
+}

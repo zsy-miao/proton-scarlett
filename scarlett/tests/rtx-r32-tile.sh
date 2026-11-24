@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 s=$(realpath "$(dirname "$0")/..")
-tool=$(realpath "${1:?usage: rtx-r32-tile.sh STAGED-TOOL [radv|nvidia|radv-typed|rtx-typed]}")
+tool=$(realpath "${1:?usage: rtx-r32-tile.sh STAGED-TOOL [radv|nvidia|radv-typed|rtx-typed|rtx-r11|radv-r11]}")
 w=$(mktemp -d "${TMPDIR:-/tmp}/r32-tile.XXXXXXXX")
 gpu=${2:-nvidia}; defines=()
 source=test-r32-tile; marker="^PASS +c8/+360"
-case "$gpu" in radv-typed) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-r32-typed; marker="^PASS RADV 0032 typed aliases" ;; rtx-typed) gpu=nvidia; display=xvfb; source=test-r32-typed; marker="^PASS RTX 0032 typed aliases" ;; nvidia) display=xvfb ;; radv) display=sway; defines+=(-DTEST_RADV) ;; *) exit 2 ;; esac
+case "$gpu" in radv-r11) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-r11-place; marker="^PASS R11 original five-mip WC" ;; rtx-r11) gpu=nvidia; display=xvfb; source=test-r11-place; marker="^PASS R11 original five-mip WC" ;; radv-typed) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-r32-typed; marker="^PASS RADV 0032 typed aliases" ;; rtx-typed) gpu=nvidia; display=xvfb; source=test-r32-typed; marker="^PASS RTX 0032 typed aliases" ;; nvidia) display=xvfb ;; radv) display=sway; defines+=(-DTEST_RADV) ;; *) exit 2 ;; esac
 mkdir "$w/game"
 for unit in test-r32-device d3d12_vm queue/queue; do
     x86_64-w64-mingw32-gcc -Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED \
@@ -13,7 +13,7 @@ for unit in test-r32-device d3d12_vm queue/queue; do
 done
 x86_64-w64-mingw32-g++ -std=c++17 -Os -Wall -Wextra -Werror -static "${defines[@]}" "$s/native/$source.cpp" \
     "$w"/*.o -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
-if [[ $source == test-r32-typed ]]; then
+if [[ $source != test-r32-tile ]]; then
     "${DXC:-dxc}" "${defines[@]}" -WX -T cs_6_0 -E sample_alias "$s/native/$source.hlsl" -Fo "$w/game/tile.dxil"
     "${DXC:-dxc}" "${defines[@]}" -WX -T cs_6_0 -E write_alias "$s/native/$source.hlsl" -Fo "$w/game/write.dxil"
 else

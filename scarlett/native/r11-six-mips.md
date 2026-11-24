@@ -42,3 +42,39 @@ of this shape (`+25cc557`, `+25cc651`). The second went on to `+360`
 state 3 and the resource IID. In the captured run the VA was `0xd5ef14000`,
 marked WC section offset `+0x13d14000`. This is a placement request, not a
 shader use. Only the evidenced five-mip `+c8` and `+360` sizes are enabled.
+
+## Five-level placement on RTX 3070
+
+`0033` extends the 0032 resource-lifetime WC reservation. Retail `+428`
+returned one buffer for `[0x13d14000,0x141c5400)` in the original marked
+section (state 3, null clear). Mip offsets are relative to this buffer, not
+independent reservations. In this run slots 68–78 named the same object:
+
+* `+90` `1a 4 1688 0 0 5 0 0` (all levels), then
+  `1a 4 1688 0 mip 1 0 0` for each mip 0 through 4.
+* `+98` `1a 4 mip 0` for each mip 0 through 4, null counter.
+
+The descriptor records retain the backing and mip range on copy. Ordinary
+texture resolution rejects them. The explicit-address fixture reads native
+R11G11B10 typed buffer SRVs and writes packed words through R32_UINT UAVs.
+The full SRV uses a chain-relative tile index; a single-level view already
+includes its level offset. The fixture checks every texel after VA recycle,
+unchanged padding, guards, and bidirectional partial overlap with a live
+MSAA color reservation at `+0x14000000`. Hold the lowered table to the fence.
+Run `scarlett/tests/rtx-r32-tile.sh STAGED-0033-TOOL rtx-r11`.
+
+The next unsupported call on the constructing thread was `+c8`, 2560×1440
+format 19, one mip, flags `0x800002`, return `+344188`. Owner `+20` held the
+returned wrapper. No consuming retail shader was observed before this query.
+
+RADV on the same retail path requested five mips at VA `0xda8288000`,
+`+0x13c88000` in the original native WC pool (base `0xd94600000`). Device
+`+428` returned success at `+193e2db`, state 3, null clear, resource IID.
+The full `0x4b1400` range uses the same cross-format reservation as the
+other tiled buffers. `rtx-r32-tile.sh TOOL radv-r11` checks all five mips,
+all 2,480 padding words and both 64 KiB guards using a fenced raw copy of
+the original pool after exact VA replacement. A partial MSAA overlap is
+rejected until fence retirement and release of the private mip table.
+Retail wrote one full SRV, five single-level SRVs and five UAVs for that
+same object before its `+c8` query for 2560×1440 format 19, one mip,
+flags `0x800002`, layout zero, returned `E_NOTIMPL` (`+344188`).

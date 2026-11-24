@@ -51,7 +51,8 @@ int main(){
     }
     struct Target { UINT w,h,fmt,flags; } targets[]={
         {3840,2160,87,0xc00005}, {3840,2160,87,0x300001},
-        {3840,2160,87,0x300001}, {3840,2160,19,0x800002}, {3840,2160,87,0xc00001}
+        {3840,2160,87,0x300001}, {3840,2160,19,0x800002}, {3840,2160,87,0xc00001},
+        {2560,1440,19,0x800002}
     };
     constexpr UINT count=ARRAYSIZE(targets);
     D3D12_RESOURCE_DESC rd[count]={}; UINT64 offsets[count],end=65536;
@@ -123,5 +124,5 @@ int main(){
             for(UINT x=0;x<t.w;x++){CK(row[x]==expect);if(t.fmt==19)CK(p[fp[i][1].Offset+y*fp[i][1].Footprint.RowPitch+x]==0x31+i);}}
         rb[i]->Unmap(0,nullptr);
     }
-    puts("PASS deferred targets: five guarded queries, adjacent desktop placements and full fenced color/depth/stencil readbacks");
+    puts("PASS deferred targets: six guarded queries, adjacent desktop placements and full fenced color/depth/stencil readbacks");
 }

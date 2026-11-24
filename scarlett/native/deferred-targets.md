@@ -55,3 +55,20 @@ held `0x3c8000` elements, stride 2, resource null, at the next query on the
 same thread. That query also requests format 26, six mips, layout `0x102`,
 flags `0x300004` at return `+344188`. No format-86 resource or view is
 qualified by these host tests.
+
+## 2560×1440 deferred depth after the five-mip R11 placement
+
+On RTX and RADV the constructing thread called `+c8` (return `+344188`)
+for format 19, flags `0x800002`, one mip/layer/sample, zero alignment and
+layout. Native DS requirements were `0x1e00000/0x10000` on RTX and
+`0x1300000/0x10000` on RADV; the single-resource detail had zero offset
+and matched the aggregate. The existing deferred sizing table admits only
+the depth query for this extent. The guarded fixture clears and reads back
+all 2560×1440 depth and stencil values on adjacent desktop placements.
+
+Both retail traces went through the `0x48` owner constructor at `+164dee`
+and factory return `+25cc6c9`. At the next query the wrapper published at
+image `+76503e0` referenced that owner at `+8`; the owner held `0x3c0000`
+(RTX) or `0x260000` (RADV) elements of stride 8, and a null resource at
+`+0x20`. No depth placement was observed before the next `+c8` from
+`+25cc757`: 640×1440 R32_UINT, flags `0x300005`, layout 0, one mip.

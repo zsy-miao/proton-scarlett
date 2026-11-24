@@ -101,3 +101,7 @@ orders, cross-format overlap rejection, original backing and descriptor views.
 `0032` reserves the tiled R32 buffer in the original pool. Apply it after
 `0031`; run `scarlett/tests/rtx-r32-tile.sh TOOL radv` and repeat with
 `nvidia` to verify original tiled words and release after GPU retirement.
+
+Apply `0033` after `0032` for five-mip R11 placement on RADV and RTX.
+Run `scarlett/tests/rtx-r32-tile.sh TOOL radv-r11` and repeat with `rtx-r11`
+to check all mip views, padding and overlapping allocation reuse after retirement.
