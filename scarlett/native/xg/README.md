@@ -125,3 +125,10 @@ Both passes wait for the CPU conversion after submission; the second
 reads the original after exact address reuse. This checks in-bounds
 integer coordinates at mip zero. It does not exercise a retail shader or
 texture filtering.
+
+In a separate mip-zero test, a shader reading the tiled buffer and a native
+`Texture2D.SampleLevel` read the same coordinate grids. Point-wrap picked the
+same R8 byte in all 393,216 comparisons per GPU, including negative coordinates
+and wrap seams. Manual bilinear interpolation differed from native sampling:
+the largest absolute differences on a [0,1] scale were 0.00229821 on RTX 3070
+and 0.00128252 on RADV. This rules out assuming those paths are bit-identical.
