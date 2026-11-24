@@ -1,19 +1,13 @@
 # scarlett-proton
 
-scarlett-proton is an experimental Proton fork that runs the Xbox Series X|S build of *Grand Theft Auto VI*
-through [XCL](https://github.com/ivall/xcl) on Linux. [Steam setup and build instructions →](scarlett/README.md)
+scarlett-proton is a Proton fork implementing Xbox Series X|S console APIs for x86-64 games on Linux.
+Wine loads the original executable; project-owned DLLs supply console imports. [Build and test](scarlett/README.md).
 
-The original executable runs directly on an x86-64 CPU. The build instructions compile the
-compatibility layer; no game source or game recompilation is required.
+**Native layer status:** early development. The graphics DLL exposes a small desktop-compatible subset through vkd3d-proton. Xbox device creation, rendering a retail frame, and gameplay are not yet supported.
 
-**Status: the retail build reaches Game Init and presents frames.** Tested with build `1.0.2.1` on NixOS and an NVIDIA RTX 3070. No menu or interactive gameplay has been verified.
+On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. Retail build `1.0.2.1` currently stops in Wine's loader (`STATUS_DLL_NOT_FOUND`) before the game entry point.
 
-| Milestone | Local result |
-| --- | --- |
-| Load the game | Title DLLs and thread-local storage initialize; the executable reaches its entry point. |
-| Initialize graphics and input | A hardware D3D12 device is created through vkd3d-proton. XGameRuntime initializes and the game registers an input callback. |
-| Read game data | With `shaders.rpf` and `packs.rpf` checksum-verified, the game passes the previous archive breakpoint and requests `textures.rpf` and `audio.rpf`. |
-| Present frames | With `core_bvh4.rpf` verified, XCL recorded 1,360 presents. Private display samples showed a black screen and cursor. The run ended in `d3d12core.dll+0x219546`; the game's crash log still reported `Game Init`, simulation frame 0. |
+The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 
 **Disclaimer:** scarlett-proton is an independent compatibility project, unaffiliated with Valve, Microsoft,
 Rockstar Games, or Take-Two Interactive. It includes no game files or console firmware. Use your

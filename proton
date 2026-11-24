@@ -2096,22 +2096,14 @@ class Session:
         target = sys.argv[2:] + self.cmdlineappend
         scarlett_title = target and ntpath.basename(target[0]).lower() == "game_scarlett_master.exe"
         if scarlett_title:
-            # The retail crash reporter otherwise sends a minidump to an external server.
-            self.env["XCL_NETWORK"] = "0"
-            host = os.path.abspath(g_proton.path("scarlett/xcl.exe"))
-            if not os.path.isfile(host):
-                log("Missing Scarlett runtime: " + host)
+            # Wine's loader resolves console DLL imports from the tool's own PE directory.
+            shim_dir = os.path.abspath(g_proton.path("scarlett"))
+            path = subprocess.run([g_proton.wine_bin, "winepath", "-w", shim_dir],
+                                  env=self.env, stdout=subprocess.PIPE, stderr=self.log_file)
+            if path.returncode or not path.stdout.strip():
+                log("Could not locate Scarlett libraries: " + shim_dir)
                 return 1
-            game = target[0]
-            if not ntpath.splitdrive(game)[0]:
-                # Wine converts the program path, but not XCL's game argument.
-                path = subprocess.run([g_proton.wine_bin, "winepath", "-w", os.path.abspath(game)],
-                                      env=self.env, stdout=subprocess.PIPE, stderr=self.log_file)
-                if path.returncode or not path.stdout.strip():
-                    log("Could not convert Scarlett executable path: " + game)
-                    return 1
-                game = os.fsdecode(path.stdout).rstrip("\r\n")
-            target = [host, "run", game, "--"] + target[1:]
+            prepend_to_env_str(self.env, "WINEPATH", os.fsdecode(path.stdout).rstrip("\r\n"), ";")
 
         if shutil.which('steam-runtime-launcher-interface-0') is not None:
             adverb = ['steam-runtime-launcher-interface-0', 'proton']
@@ -2128,7 +2120,7 @@ class Session:
             remote_debug_proc = None
 
         if scarlett_title:
-            # This console title has no Steam client. Wait for XCL and return its exit status.
+            # This console title has no Steam client. Pass the executable directly to Wine.
             argv = [g_proton.wine_bin]
         # CoD: Black Ops 3 workaround
         elif os.environ.get("SteamGameId", 0) in [

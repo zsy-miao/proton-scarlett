@@ -1,0 +1,4 @@
+LIBRARY d3d12_xs.dll
+EXPORTS
+    D3D12CreateDevice=d3d12.D3D12CreateDevice
+    D3D12SerializeVersionedRootSignature=d3d12.D3D12SerializeVersionedRootSignature

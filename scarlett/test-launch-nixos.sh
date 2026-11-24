@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 game=$(realpath "${1:?usage: test-launch-nixos.sh GAME-FOLDER [INSTALLED-TOOL]}")
 tool=$(realpath "${2:-$HOME/.local/share/Steam/compatibilitytools.d/scarlett-proton}")
-test -r "$game/game_scarlett_master.exe" && test -x "$tool/scarlett/xcl.exe" || exit 1
+test -r "$game/game_scarlett_master.exe" && test -f "$tool/scarlett/d3d12_xs.dll" || exit 1
 closure=$(nix-store -qR "$(realpath "$(command -v steam-run)")")
 fhs=$(grep -E '/[^/]+-steam-run-[^/]+-fhsenv-rootfs$' <<<"$closure")
 bwrap=$(grep -E '/[^/]+-bubblewrap-[0-9.]+$' <<<"$closure")/bin/bwrap
@@ -21,18 +21,13 @@ for node in /dev/dri /dev/nvidia0 /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia
 done
 seconds=${SCARLETT_TEST_SECONDS:-90}
 [[ $seconds =~ ^[1-9][0-9]*$ ]] || { echo "Invalid SCARLETT_TEST_SECONDS" >&2; exit 2; }
-capture=()
 ffmpeg=
 case ${SCARLETT_RECORD:-0} in
     1) ffmpeg=$(realpath "$(command -v ffmpeg)") ;;
     0) ;;
     *) echo "SCARLETT_RECORD must be 0 or 1" >&2; exit 2 ;;
 esac
-if [[ -n ${XCL_FRAME_DUMP:-} ]]; then
-    [[ $XCL_FRAME_DUMP =~ ^[1-9][0-9]*$ ]] || { echo "Invalid XCL_FRAME_DUMP interval" >&2; exit 2; }
-    capture+=(--setenv XCL_FRAME_DUMP "$XCL_FRAME_DUMP")
-fi
-exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-session --clearenv "${capture[@]}" \
+exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-session --clearenv \
     --ro-bind /nix/store /nix/store --ro-bind "$fhs/usr" /usr \
     --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/lib32 /lib32 \
     --proc /proc --dev /dev --tmpfs /dev/shm --tmpfs /tmp --ro-bind /sys /sys \
