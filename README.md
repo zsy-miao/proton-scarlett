@@ -5,11 +5,11 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 **Native layer status:** early development. The graphics DLL exposes a small desktop-compatible subset through vkd3d-proton. Xbox device creation, rendering a retail frame, and gameplay are not yet supported.
 
-On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. The memory tests cover CPU page reservation, commitment, release and executable allocation callbacks.
+On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
 Retail build `1.0.2.1` passes both initial address-space reservations and the 1,172 MiB graphics allocation on [patched Wine](scarlett/wine-patches/README.md). Startup now stops at `+0x1e1d4e0`: `XMemVirtualAlloc` rejects a different 2,199 MiB pool (`0x89700000` bytes, flags `0x283`, protection `0x2404`). A [GPU copy test](scarlett/native/xmem/README.md) verified that queued work completes against the original backing even after the title frees and reuses its address. No native retail frame has been presented.
 
-An RTX 3070 experiment verified a GPU write to the last word of the full 2,199 MiB pool. The imported heap reported write-back caching, while the title requested write-combined memory. The retail allocation remains unsupported.
+An [RTX 3070 experiment](https://github.com/rcx2135/proton-scarlett/blob/0dcd7e73/scarlett/native/xmem/test_pool2.cpp) verified a GPU write to the last word of the full 2,199 MiB pool. The imported heap reported write-back caching, while the title requested write-combined memory. The retail allocation remains unsupported.
 
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 
