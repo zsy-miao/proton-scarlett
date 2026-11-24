@@ -945,6 +945,9 @@ all three fields, both GPUs read all 32 late-written words through the
 view, got zero for the next 32 reads and retained the original backing
 after address reuse. The reported view size was 128 bytes.
 
+Build the fixture with `scarlett/tests/build-raw32.sh MATCHED-XMEM-DLL NEW-FIXTURE-DIR`;
+run the resulting directory on each GPU with the shared launcher.
+
 On the identical ordinary stage both GPUs passed device `+230`. Their first
 process and recorder stop was the composite table bind, list `+120`, return
 `+32206`, under `+1263f0`. Each issued tokens 1 and 2 and presented only
