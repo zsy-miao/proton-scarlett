@@ -29,8 +29,11 @@ handle that survives object `Close` or final `Release`; callers use
 `CloseHandle`. After `Close`, `GetHandle` returns `INVALID_HANDLE_VALUE` with
 `ERROR_INVALID_HANDLE`. Console `CreateQueue1` supports the [captured file queue](ABI.md#createqueue1-captured-descriptor-and-supported-slots).
 An explicit submit runs offset reads on a FIFO worker. Status markers report
-completion or the first error; unsupported compression and request formats
-never produce a successful copy. Other queue descriptors remain unsupported.
+completion or the first error. Option 1 reads one zlib-wrapped file range to
+linear memory. Source and destination are each bounded to 32 MiB. Invalid
+streams, trailing bytes and size mismatches fail before destination publication.
+The caller must retain the writable destination until completion; the queue
+owns an independent file handle and copies the request at enqueue.
 
 Before this queue implementation, on RADV and RTX 3070, retail build `1.0.2.1` called factory slot `+0x50`
 (`CreateQueue1`) with a descriptor and queue IID
@@ -40,11 +43,16 @@ then hit the breakpoint at `+0x28c95ce`, before it could submit storage work.
 
 ## Build and verify
 
-From this directory, build the DLL offline with x86-64 MinGW-w64:
+From this directory, build the DLL offline with Bash and x86-64 MinGW-w64.
+The build uses the inflate sources from the pinned `wine/libs/zlib` submodule
+directory (or set `SCARLETT_ZLIB_SRC` to that directory in an existing matching
+Wine source checkout). These are zlib by Jean-loup Gailly and Mark Adler;
+see `wine/libs/zlib/LICENSE`. No additional runtime DLL or host libz is needed.
 
 ```sh
 mkdir -p build
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -shared xcrdapi.c -luuid -o build/XCRDAPI.dll
+source ./zlib-flags.sh
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -shared xcrdapi.c "${zflags[@]}" -luuid -o build/XCRDAPI.dll
 ```
 
 Run `./test.sh` for an independent ABI check. It builds a C++ caller against

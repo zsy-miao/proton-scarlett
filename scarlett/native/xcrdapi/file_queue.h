@@ -1,6 +1,7 @@
 /* Console +50 only. The public Windows factory and console +18 stay separate. */
 #include <stdio.h>
 #include <stdint.h>
+#include <zlib.h>
 static const IID queue_iid={0x3c02cb0c,0xc050,0x4195,{0x99,0xa1,0xa1,0xce,0x94,0xba,0x33,0xc5}};
 typedef struct { UINT64 source; UINT16 capacity; INT8 priority; const char *name; UINT64 options; } QueueDesc1;
 typedef struct {
@@ -15,7 +16,7 @@ _Static_assert(offsetof(FileRequest,dst_size)==0x18 && offsetof(FileRequest,file
 enum { FILE_CAPACITY=0x103f, MAX_READ_BYTES=32<<20 };
 typedef struct {
     HRESULT error;
-    HANDLE file; void *dst; LARGE_INTEGER offset; DWORD bytes;
+    HANDLE file; void *dst; LARGE_INTEGER offset; DWORD bytes,inflate_bytes;
     Status *marker; UINT index;
 } FileEntry;
 typedef struct {
@@ -31,16 +32,72 @@ static void queue_stop(void)
     RaiseFailFastException(NULL,NULL,0);
     __builtin_trap();
 }
+static HRESULT read_exact(FileEntry *e,void *dst)
+{
+    DWORD n;
+    if (!ReadFile(e->file,dst,e->bytes,&n,NULL)) return HRESULT_FROM_WIN32(GetLastError());
+    return n==e->bytes ? S_OK : HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
+}
+static voidpf zalloc_heap(voidpf unused,uInt n,uInt size)
+{
+    (void)unused;
+    return HeapAlloc(GetProcessHeap(),0,(SIZE_T)n*size); /* x64, two 32-bit factors */
+}
+static void zfree_heap(voidpf unused,voidpf p)
+{
+    (void)unused;
+    HeapFree(GetProcessHeap(),0,p);
+}
+static BOOL writable_range(void *dst,SIZE_T bytes)
+{
+    UINT_PTR cur=(UINT_PTR)dst;
+    if (bytes>UINTPTR_MAX-cur) return FALSE;
+    while (bytes) {
+        MEMORY_BASIC_INFORMATION m;
+        if (!VirtualQuery((void *)cur,&m,sizeof m) || m.State!=MEM_COMMIT || (m.Protect&PAGE_GUARD) ||
+            !(m.Protect&(PAGE_READWRITE|PAGE_WRITECOPY|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) return FALSE;
+        SIZE_T left=m.RegionSize-(cur-(UINT_PTR)m.BaseAddress);
+        if (left>=bytes) break;
+        bytes-=left; cur+=left;
+    }
+    return TRUE;
+}
+static HRESULT inflate_entry(FileEntry *e)
+{
+    BYTE *buf=HeapAlloc(GetProcessHeap(),0,(SIZE_T)e->bytes+e->inflate_bytes);
+    if (!buf) return E_OUTOFMEMORY;
+    BYTE *out=buf+e->bytes;
+    HRESULT hr=read_exact(e,buf);
+    if (SUCCEEDED(hr)) {
+        z_stream s={.zalloc=zalloc_heap,.zfree=zfree_heap,.next_in=buf,.avail_in=e->bytes,
+            .next_out=out,.avail_out=e->inflate_bytes};
+        int rc=inflateInit(&s);
+        if (rc==Z_OK) {
+            rc=inflate(&s,Z_FINISH);
+            if (inflateEnd(&s)!=Z_OK) rc=Z_STREAM_ERROR;
+        }
+        if (rc==Z_MEM_ERROR) hr=E_OUTOFMEMORY;
+        else if (rc!=Z_STREAM_END || s.total_in!=e->bytes || s.total_out!=e->inflate_bytes)
+            hr=HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+        else {
+            SIZE_T n=0;
+            /* Caller owns this mapping until completion; recheck at publication, not enqueue. */
+            if (!writable_range(e->dst,e->inflate_bytes) ||
+                !ReadProcessMemory(GetCurrentProcess(),out,e->dst,e->inflate_bytes,&n) || n!=e->inflate_bytes)
+                hr=E_POINTER;
+        }
+    }
+    HeapFree(GetProcessHeap(),0,buf);
+    return hr;
+}
 static HRESULT read_entry(FileEntry *e)
 {
     if (FAILED(e->error)) return e->error;
     LARGE_INTEGER length;
-    DWORD n;
     if (!GetFileSizeEx(e->file,&length)) return HRESULT_FROM_WIN32(GetLastError());
     if (length.QuadPart<e->offset.QuadPart+e->bytes) return HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
-    if (!SetFilePointerEx(e->file,e->offset,NULL,FILE_BEGIN) || !ReadFile(e->file,e->dst,e->bytes,&n,NULL))
-        return HRESULT_FROM_WIN32(GetLastError());
-    return n==e->bytes ? S_OK : HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
+    if (!SetFilePointerEx(e->file,e->offset,NULL,FILE_BEGIN)) return HRESULT_FROM_WIN32(GetLastError());
+    return e->inflate_bytes ? inflate_entry(e) : read_exact(e,e->dst);
 }
 static DWORD WINAPI file_worker(void *arg)
 {
@@ -104,9 +161,10 @@ static void WINAPI file_enqueue(FileQueue *q,const FileRequest *input)
     SIZE_T got;
     if (!input || !ReadProcessMemory(GetCurrentProcess(),input,&r,sizeof r,&got) || got!=sizeof r)
         e.error=E_POINTER;
-    else if (r.options || r.intermediate) e.error=E_NOTIMPL;
+    else if (r.options>1 || r.intermediate || (r.options==1 && r.page_tail)) e.error=E_NOTIMPL;
     else if (!r.dst || !r.file) e.error=E_POINTER;
-    else if (!r.size || r.size!=r.dst_size || r.size>MAX_READ_BYTES || r.offset>INT64_MAX-(UINT64)r.size)
+    else if (!r.size || !r.dst_size || r.size>MAX_READ_BYTES || r.dst_size>MAX_READ_BYTES ||
+             (!r.options && r.size!=r.dst_size) || r.offset>INT64_MAX-(UINT64)r.size)
         e.error=E_INVALIDARG;
     else {
         /* The caller may recycle its stack request and Close/Release the file.
@@ -123,6 +181,7 @@ static void WINAPI file_enqueue(FileQueue *q,const FileRequest *input)
             file_release(p);
         }
         e.offset.QuadPart=r.offset; e.dst=r.dst; e.bytes=r.size;
+        if (r.options==1) e.inflate_bytes=r.dst_size;
     }
     push_entry(q,e);
 }

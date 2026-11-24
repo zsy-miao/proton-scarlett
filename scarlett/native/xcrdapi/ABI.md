@@ -120,8 +120,11 @@ The implementation binds only these slots and IUnknown for the captured IID;
 other slots through `+68` stop instead of guessing a return signature.
 The [request layout](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/structs/dstorage_request?view=gdk-2510)
 and its [options](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/structs/dstorage_request_options?view=gdk-2510)
-qualify plain file reads only: options and intermediate size zero, equal
-source/destination byte counts, a linear destination of at most 32 MiB.
+qualify plain file reads (options zero, equal sizes) and zlib-to-linear-memory
+reads (options exactly one, unused page field zero). Both require zero
+intermediate size, with source and destination each in the range 1–32 MiB.
+The zlib worker requires stream end, exact input consumption and exact output
+length in private scratch before publishing to the verified writable range.
 Destinations must remain writable through completion. The worker serializes
 reads per queue; a status marker reports the first failure since the preceding
 marker, including across submit boundaries. The caller must not reuse an
@@ -131,4 +134,6 @@ the worker, including when the title has released the source file or array.
 
 Both unchanged retail runs with this queue passed `+28c95ce` and reached
 [`XMemMapPhysicalPagesScatter`](../xmem/README.md#scatter-mapping-into-the-24-gib-cpu-arena).
-Queue transfer and completion evidence is from the synthetic fixture.
+Those two earlier runs did not instrument transfers. A subsequent instrumented
+RTX run traced real option-1 requests from `28c9a0b` reading `G:\shaders.rpf`
+and the title polling the submitted markers at `4f65847`.

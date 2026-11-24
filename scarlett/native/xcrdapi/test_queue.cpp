@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <cstdint>
 extern "C" HRESULT WINAPI DStorageGetFactory(REFIID,void **);
 #define CK(e) do { if (!(e)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#e); ExitProcess(1); } } while(0)
 template<class F> F method(void *p,unsigned at) { return (F)((*(void ***)p)[at/8]); }
@@ -25,6 +26,53 @@ static DWORD WINAPI blocked(void *arg)
     SetEvent(((Blocked *)arg)->entered);
     method<Mark>(q,0x20)(q,s,1);
     return 0;
+}
+static void test_zlib(void *f)
+{
+    // zlib.compress(bytes(range(16))*4); a second stream has a damaged Adler trailer.
+    BYTE stream[]={0x78,0x9c,0x63,0x60,0x64,0x62,0x66,0x61,0x65,0x63,0xe7,0xe0,0xe4,0xe2,
+        0xe6,0xe1,0xe5,0xe3,0x67,0x20,0x91,0x0f,0x00,0x37,0xe0,0x01,0xe1};
+    WCHAR dir[MAX_PATH],path[MAX_PATH];
+    CK(GetTempPathW(MAX_PATH,dir) && GetTempFileNameW(dir,L"zds",0,path));
+    HANDLE h=CreateFileW(path,GENERIC_WRITE,0,nullptr,TRUNCATE_EXISTING,0,nullptr);
+    DWORD n;CK(h!=INVALID_HANDLE_VALUE && WriteFile(h,stream,1,&n,nullptr) && n==1);
+    CK(WriteFile(h,stream,sizeof stream,&n,nullptr) && n==sizeof stream);
+    stream[sizeof stream-1]^=1;
+    CK(WriteFile(h,stream,sizeof stream,&n,nullptr) && n==sizeof stream && CloseHandle(h));
+    void *src; CK(method<Make>(f,0x20)(f,path,file,&src)==S_OK);
+    UINT64 d[]={0,0x2103f,0,1}; CK(method<Make>(f,0x50)(f,d,queue,&q)==S_OK);
+    CK(method<Status>(f,0x28)(f,1,nullptr,status,&s)==S_OK);
+    BYTE dst[80];BYTE *pages=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+    CK(pages);memset(pages,0xab,8192);
+    auto run=[&](UINT64 off,UINT64 size,UINT64 len,HRESULT expect,BYTE *target=nullptr,DWORD protect=0,bool close=false) {
+        memset(dst,0xda,sizeof dst);
+        UINT64 r[]={1,(UINT_PTR)(target?target:dst+8),0,len,(UINT_PTR)src,off,size,0,0};
+        method<Request>(q,0x18)(q,r); memset(r,0,sizeof r);
+        method<Mark>(q,0x20)(q,s,0);
+        CK(method<Result>(s,0x20)(s,0)==E_PENDING);
+        DWORD old; if(protect) CK(VirtualProtect(pages+4096,4096,protect,&old));
+        if(close) { method<Call>(src,0x18)(src); CK(((IUnknown*)src)->Release()==0); }
+        method<Call>(q,0x30)(q);
+        auto until=GetTickCount64()+5000;
+        while(!method<Complete>(s,0x18)(s,0) && GetTickCount64()<until) Sleep(1);
+        CK(method<Result>(s,0x20)(s,0)==expect);
+        if(protect) CK(VirtualProtect(pages+4096,4096,old,&old));
+        for(unsigned i=0;i<sizeof dst;i++) CK(dst[i]==(expect==S_OK && i>=8 && i<72 ? ((i-8)&15) : 0xda));
+        for(unsigned i=0;i<8192;i++) CK(pages[i]==0xab);
+    };
+    constexpr UINT64 z=sizeof stream;
+    const HRESULT bad=HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    run(1,z,64,S_OK); run(1,z-1,64,bad); run(1,z+1,64,bad);
+    run(1+z,z,64,bad); run(1,z,63,bad); run(1,z,65,bad);
+    run(1+z,z+1,64,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF));
+    run(INT64_MAX,z,64,E_INVALIDARG); run(1,z,0,E_INVALIDARG); run(1,0,64,E_INVALIDARG);
+    run(1,z,(32u<<20)+1,E_INVALIDARG); run(1,(32u<<20)+1,64,E_INVALIDARG);
+    run(1,z,64,E_POINTER,pages+4096-16,PAGE_READONLY);
+    run(1,z,64,E_POINTER,pages+4096,PAGE_READWRITE|PAGE_GUARD);
+    run(1,z,64,S_OK,nullptr,0,true);
+    CK(VirtualFree(pages,0,MEM_RELEASE) && DeleteFileW(path));
+    ((IUnknown*)q)->Release();((IUnknown*)s)->Release();
+    puts("PASS zlib queue: exact offset/output, pending and terminal status, snapshot and file lifetime; corrupt, truncated, trailing, length, range and changed protection preserve destination");
 }
 int main()
 {
@@ -50,7 +98,7 @@ int main()
     auto result=method<Result>(s,0x20);auto complete=method<Complete>(s,0x18);
     request(q,r); mark(q,s,0);
     r[1]=(UINT_PTR)(dst+40);
-    r[0]=1; request(q,r); // unsupported zlib, followed by a distinct invalid length
+    r[0]=2; request(q,r); // unsupported options, followed by a distinct invalid length
     r[0]=0; r[3]=31; request(q,r); r[3]=32; mark(q,s,1);
     r[5]=100;request(q,r); mark(q,s,2); // past EOF
     r[5]=1; r[4]=1;request(q,r); mark(q,s,3); // foreign file, never invoke it
@@ -83,6 +131,6 @@ int main()
     CK(!stats[36] && stats[37]==1 && stats[38]==1 && stats[39]==6 && !stats[41] && stats[42]==0x103f+6);
     CK(!stats[61] && stats[62]>0 && stats[63]==0x103f+4);
     CK(CloseHandle(thread)&&CloseHandle(args.entered));
-    CK(((IUnknown*)s)->Release()==0);((IUnknown*)f)->Release();
+    CK(((IUnknown*)s)->Release()==0);test_zlib(f);((IUnknown*)f)->Release();
     puts("PASS exact capacity stalls enqueue; explicit Submit wakes producer; final release drains and joins");
 }

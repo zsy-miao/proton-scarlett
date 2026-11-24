@@ -13,7 +13,8 @@ guid() {
     sed -n "s/^DECLARE_INTERFACE_IID_($1, IUnknown, \"\\([0-9a-f-]*\\)\").*/\\1/p" "$tmp/dstorage.h"
 }
 mkdir -p build
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -shared xcrdapi.c -luuid \
+source ./zlib-flags.sh
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -shared xcrdapi.c "${zflags[@]}" -luuid \
     -Wl,--out-implib,"$tmp/libxcrdapi.a" -o build/XCRDAPI.dll
 cp build/XCRDAPI.dll "$tmp/"
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$tmp" \
@@ -30,7 +31,7 @@ HASHES
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$tmp" test_console.cpp \
     -L"$tmp" -lxcrdapi -lole32 -luuid -static -o "$tmp/test_console.exe"
 wine "$tmp/test_console.exe"
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror test_status.c -luuid -o "$tmp/test_status.exe"
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror test_status.c "${zflags[@]}" -luuid -o "$tmp/test_status.exe"
 wine "$tmp/test_status.exe"
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror test_queue.cpp \
     -L"$tmp" -lxcrdapi -luuid -static -o "$tmp/test_queue.exe"

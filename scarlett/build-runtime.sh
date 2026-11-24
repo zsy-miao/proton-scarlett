@@ -31,7 +31,8 @@ build_dll chad chad
 build_dll xapu xapu
 build_dll acphal AcpHal
 build_dll xg xg_xs
-build_dll xcrdapi XCRDAPI -luuid
+source "$here/native/xcrdapi/zlib-flags.sh"
+build_dll xcrdapi XCRDAPI "${zflags[@]}" -luuid
 build_dll gameruntime xgameruntime -lntdll
 ln -s "$sdk" "$inc/GameInput.h"
 x86_64-w64-mingw32-g++ -std=c++20 -Os -s -Wall -Wextra -Werror -Wno-unknown-pragmas \

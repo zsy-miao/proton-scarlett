@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | The latest build creates the tiled 720p texture on both GPUs, then stops when the game asks to read it from a shader. Compressed reads from the shader archive also fail. |
+| What's blocking it? | The installed graphics layer stops at a shader view of a tiled 720p texture. The game asks to display its first image, but the display call hasn't completed. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -21,7 +21,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md) and [depth/stencil buffer](scarlett/native/msaa-depth.md): 4 MiB for each. RTX retail places both in its original pool and creates their shader, render-target and depth/stencil views. A GPU test drew through the color view: exactly 16 bytes changed in the original allocation. The [depth test](scarlett/native/rtx-depth.md) verified which samples passed or failed depth and stencil comparisons.
 
-**Retail graphics:** Both GPUs finished the list containing the transparent-black clear, texture release and second timestamp. Its completion fence reached `1`; a [separate pixel test](scarlett/native/test-primary-barrier.hpp) verified all 8,294,400 cleared pixels. The installed tool uses the [opt-in submission path](scarlett/native/queue/README.md#experimental-whole-queue-wait) and graphics backend patch `0031`.
+**Retail graphics:** Both GPUs finished the list containing the transparent-black clear, texture release and second timestamp. Its completion fence reached `1`; a [separate pixel test](scarlett/native/test-primary-barrier.hpp) verified all 8,294,400 cleared pixels. The installed tool uses the [opt-in submission path](scarlett/native/queue/README.md#experimental-whole-queue-wait) and graphics backend patch `0032`. In staged runs on both adapters the game called `PresentX` for that image and token. Neither run recorded a DXGI flip.
 
 Retail created both 2048×2048 BGRA color targets and their views in the game's memory on AMD and RTX. The [hardware test](scarlett/native/test-wc-bgra.cpp) checked every pixel of each target and verified that writing one left its neighbor intact. Both GPUs now answer the [1024×1024 and 994×624 depth](scarlett/native/depth1024.md), [994×624 color](scarlett/native/bgra994.md) and [4K color and depth](scarlett/native/deferred-targets.md) size queries. For the 4K group retail requested memory sizes; the corresponding resource pointers were still null.
 
@@ -29,7 +29,7 @@ Backend patch `0031` lets the [1440p floating-point target](scarlett/native/half
 
 With `0032`, retail placed the [720p tiled buffer](scarlett/native/tiled-r32-resource.md) and reached its first shader-view request on both GPUs (return `+164f01`). Hardware tests read and updated all 921,600 words through explicit tile addressing. The game needs integer and shared-exponent color views of the same bytes.
 
-All 12 root archives opened, but 4,200 queued reads returned `E_NOTIMPL`. All 45 sampled requests from `shaders.rpf` contained zlib streams that decoded to the requested lengths. The archive itself was readable; the missing operation is in the [DirectStorage provider](scarlett/native/xcrdapi/README.md).
+The [DirectStorage provider](scarlett/native/xcrdapi/README.md) now decompresses the startup reads. In a retail trace all 4,200 destinations matched independent decodes: 4,199 from the shader pipeline cache and one from the audio archive. All six batches completed successfully. The game's cache lookup table previously had 24,576 zero keys; with the fix it had none.
 
 Both adapters handle the six- and [twelve-layer textures](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070). The twelve-layer image takes 4 KiB on AMD and 8 KiB on RTX; its guest layout takes 48 KiB on both. Both also passed two-layer array shader tests and the [256-pixel sRGB row](scarlett/native/xg/README.md#256-texel-srgb-texture1d).
 
