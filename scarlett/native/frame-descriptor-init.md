@@ -145,6 +145,17 @@ SCARLETT_TEST_GPU=radv TMPDIR="$w" "$src/../test-launch-nixos.sh" "$w/game" "$to
 | Device `+0x88` CBV / inline | `2479244` zeroes the 16-byte description, `247924f` tests device byte `+0x18`. If set, `247927a` passes `(This, &zeroDesc, titleCPUHandle)`; if clear, `2479269`/`247926c` write qwords `0x0010000000000000`, `0x0002403c00000000` directly. The slot writer and the bound-heap resolver both recognize this exact null CBV. This doesn't establish other inline formats. |
 | Non-null raw buffer SRV | `5bdb96c`–`5bdb9c2`: format `39` (`R32_TYPELESS`), dimension 1, mapping `0x1688`, first element `UINT64` at `+16`, count `UINT32` at `+24`, stride zero at `+28`, RAW=1 at `+32`. `5bdba95` loads `resourceOwner[+0x20]` as the **interface pointer** and calls the SRV helper. Padding at offsets 12 and 36 is ignored. Only an explicitly bound same-device host buffer, a nonzero count, and an in-bounds range in four-byte elements are accepted. |
 
+At `247905a` the first SRV is `{42,2,0x1688,0,0,0,0,0,0,0}`:
+a null `R32_UINT` Texture1D with default component mapping. Its destination
+is the first slot of the WB DMA placement. The 40-byte current-process read
+succeeded; the former `WriteProcessMemory` tag store returned error 299 with
+zero bytes on that RW `MEM_MAPPED` region. The writer now checks that the
+whole 16-byte tag fits one committed RW (or WC/RW) region, then uses the
+checked local-output path of `ReadProcessMemory` on its private tag. Caller
+heap/VA lifetime requirements below still apply. The synthetic descriptor
+test exercises actual WB/WC XMem placements, reads zero from the null
+Texture1D on the GPU, and rejects a revoked slot.
+
 Ownership: each device maintains a lock-protected list of its live type-0
 heaps. The writer translates only an aligned, in-bounds destination in
 exactly one such heap. Final heap release removes it before dropping backing.

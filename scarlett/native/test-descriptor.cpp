@@ -64,6 +64,55 @@ static void check_rtv(ID3D12Device *d,D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     CloseHandle(event); fence->Release(); list->Release(); alloc->Release(); queue->Release(); readback->Release(); target->Release();
 }
 #include "test-view.hpp"
+static void test_dma_slot(IUnknown *d,ID3D12Device *host)
+{
+    HMODULE xm=GetModuleHandleW(L"xmem.dll");
+    auto reserve=(void *(WINAPI *)(void *,SIZE_T,DWORD,UINT64,DWORD))(void *)GetProcAddress(xm,"XMemVirtualAlloc");
+    auto alloc=(BOOL(WINAPI *)(UINT64,ULONG_PTR *,ULONG_PTR *))(void *)GetProcAddress(xm,"XMemAllocatePhysicalPages");
+    auto free_run=(BOOL(WINAPI *)(ULONG_PTR,ULONG_PTR *))(void *)GetProcAddress(xm,"XMemFreePhysicalPages");
+    auto map=(void *(WINAPI *)(void *,ULONG_PTR,ULONG_PTR *))(void *)GetProcAddress(xm,"XMemMapPhysicalPages");
+    CK(reserve && alloc && free_run && map);
+    const SIZE_T pg=65536, counts[]={160,16,432,752,1600}, ids0[]={2352,2512,2528};
+    const DWORD prot[]={0x1004,0x1404,0x8404,0x2404,0x2004};
+    BYTE *at[5]; arena=(BYTE *)reserve(nullptr,2960*pg,0x42000,7,PAGE_NOACCESS); CK(arena);
+    BYTE *p=arena;
+    for (unsigned i=0;i<5;i++) {
+        at[i]=p;
+        if (i<4) CK(VirtualFree(p,counts[i]*pg,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER));
+        p+=counts[i]*pg;
+    }
+    for (unsigned i=0;i<5;i++) CK(reserve(at[i],counts[i]*pg,0x20406000,0x27,prot[i])==at[i]);
+    ULONG_PTR n=2960,ids[2960]; CK(alloc(0x280,&n,ids));
+    for (unsigned i=0;i<3;i++) CK(map(at[i],counts[i],ids+ids0[i])==at[i]);
+    UINT desc[]={0,0x130000,1,1},words[10]={42,2,0x1688},copy[10];
+    SIZE_T got=0; CK(ReadProcessMemory(GetCurrentProcess(),words,copy,sizeof copy,&got) && got==sizeof copy && !memcmp(words,copy,sizeof copy));
+    MemoryBarrier();
+    SIZE_T wrote=0;
+    BOOL ok=WriteProcessMemory(GetCurrentProcess(),arena,words,16,&wrote);
+    std::printf("DMA placement probe: stack RPM %zu bytes; WB destination WPM ok=%d bytes=%zu error=%lu\n",got,ok,wrote,GetLastError());
+    extent=38u<<20;
+    IUnknown *heap; alloc_hook=true; HR(SLOT(d,0x70,Make)(d,desc,IID_ID3D12DescriptorHeap,(void **)&heap)); alloc_hook=false;
+    SIZE_T slot=SLOT(heap,0x48,Start)(heap); CK(slot==(SIZE_T)arena);
+    CK(xs_write_view(d,0x90,nullptr,(void *)1,slot)==E_POINTER);
+    CK(xs_write_view(d,0x90,nullptr,words,slot+1)==E_INVALIDARG);
+    *(UINT64 *)(slot+16)=0x0190face;
+    using Srv=void(WINAPI *)(IUnknown *,IUnknown *,const void *,SIZE_T);
+    SLOT(d,0x90,Srv)(d,nullptr,words,slot);
+    CK(*(UINT64 *)(slot+8)==0x5853444553430090ull && *(UINT64 *)(slot+16)==0x0190face);
+    ID3D12DescriptorHeap *bank; D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    HR(xs_resolve_view(heap,slot,0x90,&bank,&gpu)); CK(bank && gpu.ptr);
+    test_writers(d,host,heap,slot,32); // dispatches a typed null Texture1D load on real DMA slot storage
+    SLOT(d,0x90,Srv)(d,nullptr,words,(SIZE_T)at[1]); // WC descriptor extent, same wire bytes
+    HR(xs_resolve_view(heap,(SIZE_T)at[1],0x90,&bank,&gpu));
+    CK(map(at[0],counts[0],nullptr)==at[0]); // exact slot now inaccessible
+    CK(xs_write_view(d,0x90,nullptr,words,slot)==E_POINTER);
+    CK(FAILED(xs_resolve_view(heap,slot,0x90,&bank,&gpu)) && !bank && !gpu.ptr);
+    free_hook=true; CK(!heap->Release()); free_hook=false;
+    for (unsigned i=1;i<3;i++) CK(map(at[i],counts[i],nullptr)==at[i]);
+    CK(free_run(n,ids)); for (auto a:at) CK(VirtualFree(a,0,MEM_RELEASE));
+    puts("PASS public +90 on WB/WC DMA title slots; Texture1D null load returned zero; revoked slot rejected");
+}
+
 int main()
 {
     CK(LoadLibraryW(L"xmem.dll"));
@@ -124,6 +173,6 @@ int main()
     CK(FAILED(xs_resolve_view(fresh,stale,0x90,&desktop,&g)) && !desktop && !g.ptr);
     HR(xs_write_view(d,0x90,nullptr,nulls,stale)); HR(xs_resolve_view(fresh,stale,0x90,&desktop,&g));
     free_hook=true; CK(!fresh->Release()); free_hook=false; CK(returned==2);
-    CK(VirtualFree(arena,0,MEM_RELEASE)); d->Release(); host->Release();
+    CK(VirtualFree(arena,0,MEM_RELEASE)); test_dma_slot(d,host); d->Release(); host->Release();
     puts("PASS descriptor heaps: actual 0x130000 placed slots, two fenced host-bank dispatches, crossing rejected, exact XMem base/free and final-slot RTV readback");
 }

@@ -61,6 +61,19 @@ static BOOL copy_in(void *out,const void *in,SIZE_T size)
     return in && ReadProcessMemory(GetCurrentProcess(),in,out,size,&n) && size==n;
 }
 
+/* The heap owner keeps the selected slot live. On this Wine build a
+ * self-process read copies into its local output under exception protection;
+ * WriteProcessMemory instead asks the server to write a DMA mapping. */
+static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
+{
+    MEMORY_BASIC_INFORMATION m;
+    if (VirtualQuery((void *)slot,&m,sizeof m)!=sizeof m || m.State!=MEM_COMMIT ||
+        (m.Protect & ~PAGE_WRITECOMBINE)!=PAGE_READWRITE) return FALSE;
+    SIZE_T off=slot-(SIZE_T)m.BaseAddress;
+    if (off>=m.RegionSize || 16>m.RegionSize-off) return FALSE;
+    return copy_in((void *)slot,tag,16);
+}
+
 #ifdef SCARLETT_STAGED_PLACED
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
 static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,const DWORD *w,SIZE_T dest)
@@ -89,8 +102,7 @@ static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,con
     if (!h) goto done;
     struct descriptor_record *r=h->records+(dest-h->start)/h->stride;
     UINT64 tag[2]={++d->descriptor_serial,0x5853444553430000ull|kind};
-    SIZE_T n;
-    if (!WriteProcessMemory(GetCurrentProcess(),(void *)dest,tag,sizeof tag,&n) || n!=sizeof tag) {
+    if (!store_slot_tag(dest,tag)) {
         hr=E_POINTER; goto done;
     }
     old=*r;
@@ -169,8 +181,7 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     if (!h || FAILED(xs_descriptor_slot(&h->iface,dest,&cpu,NULL))) goto done;
     struct descriptor_record *r=h->records+(dest-h->start)/h->stride;
     UINT64 tag[2]={++d->descriptor_serial,0x5853444553430000ull|kind};
-    SIZE_T n;
-    if (!WriteProcessMemory(GetCurrentProcess(),(void *)dest,kind==CBV?inline_null_cbv:tag,16,&n) || n!=16) {
+    if (!store_slot_tag(dest,kind==CBV?inline_null_cbv:tag)) {
         hr=E_POINTER; goto done;
     }
     if (kind==SRV) ID3D12Device_CreateShaderResourceView(d->host,resource,&srv,cpu);

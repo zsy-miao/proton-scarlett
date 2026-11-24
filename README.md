@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** The installed build maps all five regions of the 185 MiB descriptor arena, creates the [174 MiB placed buffer](scarlett/native/placed-arena.md), and backs the title's 1,245,184 descriptor slots with two host heaps. Retail gets past heap initialization and stops while writing the first null shader-resource view (`E_POINTER`, device `+0x90`, caller `+0x247905f`). **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** The installed build maps all five regions of the 185 MiB descriptor arena, creates the [174 MiB placed buffer](scarlett/native/placed-arena.md), and backs the title's 1,245,184 descriptor slots with two host heaps. Retail writes five null shader-resource views into the title's mapped memory. The next unsupported graphics call is device slot `+0x230` at title RVA `+0x4ecc81b`, while initializing a view of the placed buffer. **No retail frame has been presented.**
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 

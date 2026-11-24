@@ -14,7 +14,7 @@ static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T st
     const SIZE_T raw=start+stride, null_srv=raw+stride, cb=null_srv+stride, null_uav=cb+stride;
     auto srv=SLOT(d,0x90,SR); auto uav=SLOT(d,0x98,UA);
     UINT words[10]={42,1,0x1688};
-    for (UINT dim : {2,4,9,8,1}) { words[1]=dim; srv(d,nullptr,words,null_srv); }
+    for (UINT dim : {1,4,9,8,2}) { words[1]=dim; srv(d,nullptr,words,null_srv); }
     words[2]=0;
     for (UINT dim : {2,4,5,8,1}) { words[1]=dim; uav(d,nullptr,nullptr,words,null_uav); }
     UINT64 zero[2]={};
