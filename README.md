@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | Both GPUs reach the command that sets the blend factor for a clear. An earlier graphics setting is recorded, but its effect is still unknown, so that command list cannot be submitted yet. |
+| What's blocking it? | Both GPUs set the blend factor, then stop while preparing an offscreen color target and its depth buffer for a clear. An earlier graphics setting still prevents submission of that command list. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

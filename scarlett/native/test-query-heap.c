@@ -45,7 +45,7 @@ int main(void)
     }
     OK(ID3D12QueryHeap_GetDevice(h[0],&IID_ID3D12Device,(void **)&host));
 
-    /* Synthetic 8x8 depth-only full-screen triangle. */
+    /* The original 8x8 query area plus two columns for a blend-factor control. */
     static const char shader[]="float4 main(uint id:SV_VertexID):SV_Position {"
         "return float4(id==1 ? 3.0 : -1.0, id==2 ? 3.0 : -1.0,0.5,1.0);}";
     ID3DBlob *vs,*blob;
@@ -62,14 +62,17 @@ int main(void)
         .DepthStencilState={.DepthEnable=TRUE,.DepthWriteMask=D3D12_DEPTH_WRITE_MASK_ALL,.DepthFunc=D3D12_COMPARISON_FUNC_ALWAYS},
         .DSVFormat=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,.SampleDesc={1,0}};
     ID3D12PipelineState *pso;
-    const char pixel[]="uint main(float4 p:SV_Position):SV_Target{return (uint)round(ddx(p.x))+256*(uint)round(ddy(p.y));}";
+    const char pixel[]="float4 main(float4 p:SV_Position):SV_Target{return float4(32*round(ddx(p.x)),48*round(ddy(p.y)),192,224)/255;}";
     ID3DBlob *ps;
     OK(D3DCompile(pixel,sizeof pixel-1,NULL,NULL,NULL,"main","ps_5_0",0,0,&ps,NULL));
     pd.DepthStencilState.StencilEnable=TRUE;pd.DepthStencilState.StencilReadMask=0xff;
     pd.DepthStencilState.FrontFace=pd.DepthStencilState.BackFace=(D3D12_DEPTH_STENCILOP_DESC){
         D3D12_STENCIL_OP_KEEP,D3D12_STENCIL_OP_KEEP,D3D12_STENCIL_OP_KEEP,D3D12_COMPARISON_FUNC_EQUAL};
-    pd.NumRenderTargets=1;pd.RTVFormats[0]=DXGI_FORMAT_R32_UINT;
-    pd.BlendState.RenderTarget[0].RenderTargetWriteMask=D3D12_COLOR_WRITE_ENABLE_ALL;
+    pd.NumRenderTargets=1;pd.RTVFormats[0]=DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.BlendState.RenderTarget[0]=(D3D12_RENDER_TARGET_BLEND_DESC){.BlendEnable=TRUE,
+        .SrcBlend=D3D12_BLEND_BLEND_FACTOR,.DestBlend=D3D12_BLEND_ZERO,.BlendOp=D3D12_BLEND_OP_ADD,
+        .SrcBlendAlpha=D3D12_BLEND_BLEND_FACTOR,.DestBlendAlpha=D3D12_BLEND_ZERO,.BlendOpAlpha=D3D12_BLEND_OP_ADD,
+        .LogicOp=D3D12_LOGIC_OP_NOOP,.RenderTargetWriteMask=D3D12_COLOR_WRITE_ENABLE_ALL};
     pd.PS=(D3D12_SHADER_BYTECODE){ID3D10Blob_GetBufferPointer(ps),ID3D10Blob_GetBufferSize(ps)};
     OK(ID3D12Device_CreateGraphicsPipelineState(host,&pd,&IID_ID3D12PipelineState,(void **)&pso));
     ID3D10Blob_Release(ps);
@@ -80,7 +83,7 @@ int main(void)
     ID3D12Resource *result;
     OK(ID3D12Device_CreateCommittedResource(host,&hp,0,&buf,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&result));
     hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-    D3D12_RESOURCE_DESC depth={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=8,.Height=8,
+    D3D12_RESOURCE_DESC depth={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=10,.Height=8,
         .DepthOrArraySize=1,.MipLevels=1,.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.SampleDesc={1,0},.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL};
     ID3D12Resource *depth_image;
     OK(ID3D12Device_CreateCommittedResource(host,&hp,0,&depth,D3D12_RESOURCE_STATE_DEPTH_WRITE,NULL,&IID_ID3D12Resource,(void **)&depth_image));
@@ -91,7 +94,7 @@ int main(void)
     views->lpVtbl->GetCPUDescriptorHandleForHeapStart(views,&dsv);
     ID3D12Device_CreateDepthStencilView(host,depth_image,NULL,dsv);
     ID3D12Resource *color;
-    depth.Format=DXGI_FORMAT_R32_UINT;depth.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    depth.Format=pd.RTVFormats[0];depth.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     OK(ID3D12Device_CreateCommittedResource(host,&hp,0,&depth,D3D12_RESOURCE_STATE_RENDER_TARGET,NULL,&IID_ID3D12Resource,(void**)&color));
     ID3D12DescriptorHeap *rtvs;dh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     OK(ID3D12Device_CreateDescriptorHeap(host,&dh,&IID_ID3D12DescriptorHeap,(void**)&rtvs));
@@ -110,6 +113,7 @@ int main(void)
     OK(xs_allocator(host,qd.Type,&a));
     OK(xs_device_list(host,qd.Type,a,TRUE,dev,&list));
     OK(sl_close(list));
+    CHECK(FAILED(record_blend(sl(list),ones_factor)));
     D3D12_SHADING_RATE_COMBINER pair[2]={0,0};
     CHECK(record_pool_rate(sl(list),0,pair)==E_INVALIDARG);
     CHECK(!can_set_topology(sl(list),4));
@@ -126,7 +130,7 @@ int main(void)
     ID3D12GraphicsCommandList_OMSetRenderTargets(l,1,&rtv,FALSE,&dsv);
     ID3D12GraphicsCommandList_IASetPrimitiveTopology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     if(prefix->put>=prefix->limit) ((void(WINAPI*)(IUnknown*,UINT))(*(void***)list)[0xa0/8])(list,4);
-    D3D12_VIEWPORT viewport={0,0,8,8,0,1};
+    D3D12_VIEWPORT viewport={0,0,10,8,0,1};
     ID3D12GraphicsCommandList_RSSetViewports(l,1,&viewport);
     D3D12_FEATURE_DATA_D3D12_OPTIONS6 opts={0};
     OK(ID3D12Device_CheckFeatureSupport(host,D3D12_FEATURE_D3D12_OPTIONS6,&opts,sizeof opts));
@@ -138,6 +142,24 @@ int main(void)
     ID3D12GraphicsCommandList_ClearDepthStencilView(l,dsv,D3D12_CLEAR_FLAG_STENCIL,0,0x59,0,NULL);
     ID3D12GraphicsCommandList_OMSetStencilRef(l,0x59);
     CHECK(FAILED(record_stencil(sl(list),0x59)));
+    /* Extra two columns are a zero-factor control, outside all four occlusion queries. */
+    ID3D12GraphicsCommandList_ClearRenderTargetView(l,rtv,ones_factor,0,NULL);
+    FLOAT factor[4]={0};
+    ID3D12GraphicsCommandList_OMSetBlendFactor(l,factor);
+    D3D12_RECT control={8,0,10,8};
+    ID3D12GraphicsCommandList_RSSetScissorRects(l,1,&control);
+    CHECK(record_blend(sl(list),NULL)==E_POINTER && record_blend(sl(list),(void*)1)==E_POINTER);
+    SYSTEM_INFO sys;GetSystemInfo(&sys);
+    BYTE *guard=VirtualAlloc(NULL,2*sys.dwPageSize,MEM_RESERVE,PAGE_NOACCESS);
+    CHECK(guard && VirtualAlloc(guard,sys.dwPageSize,MEM_COMMIT,PAGE_READWRITE)==guard);
+    FLOAT *short_input=(FLOAT*)(guard+sys.dwPageSize)-3;
+    memcpy(short_input,ones_factor,3*sizeof(FLOAT));
+    CHECK(record_blend(sl(list),short_input)==E_POINTER && VirtualFree(guard,0,MEM_RELEASE));
+    memcpy(factor,ones_factor,sizeof factor);factor[3]=0;
+    CHECK(record_blend(sl(list),factor)==E_NOTIMPL && !sl(list)->blend_ones);
+    CHECK(!sl(list)->depth_zero_pending && !sl(list)->pending_470);
+    ID3D12GraphicsCommandList_DrawInstanced(l,6,1,0,0);
+    factor[3]=1;pool_vtbl.blend(list,factor);memset(factor,0,sizeof factor);
     for (int i=0;i<4;++i) {
         if(i==1){ID3D12GraphicsCommandList_ClearDepthStencilView(l,dsv,D3D12_CLEAR_FLAG_STENCIL,0,0,0,NULL);
             pool_vtbl.stencil(list,0);}
@@ -154,7 +176,7 @@ int main(void)
     D3D12_RESOURCE_BARRIER b={.Transition={color,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}};
     ID3D12GraphicsCommandList_ResourceBarrier(l,1,&b);
     D3D12_TEXTURE_COPY_LOCATION from={.pResource=color},dst={.pResource=result,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-        .PlacedFootprint={512,{DXGI_FORMAT_R32_UINT,8,8,1,256}}};
+        .PlacedFootprint={512,{DXGI_FORMAT_R8G8B8A8_UNORM,10,8,1,256}}};
     ID3D12GraphicsCommandList_CopyTextureRegion(l,&dst,0,0,0,&from,NULL);
     OK(sl_close(list));
     ID3D12CommandList *submit=(ID3D12CommandList *)l;
@@ -166,8 +188,9 @@ int main(void)
     printf("visible samples at index 2459: %llu %llu %llu %llu\n",words[1],words[2],words[3],words[4]);
     CHECK(words[1]==64 && words[2]==48 && words[3]==32 && words[4]==16);
     CHECK(words[0]==UINT64_MAX && words[5]==UINT64_MAX);
-    for(UINT y=0;y<8;y++)for(UINT x=0;x<8;x++)
-        CHECK(*(UINT*)((BYTE*)words+512+y*256+4*x)==(x<6?0x101u:0x202u));
+    for(UINT y=0;y<8;y++)for(UINT x=0;x<10;x++)
+        CHECK(*(UINT*)((BYTE*)words+512+y*256+4*x)==(x<6?0xe0c03020u:x<8?0xe0c06040u:0));
+    puts("PASS +b8: zero-factor control black, four ones preserve all RGBA channels and shading-rate bands");
     puts("PASS +c0: 64 samples at seeded reference, then 48/32/16 only with zero reference");
     printf("PASS +3f0 tier=%u: 16 coarse and 48 fine pixels in order after fence\n",opts.VariableShadingRateTier);
     ID3D12Resource_Unmap(result,0,NULL);

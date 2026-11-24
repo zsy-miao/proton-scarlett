@@ -543,3 +543,16 @@ the diagnostic captured blend factor `(1,1,1,1)`. The 2560×1440 depth
 target was created successfully in this diagnostic. That does not
 explain the earlier intermittent null. Both ordinary runs issued
 tokens 1 and 2 and presented only token 1 (WSI count 0→1).
+
+Pooled Direct `+b8` copies the four blend factors and records the measured
+`(1,1,1,1)` on the active list. The fixture seeded the factor to zero
+and checked the resulting black control band and the RGBA output after
+the setter. A split replays the factor; successful reset clears it.
+
+Four retail launches (two diagnostics and two matched ordinary runs);
+all six fixtures passed. Both GPUs first stopped at `+490`, return
+`+32113`. The RTX trace matched two whole-resource texture barriers to
+the selected 4K color and depth resources. The color resource matched
+neither primary ring entry and both secondary entries were empty.
+Neither the attachment bind nor the draw was reached. Both ordinary
+runs issued tokens 1 and 2 and presented only token 1.
