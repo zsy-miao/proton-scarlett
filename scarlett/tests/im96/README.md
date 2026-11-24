@@ -44,6 +44,15 @@ draw through the private layout passed the same pixel checks; the original
 object still resolved to its original host root. The fixture supplied the
 three descriptors. Retail consumption of that table has yet to be observed.
 
+The live producer's camera payload is 480 bytes; the following 32 bytes
+belong to the object transform, not to camera padding. In a separate
+AMD/RTX fixture the shader read the camera rows at `0x160..0x19f` from a
+512-byte aligned constant buffer. Fenced readback matched all 480 original
+bytes and all 32 independently filled padding bytes after address reuse.
+The object SRV used a separate 64-byte copy starting at `0x3de20`;
+rounding that address down to a 64-byte stride boundary would read 32
+wrong bytes. Both adapters matched the 16 shaded pixels and 48 guards.
+
 | Stage | Register | Consumer |
 |---|---|---|
 | VS | `t7` | Structured SRV, stride 64, first **view-relative** element. Four float4 rows at bytes 0,16,32,48. Only XYZ used: start with translation, accumulate X, Y, Z by FMA. Row W is ignored even when nonzero. |
