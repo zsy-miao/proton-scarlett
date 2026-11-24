@@ -24,6 +24,8 @@ The NixOS harness defaults to NVIDIA. To run the queue and fence test on the hos
 
 `tests/present-capture.cpp` (under `scarlett/`) presents red and green DXGI back buffers. The private Xvfb recorder captured both colors on NVIDIA. With RADV 26.3.0, creating the swapchain on Xvfb failed because the surface did not support presentation. Offscreen GPU tests do not check this display path.
 
+For RADV presentation, set `SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway` when invoking `test-launch-nixos.sh`. This starts headless Sway and Xwayland in the same isolated sandbox with only the AMD render node. Requires NixOS `sway` and `Xwayland` on PATH and exactly one AMD render node. `SCARLETT_RECORD=1` samples the compositor with `grim` and saves `display.mp4` and `display.png` using `ffmpeg`; the MP4 is a color/ordering check, not a timing trace. Run `./scarlett/tests/radv-present.sh` to build the synthetic fixture and check the decoded colors.
+
 ## What the first graphics test covers
 
 The runtime also includes an original [xmem.dll](native/xmem/README.md) supporting ordinary
