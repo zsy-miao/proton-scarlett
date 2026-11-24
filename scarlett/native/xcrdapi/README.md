@@ -31,6 +31,12 @@ handle that survives object `Close` or final `Release`; callers use
 `ERROR_INVALID_HANDLE`. Console queue creation returns `E_NOTIMPL` and clears
 the output; reads through returned Win32 handles work without a queue.
 
+On RADV and RTX 3070, retail build `1.0.2.1` called factory slot `+0x50`
+(`CreateQueue1`) with a descriptor and queue IID
+`3c02cb0c-c050-4195-99a1-a1ce94ba33c5`. The provider returned
+`0x80004001` and a null queue to title RVA `+0x28c95ca`. The same thread
+then hit the breakpoint at `+0x28c95ce`, before it could submit storage work.
+
 ## Build and verify
 
 From this directory, build the DLL offline with x86-64 MinGW-w64:
