@@ -27,6 +27,7 @@ CPU pages and title allocation hooks. The other providers cover [DSP registratio
 [texture layout suggestions](native/xg/README.md), and [read-only storage files](native/xcrdapi/README.md).
 The console storage test opens a file through the title's interface and keeps reading from its handle after the COM object closes. Storage queue submission remains unsupported.
 The [Direct queue adapter test](native/queue/README.md) verifies that a GPU wait stays blocked until the full 64-bit fence value matches. Retail also monitors a fence address directly; the console fence interface is not yet exposed.
+The [device bootstrap test](native/d3d12_device.md) verifies that a default Compute queue waits for a Direct queue's signal. The four indexed queue requests found in the title are still unsupported.
 Each provider lists the operations it supports and how unsupported requests fail.
 Run `./scarlett/tests/native-providers.sh` to exercise the installed DLLs through Proton
 with synthetic callers (including an EXE exporting its own allocation hooks).

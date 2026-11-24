@@ -127,10 +127,8 @@ HRESULT xs_fence_event(IUnknown *fence, UINT64 value, HANDLE event)
     return f ? ID3D12Fence_SetEventOnCompletion(f, value, event) : E_INVALIDARG;
 }
 
-static HRESULT create(ID3D12Device *host, BOOL fence, IUnknown **out)
+static HRESULT create(ID3D12Device *host, const D3D12_COMMAND_QUEUE_DESC *desc, IUnknown **out)
 {
-    const D3D12_COMMAND_QUEUE_DESC desc = {D3D12_COMMAND_LIST_TYPE_DIRECT,
-            D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_COMMAND_QUEUE_FLAG_NONE, 1};
     struct adapter *a;
     HRESULT hr;
     if (!out) return E_POINTER;
@@ -138,14 +136,13 @@ static HRESULT create(ID3D12Device *host, BOOL fence, IUnknown **out)
     if (!host) return E_INVALIDARG;
     a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
     if (!a) return E_OUTOFMEMORY;
-    hr = fence ? ID3D12Device_CreateFence(host, 0, D3D12_FENCE_FLAG_SHARED,
-            &IID_ID3D12Fence, (void **)&a->host.fence) :
-            ID3D12Device_CreateCommandQueue(host, &desc, &IID_ID3D12CommandQueue, (void **)&a->host.queue);
+    hr = desc ? ID3D12Device_CreateCommandQueue(host, desc, &IID_ID3D12CommandQueue, (void **)&a->host.queue) :
+            ID3D12Device_CreateFence(host, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&a->host.fence);
     if (FAILED(hr)) {
         HeapFree(GetProcessHeap(), 0, a);
         return hr;
     }
-    a->iface.lpVtbl = fence ? &fence_prefix : &queue_prefix.unknown;
+    a->iface.lpVtbl = desc ? &queue_prefix.unknown : &fence_prefix;
     a->refs = 1;
     *out = &a->iface;
     return S_OK;
@@ -153,10 +150,17 @@ static HRESULT create(ID3D12Device *host, BOOL fence, IUnknown **out)
 
 HRESULT xs_direct_queue(ID3D12Device *host, IUnknown **out)
 {
-    return create(host, FALSE, out);
+    const D3D12_COMMAND_QUEUE_DESC desc = {D3D12_COMMAND_LIST_TYPE_DIRECT, 0, 0, 1};
+    return create(host, &desc, out);
+}
+
+HRESULT xs_compute_queue(ID3D12Device *host, IUnknown **out)
+{
+    const D3D12_COMMAND_QUEUE_DESC desc = {D3D12_COMMAND_LIST_TYPE_COMPUTE, 0, 0, 1};
+    return create(host, &desc, out);
 }
 
 HRESULT xs_shared_fence(ID3D12Device *host, IUnknown **out)
 {
-    return create(host, TRUE, out);
+    return create(host, NULL, out);
 }

@@ -23,8 +23,10 @@ static const IID device_id = {0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4
 int main(void)
 {
     DWORD params[20] = { [0]=0x20004, [2]=0x100000, [10]=1, [15]=0x20 };
-    UINT direct[4] = {0,0,0,1}, ext[4] = {2,0,1,0};
-    IUnknown *d, *q, *f;
+    UINT direct[4] = {0,0,0,1}, compute[4] = {2,0,0,0};
+    const UINT unsupported[][4] = {{2,0,1,0}, {2,0,2,0}, {2,0,3,0}, {2,0,0,1},
+                                   {2,1,0,0}, {3,0,0,0}};
+    IUnknown *d, *q, *f, *cq;
     ID3D12Device *host;
     void *p = params;
     UINT64 hz = 0;
@@ -58,10 +60,41 @@ int main(void)
     CHECK(WaitForSingleObject(done, 5000) == WAIT_OBJECT_0);
     CloseHandle(done);
 #endif
+    Queue extended = METHOD(d,0x180,Queue);
+    CHECK(extended(d, compute, &IID_ID3D12CommandQueue, (void **)&cq) == S_OK && cq != q);
+    CHECK(METHOD(cq,0x80,Signal)(cq, f, 0x100000002ull) == S_OK);
+#ifdef XS_TEST_LINKED
+    /* Queue both sides of a dependency before opening the CPU gate. */
+    const UINT64 n = 1ull << 42;
+    IUnknown *gate, *ready, *complete;
+    Fence shared = METHOD(d,0x120,Fence);
+    CHECK(shared(d, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&gate) == S_OK);
+    CHECK(shared(d, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&ready) == S_OK);
+    CHECK(shared(d, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&complete) == S_OK);
+    done = CreateEventW(NULL, FALSE, FALSE, NULL);
+    CHECK(done && xs_fence_event(complete, n, done) == S_OK);
+    CHECK(xs_queue_wait(cq, ready, n) == S_OK);
+    CHECK(METHOD(cq,0x80,Signal)(cq, complete, n) == S_OK);
+    CHECK(xs_queue_wait(q, gate, n) == S_OK);
+    CHECK(METHOD(q,0x80,Signal)(q, ready, n) == S_OK);
+    CHECK(WaitForSingleObject(done, 100) == WAIT_TIMEOUT);
+    CHECK(xs_cpu_signal(gate, n) == S_OK);
+    CHECK(WaitForSingleObject(done, 5000) == WAIT_OBJECT_0);
+    CloseHandle(done);
+    CHECK(!IUnknown_Release(gate) && !IUnknown_Release(ready) && !IUnknown_Release(complete));
+#endif
+    for (unsigned i = 0; i < ARRAYSIZE(unsupported); ++i) {
+        p = q;
+        CHECK(extended(d, unsupported[i], &IID_ID3D12CommandQueue, &p) == E_NOTIMPL && !p);
+    }
     p = q;
-    CHECK(METHOD(d,0x180,Queue)(d, ext, &IID_ID3D12CommandQueue, &p) == E_NOTIMPL && !p);
+    CHECK(extended(d, compute, &IID_ID3D12Fence, &p) == E_NOINTERFACE && !p);
+    p = q;
+    CHECK(extended(d, NULL, &IID_ID3D12CommandQueue, &p) == E_INVALIDARG && !p);
+    CHECK(extended(d, compute, &IID_ID3D12CommandQueue, NULL) == E_POINTER);
+    CHECK(!IUnknown_Release(cq));
     CHECK(!IUnknown_Release(f) && !IUnknown_Release(q) && !IUnknown_Release(d));
     ID3D12Device_Release(host);
-    puts("PASS bootstrap: Xbox IID -> 3 host heaps -> Direct queue/shared fence -> extended queue E_NOTIMPL");
+    puts("PASS bootstrap: Direct and default Compute queues; all four indexed retail queues rejected");
     return 0;
 }

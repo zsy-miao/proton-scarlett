@@ -44,7 +44,7 @@ This is a lower bound on initialization, not a complete console interface.
 | `0x247870d`, `0x2478731`, `0x2478758` | **Device `+0xd0`**. RCX points to the same stack destination, RDX is the device, R8D=`1`, R9D=`1,2,3`: fits `GetCustomHeapProperties(nodeMask, DEFAULT/UPLOAD/READBACK)`. The buffer is overwritten before use; this site does **not** prove the console result layout or a required RAX value. |
 | `0x247878a` | **Device `+0x40`**. Descriptor words `(0,0,0,1)` match `D3D12_COMMAND_QUEUE_DESC` (Direct, normal, no flags, node 1). R8 points to the exact `IID_ID3D12CommandQueue`; R9 is the output. Negative HRESULT calls device `+0x10` (Release shape) and returns failure. |
 | `0x24787e2` → `0x5a86180` → `0x1d0b2fa` | The queue setup helper requests a companion **fence from the device** at `+0x120`: initial value `0`, flags `1` (desktop `SHARED`), exact `IID_ID3D12Fence`, stack output. It stores the fence at helper object `+0x10` and the queue at `+0`. |
-| `0x2478813`, `0x2478853`, `0x2478893`, `0x24788d3` | **Device `+0x180`**. Four more queue outputs, same queue IID, distinct 16-byte inputs `(2,0,1,0)`, `(2,0,2,0)`, `(2,0,3,0)`, `(2,0,0,1)`; the second is built by duplicating a qword. Each queue goes through the fence setup above. The method and descriptor semantics are not established by the shared IID. |
+| `0x2478813`, `0x2478853`, `0x2478893`, `0x24788d3` | **Device `+0x180`**, consistent with `CreateCommandQueueX`. Four queue outputs, same queue IID, distinct 16-byte inputs `(2,0,1,0)`, `(2,0,2,0)`, `(2,0,3,0)`, `(2,0,0,1)`; the second is built by duplicating a qword. The title passes each queue and a separate bookkeeping ID (1–4) to fence setup at `0x2478909`, `0x247893c`, `0x247896f`, `0x24789a2`. Its allocator loop uses Compute (`2`) for these IDs. |
 | `0x2478b2d`, `0x2478c3b` | **Device `+0x48`**, exact `IID_ID3D12CommandAllocator` and types Direct (`0`) / Compute (`2`). The resulting allocator goes into `+0x248`, below. The helper reached from `0x2479345` and `0x2479366` also uses this allocator slot (`0x161d0a0`). |
 | `0x2478b71`, `0x2478c70` | **Device `+0x248`**. RDX points to four words `(0,2,1,0)` or `(2,2,1,0)`, R8=allocator, R9=null, stack=IID and output. The requested list IID `c3827890-4024-474c-98cf-645b51dc4874` differs from desktop `IID_ID3D12GraphicsCommandList6`. The **returned list**, not the device, immediately receives `+0x420`, `+0x418`, then `+0x48` (Close shape, HRESULT checked). |
 | `0x2478de4`, `0x2478e42`–`0x2478e9a` | **Device `+0x278`** takes `(2,0,0,0)` and its HRESULT gates progress. **Device `+0x78`** fits `GetDescriptorHandleIncrementSize`: arguments `0..4`; nested call at `0x5c5ff2f` multiplies descriptor counts by the result. No mapping assumed for heap type 4. |
@@ -69,6 +69,17 @@ the exact Direct queue and zero-valued shared fence using separate native
 adapters. For the first extended queue call, `+0x180` clears the output,
 logs the operation and returns `E_NOTIMPL`. The retail caller checks the
 HRESULT and contains `int3` at RVA `0x2478826` on failure.
+
+`+0x180` supports the sample's default Compute request `(2,0,0,0)`.
+Microsoft's [FramePacing](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/FramePacing/FramePacing.cpp#L1730-L1748)
+creates an ordinary Direct queue, then uses `CreateCommandQueueX` with a
+zero-initialized `D3D12XBOX_COMMAND_QUEUE_DESC`, `Type=COMPUTE`, `Flags=NONE`,
+`EngineOrPipeIndex=0`, `QueueIndex=0`. Its [DynamicCubeMap](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/DynamicCubeMap/DeviceResources.cpp#L118-L131)
+uses ordinary default Compute alongside Direct. We create a fresh host Compute
+queue at normal priority for the all-zero options. Those assignments do not
+establish a binary offset for each optional field or a desktop equivalent for
+nonzero pipe/queue selection. Treating word 2 as desktop `Flags` or word 3
+as `NodeMask` would be unjustified. All four retail inputs still fail.
 
 The prior trace stops at `0x19f4f58` with ECX=`0x80004002`, before any
 success-path calls. `+0x188` **is not needed with this runtime/prefix**:
@@ -104,8 +115,22 @@ TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/public"
 heap result to the desktop device with surrounding canaries, submits a real
 queue signal, and checks `E_NOTIMPL` and null output at `+0x180`. The linked
 variant (`-DXS_TEST_LINKED -DSCARLETT_DEVICE_BOOTSTRAP` plus `d3d12_device.c`
-and `queue/queue.c`) also observes fence completion via a Win32 event. Both
-passed on an RTX 3070. No private test symbol is exported by the DLL.
+and `queue/queue.c`) enqueues Compute's wait before Direct's signal. A CPU
+gate holds Direct, so the final Compute event must time out until the gate
+opens and then complete. This tests independent command queues and explicit
+dependencies, not hardware-engine affinity or physical concurrency. Run after
+the public test above:
+
+```sh
+mkdir linked
+"$cc" -O2 -Wall -Wextra -Werror -DXS_TEST_LINKED -DSCARLETT_DEVICE_BOOTSTRAP \
+  "$src/test-d3d12-bootstrap.c" "$src/d3d12_device.c" "$src/queue/queue.c" \
+  -ld3d12 -o linked/game_scarlett_master.exe
+TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/linked"
+grep -F 'PASS bootstrap:' "$work"/scarlett-run.*/logs/steam-999001.log
+```
+
+Both tests passed on an RTX 3070. No private test symbol is exported by the DLL.
 
 ## Scratch GPU test
 

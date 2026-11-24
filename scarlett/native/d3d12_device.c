@@ -104,12 +104,24 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
 
 static HRESULT WINAPI bootstrap_extended(IUnknown *iface, const void *desc, REFIID iid, void **out)
 {
-    (void)iface;
+    UINT words[4];
+    SIZE_T copied;
+    IUnknown *queue = NULL;
+    HRESULT hr;
     if (!out) return E_POINTER;
     *out = NULL;
     if (!desc || !iid) return E_INVALIDARG;
-    OutputDebugStringA("scarlett: device+0x180 extended queue unsupported (E_NOTIMPL)\n");
-    return E_NOTIMPL;
+    if (!IsEqualIID(iid, &IID_ID3D12CommandQueue)) return E_NOINTERFACE;
+    if (!ReadProcessMemory(GetCurrentProcess(), desc, words, sizeof(words), &copied) || copied != sizeof(words))
+        return E_POINTER;
+    /* No desktop equivalent for selecting an Xbox compute pipe or queue index. */
+    if (words[0] != D3D12_COMMAND_LIST_TYPE_COMPUTE || words[1] || words[2] || words[3]) {
+        OutputDebugStringA("scarlett: device+0x180 extended queue unsupported (E_NOTIMPL)\n");
+        return E_NOTIMPL;
+    }
+    hr = xs_compute_queue(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, &queue);
+    *out = queue;
+    return hr;
 }
 
 struct bootstrap_vtbl {

@@ -5,6 +5,7 @@
 
 /* Internal constructors: each result owns one reference and advertises only IUnknown. */
 HRESULT xs_direct_queue(ID3D12Device *host, IUnknown **out);
+HRESULT xs_compute_queue(ID3D12Device *host, IUnknown **out);
 HRESULT xs_shared_fence(ID3D12Device *host, IUnknown **out);
 
 /* Verified x64 call shapes only; reserved entries must never be dispatched. */
