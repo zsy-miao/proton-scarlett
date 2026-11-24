@@ -1248,6 +1248,25 @@ ID3D12RootSignature *xs_retain_colour_root(IUnknown *owner,IUnknown *identity)
 {
     return retain_graphics_kind(owner,identity,ROOT_BLIT_COLOUR);
 }
+/* Factory component only: the caller must already qualify the im96 request,
+ * stream and stages. Success owns one alias ref and one private host root. */
+HRESULT xs_im96_private_layout(IUnknown *owner,IUnknown *alias,ID3D12RootSignature **out)
+{
+    if(!out)return E_POINTER;
+    *out=NULL;
+    if(!xs_retain_colour_root(owner,alias))return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rs={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1,.Desc_1_1=im96_layout()};
+    ID3DBlob *blob=NULL;
+    HRESULT hr=D3D12SerializeVersionedRootSignature(&rs,&blob,NULL);
+    if(SUCCEEDED(hr)){
+        hr=ID3D12Device_CreateRootSignature(d->host,1,ID3D10Blob_GetBufferPointer(blob),
+                ID3D10Blob_GetBufferSize(blob),&IID_ID3D12RootSignature,(void**)out);
+        ID3D10Blob_Release(blob);
+    }
+    if(FAILED(hr))IUnknown_Release(alias);
+    return hr;
+}
 ID3D12PipelineState *xs_pin_colour_pso(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown *root)
 {
     if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;

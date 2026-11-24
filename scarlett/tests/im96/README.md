@@ -38,6 +38,12 @@ mutation of each of its 22 samplers and drew with the returned root.
 All 16 shaded pixels and 48 guard pixels matched after the fence.
 Creating this layout does not repair the title's cached selection.
 
+A second fixture retained the original guest colour-root object and
+created a private textured layout on the same device. On AMD and RTX a
+draw through the private layout passed the same pixel checks; the original
+object still resolved to its original host root. The fixture supplied the
+three descriptors. Retail consumption of that table has yet to be observed.
+
 | Stage | Register | Consumer |
 |---|---|---|
 | VS | `t7` | Structured SRV, stride 64, first **view-relative** element. Four float4 rows at bytes 0,16,32,48. Only XYZ used: start with translation, accumulate X, Y, Z by FMA. Row W is ignored even when nonzero. |

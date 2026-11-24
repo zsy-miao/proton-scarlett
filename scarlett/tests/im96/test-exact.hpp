@@ -1,6 +1,7 @@
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
 extern "C" ID3D12RootSignature *test_retain_im96(IUnknown*,IUnknown*);
 extern "C" ID3D12RootSignature *xs_retain_colour_root(IUnknown*,IUnknown*);
+extern "C" HRESULT xs_im96_private_layout(IUnknown*,IUnknown*,ID3D12RootSignature**);
 static ComPtr<IUnknown> owner(){
     DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
@@ -17,6 +18,13 @@ static ComPtr<ID3D12RootSignature> exact_root(){
     CK(a.Get()!=b.Get() && !test_retain_im96(other.Get(),a.Get()) && !test_retain_im96(d.Get(),b.Get()) &&
        !xs_retain_colour_root(d.Get(),a.Get()) && xs_retain_colour_root(d.Get(),b.Get()));
     b->Release();
+    auto original=xs_retain_colour_root(d.Get(),b.Get());CK(original);b->Release();
+    ComPtr<ID3D12RootSignature> private_root;
+    CK(xs_im96_private_layout(other.Get(),b.Get(),private_root.GetAddressOf())==E_INVALIDARG && !private_root);
+    CK(xs_im96_private_layout(d.Get(),a.Get(),private_root.GetAddressOf())==E_INVALIDARG && !private_root);
+    HR(xs_im96_private_layout(d.Get(),b.Get(),private_root.GetAddressOf()));
+    CK(private_root.Get()!=original && xs_retain_colour_root(d.Get(),b.Get())==original && !test_retain_im96(d.Get(),b.Get()));
+    b->Release();b->Release(); /* registry check and private-layout success pin */
     ComPtr<ID3D12RootSignature> host=test_retain_im96(d.Get(),a.Get());CK(host);a->Release();
     ComPtr<ID3D12VersionedRootSignatureDeserializer> de;
     HR(D3D12CreateVersionedRootSignatureDeserializer(wire.data(),wire.size(),IID_PPV_ARGS(&de)));
@@ -37,5 +45,6 @@ static ComPtr<ID3D12RootSignature> exact_root(){
     rs.Flags=D3D12_ROOT_SIGNATURE_FLAG_NONE;reject();
     void*out=a.Get();CK(create(d.Get(),0,wire.data(),wire.size(),IID_ID3D12RootSignature,&out)==E_NOTIMPL && !out);
     auto stale=a.Get();a.Reset();CK(!test_retain_im96(d.Get(),stale));
-    puts("PASS +80 im96: distinct b27/im96 kinds and owners, exact table, all 22 near-miss samplers rejected, release unlinks");return host;
+    puts("PASS im96 private layout: wrong owner/kind rejected; original b27 identity, host root and kind unchanged");
+    puts("PASS +80 im96: distinct b27/im96 kinds and owners, exact table, all 22 near-miss samplers rejected, release unlinks");return private_root;
 }
