@@ -17,7 +17,7 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 
-A [RADV shader test](scarlett/native/xmem/placed_capture.md) read and wrote every 32-bit word in the 147 MiB writable portion of that buffer. After the original allocation was freed and its addresses were reused, a second dispatch updated only the original pages. Binding the title's full-width shader views, including read-only shader access to the first 27 MiB, remains unverified.
+A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
 
 An experimental build with the [placed-resource factory](scarlett/native/placed-arena.md) enabled passed the `+0x428` call in retail. It then stopped at `+0x156c251` reading address `0x30`, before presentation. The default build still rejects the placement while full-width shader binding is incomplete.
 

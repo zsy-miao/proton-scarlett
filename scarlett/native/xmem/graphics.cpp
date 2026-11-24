@@ -1,5 +1,6 @@
 #include "gpu_buffer.hpp"
 #include "placed_capture.h"
+#include "placed_table.h"
 #include "arena_data_uav.hpp"
 #include <new>
 #include <winternl.h>
@@ -120,6 +121,61 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedCopyToV1(XsPlacedC
 extern "C" __declspec(dllexport) void WINAPI ScarlettReleasePlacedV1(XsPlacedCapture *p)
 {
     if (p && !InterlockedDecrement(&p->refs)) delete p;
+}
+
+struct XsPlacedTable {
+    XsPlacedCapture *capture;
+    ID3D12DescriptorHeap *heap;
+};
+
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCreatePlacedTableV1(XsPlacedCapture *p, XsPlacedTable **out)
+{
+    if (!out) return E_POINTER;
+    *out=nullptr;
+    if (!p) return E_INVALIDARG;
+    for (unsigned i=0;i<3;i++) {
+        auto b=p->resource(i)->GetDesc();
+        if (b.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || b.Width!=edges[i+1]-edges[i] ||
+                b.Flags!=(i?D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS:D3D12_RESOURCE_FLAG_NONE)) return E_NOTIMPL;
+    }
+    ID3D12Device *d;
+    HRESULT hr=p->owner->QueryInterface(IID_PPV_ARGS(&d));
+    if (FAILED(hr)) return hr;
+    auto t=new(std::nothrow) XsPlacedTable{};
+    if (!t) { d->Release(); return E_OUTOFMEMORY; }
+    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,3,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+    hr=d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&t->heap));
+    if (SUCCEEDED(hr)) {
+        auto cpu=t->heap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_SHADER_RESOURCE_VIEW_DESC s={}; s.Format=DXGI_FORMAT_R32_TYPELESS; s.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
+        s.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        s.Buffer.NumElements=UINT(edges[1]/4); s.Buffer.Flags=D3D12_BUFFER_SRV_FLAG_RAW;
+        d->CreateShaderResourceView(p->resource(0),&s,cpu);
+        for (unsigned i=1;i<3;i++) {
+            cpu.ptr+=d->GetDescriptorHandleIncrementSize(hd.Type);
+            D3D12_UNORDERED_ACCESS_VIEW_DESC u={}; u.Format=DXGI_FORMAT_R32_TYPELESS; u.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;
+            u.Buffer.NumElements=UINT((edges[i+1]-edges[i])/4); u.Buffer.Flags=D3D12_BUFFER_UAV_FLAG_RAW;
+            d->CreateUnorderedAccessView(p->resource(i),nullptr,&u,cpu);
+        }
+        t->capture=p; InterlockedIncrement(&p->refs); *out=t;
+    } else delete t;
+    d->Release();
+    return hr;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettBindPlacedTableV1(const XsPlacedTable *t, ID3D12GraphicsCommandList *l)
+{
+    if (!t || !l || !on_device(l,t->capture->owner) ||
+            (l->GetType()!=D3D12_COMMAND_LIST_TYPE_COMPUTE && l->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)) return E_INVALIDARG;
+    l->SetDescriptorHeaps(1,&t->heap);
+    l->SetComputeRootDescriptorTable(0,t->heap->GetGPUDescriptorHandleForHeapStart());
+    return S_OK;
+}
+
+extern "C" __declspec(dllexport) void WINAPI ScarlettReleasePlacedTableV1(XsPlacedTable *t)
+{
+    if (!t) return;
+    t->heap->Release(); ScarlettReleasePlacedV1(t->capture); delete t;
 }
 
 static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)
