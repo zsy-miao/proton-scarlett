@@ -136,3 +136,10 @@ TOOL rtx-small` and `radv-small` sequentially.
 `0040` adds the measured 160×90 R32_UINT starts to the WC reservation
 via a separate export. `rtx-small` / `radv-small` also cover its two
 R8_UINT sizing-only siblings and rejection of the 720p alias.
+
+`0041` extends the WC RT placement used by `0038` to the `+5b67c2c`
+3840×2160 RGBA8 RT-only constructor. The 510/513-page lease follows
+`+c8`/`+360`; the raw image occupies `0x1fe0000` / `0x2008000` bytes
+on RTX/RADV. The placed wrapper has no display slice. Test with
+`wc-float1440.sh GPU TOOL small`; the fixture identifies all 4096 distinct
+upload words in the original WC backing after title VA reuse.

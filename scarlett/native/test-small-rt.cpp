@@ -11,25 +11,31 @@ extern "C" HRESULT xs_resolve_color_rtv(IUnknown*,SIZE_T,D3D12_CPU_DESCRIPTOR_HA
 #define CK(v) do{if(!(v)){fprintf(stderr,"FAIL %d %s\n",__LINE__,#v);return 1;}}while(0)
 #define HR(e) do{HRESULT hr=(e);if(FAILED(hr)){fprintf(stderr,"FAIL %d %s = %lx\n",__LINE__,#e,hr);return 1;}}while(0)
 #include "xmem/marked_section.h"
+extern "C" ID3D12Resource *xs_retain_primary(IUnknown*,const void*);
 struct Shape {UINT fmt,width,height,off,span,bytes[2];};
 static int check(Shape t){
-    const UINT off=t.off,span=t.span,width=t.width,height=t.height,bpp=t.fmt==10?8:4;
+    UINT off=t.off,span=t.span;const UINT width=t.width,height=t.height,bpp=t.fmt==10?8:4;
     constexpr UINT pool=0x89700000,guard=65536;
     auto xm=LoadLibraryW(L"xmem.dll");CK(xm);
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");
     auto take=(HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*))(void*)GetProcAddress(xm,"ScarlettAcquireNativePoolV1");
     CK(alloc&&take);auto base=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(base);
-    memset(base+off-guard,0xa7,span+2*guard);MemoryBarrier();
     DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> dev;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)dev.GetAddressOf()));
     ComPtr<ID3D12Device>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
+    DWORD wire[]={3,0,0,0,width,0,height,0x10001,t.fmt,1,0,0,0x300001};D3D12_CLEAR_VALUE cv={};cv.Format=(DXGI_FORMAT)t.fmt;
+    if(t.fmt==28){
+        D3D12_RESOURCE_DESC rd={};memcpy(&rd,wire,sizeof wire);rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        auto info=d->GetResourceAllocationInfo(1,1,&rd);CK(info.Alignment==65536);
+        if(info.SizeInBytes==0x2010000){off=0x15470000;span=0x2010000;}else CK(info.SizeInBytes==span);
+    }
+    memset(base+off-guard,0xa7,span+2*guard);MemoryBarrier();
     UINT actual=0;ComPtr<ID3D12Resource> backing;HRESULT pin=take(d.Get(),base+off,span,nullptr,backing.GetAddressOf(),&actual);
     BYTE *alias=nullptr;bool native=pin==S_OK;
     if(native){CK(actual==off && backing->GetDesc().Width==pool);}
     else {CK(pin==S_FALSE);scarlett_section_info held={},mapped={};HR(scarlett_query_section(0x53430005,base+off,span,&held));CK(held.offset==off && held.view_size==pool);
         HR(scarlett_query_section_handle(0x53430004,nullptr,pool,&mapped,held.section));CloseHandle(held.section);alias=(BYTE*)mapped.base;}
-    DWORD wire[]={3,0,0,0,width,0,height,0x10001,t.fmt,1,0,0,0x300001};D3D12_CLEAR_VALUE cv={};cv.Format=(DXGI_FORMAT)t.fmt;
     using Place=HRESULT(WINAPI*)(IUnknown*,UINT64,const void*,UINT,const void*,REFIID,void**);
     auto place=(Place)((*(void***)dev.Get())[0x428/8]);void *guest=nullptr;
     auto create=[&](UINT pos,UINT state=6){return place(dev.Get(),(UINT_PTR)base+pos,wire,state,&cv,IID_ID3D12Resource,&guest);};
@@ -40,7 +46,14 @@ static int check(Shape t){
     D3D12_RESOURCE_ALLOCATION_INFO info={};D3D12_RESOURCE_ALLOCATION_INFO1 detail={};detail.Offset=~0ull;
     CK(((Query)((*(void***)dev.Get())[0xc8/8]))(&info,dev.Get(),1,1,wire)==&info && info.SizeInBytes==span && info.Alignment==65536);
     CK(((Detail)((*(void***)dev.Get())[0x360/8]))(&info,dev.Get(),1,1,wire,&detail)==&info && !detail.Offset && detail.SizeInBytes==span && detail.Alignment==65536);
-    HR(create(off));CK(guest);ComPtr<IUnknown> obj;obj.Attach((IUnknown*)guest);
+    if(t.fmt==28){
+        wire[12]=0x300005;CK(FAILED(create(off)) && !guest);wire[12]=0xc00001;CK(FAILED(create(off)) && !guest);
+        wire[8]=19;wire[12]=2;UINT64 ds=UINT64(native?655:1020)*65536;
+        CK(((Query)((*(void***)dev.Get())[0xc8/8]))(&info,dev.Get(),1,1,wire)==&info && info.SizeInBytes==ds && info.Alignment==65536);
+        detail.Offset=~0ull;CK(((Detail)((*(void***)dev.Get())[0x360/8]))(&info,dev.Get(),1,1,wire,&detail)==&info && !detail.Offset && detail.SizeInBytes==ds && detail.Alignment==65536);
+        wire[8]=28;wire[12]=0x300001;
+    }
+    HR(create(off));CK(guest);ComPtr<IUnknown> obj;obj.Attach((IUnknown*)guest);CK(!xs_retain_primary(dev.Get(),obj.Get()));
     using Heap=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);using Start=SIZE_T(WINAPI*)(IUnknown*);
     using Writer=void(WINAPI*)(IUnknown*,IUnknown*,const void*,SIZE_T);
     ComPtr<IUnknown> rtvHeap,srvHeap;auto vt=*(void***)dev.Get();
@@ -83,6 +96,16 @@ static int check(Shape t){
     b.Transition={image.Get(),0,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION src={},dst={};src.pResource=image.Get();dst.pResource=rb.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     dst.PlacedFootprint=fp;l->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+    // A fast-clear color may live only in metadata. Write distinct texels to identify the original WC bytes.
+    ComPtr<ID3D12Resource> stampUpload;UINT seed=0x39a57219u;
+    if(t.fmt==28){
+        hp.Type=D3D12_HEAP_TYPE_UPLOAD;buf.Width=64*64*4;buf.Flags=D3D12_RESOURCE_FLAG_NONE;
+        HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&stampUpload)));
+        UINT *u;HR(stampUpload->Map(0,nullptr,(void**)&u));for(UINT i=0;i<4096;i++)u[i]=(seed+i)*0x9e3779b1u;stampUpload->Unmap(0,nullptr);
+        b.Transition={image.Get(),0,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COPY_DEST};l->ResourceBarrier(1,&b);
+        dst.pResource=stampUpload.Get();dst.PlacedFootprint={0,{DXGI_FORMAT_R8G8B8A8_UNORM,64,64,1,256}};
+        l->CopyTextureRegion(&src,0,0,0,&dst,nullptr);
+    }
     if(native){b={};b.Type=D3D12_RESOURCE_BARRIER_TYPE_ALIASING;b.Aliasing={image.Get(),backing.Get()};l->ResourceBarrier(1,&b);
     l->CopyBufferRegion(rb.Get(),bytes,backing.Get(),off-guard,span+2*guard);}HR(l->Close());
     ComPtr<ID3D12Fence> gate,end;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate)));HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&end)));HR(q->Wait(gate.Get(),1));
@@ -91,21 +114,23 @@ static int check(Shape t){
     BYTE *reuse=base+off-guard;CK(VirtualAlloc(reuse,span+2*guard,MEM_COMMIT,PAGE_READWRITE)==reuse);memset(reuse,0x39,span+2*guard);
     CK(FAILED(create(off))&&!guest);HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(end->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,50)==WAIT_TIMEOUT);
     HR(gate->Signal(1));CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);HR(d->GetDeviceRemovedReason());
-    BYTE *data;HR(rb->Map(0,nullptr,(void**)&data));const UINT64 bg=t.fmt==10?0x3c003c0000003c00ull:t.fmt==26?0x780003c0u:t.fmt==34?0x3c00:0xffff;
-    const UINT64 fg=t.fmt==10?0x3c0000003c000000ull:t.fmt==26?0x1e0000u:t.fmt==34?0x3c000000:0xffff0000;
+    BYTE *data;HR(rb->Map(0,nullptr,(void**)&data));const UINT64 bg=t.fmt==10?0x3c003c0000003c00ull:t.fmt==26?0x780003c0u:t.fmt==34?0x3c00:t.fmt==28?0xffff00ffu:0xffff;
+    const UINT64 fg=t.fmt==10?0x3c0000003c000000ull:t.fmt==26?0x1e0000u:t.fmt==34?0x3c000000:t.fmt==28?0xff00ff00u:0xffff0000;
     for(UINT y=0;y<height;y++)for(UINT x=0;x<width;x++){UINT64 bits=0;memcpy(&bits,data+fp.Footprint.RowPitch*y+x*bpp,bpp);CK(bits==(x>=13 && x<23?fg:bg));}
     if(t.fmt==34 || t.fmt==35)dark[2]=0;
     CK(!memcmp(data+shaderOff,dark,16) && !memcmp(data+shaderOff+16,bright,16));
-    const BYTE *raw=native?data+bytes:alias+off-guard;UINT darkCount=0,brightCount=0;
+    const BYTE *raw=native?data+bytes:alias+off-guard;UINT darkCount=0,brightCount=0,stamps=0;bool seen[4096]={};
     for(UINT i=0;i<span+2*guard;i++){CK(reuse[i]==0x39);if(i<guard || i>=guard+t.bytes[native])CK(raw[i]==0xa7);
-        else if(!(i%bpp)){UINT64 v=0;memcpy(&v,raw+i,bpp);darkCount+=v==bg;brightCount+=v==fg;}}
-    CK(darkCount>=width-10 && brightCount>=10);
+        else if(!(i%bpp)){UINT64 v=0;memcpy(&v,raw+i,bpp);darkCount+=v==bg;brightCount+=v==fg;
+            if(t.fmt==28){UINT idx=(UINT)v*0x0e8b2f51u-seed;if(idx<4096 && !seen[idx]){seen[idx]=true;stamps++;}}}}
+    if(t.fmt==28){printf("WC stamp words=%u/4096\n",stamps);CK(stamps==4096);}else CK(darkCount>=width-10 && brightCount>=10);
     printf("PASS WC %ux%u fmt=%u +%x/%x; %u RTV texels, two SRV samples; original raw counts %u/%u, duplicate, tail, guards and VA reuse\n",width,height,t.fmt,off,span,width*height,darkCount,brightCount);
     rb->Unmap(0,nullptr);CloseHandle(e);CK(VirtualFree(base,0,MEM_RELEASE));if(alias)CK(VirtualFree(alias,0,MEM_RELEASE));return 0;
 }
 int main(){const Shape shapes[]={
     {10,256,256,0xe6d0000,0x80000,{0x80000,0x80000}}, {26,256,256,0xe750000,0x40000,{0x40000,0x40000}},
     {34,256,256,0xe790000,0x40000,{0x40000,0x40000}}, {26,64,2,0xe7d0000,0x10000,{0x800,0x2000}},
-    {35,127,128,0xe7e0000,0x10000,{0x10000,0x10000}}, {10,64,64,0xe7f0000,0x10000,{0x8000,0x8000}}};
+    {35,127,128,0xe7e0000,0x10000,{0x10000,0x10000}}, {10,64,64,0xe7f0000,0x10000,{0x8000,0x8000}},
+    {28,3840,2160,0x16000000,0x1fe0000,{0x1fe0000,0x2008000}}};
     for(auto t:shapes)if(check(t))return 1;
 }

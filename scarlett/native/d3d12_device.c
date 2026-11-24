@@ -255,7 +255,8 @@ static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
 
 static BOOL small_rt(const D3D12_RESOURCE_DESC *r)
 {
-    return (r->Width==256 && r->Height==256 && (r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT ||
+    return (r->Width==3840 && r->Height==2160 && r->Format==DXGI_FORMAT_R8G8B8A8_UNORM) ||
+            (r->Width==256 && r->Height==256 && (r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT ||
             r->Format==DXGI_FORMAT_R11G11B10_FLOAT || r->Format==DXGI_FORMAT_R16G16_FLOAT)) ||
             (r->Width==64 && r->Height==2 && r->Format==DXGI_FORMAT_R11G11B10_FLOAT) ||
             (r->Width==127 && r->Height==128 && r->Format==DXGI_FORMAT_R16G16_UNORM) ||
@@ -321,11 +322,13 @@ static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
         {DXGI_FORMAT_R16G16B16A16_FLOAT,64,64,0x300001,{1,1},1,TRUE},
         {DXGI_FORMAT_R16G16_FLOAT,1280,720,0x300001,{60,61},1,FALSE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x4800002,{480,304},2,TRUE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,2,{1020,655},2,TRUE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,2,{480,304},2,FALSE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,1280,720,0x80300002,{120,77},2,FALSE},
         {DXGI_FORMAT_R10G10B10A2_UNORM,2560,1440,0xc00005,{240,241},5,FALSE},
         {DXGI_FORMAT_R10G10B10A2_UNORM,2560,1440,0x300005,{240,241},5,FALSE},
         {DXGI_FORMAT_R11G11B10_FLOAT,3840,2160,0x300001,{510,513},1,FALSE},
+        {DXGI_FORMAT_R8G8B8A8_UNORM,3840,2160,0x300001,{510,513},1,TRUE},
         {DXGI_FORMAT_R8G8B8A8_UNORM,3840,2160,0xc00001,{510,513},1,FALSE},
         {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,2560,1440,0xc00001,{240,241},1,FALSE},
         {DXGI_FORMAT_R8G8B8A8_UNORM,2560,1440,0xc00001,{240,241},1,FALSE}
@@ -671,7 +674,7 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
     DXGI_FORMAT format=rd->Format;
     BOOL ds1440=format==DXGI_FORMAT_R32G8X24_TYPELESS && rd->SampleDesc.Count==1;
     BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS,a8=format==DXGI_FORMAT_A8_UNORM,bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM;
-    BOOL small=small_rt(rd);
+    BOOL small=rd->SampleDesc.Count==1 && small_rt(rd);
     BOOL fp=format==DXGI_FORMAT_R16G16B16A16_FLOAT,u8=format==DXGI_FORMAT_R8_UINT,single=ds1440 || fp || a8 || bgra || u8 || small;
     D3D12_CLEAR_VALUE cv={0};
     if (!copy_in(&cv,clear,depth ? offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+sizeof cv.DepthStencil.Stencil : sizeof cv)) return E_POINTER;
@@ -680,11 +683,11 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
         if (cv.Format!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || cv.DepthStencil.Depth!=0 || cv.DepthStencil.Stencil!=(ds1440?7:0)) return E_NOTIMPL;
     } else if (cv.Format!=format || memcmp(cv.Color,u8?(float[4]){0,0,0,1}:single?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
-    UINT span=small?deferred_pages(rd)->pages[0]*65536:ds1440?0x1300000:u8?0x40000:fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    UINT span=small?deferred_pages(rd)->pages[1]*65536:ds1440?0x1300000:u8?0x40000:fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     ID3D12Heap *native=NULL;UINT off=0;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&native,NULL,&off);
     if(hr==S_FALSE) {
-        if ((fp && !small) || ds1440) span=0x1e00000; else if (bgra) span=0x1000000; else if (a8) span=0x800000;
+        if(small) span=deferred_pages(rd)->pages[0]*65536; else if (fp || ds1440) span=0x1e00000; else if (bgra) span=0x1000000; else if (a8) span=0x800000;
         hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
     }
     else if(SUCCEEDED(hr))i=(struct scarlett_section_info){span,(void *)(va-off),WC_POOL_BYTES,off,NULL};

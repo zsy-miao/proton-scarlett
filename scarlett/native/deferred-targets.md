@@ -329,3 +329,18 @@ Four retail launches: one diagnostic per adapter, then one ordinary run
 per adapter on the same staged provider and core. RTX presented token 1
 (count 0 → 1). RADV completed the producer fence with no logged count
 increment. Neither ordinary run presented a second token.
+
+### 4K RGBA8 color target (0041)
+
+The constructor at `+5b67c2c` placed the `0x300001` RGBA8 target in state
+6 with a zero clear, then wrote its SRV and RTV. RADV used 513 × 64 KiB
+at `+0x15470000`; RTX used 510 × 64 KiB at `+0x16000000`. The fixture
+verified all 8,294,400 texels and found 4,096 distinct test words in the
+original allocation after VA reuse. The object did not qualify as a
+display primary.
+
+Six retail launches: four diagnostic and two ordinary. In three fixture
+runs, the initial RADV check assumed raw clear colors would be present;
+explicit texel writes verified the backing on both adapters. Both final
+ordinary runs presented only token 1 (count 0 → 1) and stopped at
+`+5707b8c` on the 4K depth/stencil placement path.
