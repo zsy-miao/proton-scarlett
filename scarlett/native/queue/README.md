@@ -115,3 +115,10 @@ are no callback calls during these operations.
 Unchanged RTX retail registered the pair, reset a pooled direct list on
 that allocator, then stopped at the list's `+100` (`4e4cac9`) with two
 visible heaps of the same device: 0x130000 resource entries and 128 samplers.
+
+The AMD retail trace establishes the ownership order: the direct allocator
+had one reference when the title registered the pair at `188501`. On the
+same thread, a previously closed pooled list reset at `2474cd4`, took a
+second reference to that allocator and released its old allocator. No
+allocator reset, callback invocation or queue submission preceded `4e4cac9`.
+This sequence does not establish thread affinity for a future callback.
