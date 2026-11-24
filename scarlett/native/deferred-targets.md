@@ -72,3 +72,25 @@ image `+76503e0` referenced that owner at `+8`; the owner held `0x3c0000`
 (RTX) or `0x260000` (RADV) elements of stride 8, and a null resource at
 `+0x20`. No depth placement was observed before the next `+c8` from
 `+25cc757`: 640×1440 R32_UINT, flags `0x300005`, layout 0, one mip.
+
+## Single-channel owners following the 1440p depth query
+
+| Factory return | Extent and format | Flags | RTX bytes | RADV bytes | Wrapper globals (RVAs) |
+|---|---|---:|---:|---:|---|
+| `+25cc757` | 640×1440 R32_UINT | `0x300005` | `0x3c0000` | `0x3c0000` | `+7650418`, `+7650420` |
+| `+25cc84c` | 2560×1440 R32_FLOAT | `0xc00001` | `0xf00000` | `0xf10000` | `+76503d8` |
+
+Both `+c8` calls return to `+344188`. The two distinct UINT wrappers point
+at the same `0xa8` owner (wrapper `+8`); the FLOAT wrapper points at a
+separate `0x28` owner. Each has stride 4 and count equal to its returned
+size divided by four. All resource fields at owner `+0x20` were still null
+at the next query. On that thread neither placement (`+428`, `+3f8`) nor
+object/address descriptor writes intervened. The next `+c8` is 160×90
+R16_FLOAT, five levels, `0x1000` alignment, layout `0x102`, flags `0x300004`,
+factory `+25cc8da`, query return `+344145`.
+
+Two 160×90 `R16_FLOAT` five-level owners asked for `0x1000` alignment,
+then retried with zero. Both accepted `0xa400` bytes at natural alignment
+`0x100` (164 tiles of 16×8 halfwords). Their resource pointers were still
+null at the next `+c8`: 2560×1440 `R32G32_FLOAT`, flags `0xc00005`.
+Only sizing is enabled for this chain.

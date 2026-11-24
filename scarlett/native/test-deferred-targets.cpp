@@ -21,6 +21,20 @@ int main(){
     ComPtr<ID3D12Device> d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page && VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
     DWORD *wire=(DWORD*)(page+4096)-13;
+    const UINT requests[]={4096,0};
+    for(UINT request : requests){
+        const DWORD v[]={3,0,request,0,160,0,90,0x50001,54,1,0,0x102,0x300004}; memcpy(wire,v,sizeof v);
+        struct { UINT64 pre; D3D12_RESOURCE_ALLOCATION_INFO out; UINT64 post; } g={13,{},17};
+        CK(query(&g.out,guest.Get(),1,1,wire)==&g.out && g.pre==13 && g.post==17 &&
+            g.out.SizeInBytes==0xa400 && g.out.Alignment==256);
+        D3D12_RESOURCE_ALLOCATION_INFO1 detail={};
+        CK(FAILED(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.out,&detail)));
+        auto deny=[&](UINT node,UINT n,const void *p){D3D12_RESOURCE_ALLOCATION_INFO z={1,2};
+            return FAILED(xs_color_allocation_info(guest.Get(),node,n,p,&z)) && !z.SizeInBytes && !z.Alignment;};
+        CK(deny(0,1,wire) && deny(1,2,wire) && deny(1,1,(BYTE*)wire+1));
+        for(UINT j=0;j<13;j++)if(j!=1){wire[j]^=1;CK(deny(1,1,wire));wire[j]^=1;}
+    }
+    puts("PASS R16 five-mip: guarded +c8 small-alignment probe and retry, rejected neighbors");
     for(UINT levels=5;levels<=6;levels++){
       UINT top=6-levels,w=2560u>>top,h=1440u>>top,bytes=levels==5?0x4b1400:0x12c1400;
       const DWORD v[]={3,0,0,0,w,0,h,(levels<<16)|1u,26,1,0,0x102,0x300004};memcpy(wire,v,sizeof v);
@@ -52,7 +66,7 @@ int main(){
     struct Target { UINT w,h,fmt,flags; } targets[]={
         {3840,2160,87,0xc00005}, {3840,2160,87,0x300001},
         {3840,2160,87,0x300001}, {3840,2160,19,0x800002}, {3840,2160,87,0xc00001},
-        {2560,1440,19,0x800002}
+        {2560,1440,19,0x800002}, {640,1440,42,0x300005}, {2560,1440,41,0xc00001}
     };
     constexpr UINT count=ARRAYSIZE(targets);
     D3D12_RESOURCE_DESC rd[count]={}; UINT64 offsets[count],end=65536;
@@ -105,6 +119,7 @@ int main(){
         if(ds){D3D12_DEPTH_STENCIL_VIEW_DESC v={};v.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT;v.ViewDimension=D3D12_DSV_DIMENSION_TEXTURE2D;
             d->CreateDepthStencilView(tex[i].Get(),&v,h);l->ClearDepthStencilView(h,D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,(i+1)/8.f,(BYTE)(0x31+i),0,nullptr);}
         else{float rgba[]={float(i&1),float((i>>1)&1),float((i>>2)&1),1.f};
+            if(targets[i].fmt==42 || targets[i].fmt==41)rgba[0]=float(i+1);
             d->CreateRenderTargetView(tex[i].Get(),nullptr,h);l->ClearRenderTargetView(h,rgba,0,nullptr);}
         D3D12_RESOURCE_BARRIER b={};b.Transition={tex[i].Get(),D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,state,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     }
@@ -119,10 +134,12 @@ int main(){
     HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(q->Signal(f.Get(),1));HR(f->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,15000)==WAIT_OBJECT_0);CloseHandle(e);
     for(UINT i=0;i<count;i++){
         BYTE *p;HR(rb[i]->Map(0,nullptr,(void**)&p));auto t=targets[i];DWORD expect=0xff000000|((i&1)?0xff0000:0)|((i&2)?0xff00:0)|((i&4)?0xff:0);
+        if(t.fmt==42)expect=i+1;
+        if(t.fmt==41){float val=float(i+1);memcpy(&expect,&val,4);}
         if(t.fmt==19){float z=(i+1)/8.f;memcpy(&expect,&z,4);}
         for(UINT y=0;y<t.h;y++){auto row=(DWORD*)(p+fp[i][0].Offset+y*fp[i][0].Footprint.RowPitch);
             for(UINT x=0;x<t.w;x++){CK(row[x]==expect);if(t.fmt==19)CK(p[fp[i][1].Offset+y*fp[i][1].Footprint.RowPitch+x]==0x31+i);}}
         rb[i]->Unmap(0,nullptr);
     }
-    puts("PASS deferred targets: six guarded queries, adjacent desktop placements and full fenced color/depth/stencil readbacks");
+    puts("PASS deferred targets: eight guarded queries, adjacent desktop placements and full fenced color/depth/stencil readbacks");
 }
