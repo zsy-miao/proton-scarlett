@@ -349,6 +349,19 @@ def setup_game_dir_drive():
         setup_dir_drive("gamedrive", "s:", try_get_game_library_dir())
 
 def setup_steam_dir_drive():
+        if g_compatdata.scarlett:
+            # The title writes its crash report to T:. Keep it inside the title prefix.
+            scratch = g_compatdata.path("scratch")
+            drive = g_compatdata.path("pfx/dosdevices/t:")
+            if os.path.realpath(scratch) != scratch or os.path.realpath(os.path.dirname(drive)) != os.path.dirname(drive):
+                raise ValueError("Refusing a redirected Scarlett scratch directory")
+            os.makedirs(scratch, mode=0o700, exist_ok=True)
+            try:
+                os.symlink(scratch, drive)
+            except FileExistsError:
+                if os.path.realpath(drive) != scratch:
+                    raise ValueError("Conflicting Scarlett scratch drive: " + drive)
+            return
         setup_dir_drive("steamdrive", "t:", try_get_steam_dir())
 
 

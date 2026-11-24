@@ -80,6 +80,21 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual((path, overrides, calls), (r"C:\old", "existing=b", 0))
         self.assertFalse((self.base / "scarlett-title").exists())
 
+    def test_scratch_drive(self):
+        data = proton["CompatData"](str(self.base), True)
+        drive = Path(data.prefix_dir) / "dosdevices/t:"
+        drive.parent.mkdir(parents=True)
+        with patch.dict(proton["setup_steam_dir_drive"].__globals__, g_compatdata=data):
+            proton["setup_steam_dir_drive"]()
+            (drive / "report").write_text("test")
+            proton["setup_steam_dir_drive"]()
+            self.assertEqual((self.base / "scarlett-title/scratch/report").read_text(), "test")
+            drive.unlink()
+            drive.symlink_to(self.base)
+            with self.assertRaisesRegex(ValueError, "Conflicting"):
+                proton["setup_steam_dir_drive"]()
+            self.assertEqual(drive.readlink(), self.base)
+
 
 if __name__ == "__main__":
     unittest.main()
