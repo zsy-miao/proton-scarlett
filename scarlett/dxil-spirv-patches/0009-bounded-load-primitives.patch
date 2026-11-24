@@ -1,0 +1,81 @@
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -492,6 +492,7 @@
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC = 56,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS = 57,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ = 58,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_TRIANGLES = 59,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+ 
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -936,7 +936,7 @@
+ /* Useful to check if the implementation recognizes a particular capability for ABI compatibility. */
+ dxil_spv_bool dxil_spv_converter_supports_option(dxil_spv_option cap)
+ {
+-	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
++	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_TRIANGLES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
+ 	     cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS)
+ 		cap = DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE;
+ 	return Converter::recognizes_option(static_cast<Option>(cap)) ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+@@ -1013,6 +1013,7 @@
+ 	}
+ 
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_TRIANGLES:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ:
+@@ -1022,10 +1023,11 @@
+ 	{
+ 		auto *in = reinterpret_cast<const dxil_spv_option_bounded_xbox_range *>(option);
+ 		OptionBoundedXboxRange helper;
+-		helper.load_pass = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS;
++		const bool triangles = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_TRIANGLES;
++		helper.load_pass = triangles || option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS;
+ 		helper.bitonic = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC;
+ 		helper.morton = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON;
+-		helper.scalar_read = helper.bitonic || helper.morton || option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ;
++		helper.scalar_read = triangles || helper.bitonic || helper.morton || option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ;
+ 		helper.range_word = in->range_word;
+ 		helper.range_descriptor = in->range_descriptor;
+ 		helper.centroid_descriptor_plus_one = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS ?
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6320,6 +6320,7 @@
+ 	if (fn->getName() == "xbox.Med3_U32") return 16;
+ 	if (fn->getName() == "xbox.Ballot64") return 25;
+ 	if (fn->getName() == "xbox.MakeUniform.i32") return 50;
++	if (fn->getName() == "xbox.V_ALIGNBYTE_B32") return 332;
+ 	if (fn->getName() == "xbox.BFI") return 23;
+ 	if (fn->getName() == "xbox.s_load_dword_with_cache") return 364;
+ 	if (fn->getName() == "xbox.Min3_F32") return 8;
+@@ -6396,6 +6397,24 @@
+ 	const bool atomic = counter || opnum >= 368;
+ 	const bool read = !counter && (opnum < 360 || opnum == 364);
+ 	if (opnum == 364 && !impl.xbox_scalar_read) return false;
++	if (opnum == 332)
++	{
++		auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };
++		if (!impl.xbox_load_pass || !impl.xbox_scalar_read || call.getNumOperands() != 4 || !u32(call.getType())) return false;
++		for (unsigned i = 0; i < 4; ++i) if (!u32(call.getOperand(i)->getType())) return false;
++		auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
++		if (!opcode || opcode->getUniqueInteger().getZExtValue() != opnum) return false;
++		// AMD alignbyte: low DWORD of (hi:lo) >> (8 * (offset & 3)).
++		auto &b = impl.builder(); auto t = b.makeUintType(32), w = b.makeUintType(64);
++		auto op = [&](spv::Op ins, spv::Id type, std::initializer_list<spv::Id> args) {
++			auto *o = impl.allocate(ins,type); for (auto id : args) o->add_id(id); impl.add(o); return o->id;
++		};
++		auto pair = op(spv::OpCompositeConstruct, b.makeVectorType(t,2), {impl.get_id_for_value(call.getOperand(2)),impl.get_id_for_value(call.getOperand(1))});
++		auto bytes = op(spv::OpBitwiseAnd,t,{impl.get_id_for_value(call.getOperand(3)),b.makeUintConstant(3)});
++		auto shift = op(spv::OpShiftLeftLogical,t,{bytes,b.makeUintConstant(3)});
++		auto aligned = op(spv::OpShiftRightLogical,w,{op(spv::OpBitcast,w,{pair}),shift});
++		auto *ret = impl.allocate(spv::OpUConvert,&call); ret->add_id(aligned); impl.add(ret); return true;
++	}
+ 	if (opnum == 23)
+ 	{
+ 		auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };

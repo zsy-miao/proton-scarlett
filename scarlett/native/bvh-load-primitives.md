@@ -1,0 +1,39 @@
+# XDXR LoadPrimitivesPass
+
+## Identity
+
+Builder SHA256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`; root call `+1c2f9` to `+c2d0`, named at `+cd498`. V1.1 root, node 1, flags `0x03000000`, zero static samplers. Root params in order: raw root UAV u0..u4, SRV t0..t2, fourteen DWORDs b0. Space/descriptor flags/visibility all zero. Compare all 284 guest serialization bytes. Tests reject the valid BVH4Builder root of that same size.
+
+| PSO | Constructor → instance slot | Container RVA / file offset / bytes | SHA-256 | vkd3d FNV |
+|---|---|---|---|---|
+| XDXR LoadTriangles | +1c39b → +8 | +80ed0 / +802d0 / a304 | `b51813bcdab86c830427a6c3c682176216e001f38e7a75dd4980e4e8576abfdb` | `f6a7f578dce5fe3a` |
+| XDXR ReloadTriangles | +1c3f5 → +18 | +73b20 / +72f20 / b1e4 | `f629a0b0fbc071c7b5860e33cf0746d2be6fa408c87023a2da5457976a2c9423` | `5befade5ff8f0f8c` |
+
+Both constructors call `+c470`, taking the same family root at `[r12]`; debug names at `+cd4c8/+cd528`. Group size 32x1x1. No sibling acceptance by span or name.
+
+## Translation / binding
+
+Only added guest operation is validated `V_ALIGNBYTE_B32(332, hi, lo, byteOffset)` → low 32 bits of `((hi:lo) >> (8*(byteOffset&3)))`. Both shaders use it for packed/unaligned formats. Option 59 combines existing bounded scalar/global 4/8/12/16-byte reads and integer/float atomics. Exact shader size/FNV, compute stage, private 6-DWORD range constants and distinct private read/atomic roots required. Adapter requires full SHA and new core marker `ScarlettBoundedTrianglesV1`. No raw guest VA becomes a physical pointer. Private root layout: [0] descriptor table (u0..u4 then t0..t2), [1] guest b0 (14 DWORDs), [2] private b0 space 0x5358 (read base lo/hi/bytes, atomic base lo/hi/bytes), [3] private t0 and [4] private u0 in 0x5358. Standard bindings use bounded views. Load uses raw t0,t1,t2,u0,u4; Reload uses structured t0 (32-byte geometry records) and raw u4. Use storage views matching each original module, not one fixed t0 view. No new guest-visible interfaces.
+
+Load tests: non-indexed FP32 triangle at nonzero primitive output slot, u4 header sum and private bounds/centroid output; empty; packed R16G16_FLOAT with 5-byte stride crossing DWORDs; successful compact reservation from previous count 2; overflow + rollback; private counter access short by one byte (suppressed with rejected reservation); clipped raw u0 view discarding metadata while preserving complete XYZ. Reload tests: nonzero geometry-table entry, FP32 leaves with absent fourth = qNaN triplet; empty; packed half vertices at offsets 1/2/3; last x3 global read short by one byte returns three zeros; unaligned R16 indices reorder vertices; paired leaf reads/writes the fourth point and includes it in bounds; disabled bounds leave both bounds records unchanged. Each fence checks every DWORD in six resources including both guards and all input bytes. High synthetic addresses cross a low-word carry; read/atomic mapped spans are distinct. Exact guest-root-only host PSO rejected. Foreign device, unrelated roots, descriptor tail, size, digest and name negatives exercise the real factory; stale core guarded before private root creation.
+
+## Procedural geometry
+
+Builder SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`. The constructor places these two bytecode spans at `+1c328` and `+1c360`:
+
+| PSO name | RVA / file offset / bytes (hex) | SHA-256 of complete container |
+| --- | --- | --- |
+| XDXR LoadProceduralGeometry | `7ed10 / 7e110 / 21b4` | `d7055e99f924824099e24b0f31a7d9c99fa8c6ee03268456ad5ad20281a54f80` |
+| XDXR ReloadProcedurals | `71f50 / 71350 / 1bc8` | `ee9e9aeb01d0a295e3a48c5f862e8c9c383217361f7ef6b9a316eec87439ac4f` |
+
+Both embedded RTS0 chunks match the exact 284-byte public root: five UAVs `u0..u4`, three SRVs `t0..t2`, fourteen DWORDs at `b0`; version 1.1, flags `0x03000000`. Both groups are `(32,1,1)`. Original DXIL has a 52-byte constants struct: header VA, transform VA, centroid VA (three little-endian uint64s), then element stride/type, index offset, primitive bound, allocation capacity, primitive offset, geometry index/flags and flags (seven DWORDs). The last root DWORD is unused padding.
+
+* **Load:** lane X exits if `X>=bound`. Read `t0` raw bytes at `stride*X` and `+12` (lower and upper float3). With `flags&4` clear, write slot `primitiveOffset+X`; an elected lane adds the active wave count to raw `u4[byte 12]`. Otherwise elect one lane to fetch-add the wave count at guest `headerVA+12`. If unsigned `old+count>capacity`, fetch-sub the same count and emit nothing for this wave; otherwise slot is `old + exclusive lane prefix`. At `u0[slot]` store 16 DWORDs: `(0,~0,~0,~0)`, lower/upper float3s, two zeroes, packed geometry index/flags, X, two zeroes. Emitted lanes always contribute to bounds.
+* **Reload:** X exits unless `X<DWORD(u4+12)`. `R=DWORD(u4+52)+64*X`. Read geometry index `DWORD(u4+R+48)>>8` and primitive index `DWORD(u4+R+52)`. `t0[geometry]` has stride 32; use only its uint64 vertex VA at +0 and uint32 stride at +24. Add the **32-bit product** stride*primitiveIndex, zero extended, to the vertex VA. Two separately bounded 12-byte loads fetch lower and upper float3. Store only the six DWORDs at `u4+R+16..39`. This path never reserves a slot. Only `flags&8` enables the bounds reductions.
+* **Reduction:** wave minima of lower.xyz and maxima of upper.xyz update guest `headerVA+16..39` by elected-lane float min/max atomics. When centroidVA is nonzero, independently reduce `(lower+upper)*0.5` and update its six floats at +0..23.
+
+Private binding slots: 0 = bounded descriptor table (`t0` raw for load or structured 32 for reload, `u0` structured 64, `u4` raw); 1 = root CBV at b0 preserving the mixed-width data; 2 = six DWORDs (read base lo/hi/length, atomic base lo/hi/length); 3 = read-window SRV; 4 = atomic-window UAV. Slots 2–4 use b0/t0/u0 in space `0x5358`. Reuses LoadInstancesPass add/sub lowering and PT_LoadInstances triple-load/float-atomic lowering. Rejected triple reads zero all 12 bytes; a rejected integer reservation returns `~amount`, rejected atomics do not write. Distinct backend export: `ScarlettBoundedProceduralsV1`.
+
+`scarlett/tests/load-primitives.sh XboxBvhBuilder.dll [tool]` fences and compares all five guarded buffers per case, including both untouched inputs. Cases cover fixed offsets across two groups, append, capacity rollback, rejected counter, no work and null centroid; reload covers disjoint geometry buffers with differing strides, reverse primitive indices, flags on/off, truncated atomic and read windows, empty and null centroid. Counts and boxes are checked using finite floats. These are public factory and private dispatch qualifications only. A guest recorder still needs to prove descriptor spans and 32-bit arithmetic cannot wrap, validate capacity/counter including concurrent reservations, and resolve/retain all address windows with correct permissions, aliasing and alignment. Do not span unrelated allocations with a private window just because the shader can name both.
+
+Production recording still needs finite caps, wave reservation no-wrap, per-resource ownership/lifetime/permissions, view extents and index/stride/offset arithmetic, geometry-table validity, transform and per-header matrix layout, and safe nonaliased/consistent mapping when loads and atomics reference the same header. One private contiguous read span and one atomic span cannot represent arbitrary unrelated vertex, index, transform, header and centroid allocations; reject unrepresentable jobs. Whole-width bounds checks and robust standard UAVs are not substitutes for rejecting invalid input formats. Tests cover particular finite vertices, one active lane, and selected formats. They do not establish multiwave contention, every format or transform branch, NaN equivalence in general, or retail recording correctness.

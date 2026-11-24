@@ -11,7 +11,8 @@ enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_I
     BVH_BITONIC_PRE, BVH_BITONIC_OUTER, BVH_BITONIC_INNER, BVH_BITONIC_PRE64, BVH_BITONIC_OUTER64, BVH_BITONIC_INNER64,
     BVH_RADIX_RESET, BVH_RADIX_COUNT, BVH_RADIX_ALLOC,
     BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096,
-    BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS, BVH_LOAD_PASS, BVH_SPLIT_PASS };
+    BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS, BVH_LOAD_PASS, BVH_SPLIT_PASS,
+    BVH_LOAD_TRIANGLES, BVH_RELOAD_TRIANGLES, BVH_LOAD_PROCEDURAL, BVH_RELOAD_PROCEDURAL };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -44,6 +45,12 @@ static const struct bvh_candidate {
         0x1e,0xb3,0xb8,0xed,0xeb,0xd3,0x8d,0x0d,0xc2,0xce,0xe9,0xaa,0xe4,0x89,0xa0,0x45},L"XDXR RearrangeTriangles",4,{0}},
     [BVH_REARRANGE_BVHS]={0x1794,{0x29,0x63,0x30,0x83,0x51,0x53,0x15,0xf9,0x22,0x33,0xce,0x4b,0x7c,0xf0,0x56,0xec,
         0x7a,0x0e,0x0a,0xdb,0xf0,0xdb,0xd5,0x70,0xe4,0x18,0xec,0xed,0x3c,0xa9,0xf8,0xf4},L"XDXR RearrangeBVHs",4,{0}},
+    [BVH_LOAD_TRIANGLES]={0xa304,{0xb5,0x18,0x13,0xbc,0xda,0xb8,0x6c,0x83,0x04,0x27,0xa6,0xc3,0xc6,0x82,0x17,0x62,0x16,0xe0,0x01,0xf3,0x8e,0x7a,0x75,0xdd,0x49,0x80,0xe4,0xe8,0x57,0x6a,0xbf,0xdb},L"XDXR LoadTriangles",14,{0}},
+    [BVH_RELOAD_TRIANGLES]={0xb1e4,{0xf6,0x29,0xa0,0xb0,0xfb,0xc0,0x71,0xc7,0xb5,0x86,0x0e,0x33,0xcf,0x07,0x46,0xd2,0xbe,0x6f,0xa4,0x08,0xc8,0x70,0x23,0xa2,0xda,0x54,0x57,0x97,0x6a,0x2c,0x94,0x23},L"XDXR ReloadTriangles",14,{0}},
+    [BVH_LOAD_PROCEDURAL]={0x21b4,{0xd7,0x05,0x5e,0x99,0xf9,0x24,0x82,0x40,0x99,0xe2,0x4b,0x0f,0x31,0xa7,0xd9,0xc9,
+        0x9f,0xa8,0xc6,0xee,0x03,0x26,0x84,0x56,0xad,0x5a,0xd2,0x02,0x81,0xa5,0x4f,0x80},L"XDXR LoadProceduralGeometry",14,{0}},
+    [BVH_RELOAD_PROCEDURAL]={0x1bc8,{0xee,0x9e,0x9a,0xeb,0x01,0xd0,0xa2,0x95,0xe3,0xa4,0x8c,0x5f,0x86,0x2e,0x8c,0x9c,
+        0x38,0x32,0x17,0x36,0x1f,0x7e,0xf6,0xb9,0xa3,0x16,0xee,0xc8,0x74,0x39,0xac,0x4f},L"XDXR ReloadProcedurals",14,{0}},
     [BVH_SPLIT_PASS]={0x88f4,{0x5c,0x3d,0x3c,0x4a,0x41,0xf3,0x20,0xfb,0x73,0x50,0xd3,0xbf,0x23,0x84,0x95,0x50,
         0x78,0x6f,0xb8,0x9b,0x87,0x09,0xd6,0x25,0x12,0xf7,0x3e,0xad,0xf2,0x08,0x8e,0xee},L"XDXR SplitInstancesPass",8,{0}},
     [BVH_LOAD_PASS]={0x1230c,{0xd4,0x8a,0xbe,0x6c,0x23,0x4f,0xae,0x56,0xa4,0xbb,0x39,0x80,0xcd,0x83,0x98,0xa5,0x4a,0xf3,0x0f,0x8b,0x58,0xda,0xbc,0xb9,0x0c,0x60,0x07,0x7b,0x6c,0x4a,0xa8,0xed},L"XDXR LoadInstancesPass",10,{0}},
@@ -170,7 +177,10 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     BOOL prefix=kind>=BVH_PREFIX64 && kind<=BVH_PREFIX4096;
     BOOL original_radix=kind==BVH_RADIX_RESET || kind==BVH_RADIX_COUNT;
     BOOL rearrange=kind==BVH_REARRANGE_TRIANGLES || kind==BVH_REARRANGE_BVHS;
-    int required_root=kind==BVH_SPLIT_PASS ? ROOT_SPLIT_INSTANCES : kind==BVH_LOAD_PASS ? ROOT_LOAD_INSTANCES :
+    BOOL triangles=kind==BVH_LOAD_TRIANGLES || kind==BVH_RELOAD_TRIANGLES;
+    BOOL procedural=kind==BVH_LOAD_PROCEDURAL || kind==BVH_RELOAD_PROCEDURAL;
+    int required_root=triangles || procedural ? ROOT_LOAD_PRIMITIVES :
+            kind==BVH_SPLIT_PASS ? ROOT_SPLIT_INSTANCES : kind==BVH_LOAD_PASS ? ROOT_LOAD_INSTANCES :
             rearrange ? ROOT_REARRANGE : prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
             bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY;
     AcquireSRWLockShared(&d->descriptor_lock);
@@ -199,10 +209,20 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         for (UINT i=0;i<2;i++) rp[i]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0}};
         rs.NumParameters=3;
     }
-    if (kind==BVH_SPLIT_PASS) {
+    D3D12_DESCRIPTOR_RANGE proc_views[]={
+        {D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0},{D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,1},
+        {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,4,0,2}};
+    if (triangles || procedural || kind==BVH_SPLIT_PASS) {
         HMODULE core=GetModuleHandleW(L"d3d12core.dll");
-        if (!core || !GetProcAddress(core,"ScarlettBoundedSplitPassV1")) return E_NOTIMPL;
-        ranges[0].NumDescriptors=4;
+        const char *marker=triangles ? "ScarlettBoundedTrianglesV1" : procedural ? "ScarlettBoundedProceduralsV1" : "ScarlettBoundedSplitPassV1";
+        if (!core || !GetProcAddress(core,marker)) return E_NOTIMPL;
+        if (triangles) {
+            ranges[0].NumDescriptors=5; ranges[1].NumDescriptors=3; ranges[1].OffsetInDescriptorsFromTableStart=5;
+            rp[0].DescriptorTable.NumDescriptorRanges=2;
+        } else if (procedural) {
+            rp[0].DescriptorTable=(D3D12_ROOT_DESCRIPTOR_TABLE){3,proc_views};
+            rp[1]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_CBV};
+        } else ranges[0].NumDescriptors=4;
         rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,6}};
         rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
         rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};

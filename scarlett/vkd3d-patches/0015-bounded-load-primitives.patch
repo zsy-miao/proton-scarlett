@@ -1,0 +1,62 @@
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1320,5 +1320,7 @@
+ void WINAPI DLLEXPORT ScarlettBoundedBitonicV1(void) {}
+ void WINAPI DLLEXPORT ScarlettRadixCountV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedLoadPassV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedProceduralsV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedTrianglesV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedSplitPassV1(void) {}
+ DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,8 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettBoundedProceduralsV1
++    ScarlettBoundedTrianglesV1
+     ScarlettBoundedSplitPassV1
+     ScarlettBoundedLoadPassV1
+     ScarlettRadixCountV1
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1258,7 +1258,7 @@
+     unsigned int root_constant_words = 0;
+     unsigned int heuristic_min_wave_size;
+     unsigned int heuristic_max_wave_size;
+-    bool load_pass, read_only, instances, boxes, morton, bitonic, rearrange;
++    bool triangles, load_pass, read_only, instances, boxes, morton, bitonic, rearrange;
+     dxil_spv_converter converter = NULL;
+     dxil_spv_parsed_blob blob = NULL;
+     dxil_spv_compiled_spirv compiled;
+@@ -1376,10 +1376,14 @@
+ 
+     /* The adapter checks the full shader digest before constructing the private root. */
+     boxes = dxbc->size == 0x1118 && hash == UINT64_C(0x5d9580eb7cfa9a7f);
+-    /* Both exact shaders use the same checked wave-reservation ABI. */
++    /* These exact shaders use the same checked wave-reservation ABI. */
+     load_pass = (dxbc->size == 0x1230c && hash == UINT64_C(0xb34bd46ce654ee73)) ||
+-            (dxbc->size == 0x88f4 && hash == UINT64_C(0x520024d8d479f209));
+-    instances = load_pass || (dxbc->size == 0x752c && hash == UINT64_C(0x942b4594697cfcb6));
++            (dxbc->size == 0x88f4 && hash == UINT64_C(0x520024d8d479f209)) ||
++            (dxbc->size == 0x21b4 && hash == UINT64_C(0xc976d9beb0bfa696));
++    triangles = (dxbc->size == 0xa304 && hash == UINT64_C(0xf6a7f578dce5fe3a)) ||
++            (dxbc->size == 0xb1e4 && hash == UINT64_C(0x5befade5ff8f0f8c));
++    instances = triangles || load_pass || (dxbc->size == 0x1bc8 && hash == UINT64_C(0xa4d3fdeef40366c2)) ||
++            (dxbc->size == 0x752c && hash == UINT64_C(0x942b4594697cfcb6));
+     morton = (dxbc->size == 0x33a0 && hash == UINT64_C(0xfe5914f3eaa74d93)) ||
+             (dxbc->size == 0x33fc && hash == UINT64_C(0x6dcc62ed085e60b8));
+     bitonic = (dxbc->size == 0x20c8 && hash == UINT64_C(0xa8cb73d69fe923ca)) ||
+@@ -1412,7 +1416,7 @@
+                 dxil_spv_option_bounded_xbox_load_instances opt = {
+                         {{rearrange ? DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ :
+                           bitonic ? DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC : morton ? DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON :
+-                          load_pass ? DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS : instances ? DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES : DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE},
++                          triangles ? DXIL_SPV_OPTION_BOUNDED_XBOX_TRIANGLES : load_pass ? DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_PASS : instances ? DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES : DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE},
+                          p->offset / 4 - 2 * num_root_descriptors, vk.root_constant_index, read_only ? DXIL_SPV_TRUE : DXIL_SPV_FALSE},
+                         ~0u};
+                 if (boxes)

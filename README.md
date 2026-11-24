@@ -13,7 +13,9 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 33 compute pipelines, through [`LoadInstancesPass`](scarlett/native/bvh-load-pass.md) and [`SplitInstancesPass`](scarlett/native/bvh-split-pass.md). Startup stops at `LoadTriangles` (builder shader RVA `+0x80ed0`, 41,732 bytes). **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 37 compute pipelines, including all four [triangle and procedural geometry loaders](scarlett/native/bvh-load-primitives.md). Startup stops at `PartitionConstruct` (`XboxBvhBuilder.dll` shader RVA `+0x46880`, 24,160 bytes). **No retail builder dispatch or presented frame has been observed.**
+
+The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
 GPU tests on RADV and RTX 3070 checked 46 radix cases per adapter, including histogram counts, scans that restart at each workgroup, and scatter writes that preserve the original key/index pairs.
 
