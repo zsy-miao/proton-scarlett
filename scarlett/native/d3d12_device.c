@@ -191,6 +191,26 @@ static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_S
     return hr;
 }
 
+static HRESULT WINAPI bootstrap_frame_interval(IUnknown *iface, IDXGIOutput *output, UINT us, UINT period, UINT flags)
+{
+    char msg[160];
+    (void)iface;
+    snprintf(msg, sizeof(msg), "scarlett: SetFrameIntervalX(output=%p, %u us, period=%u, flags=%#x) unsupported\n",
+            (void *)output, us, period, flags);
+    OutputDebugStringA(msg);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI bootstrap_frame_event(IUnknown *iface, UINT type, UINT offset_us, const void *signals, UINT flags)
+{
+    char msg[160];
+    (void)iface;
+    snprintf(msg, sizeof(msg), "scarlett: ScheduleFrameEventX(type=%u, offset=%u us, signals=%p, flags=%#x) unsupported\n",
+            type, offset_us, signals, flags);
+    OutputDebugStringA(msg);
+    return E_NOTIMPL;
+}
+
 struct bootstrap_vtbl {
     IUnknownVtbl unknown;
     xs_stop_fn gap18[5];
@@ -206,9 +226,15 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_extended) extended;
     xs_stop_fn gap188[24];
     __typeof__(&bootstrap_list) list;
-    xs_stop_fn gap250[8];
+    xs_stop_fn gap250[4];
+    __typeof__(&bootstrap_frame_interval) frame_interval;
+    __typeof__(&bootstrap_frame_event) frame_event;
+    xs_stop_fn gap280[2];
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
+               offsetof(struct bootstrap_vtbl, frame_interval) == 0x270 &&
+               offsetof(struct bootstrap_vtbl, frame_event) == 0x278 &&
+               offsetof(struct bootstrap_vtbl, gap280) == 0x280 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
@@ -255,7 +281,9 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 7] = xs_stop }
+    .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 3] = xs_stop },
+    .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
+    .gap280 = { xs_stop, xs_stop }
 };
 #endif
 

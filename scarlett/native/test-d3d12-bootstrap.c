@@ -19,6 +19,8 @@ typedef HRESULT (WINAPI *Frequency)(IUnknown *, UINT64 *);
 typedef HRESULT (WINAPI *Allocator)(IUnknown *, D3D12_COMMAND_LIST_TYPE, REFIID, void **);
 typedef HRESULT (WINAPI *List)(IUnknown *, const void *, IUnknown *, IUnknown *, REFIID, void **);
 typedef HRESULT (WINAPI *ResetAllocator)(IUnknown *);
+typedef HRESULT (WINAPI *Interval)(IUnknown *, IDXGIOutput *, UINT, UINT, UINT);
+typedef HRESULT (WINAPI *Schedule)(IUnknown *, UINT, UINT, const void *, UINT);
 #define METHOD(obj, offset, type) ((type)((void *const *)(obj)->lpVtbl)[(offset)/8])
 #define CHECK(e) do { if (!(e)) { fprintf(stderr, "FAIL %d: %s\n", __LINE__, #e); return 1; } } while (0)
 static const IID device_id = {0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
@@ -163,6 +165,10 @@ int main(void)
     CHECK(D3D12XboxCreateDevice(NULL, params, &device_id, &p) == E_NOTIMPL && !p);
     params[1] = 0;
     CHECK(D3D12XboxCreateDevice(NULL, params, &device_id, (void **)&d) == S_OK);
+    CHECK(METHOD(d,0x270,Interval)(d,NULL,16667,3,0) == E_NOTIMPL);
+    CHECK(METHOD(d,0x278,Schedule)(d,0,17,NULL,0) == E_NOTIMPL);
+    CHECK(METHOD(d,0x278,Schedule)(d,2,0,NULL,0) == E_NOTIMPL);
+    CHECK(METHOD(d,0x278,Schedule)(d,2,123,(void *)(UINT_PTR)1,5) == E_NOTIMPL);
     CHECK(IUnknown_QueryInterface(d, &device_id, &p) == S_OK && p == d);
     IUnknown_Release((IUnknown *)p);
     CHECK(IUnknown_QueryInterface(d, &IID_ID3D12Device, &p) == E_NOINTERFACE && !p);
