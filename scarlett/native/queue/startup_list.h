@@ -293,10 +293,17 @@ static void WINAPI sl_marker(IUnknown *i,UINT64 addr,UINT value,UINT64 control,U
 }
 static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
 {
-    /* shortcut: only the observed kind-2 query encoding and one query per recording. */
+    /* shortcut: only the observed kind-2 query encoding and primary-release pair. */
     if (!s->reservation || !s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        s->stamp || x || y || flags!=1) return E_NOTIMPL;
+        FAILED(s->error) || x || y || flags!=1) return E_NOTIMPL;
     if (!addr || (addr&7)) return E_INVALIDARG;
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+    if (s->primary_released) {
+        if (!s->stamp || !s->head || !s->post || !s->post->counter || s->host_exposed) return E_NOTIMPL;
+        return record_tail_timestamp(s->stamp,s->host,addr);
+    }
+#endif
+    if (s->stamp) return E_NOTIMPL;
     return record_timestamp(s->device,s->host,addr,&s->stamp);
 }
 static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)

@@ -5,6 +5,11 @@ struct system_timestamp {
     ID3D12Heap *retained;
     ID3D12Resource *dst;
     ID3D12QueryHeap *query;
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+    HANDLE section;
+    UINT64 tail_addr;
+    BOOL tail_recorded;
+#endif
 };
 static void drop_timestamp(struct system_timestamp *t)
 {
@@ -13,6 +18,9 @@ static void drop_timestamp(struct system_timestamp *t)
     if (t->dst) ID3D12Resource_Release(t->dst);
     if (t->retained) ID3D12Heap_Release(t->retained);
     if (t->mapping) UnmapViewOfFile(t->mapping);
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+    if (t->section) CloseHandle(t->section);
+#endif
     HeapFree(GetProcessHeap(),0,t);
 }
 static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list,UINT64 addr,struct system_timestamp **out)
@@ -42,10 +50,17 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
         if (SUCCEEDED(hr)) hr=ID3D12Device3_OpenExistingHeapFromAddress(d3,t->mapping,&IID_ID3D12Heap,(void **)&heap);
         if (d3) ID3D12Device3_Release(d3);
     }
-    CloseHandle(i.section);
+    D3D12_QUERY_HEAP_DESC qd={D3D12_QUERY_HEAP_TYPE_TIMESTAMP,1,1};
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+    if (i.offset==0x4196218) {
+        t->section=i.section;
+        t->tail_addr=addr-8;
+        qd.Count=2;
+    } else
+#endif
+        CloseHandle(i.section);
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=window,.Height=1,
         .DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR,.Flags=D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER};
-    D3D12_QUERY_HEAP_DESC qd={D3D12_QUERY_HEAP_TYPE_TIMESTAMP,1,1};
     if (wb) rd.Flags=D3D12_RESOURCE_FLAG_NONE;
     if (SUCCEEDED(hr)) hr=ID3D12Device_CreatePlacedResource(d,heap,wb?(i.offset&~(SIZE_T)(window-1)):0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&t->dst);
     if (!wb && heap) ID3D12Heap_Release(heap);
@@ -55,3 +70,24 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     ID3D12GraphicsCommandList7_ResolveQueryData(list,t->query,D3D12_QUERY_TYPE_TIMESTAMP,0,1,t->dst,i.offset%window);
     *out=t;return S_OK;
 }
+#ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+static HRESULT record_tail_timestamp(struct system_timestamp *t,ID3D12GraphicsCommandList7 *list,UINT64 addr)
+{
+    if (!t->section || t->tail_recorded) return E_NOTIMPL;
+    if (addr!=t->tail_addr) return E_INVALIDARG;
+    struct scarlett_section_info i;
+    HRESULT hr=t->retained ? scarlett_query_section(0x5343000c,(void *)addr,8,&i) :
+        scarlett_acquire_section((void *)addr,8,&i);
+    if (FAILED(hr)) return hr;
+    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+    BOOL match=i.section && i.offset==0x4196210 && i.view_size==0x49400000 &&
+        addr==(UINT_PTR)i.base+i.offset && same && same(t->section,i.section);
+    if (i.section) CloseHandle(i.section);
+    if (!match) return E_INVALIDARG;
+    /* Both queries resolve into the original window held through submission retirement. */
+    ID3D12GraphicsCommandList7_EndQuery(list,t->query,D3D12_QUERY_TYPE_TIMESTAMP,1);
+    ID3D12GraphicsCommandList7_ResolveQueryData(list,t->query,D3D12_QUERY_TYPE_TIMESTAMP,1,1,t->dst,i.offset%65536);
+    t->tail_recorded=TRUE;
+    return S_OK;
+}
+#endif
