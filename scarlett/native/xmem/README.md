@@ -12,7 +12,7 @@ console SDK, external compatibility runtime, or ordinal compatibility contract.
 | `XMemVirtualAlloc`, 64 KiB reservations | Type `0x20402000`: CPU mappable (`0x21`, `PAGE_READWRITE`), WC CPU/GPU mappable (`0x23`, `0x2404`), or graphics VA only (`3`, `0x801`). Size and any specified base must be multiples of 64 KiB. |
 | `XMemVirtualAlloc`, 64 KiB CPU reserve+commit | Type `0x20403000`, flags exactly `0x181`, protection `PAGE_READWRITE` (`4`). Returns zero-initialized private committed CPU memory. Size must be a positive multiple of 64 KiB; an explicit base must be free and 64 KiB-aligned. Release with ordinary `VirtualFree(base, 0, MEM_RELEASE)`. |
 | `XMemVirtualAlloc`, graphics reserve+commit | Type `0x20003000`, flags `0x183`, protection `0x22004`: a live GPU-importable shared section on patched Wine. Size must be a positive multiple of 2 MiB; a requested base must also be aligned to 2 MiB and free. Release with `VirtualFree(base, 0, MEM_RELEASE)`. |
-| [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | 64 KiB page runs with CPU section backing (`0`) or a WC graphics heap (`0x280`). See limits below. |
+| [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | 64 KiB page runs with CPU section backing (`0`), graphics backing (`0x280`), or the whole write-back pool (`0x380`). See limits below. |
 
 The graphics default allocator also accepts exactly `(64 MiB, 0x30808000)`.
 The full word is a compatibility candidate informed by xcl `f4ce27ceb6`;
@@ -42,16 +42,19 @@ budget accounting.
 ### Retail write-back page pool
 
 Build `1.0.2.1` calls `XMemAllocatePhysicalPages(0x380)` at `+0x1e6c22d`
-for 99,776 pages of 64 KiB. The installed provider rejects the flags with
-`ERROR_NOT_SUPPORTED` and sets the returned count to zero. The title branches
-on the false return and breaks at `+0x19f5291` during System Init.
+for 99,776 pages of 64 KiB. XMem allocates five 1,024 MiB write-back heaps
+and one 1,116 MiB heap. Page IDs advance by 16 so they stay distinct after
+the title drops the low four bits. The matching
+`XMemVirtualAlloc(NULL, 0x185c00000, 0x20402000, 0x23, 0x2004)` reserves a
+contiguous range. `XMemMapPhysicalPages` at `+0x1e6c295` maps those same six
+sections into it. Only whole-run mapping is supported. Retail reaches the
+graphics device's page-pool registration call at `+0x1e6c2bb`.
 
-A scratch RADV provider allocated all 6,236 MiB in six write-back heaps.
-Its page IDs remain distinct after the title drops the low four bits.
-Retail accepted the full count, then broke at `+0x1e6c284` when the matching
-`XMemVirtualAlloc(NULL, 0x185c00000, 0x20402000, 0x23, 0x2004)` reservation
-failed. Allocation and reimport were tested; the public build does not yet
-map these pages into a contiguous title address range.
+[`test-tile-pages.cpp`](test-tile-pages.cpp) maps the run twice, writes and
+reads both ends of each heap through opposite mappings, and checks fenced
+GPU copies in both directions across the first 1 GiB boundary. It also
+checks busy frees, unmap/remap, stale addresses, and retained imports after
+the title frees the run. Build it like `test_wc_pages.cpp` and run on RADV.
 
 ### Reservation and mapping milestone
 

@@ -187,7 +187,7 @@ extern "C" __declspec(dllexport) void WINAPI ScarlettReleasePlacedTableV1(XsPlac
     t->heap->Release(); ScarlettReleasePlacedV1(t->capture); delete t;
 }
 
-static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)
+static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false, bool tile = false)
 {
     // Resolve only for graphics requests: CPU allocations do not require D3D12.
     HMODULE d3d = LoadLibraryExW(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -203,9 +203,9 @@ static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE
             hr = probe.acquire(device, base, size, &offset);
         } else {
             HANDLE h = nullptr;
-            hr = probe.wc(device,size,nullptr,&h,control,wb,wc_backing && wb);
+            hr = probe.wc(device,size,nullptr,&h,control,wb,wc_backing && wb && !tile);
             ImportedBuffer rebound;
-            if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr,control,wb,wc_backing && wb);
+            if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr,control,wb,wc_backing && wb && !tile);
             scarlett_section_info info;
             if (SUCCEEDED(hr) && wc_backing) {
                 *wc_backing = h;
@@ -244,6 +244,14 @@ extern "C" HANDLE xmem_page_backing(SIZE_T size, BOOL wb)
 {
     HANDLE h = nullptr;
     HRESULT hr = validate_import(nullptr, size, nullptr, &h, false, wb);
+    if (FAILED(hr)) set_graphics_error(hr);
+    return h;
+}
+
+extern "C" HANDLE xmem_tile_backing(SIZE_T size)
+{
+    HANDLE h = nullptr;
+    HRESULT hr = validate_import(nullptr,size,nullptr,&h,false,true,true);
     if (FAILED(hr)) set_graphics_error(hr);
     return h;
 }

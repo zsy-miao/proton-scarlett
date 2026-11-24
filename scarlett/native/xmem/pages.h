@@ -1,6 +1,12 @@
 /* Private physical-page implementation included by xmem.c. */
 #define XMEM_PAGE ((SIZE_T)65536)
+#define TILE_PAGES ((ULONG_PTR)99776)
+static SIZE_T tile_bytes(unsigned chunk)
+{
+    return chunk == 5 ? (1116ULL<<20) : (1ULL<<30);
+}
 HANDLE xmem_page_backing(SIZE_T size, BOOL wb);
+HANDLE xmem_tile_backing(SIZE_T size);
 BOOL xmem_wc_slot(PVOID addr, SIZE_T size, HANDLE backing, SIZE_T offset, DWORD policy);
 static PVOID (WINAPI *reserve2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 static PVOID (WINAPI *map3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
@@ -22,6 +28,7 @@ typedef struct PageRun {
     HANDLE section;
     BOOL wc;
     HANDLE parts[5]; /* Only for the five-extent descriptor allocation. */
+    HANDLE tile[6]; /* 5 x 1024 MiB + 1116 MiB; each fits the existing RADV WB import. */
 } PageRun;
 
 typedef struct PageView {
@@ -39,6 +46,9 @@ typedef struct Arena {
     ULONG_PTR views;
     BOOL split, wc, descriptor;
     DWORD policy;
+    BOOL tile;
+    PageRun *tile_run;
+    unsigned tile_mapped;
 } Arena;
 
 static SRWLOCK page_lock = SRWLOCK_INIT;
@@ -70,14 +80,14 @@ static void discard_released_arenas(void)
         MEMORY_BASIC_INFORMATION m;
         if (!old->views && VirtualQuery(old->base, &m, sizeof m) &&
             (m.State != MEM_RESERVE || m.AllocationBase != old->base || m.RegionSize != old->size ||
-             (old->descriptor && !descriptor_marker(old->base)))) {
+              ((old->descriptor || old->tile) && !descriptor_marker(old->base)))) {
             *p = old->next;
             HeapFree(GetProcessHeap(), 0, old);
         } else p = &old->next;
     }
 }
 
-static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
+static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc, BOOL tile)
 {
     Arena *a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *a);
     if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
@@ -87,7 +97,13 @@ static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
                        PAGE_NOACCESS, NULL, 0);
     PVOID result = a->base;
     DWORD err = GetLastError();
+    if (tile && result && !occupy_descriptor(result,size)) {
+        err = GetLastError();
+        VirtualFree(result,0,MEM_RELEASE);
+        result = NULL;
+    }
     if (result) {
+        a->tile = tile;
         a->size = size;
         a->wc = wc;
         a->next = arenas;
@@ -225,6 +241,7 @@ done:
 static void close_run(PageRun *r)
 {
     if (r->section) CloseHandle(r->section);
+    for (unsigned i=0;i<ARRAYSIZE(r->tile);++i) if (r->tile[i]) CloseHandle(r->tile[i]);
     for (unsigned i=0;i<ARRAYSIZE(r->parts);++i) if (r->parts[i]) CloseHandle(r->parts[i]);
     HeapFree(GetProcessHeap(),0,r);
 }
@@ -237,7 +254,8 @@ __declspec(dllexport) BOOL WINAPI XMemAllocatePhysicalPages(ULONGLONG flags, PUL
         SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
-    if ((flags && flags != 0x280) || !reserve2 || !map3 || !unmap2) {
+    BOOL tile = flags == 0x380 && n == TILE_PAGES;
+    if ((flags && flags != 0x280 && !tile) || !reserve2 || !map3 || !unmap2) {
         SetLastError(ERROR_NOT_SUPPORTED);
         return FALSE;
     }
@@ -254,41 +272,46 @@ __declspec(dllexport) BOOL WINAPI XMemAllocatePhysicalPages(ULONGLONG flags, PUL
         mixed = has_descriptor_layout();
         ReleaseSRWLockShared(&page_lock);
     }
-    if (mixed) {
+    if (tile) {
+        for (unsigned i=0;i<ARRAYSIZE(r->tile);i++) {
+            r->tile[i] = xmem_tile_backing(tile_bytes(i));
+            if (!r->tile[i]) { DWORD e=GetLastError(); close_run(r); SetLastError(e); return FALSE; }
+        }
+    } else if (mixed) {
         for (unsigned i=0;i<ARRAYSIZE(layout);++i) {
             r->parts[i] = xmem_page_backing(layout[i].pages * XMEM_PAGE, !(layout[i].policy & PAGE_WRITECOMBINE));
             if (!r->parts[i]) { DWORD e=GetLastError(); close_run(r); SetLastError(e); return FALSE; }
         }
     } else r->section = r->wc ? xmem_page_backing(size,FALSE) :
         CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)size, NULL);
-    if (!mixed && !r->section) {
+    if (!tile && !mixed && !r->section) {
         DWORD err = GetLastError();
         HeapFree(GetProcessHeap(), 0, r);
         SetLastError(err);
         return FALSE;
     }
     AcquireSRWLockExclusive(&page_lock);
-    if (n > UINTPTR_MAX - next_page) {
+    if (n > UINTPTR_MAX - next_page || (tile && next_page > (0x1fffffULL-n)*16)) {
         ReleaseSRWLockExclusive(&page_lock);
         close_run(r);
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return FALSE;
     }
-    r->first = next_page;
-    next_page += n;
+    r->first = tile ? (next_page+15)&~(ULONG_PTR)15 : next_page;
+    next_page = r->first + n*(tile ? 16 : 1);
     r->count = n;
     r->next = runs;
     runs = r;
-    for (ULONG_PTR i = 0; i < n; ++i) pages[i] = r->first + i;
+    for (ULONG_PTR i = 0; i < n; ++i) pages[i] = r->first + i*(tile ? 16 : 1);
     *count = n;
     ReleaseSRWLockExclusive(&page_lock);
     return TRUE;
 }
 
-static BOOL consecutive(PULONG_PTR pages, ULONG_PTR n)
+static BOOL consecutive(PULONG_PTR pages, ULONG_PTR n, ULONG_PTR step)
 {
     for (ULONG_PTR i = 1; i < n; ++i)
-        if (pages[i] != pages[0] + i) return FALSE;
+        if (pages[i] != pages[0] + i*step) return FALSE;
     return TRUE;
 }
 
@@ -300,7 +323,7 @@ __declspec(dllexport) BOOL WINAPI XMemFreePhysicalPages(ULONG_PTR n, PULONG_PTR 
         for (PageRun **p = &runs; *p; p = &(*p)->next) {
             PageRun *r = *p;
             if (r->first != pages[0]) continue;
-            if (r->count != n || !consecutive(pages, n)) break;
+            if (r->count != n || !consecutive(pages,n,r->tile[0] ? 16 : 1)) break;
             if (r->views) { err = ERROR_BUSY; break; }
             *p = r->next;
             close_run(r);
@@ -313,6 +336,54 @@ __declspec(dllexport) BOOL WINAPI XMemFreePhysicalPages(ULONG_PTR n, PULONG_PTR 
     return !err;
 }
 
+/* Called with page_lock exclusive. Keep the run pinned if restoration needs a retry. */
+static DWORD unmap_tile(Arena *a)
+{
+    while (a->tile_mapped) {
+        unsigned i = a->tile_mapped-1;
+        if (!xmem_wc_slot((BYTE *)a->base+((SIZE_T)i<<30),tile_bytes(i),NULL,0,0))
+            return GetLastError();
+        a->tile_mapped--;
+    }
+    if (a->split) {
+        if (!VirtualFree(a->base,a->size,MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS))
+            return GetLastError();
+        a->split = FALSE;
+    }
+    if (!occupy_descriptor(a->base,a->size)) return GetLastError();
+    --a->tile_run->views;
+    a->tile_run = NULL;
+    --a->views;
+    return ERROR_SUCCESS;
+}
+
+static DWORD map_tile(Arena *a, PULONG_PTR pages)
+{
+    if (!pages) return a->tile_run ? unmap_tile(a) : ERROR_INVALID_ADDRESS;
+    if (a->tile_run || !descriptor_marker(a->base)) return ERROR_INVALID_ADDRESS;
+    PageRun *r = runs;
+    while (r && (!r->tile[0] || r->first != pages[0])) r = r->next;
+    if (!r || !consecutive(pages,r->count,16)) return ERROR_INVALID_PARAMETER;
+    if (!VirtualFree(a->base,a->size,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))
+        return GetLastError();
+    a->tile_run = r;
+    ++a->views;
+    ++r->views;
+    while (a->tile_mapped < ARRAYSIZE(r->tile)) {
+        unsigned i = a->tile_mapped;
+        BYTE *at = (BYTE *)a->base+((SIZE_T)i<<30);
+        if (i+1 < ARRAYSIZE(r->tile)) {
+            if (!VirtualFree(at,tile_bytes(i),MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) break;
+            a->split = TRUE;
+        }
+        if (!xmem_wc_slot(at,tile_bytes(i),r->tile[i],0,0x2004)) break;
+        a->tile_mapped++;
+    }
+    if (a->tile_mapped == ARRAYSIZE(r->tile)) return ERROR_SUCCESS;
+    DWORD err = GetLastError(), cleanup = unmap_tile(a);
+    return cleanup ? cleanup : err;
+}
+
 __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n, PULONG_PTR pages)
 {
     if (!addr || ((UINT_PTR)addr % XMEM_PAGE) || !n || n > SIZE_MAX / XMEM_PAGE) {
@@ -322,6 +393,11 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
     SIZE_T size = n * XMEM_PAGE;
     DWORD err = ERROR_INVALID_ADDRESS;
     AcquireSRWLockExclusive(&page_lock);
+    for (Arena *a = arenas; a; a = a->next) {
+        if (!a->tile || (UINT_PTR)addr-(UINT_PTR)a->base >= a->size) continue;
+        if (addr == a->base && size == a->size) err = map_tile(a,pages);
+        goto done;
+    }
     PageView **slot = &views;
     while (*slot && (*slot)->address != addr) slot = &(*slot)->next;
     if (*slot) {
@@ -360,6 +436,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
             BOOL split = addr != m.AllocationBase || size != start.RegionSize;
             err = ERROR_INVALID_PARAMETER;
             for (PageRun *r = runs; r; r = r->next) {
+                if (r->tile[0]) continue;
                 ULONG_PTR offset = pages[0] - r->first;
                 if (offset >= r->count || n > r->count - offset) continue;
                 HANDLE section = r->section;
@@ -373,7 +450,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
                     }
                     section = r->parts[j];
                 } else if (r->wc != arena->wc || (arena->descriptor && arena->policy != 0x2404) || (r->wc && !arena->descriptor && n != 1)) { err = ERROR_NOT_SUPPORTED; break; }
-                if (!consecutive(pages, n)) { err = ERROR_NOT_SUPPORTED; break; }
+                if (!consecutive(pages, n, 1)) { err = ERROR_NOT_SUPPORTED; break; }
                 PageView *v = HeapAlloc(GetProcessHeap(), 0, sizeof *v);
                 if (!v) { err = ERROR_NOT_ENOUGH_MEMORY; break; }
                 if ((split || arena->descriptor) && !VirtualFree(addr, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
