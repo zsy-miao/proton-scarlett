@@ -94,3 +94,27 @@ then retried with zero. Both accepted `0xa400` bytes at natural alignment
 `0x100` (164 tiles of 16×8 halfwords). Their resource pointers were still
 null at the next `+c8`: 2560×1440 `R32G32_FLOAT`, flags `0xc00005`.
 Only sizing is enabled for this chain.
+
+## Five RT+UAV size queries after the R16 chain (0034)
+
+The constructing thread requested one layer, mip and sample, layout and
+alignment zero, flags `0xc00005`, at `+c8` (return `+344188`). Sizes in
+64 KiB pages, in retail order:
+
+| Extent | Format | RTX 3070 | RADV 1002:164e |
+|---|---|---:|---:|
+| 2560×1440 | R32G32_FLOAT | 480 | 462 |
+| 2560×1440 | R8_UNORM | 60 | 61 |
+| 2560×1440 | R32G32_UINT | 480 | 460 |
+| 1280×720 | R32_UINT | 60 | 60 |
+| 640×360 | R8_UINT | 4 | 4 |
+
+Only the last texture requested `+360` (return `+abfe0d`): offset zero,
+size `0x40000`, alignment `0x10000` on both adapters. Its next call was
+placement (`+428`, return `+193e2db`), state 3, resource IID and a non-null
+R8_UINT clear value with words `0,0,0,0x3f800000`. Placement returned
+`E_NOTIMPL` and the title broke at `+cc2834`. No view intervened.
+
+The guarded fixture checks both sizing slots against native allocation
+info, rejects descriptor-field and node/count neighbors and tests short
+input at a page boundary. It does not place these five guest resources.
