@@ -378,3 +378,19 @@ Three retail launches (one RADV diagnostic, then one ordinary per GPU)
 reached command-list `+238`, return `+4ed46aa`. Both ordinary runs
 presented token 1. RTX issued token 2 on the same clock and epoch;
 neither run presented it.
+
+### Small linear texture size queries
+
+For the 128×72 `R32_FLOAT` texture the game asks for aggregate and
+per-resource sizes with requested alignment 4096, then 0. Both return
+`0xd900` bytes, alignment `0x100`, offset zero. The seven mip starts, in
+API order, are `0x4900, 0x2500, 0x1300, 0xa00, 0x500, 0x200, 0`.
+The separate 128×1 `A8_UNORM` 1D texture requests only aggregate
+sizing: `0x100` bytes, alignment `0x100`. Guarded tests passed on AMD
+and RTX. The RTX diagnostic then encountered a null texture-computer
+interface before placement. No placement or view was observed for the chain.
+
+Five retail launches: three RTX diagnostics and two matched ordinary
+runs. Separate runs: one reference layout check and two passing fixtures.
+AMD issued tokens 1 and 2 and stopped at `+32820`; RTX issued only token
+1 before the title breakpoint at `+5707b8c`. Each presented token 1 once.

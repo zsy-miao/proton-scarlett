@@ -473,6 +473,17 @@ static HRESULT primary_info(ID3D12Device *device,D3D12_RESOURCE_ALLOCATION_INFO 
     return S_OK;
 }
 
+static UINT linear_small_size(const D3D12_RESOURCE_DESC *r,BOOL detail)
+{
+    if ((r->Alignment && r->Alignment!=4096) || r->Width!=128 || r->DepthOrArraySize!=1 ||
+        r->SampleDesc.Count!=1 || r->SampleDesc.Quality || (UINT)r->Flags!=0x300000)return 0;
+    if(r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && r->Height==72 && r->MipLevels==7 &&
+        r->Format==DXGI_FORMAT_R32_FLOAT && (UINT)r->Layout==0x100)return 0x4900+72*512;
+    if(!detail && r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE1D && r->Height==1 && r->MipLevels==1 &&
+        r->Format==DXGI_FORMAT_A8_UNORM && !r->Layout)return 256;
+    return 0;
+}
+
 /* 344182: console sret precedes This; the desktop C vtable takes This first. */
 HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void *wire,
         D3D12_RESOURCE_ALLOCATION_INFO *out)
@@ -482,6 +493,8 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     *out=(D3D12_RESOURCE_ALLOCATION_INFO){0};
     if (!iface || node!=1 || count!=1) return E_INVALIDARG;
     if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
+    UINT small_bytes=linear_small_size(&rd,FALSE);
+    if(small_bytes){*out=(D3D12_RESOURCE_ALLOCATION_INFO){small_bytes,256};return S_OK;}
     if (rd.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && (rd.Alignment==4096 || !rd.Alignment) &&
         rd.Width==160 && rd.Height==90 && rd.DepthOrArraySize==1 && rd.MipLevels==5 &&
         rd.Format==DXGI_FORMAT_R16_FLOAT && rd.SampleDesc.Count==1 && !rd.SampleDesc.Quality &&
@@ -560,6 +573,9 @@ HRESULT xs_msaa_allocation_info1(IUnknown *iface,UINT node,UINT count,const void
     if (!out || !detail) return E_POINTER;
     if (!iface || count!=1 || node!=1) return E_INVALIDARG;
     if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
+    UINT small_bytes=linear_small_size(&rd,TRUE);
+    if(small_bytes){*out=(D3D12_RESOURCE_ALLOCATION_INFO){small_bytes,256};
+        *detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=256,.SizeInBytes=small_bytes};return S_OK;}
     if (rd.MipLevels==5 && tiled_r11_chain(&rd)) {
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){r11_end[rd.MipLevels],R11_ALIGNMENT};
         *detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=out->Alignment,.SizeInBytes=out->SizeInBytes};

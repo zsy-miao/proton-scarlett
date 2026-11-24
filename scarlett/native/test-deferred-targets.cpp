@@ -39,6 +39,28 @@ int main(){
     }
     puts("PASS tiled R32_FLOAT: guarded one- and two-level sizing only");
     const UINT requests[]={4096,0};
+    for(UINT request : requests)for(UINT dim=2;dim<=3;dim++){
+        bool chain=dim==3;
+        DWORD v[]={dim,0,request,0,128,0,chain?72u:1u,chain?0x70001u:0x10001u,
+                chain?41u:65u,1,0,chain?0x100u:0u,0x300000};memcpy(wire,v,sizeof v);
+        struct {UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO out;UINT64 post;} g={13,{},17};
+        struct {UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO1 one;UINT64 post;} h={19,{},23};
+        UINT bytes=chain?0xd900:256;
+        CK(query(&g.out,guest.Get(),1,1,wire)==&g.out && g.out.SizeInBytes==bytes && g.out.Alignment==256);
+        if(chain){
+            using Query1=D3D12_RESOURCE_ALLOCATION_INFO*(WINAPI*)(D3D12_RESOURCE_ALLOCATION_INFO*,IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO1*);
+            auto query1=(Query1)((*(void***)guest.Get())[0x360/8]);g.out={};h.one.Offset=~0ull;
+            CK(query1(&g.out,guest.Get(),1,1,wire,&h.one)==&g.out && !h.one.Offset && h.one.SizeInBytes==bytes &&
+                h.one.Alignment==256 && g.out.SizeInBytes==bytes && g.out.Alignment==256);
+        }else CK(FAILED(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.out,&h.one)));
+        CK(g.pre==13 && g.post==17 && h.pre==19 && h.post==23);
+        auto deny=[&](UINT node,UINT n,const void *p){
+            g.out={1,2};return FAILED(xs_color_allocation_info(guest.Get(),node,n,p,&g.out)) &&
+                !g.out.SizeInBytes && !g.out.Alignment && FAILED(xs_msaa_allocation_info1(guest.Get(),node,n,p,&g.out,&h.one));};
+        CK(deny(0,1,wire) && deny(1,2,wire) && deny(1,1,(BYTE*)wire+1));
+        for(UINT j=0;j<13;j++)if(j!=1){wire[j]^=1;CK(deny(1,1,wire));wire[j]^=1;}
+    }
+    puts("PASS 128x72 R32_FLOAT seven-mip aggregate/detail and 128x1 A8 aggregate: small-alignment probe/retry, bounds and rejection controls");
     for(UINT request : requests){
         const DWORD v[]={3,0,request,0,160,0,90,0x50001,54,1,0,0x102,0x300004}; memcpy(wire,v,sizeof v);
         struct { UINT64 pre; D3D12_RESOURCE_ALLOCATION_INFO out; UINT64 post; } g={13,{},17};
