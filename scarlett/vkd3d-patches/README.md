@@ -77,3 +77,7 @@ For the [4× MSAA color target](../native/msaa-color.md), apply `0026` after
 `0025` with Wine `0012`. Rebuild the x64 core, `win32u.so`, and the graphics
 provider together. The linked fixture checks sample contents, resolve, and
 the original allocation on RTX; RADV checks explicit import refusal.
+
+`0027` adds `ScarlettMsaaDepthV1` at ordinal 29 for the [RTX depth/stencil
+target](../native/rtx-depth.md). Apply it after `0026` and rebuild the x64
+core and graphics provider. It uses the same Wine `0012` import path.

@@ -39,7 +39,7 @@ struct color_resource {
     LONG refs;
     struct xbox_device *owner;
     ID3D12Resource *host;
-    BOOL msaa;
+    BOOL msaa,depth;
     void *slice;
     void (WINAPI *xfree)(void *,UINT64);
     struct color_resource *next;

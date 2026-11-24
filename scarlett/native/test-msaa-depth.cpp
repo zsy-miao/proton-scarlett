@@ -10,6 +10,10 @@ using Microsoft::WRL::ComPtr;
 #define HR(x) do { HRESULT v=(x); if (FAILED(v)) {fprintf(stderr,"FAIL %d %s hr=%08lx\n",__LINE__,#x,(DWORD)v);ExitProcess(1);} } while(0)
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_msaa_allocation_info1(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *,D3D12_RESOURCE_ALLOCATION_INFO1 *);
+#ifdef TEST_NV_DEPTH
+extern "C" ID3D12Resource *test_msaa_host(IUnknown *);
+extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
+#endif
 using Query=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *);
 using Rich=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO1 *);
 using Place=HRESULT(WINAPI*)(IUnknown *,UINT64,const void *,UINT,const void *,REFIID,void **);
@@ -35,7 +39,12 @@ static ComPtr<IUnknown> checked_device(const D3D12_RESOURCE_DESC &rd) {
 }
 
 int main() {
-    constexpr UINT span=4<<20, pool=0x89700000, off=0xe800000;
+    constexpr UINT span=4<<20, pool=0x89700000,
+#ifdef TEST_NV_DEPTH
+        off=0xec00000;
+#else
+        off=0xe800000;
+#endif
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     rd.Width=rd.Height=rd.DepthOrArraySize=rd.MipLevels=1;rd.SampleDesc.Count=4;
     rd.Format=DXGI_FORMAT_R32G8X24_TYPELESS;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
@@ -56,18 +65,39 @@ int main() {
     auto count=[&](){OBJECT_BASIC_INFORMATION info={};CK(query(pin.section,ObjectBasicInformation,&info,sizeof info,nullptr)==0);return info.HandleCount;};
     ULONG before=count();HANDLE extra;CK(before && DuplicateHandle(GetCurrentProcess(),pin.section,GetCurrentProcess(),&extra,0,FALSE,DUPLICATE_SAME_ACCESS));
     CK(count()==before+1 && CloseHandle(extra) && count()==before);
+#ifdef TEST_NV_DEPTH
+    void *wrapper=nullptr; HR(place(g.Get(),(UINT_PTR)wc+off,&rd,6,clear,__uuidof(ID3D12Resource),&wrapper)); CK(wrapper);
+    ComPtr<ID3D12Resource> original;original.Attach(test_msaa_host((IUnknown*)wrapper)); CK(original);
+    auto desc=original->GetDesc(); CK(desc.Format==rd.Format && desc.Flags==rd.Flags && desc.SampleDesc.Count==4);
+    using Make=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**); using Start=SIZE_T(WINAPI*)(IUnknown*);
+    UINT hd0[]={0,4,1,1};ComPtr<IUnknown> slots; HR(((Make)(*(void***)g.Get())[0x70/8])(g.Get(),hd0,__uuidof(ID3D12DescriptorHeap),(void**)slots.GetAddressOf()));
+    SIZE_T slot=((Start)(*(void***)slots.Get())[0x48/8])(slots.Get());
+    DWORD wrongColor[]={28,6,0x1688,0,0,0,0,0}; CK(FAILED(xs_write_view(g.Get(),0x90,(IUnknown*)wrapper,wrongColor,slot))); slots.Reset();
+    ((IUnknown*)wrapper)->Release(); CK(FAILED(attempt(wc+off,6,clear)));
+    for(UINT i=0;i<span+32;i++) CK((wc+off-16)[i]==0xac);
+#else
     for(unsigned i=0;i<64;i++)CK(attempt(wc+off,6,clear)==DXGI_ERROR_UNSUPPORTED);
     CK(count()==before);
+#endif
     scarlett_section_info alias;HR(scarlett_query_section_handle(0x53430004,nullptr,pool,&alias,pin.section));
     CK(CloseHandle(pin.section));wcHeap.Reset();CK(VirtualFree(wc,0,MEM_RELEASE));
     BYTE *reuse=wc+off;CK(VirtualAlloc(reuse,span,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==reuse);memset(reuse,0x37,span);
-    CK(FAILED(attempt(reuse,6,clear)));CK(VirtualFree(pg,0,MEM_RELEASE));g.Reset();
+    CK(FAILED(attempt(reuse,6,clear)));CK(VirtualFree(pg,0,MEM_RELEASE));
+#ifdef TEST_NV_DEPTH
+    puts("PASS guest +428 D32/S8 import, duplicate refused, wrapper released, original WC intact at creation; stale VA refused");
+#else
     puts("PASS +c8/+360 depth 4MiB/4MiB detail offset 0; marked +428 unsupported/null x64, stable handle count; reused VA refused");
+#endif
 
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_HEAP_DESC hd={};hd.Properties=hp;hd.Alignment=span;hd.SizeInBytes=3*span;hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
     ComPtr<ID3D12Heap> heap;HR(d->CreateHeap(&hd,IID_PPV_ARGS(&heap)));ComPtr<ID3D12Resource> ds[3],report,rb;
-    for(UINT i=0;i<3;i++)HR(d->CreatePlacedResource(heap.Get(),i*span,&rd,D3D12_RESOURCE_STATE_DEPTH_WRITE,&cv,IID_PPV_ARGS(&ds[i])));
+    for(UINT i=0;i<3;i++) {
+#ifdef TEST_NV_DEPTH
+        if(i==1) {ds[i]=original;original.Reset();continue;}
+#endif
+        HR(d->CreatePlacedResource(heap.Get(),i*span,&rd,D3D12_RESOURCE_STATE_DEPTH_WRITE,&cv,IID_PPV_ARGS(&ds[i])));
+    }
     heap.Reset();
     D3D12_DESCRIPTOR_HEAP_DESC dd={D3D12_DESCRIPTOR_HEAP_TYPE_DSV,3,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};ComPtr<ID3D12DescriptorHeap> dh,sh;
     HR(d->CreateDescriptorHeap(&dd,IID_PPV_ARGS(&dh)));dd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,6,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};HR(d->CreateDescriptorHeap(&dd,IID_PPV_ARGS(&sh)));
@@ -99,8 +129,23 @@ int main() {
     transition(report.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);l->CopyBufferRegion(rb.Get(),0,report.Get(),0,96);HR(l->Close());ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
     ComPtr<ID3D12Fence>f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));HR(q->Signal(f.Get(),1));HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(f->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);CloseHandle(e);HR(d->GetDeviceRemovedReason());
     DWORD *m;HR(rb->Map(0,nullptr,(void**)&m));for(UINT i=0;i<3;i++) for(UINT s=0;s<4;s++) {DWORD bits=m[8*i+2*s],stencil=m[8*i+2*s+1];float depth;memcpy(&depth,&bits,4);printf("placement %u sample %u depth=%g stencil=%02lx\n",i,s,depth,stencil);CK(depth==(i==1?(s+1)*0.125f:depths[i]) && stencil==(i==1?0x31+s*11:stencils[i]));}rb->Unmap(0,nullptr);
+#ifdef TEST_NV_DEPTH
+    BYTE *slice=(BYTE*)alias.base+off;
+    for(UINT i=0;i<16;i++)CK(slice[(int)i-16]==0xac && slice[span+i]==0xac);
+    auto verify_alias=[&](){
+        BYTE expected[0x206];memset(expected,0xac,sizeof expected);
+        for(UINT s=0;s<4;s++) {UINT x=(s/2)*4+s%2;float z=(s+1)*0.125f;memcpy(expected+4*x,&z,4);expected[0x200+x]=0x31+s*11;}
+        CK(!memcmp(slice,expected,sizeof expected));for(UINT i=sizeof expected;i<span;i++)CK(slice[i]==0xac);
+    };
+    verify_alias();puts("PASS original 4MiB alias: four exact float words at +0,4,10,14 (hex), stencil at +200,201,204,205; all other bytes unchanged");
+    // End every native consumer before attempting to reuse the same physical slice.
+    sh.Reset();dh.Reset();l.Reset();a.Reset();q.Reset();ds[1].Reset();void *again=nullptr;
+    HR(place(g.Get(),(UINT_PTR)slice,&rd,6,&cv,__uuidof(ID3D12Resource),&again));CK(again);((IUnknown*)again)->Release();
+    verify_alias();puts("PASS retired depth import released slice; recreation preserved all four samples");
+#else
     for(UINT i=0;i<span+32;i++)CK(((BYTE*)alias.base)[off-16+i]==0xac);
+#endif
     for(UINT i=0;i<span;i++)CK(reuse[i]==0x37);
     CK(VirtualFree(reuse,0,MEM_RELEASE)&&VirtualFree(alias.base,0,MEM_RELEASE));
-    puts("PASS native per-sample depth/stencil and both neighboring placements; original WC backing, guards and replacement VA intact");
+    puts("PASS native per-sample depth/stencil and both neighboring placements; original allocation guards and replacement VA intact");
 }

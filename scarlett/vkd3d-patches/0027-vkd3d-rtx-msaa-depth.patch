@@ -1,0 +1,73 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettMsaaDepthV1 @29
+     ScarlettMsaaColorV1 @28
+     ScarlettCpuControlViewV1 @27
+     ScarlettBoundedTreeletsV1
+diff --git a/libs/vkd3d/scarlett_primary_image.h b/libs/vkd3d/scarlett_primary_image.h
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -173,8 +173,8 @@
+ 
+ /* Re-import the exact tagged WC DMA-BUF for a 4-sample image. The existing
+  * buffer heap itself cannot back it (type 3 vs. image bits 0x3 on RTX). */
+-HRESULT WINAPI ScarlettMsaaColorV1(d3d12_device_iface *iface, HANDLE section, SIZE_T size, SIZE_T off,
+-        ID3D12Resource **out)
++static HRESULT scarlett_msaa_image(d3d12_device_iface *iface, HANDLE section, SIZE_T size, SIZE_T off,
++        ID3D12Resource **out, bool depth)
+ {
+     /* Private Wine selector: tagged WC pool, with fd compatibility checked on import. */
+     const VkExternalMemoryHandleTypeFlagBits dma = (VkExternalMemoryHandleTypeFlagBits)0x04000000u;
+@@ -182,7 +182,8 @@
+     VkExternalImageFormatProperties xp={VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+     VkImageFormatProperties2 fp={VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,&xp};
+     VkPhysicalDeviceImageFormatInfo2 fi={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,&ext,
+-        VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_TYPE_2D,VK_IMAGE_TILING_OPTIMAL,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++        depth ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_TYPE_2D,VK_IMAGE_TILING_OPTIMAL,
++        (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
+         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+     VkExternalMemoryImageCreateInfo ei={VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,NULL,dma};
+     VkImageCreateInfo ci={VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,&ei,0,fi.type,fi.format,{1,1,1},1,1,
+@@ -193,9 +194,11 @@
+     VkImportMemoryWin32HandleInfoKHR imp={VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,NULL,dma,section};
+     VkMemoryAllocateInfo ai={VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,&imp,size,0};
+     VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,NULL,0,0,off};
+-    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,1,1,1,1,DXGI_FORMAT_R8G8B8A8_UNORM,
+-        {4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
++    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,1,1,1,1,
++        depth ? DXGI_FORMAT_R32G8X24_TYPELESS : DXGI_FORMAT_R8G8B8A8_UNORM,
++        {4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+     const D3D12_CLEAR_VALUE cv={.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.Color={1,1,1,1}};
++    const D3D12_CLEAR_VALUE ds_clear={.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.DepthStencil={0.0f,0}};
+     const D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
+     const struct vkd3d_vk_device_procs *vk_procs;
+     struct d3d12_device *d;
+@@ -236,7 +239,8 @@
+     bi.image=im;bi.memory=s->memory;
+     if ((vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi)))<0) {hr=hresult_from_vk_result(vr);goto slice_fail;}
+     if (FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,
+-            &rd,&hp,0,D3D12_RESOURCE_STATE_RENDER_TARGET,&cv,0,NULL,&r))) goto slice_fail;
++            &rd,&hp,0,depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET,
++            depth ? &ds_clear : &cv,0,NULL,&r))) goto slice_fail;
+     r->res.vk_image=im;r->initial_layout_transition=1;r->common_layout=VK_IMAGE_LAYOUT_GENERAL;
+     pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;pthread_mutex_unlock(&scarlett_slice_lock);
+     *out=(ID3D12Resource *)&r->ID3D12Resource_iface;
+@@ -248,3 +252,13 @@
+ image_fail:
+     VK_CALL(vkDestroyImage(d->vk_device,im,NULL));return hr;
+ }
++
++HRESULT WINAPI ScarlettMsaaColorV1(d3d12_device_iface *iface,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    return scarlett_msaa_image(iface,section,size,off,out,false);
++}
++
++HRESULT WINAPI ScarlettMsaaDepthV1(d3d12_device_iface *iface,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    return scarlett_msaa_image(iface,section,size,off,out,true);
++}

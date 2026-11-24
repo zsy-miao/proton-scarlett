@@ -456,18 +456,16 @@ static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UI
     HRESULT hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
     if (FAILED(hr)) return hr;
     if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset%span || i.offset>i.view_size-span) hr=E_INVALIDARG;
-    /* The WC heap denies RT/DS. Only color has a qualified external-image importer. */
-    else if (depth) hr=DXGI_ERROR_UNSUPPORTED;
     else {
         HRESULT (WINAPI *import)(ID3D12Device *,HANDLE,SIZE_T,SIZE_T,ID3D12Resource **)=
-            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettMsaaColorV1");
+            (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),depth?"ScarlettMsaaDepthV1":"ScarlettMsaaColorV1");
         struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r) hr=E_OUTOFMEMORY;
         else {
-            hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):E_NOTIMPL;
+            hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
             if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
             else {
-                r->iface.lpVtbl=&color_vtbl.unknown; r->msaa=TRUE; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
+                r->iface.lpVtbl=&color_vtbl.unknown; r->msaa=TRUE; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
                 AcquireSRWLockExclusive(&d->descriptor_lock); r->next=d->colors; d->colors=r; ReleaseSRWLockExclusive(&d->descriptor_lock);
                 *out=&r->iface;
             }

@@ -193,7 +193,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     AcquireSRWLockExclusive(&d->descriptor_lock);
     if (object && (kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && c->msaa==ms_srv) { resource=c->host; break; }
+            if (&c->iface==object && !c->depth && c->msaa==ms_srv) { resource=c->host; break; }
         if (!resource) goto done;
     } else if (object) {
         for (struct xs_buffer_binding *b=d->buffers;b;b=b->next) if (b->identity==object) {
