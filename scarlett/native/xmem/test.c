@@ -68,6 +68,10 @@ int main(int argc, char **argv)
     SetLastError(ERROR_SUCCESS);
     CHECK(!XMemVirtualAlloc(NULL, 0x49400000, 0x20003000, 0x283, 0x2404));
     CHECK(GetLastError() == ERROR_NOT_SUPPORTED);
+    /* A host-WC heap does not satisfy PAGE_GRAPHICS_NOCACHE on the qualified RTX 3070. */
+    SetLastError(ERROR_SUCCESS);
+    CHECK(!XMemVirtualAlloc(NULL, 65536, 0x20401000, 0x283, 0x42404));
+    CHECK(GetLastError() == ERROR_NOT_SUPPORTED);
     CHECK(!GetProcAddress(GetModuleHandleA("xmem.dll"), "XMemTransferMemory"));
     if (argc == 2 && !strcmp(argv[1], "--no-graphics")) {
         /* Run on stock Wine or with the graphics backend disabled. */
