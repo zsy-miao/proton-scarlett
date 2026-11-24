@@ -1,5 +1,5 @@
 /* Private compute recorder. No guest COM slot or desktop descriptor accessor. */
-#include <wincrypt.h>
+#include "shader_digest.h"
 #include "xmem/placed_table.h"
 
 struct xs_placed_dispatch {
@@ -26,14 +26,7 @@ static BOOL placed_shader_digest(const BYTE *code,DWORD n)
     /* logical.hlsl, dxc -T cs_6_0 -E main -Qstrip_debug. Exact bytecode only. */
     static const BYTE approved[32]={0x82,0xe0,0x90,0x74,0x81,0xdf,0xbe,0x24,0xfa,0xd4,0x7e,0xe8,0x80,0xb4,0xd3,0x70,
         0xe0,0x20,0x12,0xfe,0x9d,0xab,0xd2,0x50,0x18,0x2f,0x1c,0x19,0xa3,0x51,0x23,0xb4};
-    HCRYPTPROV prov=0; HCRYPTHASH hash=0;
-    BYTE sum[32]; DWORD size=sizeof sum;
-    BOOL ok=CryptAcquireContextW(&prov,NULL,NULL,PROV_RSA_AES,CRYPT_VERIFYCONTEXT) &&
-        CryptCreateHash(prov,CALG_SHA_256,0,0,&hash) && CryptHashData(hash,code,n,0) &&
-        CryptGetHashParam(hash,HP_HASHVAL,sum,&size,0) && size==sizeof sum && !memcmp(sum,approved,sizeof sum);
-    if (hash) CryptDestroyHash(hash);
-    if (prov) CryptReleaseContext(prov,0);
-    return ok;
+    return shader_digest_matches(code,n,approved);
 }
 
 static IUnknown *placed_slot_identity(struct desc_heap *h,SIZE_T slot,UINT kind)

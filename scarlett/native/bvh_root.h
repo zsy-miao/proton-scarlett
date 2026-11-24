@@ -4,6 +4,7 @@ struct bvh_root {
     LONG refs;
     struct xbox_device *owner;
     ID3D12RootSignature *host;
+    struct bvh_root *next;
 };
 static ULONG WINAPI root_addref(IUnknown *i)
 {
@@ -14,6 +15,11 @@ static ULONG WINAPI root_release(IUnknown *i)
     struct bvh_root *r=CONTAINING_RECORD(i,struct bvh_root,iface);
     ULONG refs=InterlockedDecrement(&r->refs);
     if (!refs) {
+        AcquireSRWLockExclusive(&r->owner->descriptor_lock);
+        struct bvh_root **link=&r->owner->bvh_roots;
+        while (*link!=r) link=&(*link)->next;
+        *link=r->next;
+        ReleaseSRWLockExclusive(&r->owner->descriptor_lock);
         ID3D12RootSignature_Release(r->host);
         IUnknown_Release(&r->owner->iface);
         HeapFree(GetProcessHeap(),0,r);
@@ -87,7 +93,11 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
                 ID3D10Blob_GetBufferSize(serialized),&IID_ID3D12RootSignature,(void **)&r->host);
         if (SUCCEEDED(hr)) {
             IUnknown_AddRef(device); r->owner=d; r->refs=1;
-            r->iface.lpVtbl=&root_methods.unknown; *out=&r->iface;
+            r->iface.lpVtbl=&root_methods.unknown;
+            AcquireSRWLockExclusive(&d->descriptor_lock);
+            r->next=d->bvh_roots; d->bvh_roots=r;
+            ReleaseSRWLockExclusive(&d->descriptor_lock);
+            *out=&r->iface;
         } else HeapFree(GetProcessHeap(),0,r);
     } else hr=E_OUTOFMEMORY;
     ID3D10Blob_Release(serialized);

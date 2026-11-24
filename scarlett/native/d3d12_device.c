@@ -46,6 +46,7 @@ struct xbox_device {
     struct desc_heap *heaps;
     struct desc_heap *rtv_heaps;
     struct xs_buffer_binding *buffers;
+    struct bvh_root *bvh_roots; /* live identities under descriptor_lock */
     struct color_resource *colors; /* weak registry under descriptor_lock */
 #ifdef SCARLETT_STAGED_PLACED
     struct placed_backing *placed; /* weak, guarded by descriptor_lock */
@@ -64,6 +65,7 @@ _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline
 #endif
 #include "descriptor_writer.h"
 #include "bvh_root.h"
+#include "bvh_pipeline.h"
 #ifdef SCARLETT_STAGED_PLACED
 #include "placed_shader.h"
 #endif
@@ -423,7 +425,9 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_signature) signature;
     xs_stop_fn gap150[6];
     __typeof__(&bootstrap_extended) extended;
-    xs_stop_fn gap188[21];
+    xs_stop_fn gap188[13];
+    __typeof__(&bootstrap_bvh_pipeline) bvh_pipeline;
+    xs_stop_fn gap1f8[7];
 #ifdef SCARLETT_STAGED_PLACED
     __typeof__(&write_address_srv) address_srv;
 #else
@@ -456,6 +460,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
                offsetof(struct bootstrap_vtbl, root) == 0x80 &&
+               offsetof(struct bootstrap_vtbl, bvh_pipeline) == 0x1f0 &&
                offsetof(struct bootstrap_vtbl, rtv) == 0xa0 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
@@ -504,7 +509,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 20] = xs_stop },
+    .gap188 = { [0 ... 12] = xs_stop }, .bvh_pipeline = bootstrap_bvh_pipeline,
+    .gap1f8 = { [0 ... 6] = xs_stop },
 #ifdef SCARLETT_STAGED_PLACED
     .address_srv = write_address_srv,
 #else

@@ -42,3 +42,24 @@ RADV and RTX 3070: all 96 destination words (including guards and
 untouched fields) matched after retirement; all 96 decoy UAV words
 remained unchanged. That test supplied a valid host address. A retail
 dispatch still requires a checked translation of the embedded title address.
+
+The installed `+0x1f0` creates the first PSO using [project HLSL](bvh_init.hlsl)
+after matching the descriptor, root owner and SHA-256 of the guest shader.
+The private recorder reads 40 immutable input bytes and uses a bounded UAV
+for the resolved destination; the host shader never receives a guest address.
+`test-bvh-pipeline.cpp` checks all 96 seeded words after dispatch, including
+the untouched parts of each partition. Build it like `test-bvh-root.cpp`,
+supplying the matching shader as `private-builder.bin` outside the repository.
+The guest command-list dispatch path is still unqualified.
+
+`bvh_init_dxil.h` contains only the compiled project shader. To regenerate
+from `scarlett/native` with DXC 1.9 (b106a961):
+
+```sh
+dxc -T cs_6_0 -E main -Qstrip_debug -Qstrip_reflect -Fh /tmp/bvh-init.h -Vn bvh_init_dxil bvh_init.hlsl
+sed -n '/^const unsigned char bvh_init_dxil/,$p' /tmp/bvh-init.h | sed '1s/^/static /;s/\r$//' > bvh_init_dxil.h
+```
+
+Retail next calls the same device slot with `XDXR WriteOfflinePartition`,
+DLL shader RVA `+c77e0`, size `0x1ec4`. This second request occurs inside
+the constructor, before any observed dispatch of the first pipeline.
