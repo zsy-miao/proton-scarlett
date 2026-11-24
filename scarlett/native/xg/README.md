@@ -25,13 +25,15 @@ handle. Ordinary allocations do not qualify.
 **R8 selection boundary.** The title chooses between an explicit mode and
 a suggestion at `4eccb28`: for a mode byte other than `ff`, it stores
 `0x100|mode`; for `ff`, it calls XGSuggestSwizzleMode with `Option=0` and
-the same layout field as output. A separate scratch experiment returned
+the same layout field as output. Separate RADV and RTX 3070 retail runs returned
 `0x105` for that request and let `+c8` check size/alignment for explicit
 R8. The copy succeeded and a second recommendation rebuilt the descriptor
 for `+230`. Its resource had layout `105`, alignment 0, same R8 shape and
 flags; view words were `3d 4 1688 0 0 1 0 0 0 0 94602000 d 0 0 0 3`.
-That is the original texture backing at `0xd94602000`. The buffer-only
-SRV writer stopped at title return `4ecc821`.
+That is the original texture backing on RADV at `0xd94602000`. On RTX the
+corresponding backing was `0xd4b202000`; the view carried that address.
+Both runs completed the copy before the buffer-only SRV writer stopped at
+title return `4ecc821`. No shader sampled the view in these runs.
 
 This confirms that this caller passes the provider's result on, and that
 the choice must be deterministic on repeated requests. It does not
