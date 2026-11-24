@@ -18,5 +18,7 @@ CPU pages and title allocation hooks. The other providers cover [DSP registratio
 [audio device discovery](native/xapu/README.md), [APU memory interfaces](native/acphal/README.md),
 [texture layout suggestions](native/xg/README.md), and [read-only storage files](native/xcrdapi/README.md).
 Each provider lists the operations it supports and how unsupported requests fail.
+Run `./scarlett/tests/native-providers.sh` to exercise the installed DLLs through Proton
+with synthetic callers (including an EXE exporting its own allocation hooks).
 
 `./scarlett/tests/queue-fence.sh` builds a synthetic PE importing `d3d12_xs.dll`, then exercises a desktop-compatible D3D12 device, command queue, CPU/GPU signaling and completion. It runs in an isolated Wine prefix on the NixOS/NVIDIA test host. `D3D12XboxCreateDevice`, console-specific COM methods and Xbox shaders are separate work; this test does not boot a retail game. `SCARLETT_RECORD=1` enables recording of the private test display.
