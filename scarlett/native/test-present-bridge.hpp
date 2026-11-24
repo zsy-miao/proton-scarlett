@@ -2,6 +2,7 @@
 #ifdef TEST_ORDERED_PRESENT
 #include "test-ordered-batch.hpp"
 extern "C" HRESULT test_replace_end(IUnknown *, ID3D12Fence *, ID3D12Fence *);
+extern "C" UINT test_ring_index(IUnknown *);
 #endif
 extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
 extern "C" HRESULT test_bridge_count(IUnknown *,UINT *);
@@ -36,9 +37,12 @@ static DWORD WINAPI bridge_gui(void *ctx)
     CK(DestroyWindow(g->replacement));return 0;
 #endif
 }
+#ifdef TEST_ORDERED_PRESENT
+template<class Recorder>
+#endif
 static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown **batches,
 #ifdef TEST_ORDERED_PRESENT
-        ID3D12Resource *upload_buffer,IUnknown *views,
+        ID3D12Resource *upload_buffer,IUnknown *views,Recorder &record_recycled,ComPtr<IUnknown> &recycled,
 #endif
         ID3D12Resource **sources,SIZE_T dest,UINT *upload,volatile UINT *ctrl,volatile UINT64 *ticks)
 {
@@ -72,6 +76,7 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     UINT count;HR(test_bridge_count(q.Get(),&count));UINT before=count;CK(before==0);
 #ifdef TEST_ORDERED_PRESENT
     const auto generation=test_generation(q.Get());CK(generation);
+    const UINT ring=test_ring_index(q.Get());CK(ring<2);
     UINT64 token=0;IUnknown *sync_id=sync.Get();
     HR(fw(dev,0,1000,nullptr,0,&token));CK(token==1);
     for(UINT y=0;y<oh;y++)for(UINT x=0;x<ow;x++)upload[y*ow+x]=x<ow/2?0xff0000ff:0xffff0000;
@@ -90,6 +95,7 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     };
     CK(flip(keys[0])==S_OK && fw(dev,2,5000,nullptr,0,&token)==S_OK);
     HR(test_bridge_count(q.Get(),&count));CK(count==1 && ticks[0]>ticks[1]);
+    CK(test_ring_index(q.Get())==1-ring);
     printf("PASS singleton token=1 count=1 generation=%zu\n",generation);Sleep(1600);
     HR(fw(dev,0,1000,nullptr,0,&token));CK(token==2);
     HR(test_tagged(q.Get(),1,&sync_id,token,0));
@@ -125,6 +131,25 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     CK(fw(dev,2,5000,nullptr,0,&token)==S_OK && present(q.Get(),token,keys[1])==DXGI_ERROR_INVALID_CALL);
     HR(test_bridge_count(q.Get(),&count));CK(count==2);CloseHandle(retired);
     printf("PASS ordered token=2 count=2 producer_end=%p generation=%zu wrong-key/end rejected\n",end.Get(),generation);
+    Sleep(1600);CK(test_ring_index(q.Get())==ring);
+    HR(fw(dev,0,1000,nullptr,0,&token));CK(token==3);
+    HR(test_tagged(q.Get(),1,&sync_id,token,0));
+    CK(present(q.Get(),token,keys[0])==DXGI_ERROR_INVALID_CALL); // sync alone cannot re-arm A
+    CK(!record_recycled() && recycled && recycled.Get()!=batches[0]);
+    for(UINT y=0;y<oh;y++)for(UINT x=0;x<ow;x++)upload[y*ow+x]=x<ow/2?0xff00ffff:0xffffff00;
+    InterlockedExchange64((volatile LONG64*)ctrl,0);ctrl[2]=ctrl[3]=~0u;ticks[0]=ticks[1]=0;MemoryBarrier();
+    IUnknown *third=recycled.Get();HR(test_tagged(q.Get(),1,&third,token,3));
+    CK(test_ordered_host_submissions()==1 && present(q.Get(),1,keys[0])==DXGI_ERROR_INVALID_CALL);
+    CK(present(q.Get(),token,keys[1])==DXGI_ERROR_INVALID_CALL);
+    CK(present(q.Get(),token,keys[0])==DXGI_ERROR_WAS_STILL_DRAWING);
+    ULONGLONG until=GetTickCount64()+5000;while(ctrl[3]!=0x29a5ee15 && GetTickCount64()<until)Sleep(1);
+    CK(ctrl[2]==0 && ctrl[3]==0x29a5ee15 && ticks[1] && !ticks[0]);
+    HR(test_bridge_count(q.Get(),&count));CK(count==2 && fw(dev,2,0,nullptr,0,&token)==DXGI_ERROR_WAIT_TIMEOUT);
+    InterlockedExchange64((volatile LONG64*)ctrl,1);
+    CK(test_generation(q.Get())==generation && flip(keys[0])==S_OK && fw(dev,2,5000,nullptr,0,&token)==S_OK);
+    CK(ticks[0]>ticks[1] && present(q.Get(),token,keys[0])==DXGI_ERROR_INVALID_CALL);
+    HR(test_bridge_count(q.Get(),&count));CK(count==3 && test_ring_index(q.Get())==1-ring);
+    printf("PASS recycled singleton token=3 count=3 key=%p ring=%u generation=%zu\n",keys[0],ring,generation);
     Sleep(1600);CK(SetEvent(gui.quit) && WaitForSingleObject(thread,5000)==WAIT_OBJECT_0);
 #else
     // Fixture producer restores its UAV precondition only after the preceding Present returns.

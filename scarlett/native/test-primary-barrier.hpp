@@ -221,22 +221,42 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     HR(SLOT(list.Get(),0x48,Close)(list.Get()));
 #ifdef TEST_PRESENT_BRIDGE
     ComPtr<IUnknown> second;
+#ifdef TEST_ORDERED_PRESENT
+    auto record_recycled=[&]() -> int {
+    IUnknown *key=surface;auto image=texture.Get();SIZE_T targetSlot=dest;
+    HR(xs_write_view(dev,0xa0,other,view,targetSlot));
+    HR(xs_write_view(dev,0xa0,key,view,targetSlot));
+#else
+    IUnknown *key=other;auto image=sibling.Get();SIZE_T targetSlot=secondSlot;
+#endif
     HR(SLOT(dev,0x248,List)(dev,ld,b.Get(),nullptr,xs_pool_list_id,(void**)second.GetAddressOf()));
     IUnknown *s2=second.Get();HR(xs_bind_pool_heaps(s2,2,pair));SLOT(s2,0x238,Mark)(s2,ctrl+2,0,0,0);
     HR(xs_bind_pool_heaps(s2,2,pair));SLOT(s2,0x240,Stamp)(s2,head,0,0,1);SLOT(s2,0x238,Mark)(s2,ctrl+3,post,0,0);SLOT(s2,0x250,Mark)(s2,ctrl,7,1,1);
     t={D3D12_BARRIER_SYNC_ALL_SHADING,D3D12_BARRIER_SYNC_RENDER_TARGET,D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,D3D12_BARRIER_ACCESS_RENDER_TARGET,
-        D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,D3D12_BARRIER_LAYOUT_RENDER_TARGET,(ID3D12Resource*)other,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
-    group.pTextureBarriers=&t;SLOT(s2,0x490,Barrier)(s2,1,&group);FLOAT zero[4]={};SLOT(s2,0x1a0,Clear)(s2,secondSlot,zero,0,nullptr);
-    auto tail=test_clear_recorder(s2);toCopy.Transition={sibling.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_DEST};
-    tail->ResourceBarrier(1,&toCopy);to.pResource=sibling.Get();tail->CopyTextureRegion(&to,0,0,0,&from,nullptr);
+        D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,D3D12_BARRIER_LAYOUT_RENDER_TARGET,(ID3D12Resource*)key,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    group.pTextureBarriers=&t;
+    auto tail=test_clear_recorder(s2);
+#ifdef TEST_ORDERED_PRESENT
+    // The private WSI copy restored A to COMMON. Reacquire on the original producer.
+    D3D12_TEXTURE_BARRIER restore={D3D12_BARRIER_SYNC_NONE,D3D12_BARRIER_SYNC_ALL_SHADING,
+        D3D12_BARRIER_ACCESS_NO_ACCESS,D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,D3D12_BARRIER_LAYOUT_COMMON,
+        D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,image,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    auto restoreGroup=group;restoreGroup.pTextureBarriers=&restore;tail->Barrier(1,&restoreGroup);
+#endif
+    SLOT(s2,0x490,Barrier)(s2,1,&group);FLOAT zero[4]={};SLOT(s2,0x1a0,Clear)(s2,targetSlot,zero,0,nullptr);
+    toCopy.Transition={image,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_DEST};
+    tail->ResourceBarrier(1,&toCopy);to.pResource=image;tail->CopyTextureRegion(&to,0,0,0,&from,nullptr);
     toCopy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;toCopy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;tail->ResourceBarrier(1,&toCopy);
     t={D3D12_BARRIER_SYNC_RENDER_TARGET,D3D12_BARRIER_SYNC_NONE,D3D12_BARRIER_ACCESS_RENDER_TARGET,D3D12_BARRIER_ACCESS_NO_ACCESS,
-       D3D12_BARRIER_LAYOUT_RENDER_TARGET,(D3D12_BARRIER_LAYOUT)0x1f,(ID3D12Resource*)other,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+       D3D12_BARRIER_LAYOUT_RENDER_TARGET,(D3D12_BARRIER_LAYOUT)0x1f,(ID3D12Resource*)key,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
     SLOT(s2,0x490,Barrier)(s2,1,&group);SLOT(s2,0x240,Stamp)(s2,head-8,0,0,1);HR(SLOT(s2,0x48,Close)(s2));
-    IUnknown *keys[]={surface,other},*batches[]={list.Get(),s2};ID3D12Resource *sources[]={texture.Get(),sibling.Get()};
+#ifdef TEST_ORDERED_PRESENT
+    return 0; };
+#endif
+    IUnknown *keys[]={surface,other},*batches[]={list.Get(),second.Get()};ID3D12Resource *sources[]={texture.Get(),sibling.Get()};
     int checked=bridge_fixture(d,dev,keys,batches,
 #ifdef TEST_ORDERED_PRESENT
-            upload.Get(),views.Get(),
+            upload.Get(),views.Get(),record_recycled,second,
 #endif
             sources,dest,pattern,ctrl,ticks);
     upload->Unmap(0,nullptr);other->Release();surface->Release();return checked;

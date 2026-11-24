@@ -15,12 +15,17 @@ def near(rgb, want):
     return all(abs(a-b) < 10 for a, b in zip(rgb, want))
 
 
-seen = False
+patterns = [((255,0,0),(0,0,255)), ((0,255,0),(255,0,255))]
+if sys.argv[2:] == ["--third"]:
+    patterns.append(((255,255,0),(0,255,255)))
+elif sys.argv[2:]:
+    sys.exit("usage: offscreen-pixels.py VIDEO [--third]")
+stage = 0
 for left, right in zip(samples(200), samples(600)):
-    if near(left, (255, 0, 0)) and near(right, (0, 0, 255)):
-        seen = True
-    elif seen and near(left, (0, 255, 0)) and near(right, (255, 0, 255)):
-        print("PASS: independently decoded red/blue then green/magenta")
-        break
+    if near(left,patterns[stage][0]) and near(right,patterns[stage][1]):
+        stage += 1
+        if stage == len(patterns):
+            print("PASS: independently decoded red/blue then green/magenta" + (" then yellow/cyan" if stage==3 else ""))
+            break
 else:
-    sys.exit("FAIL: expected both spatial patterns in order")
+    sys.exit(f"FAIL: missing spatial pattern {stage+1} in order")

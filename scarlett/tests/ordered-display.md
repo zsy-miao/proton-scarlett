@@ -23,6 +23,8 @@ Set `RADV_RUN` and `NVIDIA_RUN` to the respective launcher output directories. T
 
 Token 1 presents red/blue. For token 2 the first closed Direct generation fills an intermediate, and the second copies it to a different registered primary. Reversing them must submit neither. The test drops caller references behind a gate, rejects the sibling key and an unrelated completed fence, then checks retirement, the original end, same captured window generation, two WSI count advances and both decoded spatial patterns.
 
+Token 3 exercises reuse. After the DXGI backbuffer index wraps, rewrite A's original RTV slot to B and back to A, record a new singleton on the same producer, and present yellow/cyan. On RADV and RTX the common fixture (`92425fda…`) reused A with RTV serial 8 instead of 5 and a new batch fence. The count advanced 0→1→2→3 on the same window generation, and the decoded captures contained red/blue, green/magenta and yellow/cyan in that order.
+
 Only the fixture's `testq.c` compiles the ordered factory and submit helper. They require a producer lease protecting command storage against reuse. A current or previous colour VB (resource or placed backing), a pending table, and queue-side split operations each disqualify a recording. The ordinary provider has no ordered entry point or queue-dispatch branch.
 
 **Qualification:** Both adapters passed the fixture-only PE built on `e94ccab7` (SHA-256 `1a0fe844482178ec5a89b02e9ffe400ddaabce58681b5bd202637f48608be0db`). Both rejected the unrelated fence, advanced WSI 0→1→2 on one window generation and displayed red/blue followed by green/magenta. The earlier common PE (`b04e501f…`) also passed; its private recordings show the two patterns at samples 26→50 and 42→65 on RADV and RTX, respectively.

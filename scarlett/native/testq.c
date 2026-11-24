@@ -16,6 +16,10 @@ ID3D12CommandQueue *test_host_queue(IUnknown *q){return as_queue(q);}
 #ifdef TEST_ORDERED_BATCH
 #include "test-ordered-queue.h"
 #ifdef TEST_ORDERED_PRESENT
+UINT test_ring_index(IUnknown *q)
+{
+    return IDXGISwapChain3_GetCurrentBackBufferIndex(CONTAINING_RECORD(q,struct adapter,iface)->display.chain);
+}
 /* Inject a completed but unrelated release fence; leave the clock record intact. */
 HRESULT test_replace_end(IUnknown *q,ID3D12Fence *expected,ID3D12Fence *replacement)
 {
