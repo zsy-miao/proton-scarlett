@@ -268,34 +268,42 @@ static BOOL tiled_r32_desc(const D3D12_RESOURCE_DESC *rd)
         rd->DepthOrArraySize==1 && rd->MipLevels==1 && rd->Format==DXGI_FORMAT_R32_UINT && rd->SampleDesc.Count==1 &&
         !rd->SampleDesc.Quality && (UINT)rd->Layout==0x102 && (UINT)rd->Flags==0x300004;
 }
-static const UINT *deferred_pages(const D3D12_RESOURCE_DESC *rd)
+struct page_group { DXGI_FORMAT fmt; UINT width,height,flags,pages[2],host_flags; BOOL detail; };
+static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
 {
     /* Deferred target owners consume only a size: qualify the native page counts,
      * not the size of a linear array of guest texels (notably for depth/stencil). */
-    static const struct { DXGI_FORMAT fmt; UINT width,height,flags,pages[2]; } groups[]={
-        {DXGI_FORMAT_R32G8X24_TYPELESS,1024,1024,2,{128,82}},
-        {DXGI_FORMAT_R32G8X24_TYPELESS,994,624,0x800002,{79,53}},
-        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x800002,{480,304}},
-        {DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,0x800002,{1020,655}},
-        {DXGI_FORMAT_B8G8R8A8_UNORM,994,624,0,{40,41}},
-        {DXGI_FORMAT_B8G8R8A8_UNORM,3840,2160,0,{510,513}},
-        {DXGI_FORMAT_R32_UINT,640,1440,0x300005,{60,60}},
-        {DXGI_FORMAT_R32_FLOAT,2560,1440,0xc00001,{240,241}},
-        {DXGI_FORMAT_R32G32_FLOAT,2560,1440,0xc00005,{480,462}},
-        {DXGI_FORMAT_R8_UNORM,2560,1440,0xc00005,{60,61}},
-        {DXGI_FORMAT_R32G32_UINT,2560,1440,0xc00005,{480,460}},
-        {DXGI_FORMAT_R32_UINT,1280,720,0xc00005,{60,60}},
-        {DXGI_FORMAT_R8_UINT,640,360,0xc00005,{4,4}}
+    static const struct page_group groups[]={
+        {DXGI_FORMAT_R32G8X24_TYPELESS,1024,1024,2,{128,82},0,FALSE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,994,624,0x800002,{79,53},0,FALSE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x800002,{480,304},0,FALSE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,0x800002,{1020,655},0,FALSE},
+        {DXGI_FORMAT_B8G8R8A8_UNORM,994,624,0,{40,41},0,FALSE},
+        {DXGI_FORMAT_B8G8R8A8_UNORM,3840,2160,0,{510,513},0,FALSE},
+        {DXGI_FORMAT_R32_UINT,640,1440,0x300005,{60,60},0,FALSE},
+        {DXGI_FORMAT_R32_FLOAT,2560,1440,0xc00001,{240,241},0,FALSE},
+        {DXGI_FORMAT_R32G32_FLOAT,2560,1440,0xc00005,{480,462},5,FALSE},
+        {DXGI_FORMAT_R8_UNORM,2560,1440,0xc00005,{60,61},5,FALSE},
+        {DXGI_FORMAT_R32G32_UINT,2560,1440,0xc00005,{480,460},5,FALSE},
+        {DXGI_FORMAT_R32_UINT,1280,720,0xc00005,{60,60},5,FALSE},
+        {DXGI_FORMAT_R8_UINT,640,360,0xc00005,{4,4},5,TRUE},
+        {DXGI_FORMAT_R8_UNORM,2560,1440,0x300005,{60,61},5,FALSE},
+        {DXGI_FORMAT_R32_UINT,2560,1440,0xc00005,{240,240},5,FALSE},
+        /* Desktop DS+UAV is invalid; this deferred owner consumes only DS size. */
+        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x80300006,{480,304},2,FALSE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,0x80300002,{1020,655},2,FALSE},
+        {DXGI_FORMAT_R16G16_FLOAT,1280,720,0x300001,{60,61},1,FALSE},
+        {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x4800002,{480,304},2,TRUE}
     };
     for (UINT i=0;i<ARRAYSIZE(groups);i++)
         if (rd->Format==groups[i].fmt && rd->Width==groups[i].width && rd->Height==groups[i].height &&
-            (rd->Format==DXGI_FORMAT_B8G8R8A8_UNORM || (UINT)rd->Flags==groups[i].flags)) return groups[i].pages;
+            (rd->Format==DXGI_FORMAT_B8G8R8A8_UNORM || (UINT)rd->Flags==groups[i].flags)) return &groups[i];
     return NULL;
 }
 
 /* Both public slots require matching aggregate and per-resource results. */
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
-        D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail,const UINT *pages)
+        D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail,const struct page_group *group)
 {
     if (tiled_r32_desc(rd)) {
         /* 160 x 90 complete 256-byte guest tiles. */
@@ -315,18 +323,17 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         if (xs_is_rtx3070(host)) {rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;expected_bytes=0x780000;}
         else if (xs_is_adapter(host,0x1002,0x164e)) {rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;expected_bytes=0x790000;}
         else return E_NOTIMPL;
-    } else if (pages) {
-        /* Of the measured page groups only the 640x360 R8_UINT owner requested +360. */
-        if ((detail && !(rd->Format==DXGI_FORMAT_R8_UINT && rd->Width==640 && rd->Height==360)) ||
+    } else if (group) {
+        if ((detail && !group->detail) ||
             rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout ||
             rd->DepthOrArraySize!=1 || rd->MipLevels!=1 || rd->SampleDesc.Count!=1 || rd->SampleDesc.Quality ||
             (bgra && (UINT)rd->Flags!=0xc00005 && (UINT)rd->Flags!=0x300001 && (UINT)rd->Flags!=0xc00001)) return E_NOTIMPL;
-        if (!bgra && (UINT)rd->Flags==0xc00005) {
-            if (xs_is_adapter(host,0x1002,0x164e)) ++pages;
-            else if (!xs_is_rtx3070(host)) return E_NOTIMPL;
-            expected_bytes=*pages*65536;
-        }
-        rd->Flags=(D3D12_RESOURCE_FLAGS)((UINT)rd->Flags & 7);
+        if (group->host_flags) {
+            if (xs_is_adapter(host,0x1002,0x164e)) expected_bytes=group->pages[1]*65536;
+            else if (xs_is_rtx3070(host)) expected_bytes=group->pages[0]*65536;
+            else return E_NOTIMPL;
+            rd->Flags=(D3D12_RESOURCE_FLAGS)group->host_flags;
+        } else rd->Flags=(D3D12_RESOURCE_FLAGS)((UINT)rd->Flags & 7);
     } else if (fp) {
         /* The half-size probe is query-only. */
         if (rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout || rd->DepthOrArraySize!=1 ||
@@ -351,9 +358,9 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     if (one.Offset || one.SizeInBytes!=info.SizeInBytes || one.Alignment!=info.Alignment) return E_NOTIMPL;
     if (expected_bytes) {
         if (info.Alignment!=65536 || info.SizeInBytes!=expected_bytes) return E_NOTIMPL;
-    } else if (pages) {
-        if (info.Alignment!=65536 || (info.SizeInBytes!=pages[0]*info.Alignment &&
-            info.SizeInBytes!=pages[1]*info.Alignment)) return E_NOTIMPL;
+    } else if (group) {
+        if (info.Alignment!=65536 || (info.SizeInBytes!=group->pages[0]*info.Alignment &&
+            info.SizeInBytes!=group->pages[1]*info.Alignment)) return E_NOTIMPL;
     } else if (fp) {
         if (info.Alignment!=65536 || (rd->Width==1280 ? info.SizeInBytes!=0x780000 && info.SizeInBytes!=0x790000 :
             info.SizeInBytes!=0x1e00000 && info.SizeInBytes!=0x1ce0000)) return E_NOTIMPL;
@@ -437,11 +444,11 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=validate_texture_desc(&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    const UINT *pages=deferred_pages(&rd);
-    if (pages || (rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) ||
+    const struct page_group *group=deferred_pages(&rd);
+    if (group || (rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) ||
         rd.Format==DXGI_FORMAT_B5G5R5A1_UNORM || rd.Format==DXGI_FORMAT_R32G8X24_TYPELESS ||
         rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
-        rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL,pages);
+        rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL,group);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL layered=is_layered_texel(&rd),texel32=layered || is_texel32(&rd);
     BOOL row=is_srgb_row(&rd);

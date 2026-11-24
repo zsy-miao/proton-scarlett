@@ -102,18 +102,21 @@ int main(){
        CK(FAILED(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&z,&detail)));
        const bool amd=id.VendorId==0x1002 && id.DeviceId==0x164e;
        const bool measured=amd || (id.VendorId==0x10de && id.DeviceId==0x2484);
-       const struct {UINT w,h,fmt,rtx,radv;} group[]={
-           {2560,1440,16,480,462},{2560,1440,61,60,61},{2560,1440,17,480,460},{1280,720,42,60,60},{640,360,62,4,4}};
+       const struct {UINT w,h,fmt,flags,rtx,radv;} group[]={
+           {2560,1440,16,0xc00005,480,462},{2560,1440,61,0xc00005,60,61},{2560,1440,17,0xc00005,480,460},
+           {1280,720,42,0xc00005,60,60},{640,360,62,0xc00005,4,4},
+           {2560,1440,61,0x300005,60,61},{2560,1440,42,0xc00005,240,240},{2560,1440,19,0x80300006,480,304},
+           {3840,2160,19,0x80300002,1020,655},{1280,720,34,0x300001,60,61},{2560,1440,19,0x4800002,480,304}};
        using Query1=D3D12_RESOURCE_ALLOCATION_INFO*(WINAPI*)(D3D12_RESOURCE_ALLOCATION_INFO*,IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO1*);
        auto query1=(Query1)((*(void***)guest.Get())[0x360/8]);
        ComPtr<ID3D12Device4> d4;HR(d.As(&d4));
        for(auto t:group){
-           DWORD v2[]={3,0,0,0,t.w,0,t.h,0x10001,t.fmt,1,0,0,0xc00005};memcpy(wire,v2,sizeof v2);
-           D3D12_RESOURCE_DESC hostrd={};memcpy(&hostrd,v2,sizeof v2);hostrd.Flags=(D3D12_RESOURCE_FLAGS)5;
+           DWORD v2[]={3,0,0,0,t.w,0,t.h,0x10001,t.fmt,1,0,0,t.flags};memcpy(wire,v2,sizeof v2);
+           D3D12_RESOURCE_DESC hostrd={};memcpy(&hostrd,v2,sizeof v2);hostrd.Flags=(D3D12_RESOURCE_FLAGS)(t.fmt==19?2:t.flags&7);
            D3D12_RESOURCE_ALLOCATION_INFO1 one={};
            auto host=d4->GetResourceAllocationInfo1(1,1,&hostrd,&one);
-           printf("RECORD native %04x:%04x %ux%u fmt=%u bytes=%llx/%llx detail=%llx,%llx/%llx\n",
-               id.VendorId,id.DeviceId,t.w,t.h,t.fmt,host.SizeInBytes,host.Alignment,one.Offset,one.SizeInBytes,one.Alignment);
+           printf("RECORD native %04x:%04x %ux%u fmt=%u flags=%x bytes=%llx/%llx detail=%llx,%llx/%llx\n",
+               id.VendorId,id.DeviceId,t.w,t.h,t.fmt,t.flags,host.SizeInBytes,host.Alignment,one.Offset,one.SizeInBytes,one.Alignment);
            struct {UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO value;UINT64 post;} g={13,{},17};
            struct {UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO1 value;UINT64 post;} h={23,{},29};
            if(measured){
@@ -121,10 +124,10 @@ int main(){
                    g.value.Alignment==65536 && !memcmp(&host,&g.value,sizeof host) && !one.Offset &&
                    one.SizeInBytes==host.SizeInBytes && one.Alignment==host.Alignment);
            }else CK(xs_color_allocation_info(guest.Get(),1,1,wire,&g.value)==E_NOTIMPL && !g.value.SizeInBytes && !g.value.Alignment);
-           if(measured && t.fmt==62){
+           if(measured && (t.fmt==62 || t.flags==0x4800002)){
                g.value={};h.value.Offset=~0ull;
                CK(query1(&g.value,guest.Get(),1,1,wire,&h.value)==&g.value && !memcmp(&host,&g.value,sizeof host) &&
-                   !h.value.Offset && h.value.SizeInBytes==0x40000 && h.value.Alignment==65536);
+                   !h.value.Offset && h.value.SizeInBytes==host.SizeInBytes && h.value.Alignment==65536);
            }else CK(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.value,&h.value)==E_NOTIMPL);
            CK(g.pre==13 && g.post==17 && h.pre==23 && h.post==29);
            auto deny=[&](UINT node,UINT n,const void *ptr){return
@@ -132,10 +135,10 @@ int main(){
                FAILED(xs_msaa_allocation_info1(guest.Get(),node,n,ptr,&z,&detail));};
            CK(deny(0,1,wire) && deny(1,2,wire) && deny(1,1,(BYTE*)wire+1));
            for(UINT j=0;j<13;j++)if(j!=1){DWORD mask=j==8?0x80:1;wire[j]^=mask;CK(deny(1,1,wire));wire[j]^=mask;}
-           wire[12]=0x300005;CK(deny(1,1,wire));
+           wire[12]^=0x1000000;CK(deny(1,1,wire));
        }
-       printf("PASS five-query group: %s; bad fields, node/count and short record denied\n",
-           measured?"five +c8, exact R8_UINT +360":"unmeasured adapter denied both slots");
+       printf("PASS measured page groups: %s; bad fields, node/count and short record denied\n",
+           measured?"eleven +c8, exact R8_UINT and deferred depth +360":"unmeasured adapter denied both slots");
     }
     CK(VirtualFree(page,0,MEM_RELEASE));
     // Place adjacent desktop images, then verify that clearing each leaves its neighbors intact.

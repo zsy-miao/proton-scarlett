@@ -136,3 +136,28 @@ not a view of the placed R8 image.
 `wc-float1440.sh radv|nvidia TOOL r8uint` tests the original backing after
 VA replacement, all texels, both guards and unused allocation tail. Its
 shader samples, UAV clear and RTV stripe are fixture operations.
+
+### Sizing after the six-element structured SRV
+
+Both adapters issued these `+c8` queries in order, returning to `+344188`.
+Each was one 2D layer/mip/sample with zero requested layout and alignment.
+Sizes in 64 KiB pages:
+
+| Extent | DXGI format | Flags | Host sizing flags | RTX | RADV |
+|---|---|---:|---|---:|---:|
+| 2560×1440 | R8_UNORM | 0x300005 | RT+UAV | 60 | 61 |
+| 2560×1440 | R32_UINT | 0xc00005 | RT+UAV | 240 | 240 |
+| 2560×1440 | R32G8X24_TYPELESS | 0x80300006 | DS | 480 | 304 |
+| 3840×2160 | R32G8X24_TYPELESS | 0x80300002 | DS | 1020 | 655 |
+| 1280×720 | R16G16_FLOAT | 0x300001 | RT | 60 | 61 |
+| 2560×1440 | R32G8X24_TYPELESS | 0x4800002 | DS | 480 | 304 |
+
+For `0x80300006` the literal low DS+UAV flags yielded `UINT64_MAX` size
+on both desktop devices. The table admits DS-only sizing for this exact
+request, without qualifying a DS+UAV image. No placement or view from
+this group was observed before the final query. Only the last row requested
+`+360` (return `+abfe0d`), with zero offset and matching size/alignment.
+The next call was `+428` (return `+193e2db`), state 6, resource IID, typed
+D32_FLOAT_S8X24_UINT clear of depth 0 and stencil 7. Guest VAs were
+`0xd5f3d0000` (RTX) and `0xda8740000` (RADV). The call returned
+`E_NOTIMPL`; both ordinary runs stopped at title `+5707b8c`.
