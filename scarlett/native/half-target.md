@@ -28,6 +28,12 @@ Consequently no retail view or GPU use is established. The constructor would
 store its result at global RVA `+7665b50`, then build a child at `+7665b58`;
 these are disassembled continuations, not successful retail GPU allocations.
 
+In the undelayed dual-GPU runs, the stack at `+cc2834` included the return
+to this 1440p constructor at `+1edb1c6`. The title took the breakpoint after
+its texture creation helper returned null (`+cc27e9`). Both logs separately
+show completion of the first primary clear. The failed texture creation
+does not by itself establish that either adapter ran out of memory.
+
 Only these two size probes and the observed 1440p detail probe are enabled.
 The latter uses a host RT+UAV optimal descriptor; nothing here maps a WC
 section, changes `+428`, chooses an initial state, or interprets high flags.
