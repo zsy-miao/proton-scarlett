@@ -16,3 +16,15 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
   scarlett/tests/control-markers.cpp -ld3d12 -o "$work/game_scarlett_master.exe"
 ./scarlett/test-launch-nixos.sh "$work"
 ```
+
+The [counter wait test](../../tests/control-wait.cpp) submits a GPU copy, a
+fence wait, and a checkpoint to a private copy queue. A CPU observer polls
+an aligned 64-bit counter. The test verifies that the first copy is visible
+while the checkpoint is blocked, and that a later CPU store releases the
+checkpoint and lets the second copy run. Timeout and destruction skip the
+second copy, drain the queue, and release the counter. Build as above with
+`control-wait.cpp` in place of `control-markers.cpp`. On the NixOS test host,
+select one directory containing `mcfgthread/gthr.h` under
+`/nix/store/*-mcfgthread-x86_64-w64-mingw32-2.5.1-dev/include` and pass
+that directory with `-isystem`. This experiment covers
+one monotonic counter on one queue; the retail command list has not used it.
