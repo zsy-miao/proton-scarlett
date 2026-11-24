@@ -174,8 +174,9 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         srv.Shader4ComponentMapping=words[2]; srv.Buffer.NumElements=words[6];
     } else if (kind==DSV) {
         if (!object || words[0]!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || (!ds2d && words[1]!=D3D12_DSV_DIMENSION_TEXTURE2DMS) ||
-            memcmp(words+2,(DWORD[4]){0},16)) return E_NOTIMPL;
-        dsv.Format=words[0]; dsv.ViewDimension=words[1];
+            (words[2] & ~(ds2d ? D3D12_DSV_FLAG_READ_ONLY_DEPTH|D3D12_DSV_FLAG_READ_ONLY_STENCIL : 0)) ||
+            memcmp(words+3,(DWORD[3]){0},12)) return E_NOTIMPL;
+        dsv.Flags=words[2]; dsv.Format=words[0]; dsv.ViewDimension=words[1];
     } else if (kind==RTV) {
         if (!object || (words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM && !single_color) || words[2] || words[3]) return E_NOTIMPL;
         if (words[1]==D3D12_RTV_DIMENSION_TEXTURE2DMS) {

@@ -11,7 +11,10 @@ done
 x86_64-w64-mingw32-g++ -std=c++17 -Os -static -Wall -Wextra -Werror "$s/$src.cpp" "$w"/*.o -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
 if [[ $src == test-wc-row ]]; then
     "${DXC:-dxc}" -WX -T cs_6_0 -E main -DWRITE "$s/$src.hlsl" -Fo "$w/game/write.dxil"; shader=read
-elif [[ $src == test-wc-depth1440 ]]; then shader=depth1024; src=test-depth1024
+elif [[ $src == test-wc-depth1440 ]]; then
+    "${DXC:-dxc}" -WX -T vs_6_0 -E vs "$s/test-msaa-depth.hlsl" -Fo "$w/game/ro-vs.dxil"
+    "${DXC:-dxc}" -WX -T ps_6_0 -E ps "$s/test-ro-dsv.hlsl" -Fo "$w/game/ro-ps.dxil"
+    shader=depth1024; src=test-depth1024
 elif [[ $src == test-wc-r8uint ]]; then shader=r8uint
 elif [[ $gpu == nvidia ]]; then
     "${DXC:-dxc}" -WX -T cs_6_0 -E main "$s/$src-uav.hlsl" -Fo "$w/game/fp-uav.dxil"; shader=fp

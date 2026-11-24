@@ -237,3 +237,16 @@ Both adapters then wrote `+90` plane-1 stencil SRV `16 4 1688 0 0 1 1 0`
 uses this guest SRV, alongside its depth SRV, for shader reads. Next came
 `+a8` DSV `14 3 3 0 0 0` on the same object (read-only depth and stencil),
 unsupported at title return `+14a69e8`.
+
+After the stencil SRV, the title requested three single-sample D32S8 DSVs
+on the same resource at `+14a69e8`, adjacent to its writable DSV. Flag
+words were `3`, `1`, `2` (both planes, depth only, stencil only read-only);
+all three mip/union words were zero. Both ordinary runs then rejected
+`+c8` for 256×256 R16G16B16A16_FLOAT, flags `0x300001`, one mip/layer/
+sample, alignment/layout zero, return `+344188`.
+
+`wc-float1440.sh GPU TOOL depth1440` binds both-plane read-only DSV and
+both SRVs simultaneously in a pixel shader, compares the samples against
+full depth/stencil readbacks, and clears only the writable aspect through
+each partial DSV. The original pool remains pinned across VA recycling;
+invalid writes leave the descriptor intact. This draw is fixture evidence.
