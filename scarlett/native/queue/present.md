@@ -123,8 +123,8 @@ and index with this ring before turning on a retail bridge. Direct wrapping
 requires an equivalent backbuffer for **all** required rendering uses and
 states. Otherwise preserve the original render target and use a synchronized
 copy/resolve into a compatible output. For a genuinely placed request also
-prove host allocation/offset/alias ownership. Both observed slots currently
-report the descriptor prefix and fail with a null output.
+prove host allocation/offset/alias ownership. Retail now creates the primary
+committed texture as an offscreen RT+UAV resource.
 
 ## Private binding
 
@@ -174,3 +174,13 @@ SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway SCARLETT_RECORD=1 TMPDIR="$w" 
 Check `PASS PresentX` in the Proton log and decode the center pixel of
 `display.mp4` as in `scarlett/tests/radv-present.sh`; it should change
 from red to green in that order.
+
+`test-offscreen-present.c` checks the separate synchronized-copy path. The
+renderer hands the presenting Direct queue its exact source texture,
+retained window, token and final RT state. `+100` copies the texture to
+the current DXGI buffer, restores the states, and waits for its copy fence.
+The compositor recording showed red/blue halves followed by green/magenta
+halves after producer references were released. Build and run as above,
+substituting `test-offscreen-present.c`; check the recording with
+`python3 scarlett/tests/offscreen-pixels.py path/to/display.mp4`.
+Retail has not reached this handoff.

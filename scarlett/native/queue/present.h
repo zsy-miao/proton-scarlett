@@ -10,3 +10,9 @@ HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
 HRESULT xs_display_wrap(IUnknown *queue, UINT index, ID3D12Resource *render_resource, IUnknown **out);
 ID3D12Resource *xs_surface_host(IUnknown *surface); /* borrowed, caller owns a valid wrapper */
 ID3D12CommandQueue *xs_display_queue(IUnknown *queue); /* borrowed for the host renderer */
+/* Private renderer handoff. Supply its factory-validated primary identity, actual
+ * title HWND, and state known after the last submit on this exact host queue.
+ * Do not reuse the source until +100 returns; each successful frame needs a new handoff. */
+HRESULT xs_display_arm_primary(IUnknown *queue,ID3D12CommandQueue *producer,HWND window,
+        UINT64 token,IUnknown *key,ID3D12Resource *source,D3D12_RESOURCE_STATES state,
+        UINT guest_flags,UINT guest_heap_flags);

@@ -70,7 +70,8 @@ static void frame_refresh(struct frame_record *r)
     r->chain = NULL;
 }
 
-HRESULT xs_frame_present(IUnknown *iface, UINT64 token, IDXGISwapChain *chain)
+HRESULT xs_frame_present_after(IUnknown *iface,UINT64 token,IDXGISwapChain *chain,
+        HRESULT (*prepare)(void *),void *context)
 {
     if (!iface || !chain || !token) return E_INVALIDARG;
     struct xbox_device *device = CONTAINING_RECORD(iface, struct xbox_device, iface);
@@ -96,6 +97,7 @@ HRESULT xs_frame_present(IUnknown *iface, UINT64 token, IDXGISwapChain *chain)
     hr = IDXGISwapChain_GetFrameStatistics(chain, &baseline);
     if (hr == S_OK || hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
         hr = IDXGISwapChain_GetLastPresentCount(chain, &before);
+    if (hr == S_OK && prepare) hr=prepare(context);
     if (hr == S_OK) hr = IDXGISwapChain_Present(chain, 1, 0);
     if (hr == S_OK) hr = IDXGISwapChain_GetLastPresentCount(chain, &id);
     if (hr == S_OK && (!id || id != before+1)) hr = DXGI_ERROR_FRAME_STATISTICS_DISJOINT;
@@ -115,6 +117,11 @@ HRESULT xs_frame_present(IUnknown *iface, UINT64 token, IDXGISwapChain *chain)
     WakeAllConditionVariable(&f->change);
     ReleaseSRWLockExclusive(&f->lock);
     return hr;
+}
+
+HRESULT xs_frame_present(IUnknown *iface, UINT64 token, IDXGISwapChain *chain)
+{
+    return xs_frame_present_after(iface,token,chain,NULL,NULL);
 }
 
 static HRESULT WINAPI bootstrap_frame_wait(IUnknown *iface, UINT type, DWORD timeout,

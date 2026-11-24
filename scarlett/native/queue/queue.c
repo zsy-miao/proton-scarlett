@@ -30,6 +30,12 @@ struct adapter {
         IDXGISwapChain3 *chain;
         IUnknown *keys[2];
         UINT width, height;
+        HWND window;
+        HANDLE cookie;
+        IUnknown *primary_key;
+        ID3D12Resource *primary;
+        UINT64 primary_token;
+        D3D12_RESOURCE_STATES primary_state;
     } display;
 #endif
 };
@@ -109,6 +115,10 @@ static ULONG WINAPI release(IUnknown *iface)
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
             for (unsigned j=0;j<2;++j) if (a->display.keys[j])
                 IUnknown_Release(a->display.keys[j]);
+            if (a->display.primary_key) IUnknown_Release(a->display.primary_key);
+            if (a->display.primary) ID3D12Resource_Release(a->display.primary);
+            if (a->display.window && GetPropW(a->display.window,L"Scarlett.Present.Owner")==a->display.cookie)
+                RemovePropW(a->display.window,L"Scarlett.Present.Owner");
             if (a->display.chain) IDXGISwapChain3_Release(a->display.chain);
             if (a->display.owner) IUnknown_Release(a->display.owner);
 #endif

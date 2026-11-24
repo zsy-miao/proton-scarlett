@@ -37,13 +37,16 @@ HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
     *out=NULL;
     ID3D12CommandQueue *q=as_queue(queue);
     if (!q || !factory || !window || !width || !height) return E_INVALIDARG;
+    DWORD pid=0;
+    if (!GetWindowThreadProcessId(window,&pid) || pid!=GetCurrentProcessId() ||
+        GetAncestor(window,GA_ROOT)!=window) return E_INVALIDARG;
     D3D12_COMMAND_QUEUE_DESC qd;
     q->lpVtbl->GetDesc(q,&qd);
     if (qd.Type!=D3D12_COMMAND_LIST_TYPE_DIRECT) return E_NOTIMPL;
     struct adapter *a=CONTAINING_RECORD(queue,struct adapter,iface);
     AcquireSRWLockExclusive(&a->display.lock);
     HRESULT hr=DXGI_ERROR_INVALID_CALL;
-    if (a->display.owner && !a->display.chain) {
+    if (a->display.owner && !a->display.chain && !GetPropW(window,L"Scarlett.Present.Owner")) {
         DXGI_SWAP_CHAIN_DESC1 sd={.Width=width,.Height=height,.Format=DXGI_FORMAT_R8G8B8A8_UNORM,
             .SampleDesc={1,0},.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT,.BufferCount=2,
             .SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD};
@@ -54,6 +57,13 @@ HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
             IDXGISwapChain1_Release(chain);
         }
         if (SUCCEEDED(hr)) {
+            static LONG64 serial;
+            a->display.cookie=(HANDLE)(UINT_PTR)InterlockedIncrement64(&serial);
+            if (!SetPropW(window,L"Scarlett.Present.Owner",a->display.cookie)) {
+                IDXGISwapChain3_Release(a->display.chain); a->display.chain=NULL;
+                ReleaseSRWLockExclusive(&a->display.lock); return E_FAIL;
+            }
+            a->display.window=window;
             a->display.width=width; a->display.height=height;
             IDXGISwapChain3_AddRef(a->display.chain); *out=a->display.chain;
         }
@@ -107,6 +117,8 @@ static BOOL read_wire(const void *src, void *dst, SIZE_T bytes)
     return src && ReadProcessMemory(GetCurrentProcess(),src,dst,bytes,&n) && n==bytes;
 }
 
+#include "offscreen.h"
+
 static HRESULT WINAPI queue_present(IUnknown *iface, UINT count, const void *planes, const void *params)
 {
     struct xs_plane p;
@@ -130,7 +142,16 @@ static HRESULT WINAPI queue_present(IUnknown *iface, UINT count, const void *pla
     if (a->display.chain && !rect.left && !rect.top && rect.right==(LONG)a->display.width &&
             rect.bottom==(LONG)a->display.height) {
         UINT index=IDXGISwapChain3_GetCurrentBackBufferIndex(a->display.chain);
-        if (index<2 && key==a->display.keys[index])
+        if (a->display.primary && index<2 && key==a->display.primary_key && p.token==a->display.primary_token &&
+                GetPropW(a->display.window,L"Scarlett.Present.Owner")==a->display.cookie) {
+            hr=xs_frame_present_after(a->display.owner,p.token,(IDXGISwapChain *)a->display.chain,copy_primary,a);
+            IUnknown *held=a->display.primary_key;
+            ID3D12Resource *source=a->display.primary;
+            a->display.primary=NULL; a->display.primary_key=NULL;
+            ReleaseSRWLockExclusive(&a->display.lock);
+            ID3D12Resource_Release(source); IUnknown_Release(held);
+            return hr;
+        } else if (!a->display.primary && index<2 && key==a->display.keys[index])
             hr=xs_frame_present(a->display.owner,p.token,(IDXGISwapChain *)a->display.chain);
         else hr=DXGI_ERROR_INVALID_CALL;
     }
