@@ -5,7 +5,7 @@
 #include "bvh_offline_dxil.h"
 #include "bvh_partitions_dxil.h"
 
-enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES };
+enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -25,6 +25,9 @@ static const struct bvh_candidate {
     [BVH_RESET_COUNTERS]={0xfe8,{0xe2,0x30,0x9a,0x6f,0x2c,0x95,0xd0,0x97,0xe5,0x00,0xd4,0xc3,0x8e,0x20,0x58,0x81,
         0xa0,0xc2,0x43,0x3f,0x17,0x54,0xf9,0x7b,0xae,0xf0,0x6e,0x17,0x5e,0xd2,0xb0,0x2e},
         L"XDXR ResetCounters",3,{NULL,0}},
+    [BVH_RESET_INDEX]={0x1004,{0xaf,0xc3,0xab,0x7f,0x0a,0x51,0x29,0xc1,0x10,0x07,0x8a,0x8e,0x56,0xb3,0xb8,0x4f,
+        0x85,0x91,0x2e,0xaa,0xe0,0xa9,0xba,0xb1,0x7e,0x8b,0x95,0x00,0xac,0x2f,0x4c,0xca},
+        L"XDXR ResetToIndexBuffer",3,{NULL,0}},
     [BVH_INSTANCES]={0x493c,{0xda,0x1d,0x4b,0xc3,0xb8,0xc1,0xf6,0x85,0x19,0x76,0xd8,0x99,0x18,0xba,0xb9,0x96,
         0x78,0xd1,0xb0,0xf7,0x4b,0x0c,0x91,0x8f,0xf1,0x58,0xe9,0xe9,0x20,0x54,0xb6,0x20},L"XDXR WriteInstances",16,{0}},
 };
@@ -224,7 +227,10 @@ HRESULT xs_record_bvh_reset(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
     *out=NULL;
     if (!dst || !count) return E_INVALIDARG;
     if (count>32u*D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION) return E_NOTIMPL;
-    HRESULT hr=bvh_record_target(pipeline,BVH_RESET_COUNTERS,list,dst,dst->guest_base,16*count,out);
+    if (!pipeline || pipeline->lpVtbl!=&bp_methods.unknown) return E_INVALIDARG;
+    enum bvh_kind kind=CONTAINING_RECORD(pipeline,struct bvh_pipeline,iface)->kind;
+    if (kind!=BVH_RESET_COUNTERS && kind!=BVH_RESET_INDEX) return E_INVALIDARG;
+    HRESULT hr=bvh_record_target(pipeline,kind,list,dst,dst->guest_base,16*count,out);
     if (SUCCEEDED(hr)) {
         UINT constants[]={count,count,value};
         ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list,1,3,constants,0);

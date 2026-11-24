@@ -9,7 +9,7 @@ extern "C" ID3D12RootSignature *xs_bvh_root_host(IUnknown *,IUnknown *);
 #define SLOT(o,n,T) ((T)((*reinterpret_cast<void***>(o))[n/8]))
 #define CK(x) do { if (!(x)) { fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); return 1; } } while(0)
 #define HR(x) CK(SUCCEEDED(x))
-int main()
+static int run(bool index)
 {
     DWORD params[20]={}; params[0]=0x20004; params[2]=0x100000; params[10]=1; params[15]=0x20;
     const IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
@@ -23,18 +23,19 @@ int main()
     ComPtr<ID3DBlob> blob; HR(D3D12SerializeVersionedRootSignature(&sig,&blob,nullptr));
     using Root=HRESULT(WINAPI *)(IUnknown *,UINT,const void *,SIZE_T,REFIID,void **);
     HR(SLOT(dev.Get(),0x80,Root)(dev.Get(),1,blob->GetBufferPointer(),blob->GetBufferSize(),IID_ID3D12RootSignature,(void **)root.GetAddressOf()));
-    BYTE code[0xfe8]; FILE *f=fopen("private-reset.bin","rb"); CK(f);
-    CK(fread(code,1,sizeof code,f)==sizeof code && fgetc(f)==EOF && !ferror(f)); fclose(f);
-    struct Wire { IUnknown *root; const void *cs; SIZE_T bytes; BYTE tail[32]; } w={root.Get(),code,sizeof code,{}};
+    BYTE code[0x1004]; size_t bytes=index?sizeof code:0xfe8;
+    FILE *f=fopen(index?"private-index.bin":"private-reset.bin","rb"); CK(f);
+    CK(fread(code,1,bytes,f)==bytes && fgetc(f)==EOF && !ferror(f)); fclose(f);
+    struct Wire { IUnknown *root; const void *cs; SIZE_T bytes; BYTE tail[32]; } w={root.Get(),code,bytes,{}};
     using Factory=HRESULT(WINAPI *)(IUnknown *,const Wire *,UINT64,UINT64,REFIID,void **);
     auto make=[&](){return SLOT(dev.Get(),0x1f0,Factory)(dev.Get(),&w,0,0,IID_ID3D12PipelineState,(void **)ps.GetAddressOf());};
-    ++code[sizeof code-1]; CK(make()==E_NOTIMPL && !ps); --code[sizeof code-1];
+    ++code[bytes-1]; CK(make()==E_NOTIMPL && !ps); --code[bytes-1];
     --w.bytes; CK(make()==E_NOTIMPL && !ps); ++w.bytes;
     w.tail[31]=1; CK(make()==E_NOTIMPL && !ps); w.tail[31]=0;
     HR(make());
     using Name=HRESULT(WINAPI *)(IUnknown *,const WCHAR *);
     CK(SLOT(ps.Get(),0x30,Name)(ps.Get(),L"XDXR WriteOfflinePartition")==E_NOTIMPL);
-    HR(SLOT(ps.Get(),0x30,Name)(ps.Get(),L"XDXR ResetCounters"));
+    HR(SLOT(ps.Get(),0x30,Name)(ps.Get(),index?L"XDXR ResetToIndexBuffer":L"XDXR ResetCounters"));
     ComPtr<ID3D12Device> d; HR(xs_bvh_root_host(dev.Get(),root.Get())->GetDevice(IID_PPV_ARGS(&d)));
     UINT expected[192];
     for (UINT i=0;i<192;i++) { expected[i]=0x9da00000u+79*i; }
@@ -62,8 +63,9 @@ int main()
     xs_bvh_range dr={dst.Get(),0x551100000000ull,32,33*16};
     xs_bvh_hold *h=nullptr;
     --dr.bytes; CK(xs_record_bvh_reset(ps.Get(),list.Get(),&dr,33,0xab234567,&h)==E_INVALIDARG && !h); ++dr.bytes;
-    HR(xs_record_bvh_reset(ps.Get(),list.Get(),&dr,33,0xab234567,&h));
-    for(UINT i=8;i<8+33*4;i++) expected[i]=0xab234567;
+    const UINT first=0xffffffc0u;
+    HR(xs_record_bvh_reset(ps.Get(),list.Get(),&dr,33,first,&h));
+    for(UINT i=8;i<8+33*4;i++) expected[i]=first+(index?i-8:0);
     ps.Reset(); root.Reset();
     transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);
     list->CopyResource(rb.Get(),dst.Get()); dst.Reset(); HR(list->Close());
@@ -73,5 +75,8 @@ int main()
     HR(queue->Signal(fence.Get(),1)); HR(fence->SetEventOnCompletion(1,event)); CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0);
     CloseHandle(event); CK(fence->GetCompletedValue()==1); xs_drop_bvh_hold(h);
     HR(rb->Map(0,nullptr,(void **)&mapped)); CK(!memcmp(mapped,expected,sizeof expected)); rb->Unmap(0,nullptr);
-    puts("PASS synthetic +1f0 ResetCounters: unaltered bytecode, two workgroups, short range rejected, all 192 fenced DWORDs");
+    printf("PASS synthetic +1f0 %s: unaltered bytecode, two workgroups, short range rejected, all 192 fenced DWORDs\n",
+            index?"ResetToIndexBuffer":"ResetCounters");
+    return 0;
 }
+int main() { return run(false) || run(true); }

@@ -24,6 +24,7 @@ offline 0xc6be0 0x1ec4
 partitions 0xc5660 0x1580
 instances 0xc0d20 0x493c
 reset 0xb76e0 0xfe8
+index 0xb3fd0 0x1004
 SLICES
 for fixture in pipeline partitions instances reset; do
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \

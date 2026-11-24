@@ -19,7 +19,9 @@ Each [primary texture](scarlett/native/color-allocation.md) consumes a 33,226,75
 
 The [pipeline regression](scarlett/native/test-bvh-pipeline.cpp) checked all 1,280 destination words after `WriteOfflinePartition` ran on the GPU, including a parent link 40 bytes before its table anchor. Retail has reached pipeline creation; these dispatch results are from the fixture.
 
-A later builder shader, [`ResetCounters`](scarlett/native/bvh-root.md#resetcounters-verified-ahead-of-retail), ran unmodified on RADV in a separate test. It reset 33 counters across two workgroups and left adjacent memory unchanged.
+`LoadInstances` passed 20 test dispatches on each of RADV and RTX 3070 with a development compiler. Each dispatch compared all 8,192 words across the inputs and outputs, including guard regions. The installed build still stops at pipeline creation.
+
+Two later builder shaders, [`ResetCounters` and `ResetToIndexBuffer`](scarlett/native/bvh-root.md#resetcounters-verified-ahead-of-retail), ran unmodified on RADV. The second filled a buffer with 132 consecutive indices and left adjacent memory unchanged.
 
 Both retail display textures were created on the thread that owns the game window. A [separate presentation test](scarlett/native/queue/present.md) opened DXGI on a window captured by the same Wine hook and verified two displayed frames.
 

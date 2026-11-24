@@ -96,3 +96,9 @@ to `16 * count` bytes. `test-bvh-reset.cpp` takes `private-reset.bin` and
 checks 33 counters across two workgroups, including untouched words on both
 sides and rejection of a range one byte too short. This is a fixture result;
 retail still stops earlier at `LoadInstances`.
+
+The tenth utility constructor call (DLL `+206f4`) selects `ResetToIndexBuffer`
+at `+b4bd0` (`0x1004` bytes). It takes the same three constants as `ResetCounters`
+but writes successive unsigned indices, four per active thread. The shared
+recorder bounds the same `u0` footprint. The regression starts at `0xffffffc0`
+to check rollover, all 132 generated indices and both guards.
