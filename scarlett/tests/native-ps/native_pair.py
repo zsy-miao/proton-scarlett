@@ -63,11 +63,21 @@ HALF = """float rtz16(float x){
     if (abs(unpackHalf2x16(h).x)>abs(x)) --h;
     return unpackHalf2x16(h).x;
 }
-float legacy(float a,float b){return a==0.0 || b==0.0 ? 0.0 : a*b;}
 """
+LEGACY = "float legacy(float a,float b){return a==0.0 || b==0.0 ? 0.0 : a*b;}"
+HLSL = """#define vec2 float2
+#define vec4 float4
+#define uintBitsToFloat asfloat
+#define fract frac
+#define fma mad
+float rtz16(float x){
+    uint h = f32tof16(x);
+    if (abs(f16tof32(h))>abs(x)) --h;
+    return f16tof32(h);
+}"""
 
 
-def translate(code, vs, bindings=None, linear=True):
+def translate(code, vs, bindings=None, linear=True, *, hlsl=False):
     need(0 < len(code) <= 4096 and len(code)%4 == 0, "word span")
     w = iter(fields(code, 0, f"{len(code)//4}I"))
 
@@ -76,14 +86,23 @@ def translate(code, vs, bindings=None, linear=True):
         need(x is not None, "missing operand, export or end")
         return x
 
-    source = ["#version 450"]
-    source += (["layout(location=0) out vec2 uv;"] if vs else
-               ["layout(location=0) in vec2 uv; layout(location=0) out vec4 mrt;", HALF])
+    if hlsl:
+        source = [HLSL, LEGACY]
+        main = ("void main(uint gl_VertexIndex:SV_VertexID, out float4 gl_Position:SV_Position, "
+                "out float2 uv:TEXCOORD0){" if vs else
+                "void main(float4 pos:SV_Position, float2 uv:TEXCOORD0, out float4 mrt:SV_Target0){")
+    else:
+        source = ["#version 450"]
+        source += (["layout(location=0) out vec2 uv;"] if vs else
+                   ["layout(location=0) in vec2 uv; layout(location=0) out vec4 mrt;", HALF, LEGACY])
+        main = "void main(){"
     if bindings:
         tex,samp = bindings
-        source += [f"layout(set=0,binding={tex}) uniform texture2D srcImage;",
-                   f"layout(set=0,binding={samp}) uniform sampler srcSampler;"]
-    source.append("void main(){")
+        source += ([f"Texture2D<float4> srcImage:register(t{tex},space1);",
+                    f"SamplerState srcSampler:register(s{samp},space1);"] if hlsl else
+                   [f"layout(set=0,binding={tex}) uniform texture2D srcImage;",
+                    f"layout(set=0,binding={samp}) uniform sampler srcSampler;"])
+    source.append(main)
     regs = {0: ("uint", "uint(gl_VertexIndex)")} if vs else {0: ("I", ""), 1: ("J", "")}
 
     def read(reg, typ):
@@ -142,7 +161,8 @@ def translate(code, vs, bindings=None, linear=True):
             vals = [read(args >> shift & 255,"float") for shift in (0,8,16,24)]
             if op == 0xf80008cf:
                 source.append(f"  gl_Position=vec4({','.join(vals)});")
-                source.append("  gl_Position.y=-gl_Position.y;")  # D3D clip Y -> positive Vulkan viewport
+                if not hlsl:  # D3D clip Y -> positive Vulkan viewport
+                    source.append("  gl_Position.y=-gl_Position.y;")
             else:
                 source.append(f"  uv=vec2({','.join(vals[:2])});")
         elif bindings and op == 0xbe8c047e and wave=="exact":
@@ -177,7 +197,8 @@ def translate(code, vs, bindings=None, linear=True):
             va,vd = args&255,args>>8&255
             need(va<=254 and vd<=252, "sample register extent")
             value = f"sample{len(source)}"
-            source.append(f"  vec4 {value}=texture(sampler2D(srcImage,srcSampler),"
+            sample = "srcImage.Sample(srcSampler," if hlsl else "texture(sampler2D(srcImage,srcSampler),"
+            source.append(f"  vec4 {value}={sample}"
                           f"vec2({read(va,'float')},{read(va+1,'float')}));")
             for i,c in enumerate("xyzw"):
                 regs[vd+i] = ("pending", f"{value}.{c}")
@@ -235,15 +256,16 @@ def translate(code, vs, bindings=None, linear=True):
     return "\n".join(source+["}"])
 
 
-def link(vs, ps):
+def link(vs, ps, *, hlsl=False):
     need(interface(vs, ps) is None,"resource-free pipeline")
-    return translate(vs.code, True), translate(ps.code, False)
+    return translate(vs.code, True, hlsl=hlsl), translate(ps.code, False, hlsl=hlsl)
 
 
-def link_sample(vs, ps, table):
+def link_sample(vs, ps, table, *, hlsl=False):
     bindings = interface(vs,ps)
     need(bindings is not None,"missing texture/sampler")
     tex,samp = bindings
     need(table.get(tex)=="texture2D" and table.get(samp) in ("linear-clamp","point-clamp"),
          "missing or mistyped host bindings")
-    return translate(vs.code,True), translate(ps.code,False,bindings,table[samp]=="linear-clamp")
+    return (translate(vs.code,True,hlsl=hlsl),
+            translate(ps.code,False,bindings,table[samp]=="linear-clamp",hlsl=hlsl))

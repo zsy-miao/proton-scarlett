@@ -59,7 +59,7 @@ def own_pair():
             Record(ps,signature([pos,(*uv,0x303)]),signature([(b"SV_Target",64,3,0,15)]),psv(0)))
 
 
-def cases(path):
+def cases(path, *, hlsl=False):
     vs,ps = own_pair()
     for v,p in [(vs, ps._replace(inputs=ps.inputs.replace(b"UVPAIR",b"OTHER!"))),
                 (vs, ps._replace(psv=ps.psv[:-19]+bytes([1])+ps.psv[-18:])),
@@ -67,11 +67,11 @@ def cases(path):
                 (vs, ps._replace(code=ps.code[:8]+words(0xc8310001)+ps.code[12:])),
                 (vs, ps._replace(code=words(0)+ps.code))]:
         try:
-            link(v,p)
+            link(v,p,hlsl=hlsl)
         except ValueError:
             continue
         raise AssertionError("bad stage, varying or instruction stream accepted")
-    yield "project-owned UV swap", link(vs,ps), lambda x,y: ((y+.5)/16,(x+.5)/256,.5,1.)
+    yield "project-owned UV swap", link(vs,ps,hlsl=hlsl), lambda x,y: ((y+.5)/16,(x+.5)/256,.5,1.)
     if path:
         names = ("VS_Passthrough_071514dd_Wrapped", "PS_LUT3DIdentity_071514dd_Wrapped")
         vs,ps = [read_record(path,name,kind) for name,kind in zip(names,(1,0))]
@@ -80,7 +80,7 @@ def cases(path):
             "58c8b8812d68d695fc52f7463d19b02c0ab087f0c2b831dd2815c23c11a74957"),
             "wrong native fixture")
         # Independent identity-LUT definition: texel (tile*16+r,g) represents (r,g,tile)/15.
-        yield " + ".join(names), link(vs,ps), lambda x,y: ((x%16)/15,y/15,(x//16)/15,1.)
+        yield " + ".join(names), link(vs,ps,hlsl=hlsl), lambda x,y: ((x%16)/15,y/15,(x//16)/15,1.)
 
 
 def half_bits(x):

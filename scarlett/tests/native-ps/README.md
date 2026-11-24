@@ -74,3 +74,33 @@ execution is modeled. Tests reject absent or mistyped bindings, disagreement
 between stages of binding resolution, wrong sampler state, altered descriptor
 address, missing waits or mask restore, wrong image mask/SGPR tuple and missing
 coordinate registers before Vulkan submission.
+
+## Wine / vkd3d-proton
+
+From this directory, on the NixOS test host with MinGW-w64, DXC and the
+installed Scarlett Proton tool:
+
+```sh
+SCARLETT_TEST_GPU=radv python3 test_d3d12.py --dxc "$DXC" "$PACK"
+SCARLETT_TEST_GPU=nvidia python3 test_d3d12.py --dxc "$DXC" "$PACK"
+```
+
+`PACK` is a local `shaders.rpf`; omit it to run only the project-owned controls.
+`DXC` is native `dxc` (the default on PATH) or x64 `dxc.exe` with adjacent
+`dxcompiler.dll` and `dxil.dll` (uses Wine). `--tool` overrides the launcher's
+installed-tool default. The runner builds a fixture PE for `test-launch-nixos.sh`.
+The same linked instructions emit VS/PS DXIL, with D3D clip coordinates and
+space-1 register bindings. After queue retirement it unpacks each RGBA16F row
+using the host copy footprint and checks every pixel with the existing oracles.
+
+The supplied executable (SHA-256 `e95020b2fa4a721db3df59fdecf75621730ac559d8835252f6c3b658d5a08993`)
+constructs a graphics **pipeline-state stream** at RVA `86f090`. It writes a
+root pointer at `+8`, VS pointer/length at `+18/+20` and PS at `+30/+38` (hex).
+At `2479a87` it calls the device's vtable byte offset `+2b0` with a descriptor
+`{size=0x2b0, stream}`, `IID_ID3D12PipelineState` and an output address.
+`2479acc` checks the HRESULT before publishing the result.
+
+The fixture submits that stream shape to the bootstrap wrapper's *host*
+`ID3D12Device2::CreatePipelineState`. Root, fixed state, descriptor tables and
+draw are test-supplied. This does not qualify a live retail root, identify a
+particular retail draw, or implement the guest vtable slot.

@@ -322,6 +322,7 @@ static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_S
 }
 
 #include "frame_clock.h"
+#include "query_readback.h"
 
 /* Read only the common caller-written prefix; the console layout/flags need
  * translation. Neither entry has the title's ring index or HWND. */
@@ -434,7 +435,8 @@ struct bootstrap_vtbl {
     xs_stop_fn gapa8[4];
     __typeof__(&bootstrap_allocation_info) allocation_info;
     __typeof__(&bootstrap_heap) heap;
-    xs_stop_fn gapd8[9];
+    __typeof__(&bootstrap_readback) readback;
+    xs_stop_fn gape0[8];
     __typeof__(&bootstrap_fence) fence;
     xs_stop_fn gap128[2];
     __typeof__(&bootstrap_query_heap) query_heap;
@@ -463,6 +465,7 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_placed) placed;
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
+               offsetof(struct bootstrap_vtbl, readback) == 0xd8 &&
                offsetof(struct bootstrap_vtbl, committed) == 0x3f8 &&
                offsetof(struct bootstrap_vtbl, placed) == 0x428 &&
                offsetof(struct bootstrap_vtbl, address_srv) == 0x230 &&
@@ -572,7 +575,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .descriptors = descriptor_heap, .stride = descriptor_stride, .root = builder_root_call,
     .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 3] = xs_stop },
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
-    .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
+    .readback = bootstrap_readback, .gape0 = { [0 ... 7] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { xs_stop, xs_stop }, .query_heap = bootstrap_query_heap, .gap140 = xs_stop,
     .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,

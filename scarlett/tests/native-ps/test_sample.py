@@ -26,7 +26,7 @@ def own_sample():
     return vs,p._replace(code=code,psv=psv,resources=((0x401,0,s,0,0x60004),(0x300,0,t,4,0x808)))
 
 
-def cases(path):
+def cases(path, *, hlsl=False):
     vs,p = own_sample()
     def changed(old,new):
         need(p.code.count(words(old))==1,"fixture mutation point")
@@ -40,18 +40,18 @@ def cases(path):
             (changed(0xf0800f08,0xf0800708),TABLE), (changed(0x1140b,0x2140b),TABLE),
             (changed(0x1140b,0x11440),TABLE)]:
         try:
-            link_sample(vs,bad,table)
+            link_sample(vs,bad,table,hlsl=hlsl)
         except ValueError:
             continue
         raise AssertionError("invalid sample pipeline accepted")
-    yield "project-owned t73/s4, VU, point, BGRA", link_sample(vs,p,TABLE), False
+    yield "project-owned t73/s4, VU, point, BGRA", link_sample(vs,p,TABLE,hlsl=hlsl), False
     if path:
         names=("VS_BlurFilter_1a08fc46_Wrapped","PS_PassthroughCopy_1a08fc46_Wrapped")
         vs,p=[read_record(path,n,kind) for n,kind in zip(names,(1,0))]
         need([hashlib.sha256(r.code).hexdigest() for r in (vs,p)]==[
             "ed345d39ecde8c9f413cb946aa8080b17f6a5353c876c70efc498865247b0542",
             "5d3d8b3de556b4d831b6d7cd56115c7f1962c04795d7495a12eb2b68f205cfed"],"wrong fixture")
-        yield " + ".join(names), link_sample(vs,p,TABLE), True
+        yield " + ".join(names), link_sample(vs,p,TABLE,hlsl=hlsl), True
 
 
 def check(data,linear):
