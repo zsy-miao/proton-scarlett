@@ -28,3 +28,10 @@ select one directory containing `mcfgthread/gthr.h` under
 `/nix/store/*-mcfgthread-x86_64-w64-mingw32-2.5.1-dev/include` and pass
 that directory with `-isystem`. This experiment covers
 one monotonic counter on one queue; the retail command list has not used it.
+
+A [combined wait and marker test](https://github.com/rcx2135/proton-scarlett/tree/3991f08a/scarlett/tests/control-translation)
+also exercises exact-size release followed by immediate address reuse. A CPU
+store to the replacement page did not satisfy the original wait. A store to
+the retained original backing did, and the subsequent GPU marker left the
+replacement untouched. This uses a synthetic allocation and known offsets;
+the retail method's scope and pipeline stage have not been verified.
