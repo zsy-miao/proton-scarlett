@@ -789,3 +789,17 @@ vertex source; the colour pipeline became current only on an explicit
 bind. Both depth and stencil remained unchanged at all 3840×2160 pixels.
 The ordinary provider SHA-256 was
 `a7aefdcf31b0c57cba4a85b900a1259c72139037cd4c4f43624846fa9868cecc`.
+
+The next six fixture runs passed (three per GPU). The inline table test
+checked the `+120` handler itself and both unsupported neighbours. Its
+earlier runs exited 1 because the fixture still expected the handler to
+be absent. With that expectation corrected, the split replay, reset,
+96-byte copy, padding and replacement-allocation checks all passed. The
+other two fixtures per GPU rejected the offscreen barrier pair before
+the colour-root switch and accepted it on the split list after the switch.
+
+The colour root uses a [volatile descriptor range](https://learn.microsoft.com/en-us/windows/win32/direct3d12/root-signature-version-1-1#descriptors_volatile).
+Setting the table selects a slot; it doesn't freeze that slot's contents
+until execution. A successful bind-time comparison alone cannot qualify
+a later submission using a private copy of the descriptor. This matters
+even when the 96 bytes of constant data come from the correct allocation.

@@ -43,6 +43,7 @@ struct startup_list {
     BOOL primary_cleared;
     BOOL primary_released; /* Guest layout 0x1f on the retained primary. */
     struct xs_attachment_pin attachments[2];
+    BOOL rt_roundtripped;
     ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
@@ -205,6 +206,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     s->full_bounds=s->full_rect=s->full_vp=FALSE;
     s->pending_470=FALSE;
     s->clear4_lanes=0;s->guest_topology=0;s->clear4_drew=FALSE;
+    s->rt_roundtripped=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -465,13 +467,37 @@ static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT fla
 #else
 #define sl_wait64 xs_stop
 #endif
+enum { XS_RECTLIST=17 };
+static void recorded_direct_state(struct startup_list *s);
 static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER_GROUP *g)
 {
-    if(!s->pending_470 || !s->depth_zero_pending || !s->blend_ones || !s->stencil_zero || !s->bound ||
-        !s->required_root || s->graphics_identity!=s->required_root || s->host_exposed || s->attachments[0].identity)return E_NOTIMPL;
+    if(!s->pending_470 || !s->depth_zero_pending || s->host_exposed)return E_NOTIMPL;
     D3D12_TEXTURE_BARRIER b[2]={0};SIZE_T got,bytes=sizeof(b[0])+offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof(b[0].Flags);
     if(!ReadProcessMemory(GetCurrentProcess(),g->pTextureBarriers,b,bytes,&got) || got!=bytes)return E_POINTER;
     const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
+    /* Same pinned image twice, after its #4 draw. Frozen OM can outlive both
+     * guest descriptor slots; do not resolve either slot again here. */
+    if(s->attachments[0].identity){
+        const struct xs_attachment_pin *rt=&s->attachments[0];
+        if(!s->clear4_drew || s->guest_topology!=XS_RECTLIST || !s->prior_pso || !s->prior_root ||
+           s->graphics_identity!=s->required_root || !s->graphics_identity || s->rt_roundtripped ||
+           !s->om.heap[0] || !s->om.heap[1] ||
+           !rt->host || rt->host==s->primary)return E_NOTIMPL;
+        for(UINT k=0;k<2;k++)if(b[k].pResource!=(ID3D12Resource*)rt->identity ||
+            b[k].SyncBefore!=(k?D3D12_BARRIER_SYNC_ALL_SHADING:D3D12_BARRIER_SYNC_RENDER_TARGET) ||
+            b[k].SyncAfter!=(k?D3D12_BARRIER_SYNC_RENDER_TARGET:D3D12_BARRIER_SYNC_ALL_SHADING) ||
+            b[k].AccessBefore!=(k?D3D12_BARRIER_ACCESS_SHADER_RESOURCE:D3D12_BARRIER_ACCESS_RENDER_TARGET) ||
+            b[k].AccessAfter!=(k?D3D12_BARRIER_ACCESS_RENDER_TARGET:D3D12_BARRIER_ACCESS_SHADER_RESOURCE) ||
+            b[k].LayoutBefore!=(k?D3D12_BARRIER_LAYOUT_SHADER_RESOURCE:D3D12_BARRIER_LAYOUT_RENDER_TARGET) ||
+            b[k].LayoutAfter!=(k?D3D12_BARRIER_LAYOUT_RENDER_TARGET:D3D12_BARRIER_LAYOUT_SHADER_RESOURCE) ||
+            b[k].Flags || memcmp(&b[k].Subresources,&all,sizeof all))return E_NOTIMPL;
+        b[0].pResource=b[1].pResource=rt->host;
+        D3D12_BARRIER_GROUP host={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=2,.pTextureBarriers=b};
+        ID3D12GraphicsCommandList7_Barrier(s->host,1,&host);
+        s->rt_roundtripped=TRUE;recorded_direct_state(s);return S_OK;
+    }
+    if(!s->blend_ones || !s->stencil_zero || !s->bound || !s->required_root ||
+        s->graphics_identity!=s->required_root)return E_NOTIMPL;
     for(UINT k=0;k<2;k++)if(b[k].SyncBefore!=D3D12_BARRIER_SYNC_ALL_SHADING ||
         b[k].SyncAfter!=(k?D3D12_BARRIER_SYNC_DEPTH_STENCIL:D3D12_BARRIER_SYNC_RENDER_TARGET) ||
         b[k].AccessBefore!=D3D12_BARRIER_ACCESS_SHADER_RESOURCE ||
@@ -576,7 +602,6 @@ static BOOL open_direct_state(struct startup_list *s)
     return s->pool_owner && s->reservation && s->type==D3D12_COMMAND_LIST_TYPE_DIRECT &&
         !s->closed && SUCCEEDED(s->error) && !s->host_exposed && !s->primary_released;
 }
-enum { XS_RECTLIST=17 };
 static BOOL can_set_topology(struct startup_list *s,UINT topology)
 {
     return open_direct_state(s) && (topology==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ||

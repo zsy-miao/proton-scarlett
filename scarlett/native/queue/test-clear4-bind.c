@@ -9,8 +9,10 @@ static void counted_execute(ID3D12CommandQueue *q,UINT n,ID3D12CommandList *cons
 }
 #undef ID3D12CommandQueue_ExecuteCommandLists
 #define ID3D12CommandQueue_ExecuteCommandLists counted_execute
-static D3D12_TEXTURE_BARRIER seen[2];static UINT calls;
+static D3D12_TEXTURE_BARRIER seen[2];static UINT calls,barrier_total;
+static ID3D12GraphicsCommandList7 *barrier_host;
 static void checked_barrier(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_BARRIER_GROUP *g){
+    ++barrier_total;barrier_host=l;
     if(n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE && g->NumBarriers==2){memcpy(seen,g->pTextureBarriers,sizeof seen);++calls;}
     ID3D12GraphicsCommandList7_Barrier(l,n,g);
 }
@@ -64,6 +66,7 @@ static HRESULT probe_create(ID3D12Device *d,UINT node,D3D12_COMMAND_LIST_TYPE t,
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
 #include "test-quad-read.h"
+#include "test-rt-roundtrip.h"
 /* Takes the caller's last PSO reference. The submission waits behind a CPU gate. */
 BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown *root,IUnknown *other_root,IUnknown *p,IUnknown *linear)
 {
@@ -181,6 +184,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #endif
     pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,0);
     REQUIRE(!can_set_topology(s,17));
+    REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],FALSE));
     pool_vtbl.state470(l,UINT64_MAX);pool_vtbl.draw(l,3,1,0,0);
     UINT nia=topo_calls;pool_vtbl.topology(l,17);
     REQUIRE(s->guest_topology==17 && topo_calls==nia+1 && ia_list==s->host && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST &&
@@ -190,6 +194,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(xs_write_view(owner,0xa8,ids[1],ds,slots[1])==S_OK && FAILED(record_om(s,1,slots,FALSE,slots+1)));
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,slots[0])==S_OK && xs_write_view(owner,0xa8,siblings[1],ds,slots[1])==S_OK);
     REQUIRE(FAILED(record_om(s,1,slots,FALSE,slots+1)) && !memcmp(&frozen,&s->om,sizeof frozen) && om_calls==ob+1);
+    REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],FALSE));
     s->marker=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *s->marker);struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);REQUIRE(s->marker && post);s->marker->refs=1;
 #ifdef TEST_LATE_COLOUR
     UINT old_psos=psos,old_roots=roots;IUnknown *colour=late_root_id(FALSE);
@@ -203,6 +208,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
     REQUIRE(s->guest_topology==17 && topo_calls==nia+2 && ia_list==s->host && ia_list!=s->head && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
+    REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],s->prior_pso!=NULL) && !xs_list_host(l));
     REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));sample_quad(s->host,images[0],quad_rb,3);
     REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
@@ -233,7 +239,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(!s->prior_pso && !s->prior_root && !s->graphics_identity && !s->pipeline && !s->bound);puts("PASS controlled late worker: root on current and split recorder, source not rebound under CBV table, publication alone ineffective, explicit PSO on tail, denied submit and reset");
 #endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
-    REQUIRE(!s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
+    REQUIRE(!s->rt_roundtripped && !s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
     puts("PASS +a0(17): host triangle input on head/tail, rectangle rejects #4, fenced unchanged guard and reset");
     puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");
     IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;
