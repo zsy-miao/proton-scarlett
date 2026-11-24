@@ -75,17 +75,17 @@ public:
                     control = true;
                 }
             }
-            hr = wc(device, info.view_size, info.section, nullptr, control, wb);
+            hr = wc(device, info.view_size, info.section, nullptr, control, wb, wb && (info.view_size == 0xa00000 || info.view_size == 0x6400000));
         }
         CloseHandle(info.section);
         if (SUCCEEDED(hr)) *offset = info.offset;
         return hr;
     }
 
-    HRESULT wc(ID3D12Device3 *device, SIZE_T size, HANDLE input, HANDLE *output, bool control = false, bool wb = false) {
+    HRESULT wc(ID3D12Device3 *device, SIZE_T size, HANDLE input, HANDLE *output, bool control = false, bool wb = false, bool pages = false) {
         if (!device || heap || base) return E_INVALIDARG;
         using Fn = HRESULT (WINAPI *)(ID3D12Device3 *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **);
-        auto fn = (Fn)(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),control ? "ScarlettControlHeapV1" : wb ? "ScarlettWbHeapV1" : "ScarlettWcHeapV1");
+        auto fn = (Fn)(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),control ? "ScarlettControlHeapV1" : pages && wb ? "ScarlettWbPagesHeapV1" : wb ? "ScarlettWbHeapV1" : "ScarlettWcHeapV1");
         if (!fn) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
         HRESULT hr = fn(device,size,input,output,&heap);
         if (FAILED(hr)) return hr;
@@ -133,4 +133,29 @@ private:
     SIZE_T length = 0;
     bool wc_mapped = false;
     bool wb_mapped = false;
+};
+
+/* Restricted imports are usable only as copy sources. No writable resource or raw GPU VA escapes. */
+class ImportedReadSpan {
+public:
+    HRESULT acquire(ID3D12Device3 *d, const void *va, SIZE_T bytes) {
+        scarlett_section_info i;
+        bool wb = SUCCEEDED(scarlett_query_section(0x53430010,va,bytes,&i));
+        HRESULT hr = wb ? S_OK : scarlett_query_section(0x53430011,va,bytes,&i);
+        if (FAILED(hr)) return hr;
+        hr = backing.wc(d,i.view_size,i.section,nullptr,false,wb,true);
+        CloseHandle(i.section);
+        if (SUCCEEDED(hr)) { offset=i.offset; length=bytes; }
+        return hr;
+    }
+    HRESULT copy_to(ID3D12GraphicsCommandList *list, ID3D12Resource *dst, UINT64 at) const {
+        if (!list || !dst || !length) return E_INVALIDARG;
+        auto desc=dst->GetDesc();
+        if (desc.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || at>desc.Width || length>desc.Width-at) return E_INVALIDARG;
+        list->CopyBufferRegion(dst,at,backing.resource(),offset,length);
+        return S_OK;
+    }
+private:
+    ImportedBuffer backing;
+    SIZE_T offset=0, length=0;
 };

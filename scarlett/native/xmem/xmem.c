@@ -109,7 +109,7 @@ __declspec(dllexport) PVOID WINAPI XMemVirtualAlloc(PVOID base, SIZE_T size,
     if (type == 0x20406000 && flags == 0x27 &&
         (protect == 0x1004 || protect == 0x1404 || protect == 0x8404 ||
          protect == 0x2404 || protect == 0x2004))
-        return descriptor_va(base, size, TRUE, protect == 0x2404);
+        return descriptor_va(base, size, TRUE, protect);
     if (!base && size == 65536 && type == 0x20401000 && flags == 0x283 && protect == 0x42404)
         return xmem_control64_alloc();
     if (type == 0x20003000 && flags == 0x183 && protect == 0x22004)

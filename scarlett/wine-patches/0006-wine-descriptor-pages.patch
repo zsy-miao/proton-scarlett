@@ -1,0 +1,80 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d9f8f950f7cef66abd91a4d5e81fd6a1c472540e..3026e955548f3a26661b6d81a5e5772f6c0470bf 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -257,6 +257,7 @@ struct file_view
+     size_t        size;          /* size in bytes */
+     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
+     HANDLE        scarlett_section; /* owned only by opt-in public views */
++    BOOL          scarlett_read_view; /* do not hand out a writable import for this VA */
+     SIZE_T        scarlett_offset, scarlett_heap_size; /* only for WC DMA views */
+ };
+ 
+@@ -6730,15 +6731,17 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+         }
+     }
+ #ifdef __linux__
+-    else if (op == MemoryWineScarlettMapWcV1 || op == MemoryWineScarlettMapControl64V1 || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbV1)
++    else if (op == MemoryWineScarlettMapWcV1 || op == MemoryWineScarlettMapControl64V1 || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbV1 || op == MemoryWineScarlettMapWbPagesV1 || op == MemoryWineScarlettMapWcReadPagesV1 || op == MemoryWineScarlettMapWbReadPagesV1)
+     {
+         const struct scarlett_section_info *in = buffer;
+-        BOOL replace = op == MemoryWineScarlettMapPagesV1;
++        BOOL read_view = op == MemoryWineScarlettMapWbReadPagesV1 || op == MemoryWineScarlettMapWcReadPagesV1;
++        BOOL replace = read_view || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbPagesV1;
+         info.view_size = replace ? in->view_size : info.size;
+         info.offset = replace ? in->offset : 0;
+         if (op != MemoryWineScarlettMapControl64V1 || info.size == 65536)
+-            status = map_scarlett_dma( addr, info.size, in->section, info.offset, &info.view_size, replace, op == MemoryWineScarlettMapWbV1,
++            status = map_scarlett_dma( addr, info.size, in->section, info.offset, &info.view_size, replace, op == MemoryWineScarlettMapWbV1 || op == MemoryWineScarlettMapWbPagesV1 || op == MemoryWineScarlettMapWbReadPagesV1,
+                                        op == MemoryWineScarlettMapControl64V1, &info.base );
++        if (!status) find_view( info.base, 0 )->scarlett_read_view = read_view;
+     }
+     else if (op == MemoryWineScarlettUnmapPagesV1)
+     {
+@@ -6762,7 +6765,7 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+         }
+     }
+ #endif
+-    else if (info.size && (op == MemoryWineScarlettAcquireV1 || op == MemoryWineScarlettAcquireWcV1 || op == MemoryWineScarlettAcquireControl64V1 || op == MemoryWineScarlettAcquireWbV1))
++    else if (info.size && (op == MemoryWineScarlettAcquireV1 || op == MemoryWineScarlettAcquireWcV1 || op == MemoryWineScarlettAcquireControl64V1 || op == MemoryWineScarlettAcquireWbV1 || op == MemoryWineScarlettAcquireWbReadPagesV1 || op == MemoryWineScarlettAcquireWcReadPagesV1))
+     {
+         struct file_view *view;
+ 
+@@ -6770,7 +6773,8 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+         if ((view = find_view( addr, 0 )) && view->scarlett_section &&
+             !!(view->protect & VPROT_SCARLETT_DMA) == (op != MemoryWineScarlettAcquireV1) &&
+             !!(view->protect & VPROT_SCARLETT_CONTROL) == (op == MemoryWineScarlettAcquireControl64V1) &&
+-            !!(view->protect & VPROT_SCARLETT_WB) == (op == MemoryWineScarlettAcquireWbV1))
++            !!(view->protect & VPROT_SCARLETT_WB) == (op == MemoryWineScarlettAcquireWbV1 || op == MemoryWineScarlettAcquireWbReadPagesV1) &&
++            (!(view->protect & VPROT_SCARLETT_DMA) || view->scarlett_read_view == (op == MemoryWineScarlettAcquireWbReadPagesV1 || op == MemoryWineScarlettAcquireWcReadPagesV1)))
+         {
+             info.offset = (UINT_PTR)addr - (UINT_PTR)view->base;
+             if (info.size <= view->size - info.offset)
+@@ -6854,6 +6858,11 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+         case MemoryWineScarlettAcquireWcV1:
+         case MemoryWineScarlettMapControl64V1:
+         case MemoryWineScarlettAcquireControl64V1:
++        case MemoryWineScarlettMapWbReadPagesV1:
++        case MemoryWineScarlettMapWcReadPagesV1:
++        case MemoryWineScarlettAcquireWbReadPagesV1:
++        case MemoryWineScarlettAcquireWcReadPagesV1:
++        case MemoryWineScarlettMapWbPagesV1:
+         case MemoryWineScarlettMapPagesV1:
+         case MemoryWineScarlettUnmapPagesV1:
+             return query_scarlett_section( process, addr, info_class, buffer, len, res_len );
+diff --git a/include/winternl.h b/include/winternl.h
+index 346b84bca4f2f7f0c14a16aa1d9b833d006ce05b..039913265db12a0643ff774acb767e2907cf545b 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2462,6 +2462,11 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+     MemoryWineScarlettCreateV1 = 0x53430001,
+     MemoryWineScarlettAcquireV1 = 0x53430002,
+     MemoryWineScarlettCreateSpanV1 = 0x53430003,
++    MemoryWineScarlettMapWbReadPagesV1 = 0x5343000e,
++    MemoryWineScarlettMapWcReadPagesV1 = 0x5343000f,
++    MemoryWineScarlettAcquireWbReadPagesV1 = 0x53430010,
++    MemoryWineScarlettAcquireWcReadPagesV1 = 0x53430011,
++    MemoryWineScarlettMapWbPagesV1 = 0x5343000d,
+     MemoryWineScarlettMapWbV1 = 0x5343000b,
+     MemoryWineScarlettAcquireWbV1 = 0x5343000c,
+     MemoryWineScarlettMapWcV1 = 0x53430004,

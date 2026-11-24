@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail gets through the four indexed Compute queues, command-list pools, and frame-event registration. It reserves a 185 MiB descriptor arena, allocates 2,960 physical pages and maps the first 752 pages (47 MiB) with write-combining. The next map requests 1,600 pages (100 MiB) with a different CPU cache policy (`0x2004`). It fails with `ERROR_INVALID_ADDRESS`, and the caller stops at `+0x19f4f58`. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail gets through the four indexed Compute queues, command-list pools, and frame-event registration. It reserves a 185 MiB descriptor arena and maps four of its five regions (47, 100, 10 and 1 MiB). The final 27 MiB region requests GPU execute/read access (`0x8404`). `XMemMapPhysicalPages` rejects that request with `ERROR_NOT_SUPPORTED` at `+0x1e867d1`, and the caller stops at `+0x19f4f58`. **No retail frame has been presented.**
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 

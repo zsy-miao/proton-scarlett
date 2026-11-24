@@ -1,0 +1,54 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index c8eed4ca155608133b67a8cbcfbefec8da14d23e..c344053e7a34a073c17a3f8f11dcd2e0cd23ac10 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -2,6 +2,7 @@ LIBRARY d3d12core.dll
+ 
+ EXPORTS
+     ScarlettControlHeapV1
++    ScarlettWbPagesHeapV1
+     ScarlettWbHeapV1
+     ScarlettWcHeapV1
+     D3D12GetInterface
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 6302d0a4391c80648d0a03ca09a51c64a3a57bd0..a2e14f67517fb911456f1d2bca1782b432177a2f 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7848,7 +7848,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
+ 
+ #ifdef _WIN32
+ /* Private x64 ABI: the D3DKMT handle retains the allocation independently of this heap. */
+-static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HANDLE input, HANDLE *output, ID3D12Heap **result, bool control, bool wb)
++static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HANDLE input, HANDLE *output, ID3D12Heap **result, bool control, bool wb, bool pages)
+ {
+     VkMemoryGetWin32HandleInfoKHR get = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
+     VkImportMemoryWin32HandleInfoKHR imp = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+@@ -7883,7 +7883,7 @@ static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HAND
+         else return DXGI_ERROR_UNSUPPORTED;
+         if (wb) {
+             if (wc_type == 3) return E_NOINTERFACE; /* qualified NVIDIA system-section path */
+-            if (size < 0x23300000 || size > 0x49400000) return DXGI_ERROR_UNSUPPORTED;
++            if (pages ? (size != 0x6400000 && size != 0xa00000) : (size < 0x23300000 || size > 0x49400000)) return DXGI_ERROR_UNSUPPORTED;
+             wc_type = 5;
+         }
+         if (device->memory_properties.memoryTypeCount <= wc_type || device->memory_properties.memoryTypes[wc_type].propertyFlags !=
+@@ -7913,14 +7913,16 @@ static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HAND
+ }
+ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
+ {
+-    return scarlett_create_heap(d, n, in, out, h, false, false);
++    return scarlett_create_heap(d, n, in, out, h, false, false, false);
+ }
+ HRESULT WINAPI ScarlettControlHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
+ {
+-    return scarlett_create_heap(d, n, in, out, h, true, false);
++    return scarlett_create_heap(d, n, in, out, h, true, false, false);
+ }
+ HRESULT WINAPI ScarlettWbHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
+-{ return scarlett_create_heap(d,n,in,out,h,false,true); }
++{ return scarlett_create_heap(d,n,in,out,h,false,true,false); }
++HRESULT WINAPI ScarlettWbPagesHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
++{ return scarlett_create_heap(d,n,in,out,h,false,true,true); }
+ #endif
+ 
+ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromFileMapping(d3d12_device_iface *iface,

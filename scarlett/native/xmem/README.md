@@ -32,41 +32,33 @@ inaccessible reservations. Wine checks base and size atomically; there is no
 free-and-reallocate window. A replacement can be released directly or restored
 as a placeholder and coalesced. Registered page arenas are excluded.
 
-Replacement itself is VA only. Of these spans, only the `0x2404` (CPU WC,
-GPU RW) replacement accepts `XMemMapPhysicalPages`: the address and size must
-match the entire replacement and all IDs must be consecutive in a single
-`0x280` run. Wine maps that byte range of the exported heap directly at the
-title VA. A mapped subrange can be acquired with `ImportedBuffer::acquire`,
-returning the whole heap and its backing-relative offset. The CPU pointer
-is not a host GPU virtual address. Unmap via XMem before using `VirtualFree`;
-as with the other page arenas do not race raw VA edits with map/unmap.
+`XMemAllocatePhysicalPages(0x280)` at `1e866e4` publishes one run of stable
+IDs. For the observed 2,960-page layout, when all five contiguous reservations
+are present it creates five dedicated heaps before returning any ID. Each
+ID names the same page for the lifetime of the run. Maps may not cross a heap
+boundary or change its cache policy. This special case does not change the
+710 MiB worker run. Unmap all active views with XMem before freeing the run or
+editing the underlying virtual reservations.
 
-`0x1e866e4` allocates all five extent sizes together, in 64 KiB pages. The
-parent's `Yr3SfKt7` log confirms 2,960 IDs (`0xb900000` bytes), the five
-reservations, and the *first* map attempt. Later calls below are static
-caller evidence, not observations that retail reached them:
+| Map RVA | Relative IDs | CPU | Guest GPU use provided |
+|---|---|---|---|
+| `1e86738` (`2404`) | `[0,752)` | WC/RW | buffer read/write |
+| `1e86760` (`2004`) | `[752,2352)` | WB/RW | buffer read/write |
+| `1e86784` (`1004`) | `[2352,2512)` | WB/RW | read source |
+| `1e867ac` (`1404`) | `[2512,2528)` | WC/RW | read source |
+| `1e867d1` (`8404`) | `[2528,2960)` | WC/RW requested | execute/read not supported; map fails |
 
-| Map RVA | VA extent (1-based) | Page IDs relative to first | Protection | Mapping support |
-|---|---:|---|---|---|
-| `1e86738` | 4 | `[0,752)` | `0x2404` | WC CPU and GPU read/write |
-| `1e86760` | 5 | `[752,2352)` | `0x2004` | unsupported: CPU RW without WC; GPU RW |
-| `1e86784` | 1 | `[2352,2512)` | `0x1004` | unsupported: CPU RW without WC; GPU read-only |
-| `1e867ac` | 2 | `[2512,2528)` | `0x1404` | unsupported: CPU WC; GPU read-only |
-| `1e867d1` | 3 | `[2528,2960)` | `0x8404` | unsupported: CPU WC; GPU execute/read |
-
-The slices are disjoint, not five aliases of the same pages. The current
-`PageRun` owns **one** CPU-WC graphics allocation. Mapping part of its DMA-BUF
-with the same ABI cannot make that part CPU cached. Conversely the separate WB
-allocator does not give a WB view of existing WC pages. Supporting the later
-maps requires cache-compatible backing for the distinct IDs and a GPU binding
-path respecting the requested access. Never create an independent CPU copy.
-See the [GDK physical-page mapping rules](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages).
-
-`test-descriptor-pages.cpp` (build like `test_wc_pages.cpp`) recreates the
-actual extent sizes, tests the unsupported maps using real IDs, aliases the last
-page through a second VA, and checks a copy queue's fenced round trip through
-the last word of the mapped extent. It also checks a nonzero backing offset,
-map bounds, release, exact VA reuse and GPU resource lifetime.
+`test-descriptor-pages.cpp` builds like `test_wc_pages.cpp`. On RADV it tests
+the actual layout, first four maps, last-word GPU reads and writes permitted by
+the translated operations, rejected writable imports of source-only VAs,
+conflicting aliases, lifetime and teardown. The two smaller dedicated WB heaps
+use `ScarlettWbPagesHeapV1` independently of the existing WB pool size contract.
+Wine's `0x5343000d` maps a WB slice; `0x5343000e/0f` map WB/WC source-only
+views. The ordinary acquire operations refuse the latter. `ImportedReadSpan`
+uses `0x53430010/11` privately and only records bounded source copies. This is
+a restriction of the translation path, not a GPU page-table permission or a
+sandbox against arbitrary native code. CPU access is never made read-only.
+No GPU instruction-fetch path from this backing has been qualified.
 
 The separate 20 MiB CPU allocation at RVA `+0x5ba6c30` saves its result at
 `+0x78cb800` and branches to `+0x5ba6c65` on null. On success, `+0x28b7b09`

@@ -1,5 +1,6 @@
 #include "gpu_buffer.hpp"
 #include <cstdio>
+#include <initializer_list>
 
 extern "C" {
 __declspec(dllimport) BOOL WINAPI XMemAllocatePhysicalPages(ULONGLONG,PULONG_PTR,PULONG_PTR);
@@ -33,9 +34,9 @@ int main()
     ids[fourth-1]++;
     CHECK(XMemMapPhysicalPages(at[3],fourth,ids)==at[3]);
     CHECK(!XMemFreePhysicalPages(n,ids) && GetLastError()==ERROR_BUSY);
-    CHECK(!XMemMapPhysicalPages(at[4],counts[4],ids+fourth));
-    CHECK(!XMemMapPhysicalPages(at[0],counts[0],ids+2352));
-    CHECK(!XMemMapPhysicalPages(at[1],counts[1],ids+2512));
+    CHECK(XMemMapPhysicalPages(at[4],counts[4],ids+fourth)==at[4]);
+    CHECK(XMemMapPhysicalPages(at[0],counts[0],ids+2352)==at[0]);
+    CHECK(XMemMapPhysicalPages(at[1],counts[1],ids+2512)==at[1]);
     CHECK(!XMemMapPhysicalPages(at[2],counts[2],ids+2528));
     MEMORY_BASIC_INFORMATION m;
     CHECK(VirtualQuery(at[3],&m,sizeof m) && m.RegionSize==fourth*pg &&
@@ -52,7 +53,7 @@ int main()
     ImportedBuffer held;
     SIZE_T offset;
     HR(held.acquire(d,(const void *)last,4,&offset));
-    CHECK(offset==fourth*pg-4 && held.resource()->GetDesc().Width==n*pg);
+    CHECK(offset==fourth*pg-4 && held.resource()->GetDesc().Width==fourth*pg);
     scarlett_section_info q;
     CHECK(FAILED(scarlett_query_section(0x53430005,(const void *)last,5,&q)));
     D3D12_COMMAND_QUEUE_DESC qd={};
@@ -92,17 +93,42 @@ int main()
     HR(queue->Signal(fence,2));
     HR(fence->SetEventOnCompletion(2,event));
     CHECK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0 && *last==0x839ab7c1 && *aliasLast==*last);
+    // GPU reads from both restricted views; both directions on WB/RW. Verify independently of resource->Map().
+    ImportedBuffer wb;
+    auto wbLast=(DWORD *)(at[4]+counts[4]*pg-4);
+    HR(wb.acquire(d,wbLast,4,&offset));
+    CHECK(offset==counts[4]*pg-4 && wb.resource()->GetDesc().Width==counts[4]*pg);
+    D3D12_HEAP_PROPERTIES wbProps; D3D12_HEAP_FLAGS wf;
+    HR(wb.resource()->GetHeapProperties(&wbProps,&wf));
+    CHECK(wbProps.CPUPageProperty==D3D12_CPU_PAGE_PROPERTY_WRITE_BACK);
+    auto out=(volatile DWORD *)at[4];
+    auto aLast=(DWORD *)(at[0]+counts[0]*pg-4), bLast=(DWORD *)(at[1]+counts[1]*pg-4);
+    ImportedReadSpan ra,rb;
+    HR(ra.acquire(d,aLast,4)); HR(rb.acquire(d,bLast,4));
+    for (unsigned i: {0u,1u,4u}) {
+        CHECK(VirtualQuery(at[i],&m,sizeof m) && m.RegionSize==counts[i]*pg &&
+            m.Protect==(DWORD)(PAGE_READWRITE|(prot[i]&PAGE_WRITECOMBINE)));
+        if (i!=4) { ImportedBuffer denied; SIZE_T o; CHECK(FAILED(denied.acquire(d,at[i],4,&o))); }
+    }
+    *aLast=0xb5f30001; *bLast=0xb5f30002; *wbLast=0xb5f30003; MemoryBarrier();
+    HR(alloc->Reset()); HR(list->Reset(alloc,nullptr));
+    HR(ra.copy_to(list,tmp,0)); HR(rb.copy_to(list,tmp,4));
+    list->CopyBufferRegion(tmp,8,wb.resource(),offset,4);
+    HR(list->Close()); queue->ExecuteCommandLists(1,batch); HR(queue->Signal(fence,3));
+    HR(fence->SetEventOnCompletion(3,event)); CHECK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0);
+    HR(alloc->Reset()); HR(list->Reset(alloc,nullptr));
+    list->CopyBufferRegion(wb.resource(),0,tmp,0,12);
+    HR(list->Close()); queue->ExecuteCommandLists(1,batch); HR(queue->Signal(fence,4));
+    HR(fence->SetEventOnCompletion(4,event)); CHECK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0);
+    CHECK(out[0]==*aLast && out[1]==*bLast && out[2]==*wbLast);
+    CHECK(XMemMapPhysicalPages(alias,1,nullptr)==alias);
+    CHECK(!XMemMapPhysicalPages(alias,1,ids+fourth)); // WC alias of a WB ID denied
+    CHECK(!XMemMapPhysicalPages(alias,1,ids+2512)); // cannot get RW alias via this worker arena
     CHECK(XMemMapPhysicalPages(at[3],fourth,nullptr)==at[3]);
-    CHECK(FAILED(scarlett_query_section(0x53430005,(const void *)last,4,&q)));
-    CHECK(XMemMapPhysicalPages(at[3],fourth,ids+n-fourth)==at[3]);
-    ImportedBuffer tail;
-    HR(tail.acquire(d,(const void *)last,4,&offset));
-    CHECK(offset==n*pg-4);
-    *last=12345;
-    MemoryBarrier();
-    CHECK(*(volatile DWORD *)((BYTE *)tail.cpu()+offset)==12345 && *aliasLast==0x839ab7c1);
-    CHECK(XMemMapPhysicalPages(at[3],fourth,nullptr)==at[3]);
-    CHECK(XMemMapPhysicalPages(alias,1,nullptr)==alias && VirtualFree(alias,0,MEM_RELEASE));
+    CHECK(!XMemMapPhysicalPages(at[3],fourth,ids+fourth)); // no WC map covering WB IDs
+    CHECK(XMemMapPhysicalPages(at[3],fourth,ids)==at[3] && *last==0x839ab7c1);
+    for (unsigned i: {3u,4u,0u,1u}) CHECK(XMemMapPhysicalPages(at[i],counts[i],nullptr)==at[i]);
+    CHECK(VirtualFree(alias,0,MEM_RELEASE));
     for (auto a:at) CHECK(VirtualFree(a,0,MEM_RELEASE));
     CHECK(VirtualAlloc(at[3],fourth*pg,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==at[3]);
     *last=999;
@@ -112,8 +138,8 @@ int main()
     CHECK(!XMemMapPhysicalPages(at[3],fourth,ids)); /* same base, size and MBI; old policy expired */
     CHECK(XMemVirtualAlloc(at[3],fourth*pg,0x20406000,0x27,0x2004)==at[3]);
     CHECK(!XMemMapPhysicalPages(at[3],fourth,ids) && VirtualFree(at[3],0,MEM_RELEASE));
-    CHECK(XMemFreePhysicalPages(n,ids) && *(volatile DWORD *)((BYTE *)tail.cpu()+offset)==12345);
+    CHECK(XMemFreePhysicalPages(n,ids) && *(volatile DWORD *)((BYTE *)wb.cpu()+offset)==0xb5f30003);
     CloseHandle(event);
     tmp->Release(); fence->Release(); list->Release(); alloc->Release(); queue->Release(); d->Release();
-    puts("PASS descriptor physical: WC extent, second VA alias, last-word CPU->GPU->title fenced copies; backing offset, reuse, map policy and lifetime");
+    puts("PASS actual 2960 IDs: WC/RW, WB/RW, WB/source and WC/source, disjoint policies, fenced GPU copies, RX rejected, unmap/reuse/free");
 }

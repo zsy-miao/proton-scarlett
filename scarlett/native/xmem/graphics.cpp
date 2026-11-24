@@ -17,9 +17,9 @@ static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE
             hr = probe.acquire(device, base, size, &offset);
         } else {
             HANDLE h = nullptr;
-            hr = probe.wc(device,size,nullptr,&h,control,wb);
+            hr = probe.wc(device,size,nullptr,&h,control,wb,wc_backing && wb);
             ImportedBuffer rebound;
-            if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr,control,wb);
+            if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr,control,wb,wc_backing && wb);
             scarlett_section_info info;
             if (SUCCEEDED(hr) && wc_backing) {
                 *wc_backing = h;
@@ -44,18 +44,21 @@ static void set_graphics_error(HRESULT hr)
     SetLastError(error);
 }
 
-extern "C" BOOL xmem_wc_slot(void *addr, SIZE_T size, HANDLE backing, SIZE_T offset)
+extern "C" BOOL xmem_wc_slot(void *addr, SIZE_T size, HANDLE backing, SIZE_T offset, DWORD policy)
 {
     scarlett_section_info info = {size, nullptr, 0, offset, backing};
-    HRESULT hr = scarlett_section_call(backing ? 0x53430006 : 0x53430007, addr, &info);
+    ULONG op = policy == 0x2004 ? 0x5343000d : policy == 0x1004 ? 0x5343000e :
+               policy == 0x1404 ? 0x5343000f : 0x53430006;
+    if (backing && policy == 0x8404) { SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+    HRESULT hr = scarlett_section_call(backing ? op : 0x53430007, addr, &info);
     if (FAILED(hr)) set_graphics_error(hr);
     return SUCCEEDED(hr);
 }
 
-extern "C" HANDLE xmem_wc_backing(SIZE_T size)
+extern "C" HANDLE xmem_page_backing(SIZE_T size, BOOL wb)
 {
     HANDLE h = nullptr;
-    HRESULT hr = validate_import(nullptr, size, nullptr, &h);
+    HRESULT hr = validate_import(nullptr, size, nullptr, &h, false, wb);
     if (FAILED(hr)) set_graphics_error(hr);
     return h;
 }
