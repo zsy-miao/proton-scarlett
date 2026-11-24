@@ -12,10 +12,10 @@ struct desc_heap {
     ID3D12DescriptorHeap *host, *tail;
     SIZE_T start;
     UINT count, stride, host_stride;
-    BOOL visible;
+    BOOL visible,rtv;
     struct xbox_device *owner;
     struct desc_heap *next;
-    struct descriptor_record *records; /* type 0 only */
+    struct descriptor_record *records; /* type 0 and RTV */
     HMODULE xmem;
     void (WINAPI *xfree)(void *,UINT64);
 };
@@ -41,7 +41,7 @@ static ULONG WINAPI desc_release(IUnknown *i)
         struct xbox_device *owner = h->owner;
         if (owner) {
             AcquireSRWLockExclusive(&owner->descriptor_lock);
-            struct desc_heap **p = &owner->heaps;
+            struct desc_heap **p = h->rtv ? &owner->rtv_heaps : &owner->heaps;
             while (*p != h) p = &(*p)->next;
             *p = h->next;
             ReleaseSRWLockExclusive(&owner->descriptor_lock);
@@ -128,10 +128,13 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
     h->host_stride = ID3D12Device_GetDescriptorHandleIncrementSize(host,d.Type);
     h->visible = d.Flags == 1;
     SIZE_T size = (SIZE_T)h->stride * h->count;
-    if (!d.Type) {
+    h->rtv = d.Type==D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    if (!d.Type || h->rtv) {
         if (!(h->records = HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(*h->records)*h->count))) {
             desc_release(&h->iface); return E_OUTOFMEMORY;
         }
+    }
+    if (!d.Type) {
         void *(WINAPI *alloc)(SIZE_T,UINT64) = NULL;
         if (GetModuleHandleExW(0,L"xmem.dll",&h->xmem)) {
             alloc = (void *)GetProcAddress(h->xmem,"XMemAlloc");
@@ -146,8 +149,9 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
         h->owner = CONTAINING_RECORD(device,struct xbox_device,iface);
         IUnknown_AddRef(device);
         AcquireSRWLockExclusive(&h->owner->descriptor_lock);
-        h->next = h->owner->heaps;
-        h->owner->heaps = h;
+        struct desc_heap **head=h->rtv ? &h->owner->rtv_heaps : &h->owner->heaps;
+        h->next = *head;
+        *head = h;
         ReleaseSRWLockExclusive(&h->owner->descriptor_lock);
     }
     *out = &h->iface;

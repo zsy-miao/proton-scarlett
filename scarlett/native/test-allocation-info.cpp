@@ -4,7 +4,7 @@
 using Microsoft::WRL::ComPtr;
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_color_allocation_info(IUnknown *,UINT,UINT,const void *,D3D12_RESOURCE_ALLOCATION_INFO *);
-extern "C" HRESULT xs_color_rtv(IUnknown *,SIZE_T,ID3D12DescriptorHeap *,ID3D12Resource **);
+extern "C" HRESULT xs_resolve_color_rtv(IUnknown *,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE *,ID3D12Resource **);
 extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
 extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
 #define SLOT(o,n,T) ((T)((*reinterpret_cast<void***>(o))[n/8]))
@@ -84,12 +84,29 @@ int main()
     sw[5]=2; CK(FAILED(xs_write_view(dev.Get(),0x90,surface,sw,sampleSlot))); sw[5]=1;
     CK(FAILED(xs_write_view(dev.Get(),0x90,(IUnknown *)1,sw,sampleSlot)));
     SLOT(dev.Get(),0x90,SRV)(dev.Get(),surface,sw,sampleSlot);
+    DWORD rtvHeapDesc[]={2,4096,0,1},rw[]={28,4,0,0,0,0};
+    ComPtr<IUnknown> views; HR(SLOT(dev.Get(),0x70,Heap)(dev.Get(),rtvHeapDesc,IID_ID3D12DescriptorHeap,(void **)views.GetAddressOf()));
+    SIZE_T dest=SLOT(views.Get(),0x48,Start)(views.Get());
+    CK(dest && !SLOT(views.Get(),0x50,Start)(views.Get()));
+    CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,slot))); // shader heap
+    CK(FAILED(xs_write_view(dev.Get(),0x90,surface,sw,dest))); // RTV heap
+    CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest+1)));
+    CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest+4096*32)));
+    CK(FAILED(xs_write_view(dev.Get(),0xa0,(IUnknown *)1,rw,dest)));
+    rw[2]=1; CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest))); rw[2]=0;
+    rw[3]=1; CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest))); rw[3]=0;
+    *(UINT64 *)(dest+16)=0xa0cafe;
+    auto writer=SLOT(dev.Get(),0xa0,SRV);
+    writer(dev.Get(),other,rw,dest); writer(dev.Get(),other,rw,dest+4095*32);
+    writer(dev.Get(),surface,rw,dest); // overwrite; the last slot still refers to other
+    CK(*(UINT64 *)(dest+16)==0xa0cafe);
     CK(other->Release()==0 && surface->Release()==0);
-    D3D12_DESCRIPTOR_HEAP_DESC vd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
-    ComPtr<ID3D12DescriptorHeap> views; HR(d->CreateDescriptorHeap(&vd,IID_PPV_ARGS(&views)));
-    auto rtv=views->GetCPUDescriptorHandleForHeapStart();
-    *(UINT64 *)slot^=1; CK(FAILED(xs_color_rtv(heap.Get(),slot,views.Get(),rt.GetAddressOf())) && !rt); *(UINT64 *)slot^=1;
-    HR(xs_color_rtv(heap.Get(),slot,views.Get(),rt.GetAddressOf()));
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv={},lastRTV={};
+    *(UINT64 *)dest^=1; CK(FAILED(xs_resolve_color_rtv(views.Get(),dest,&rtv,rt.GetAddressOf())) && !rt && !rtv.ptr); *(UINT64 *)dest^=1;
+    HR(xs_resolve_color_rtv(views.Get(),dest,&rtv,rt.GetAddressOf()));
+    ComPtr<ID3D12Resource> otherRT; HR(xs_resolve_color_rtv(views.Get(),dest+4095*32,&lastRTV,otherRT.GetAddressOf()));
+    CK(rt.Get()!=otherRT.Get() && rtv.ptr!=dest && lastRTV.ptr-rtv.ptr==4095ull*d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
+    otherRT.Reset();
     auto actual=rt->GetDesc(); CK(actual.Width==3840 && actual.Height==2160 && actual.Format==tex.Format && actual.Flags==tex.Flags);
     ID3D12DescriptorHeap *bank; D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     HR(xs_resolve_view(heap.Get(),slot,0x98,&bank,&gpu));
@@ -161,6 +178,7 @@ int main()
     HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff); rb->Unmap(0,nullptr);
     heap.Reset(); FreeLibrary(xm);
     puts("PASS public +90 color SRV: checked slot, two live primary identities, point-sampled green/red after both wrappers and UAV view released");
+    puts("PASS public +a0: type-2 heap, overwritten slot and independent final slot retained two distinct +3f8 textures; real RTV clear/readback after title Release");
     std::printf("PASS +c8 size=%llu alignment=%llu; +3f8 committed identity -> +98 UAV -> checked RTV; fenced last pixels ff00ff00 ff0000ff after wrapper release\n",
             (unsigned long long)ref.SizeInBytes,(unsigned long long)ref.Alignment);
 }

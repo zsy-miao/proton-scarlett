@@ -44,6 +44,7 @@ struct xbox_device {
     BYTE inline_descriptor_mode;
     SRWLOCK descriptor_lock;
     struct desc_heap *heaps;
+    struct desc_heap *rtv_heaps;
     struct xs_buffer_binding *buffers;
     struct color_resource *colors; /* weak registry under descriptor_lock */
 #ifdef SCARLETT_STAGED_PLACED
@@ -372,7 +373,8 @@ struct bootstrap_vtbl {
     __typeof__(&write_cbv) cbv;
     __typeof__(&write_srv) srv;
     __typeof__(&write_uav) uav;
-    xs_stop_fn gapa0[5];
+    __typeof__(&write_rtv) rtv;
+    xs_stop_fn gapa8[4];
     __typeof__(&bootstrap_allocation_info) allocation_info;
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
@@ -413,6 +415,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
+               offsetof(struct bootstrap_vtbl, rtv) == 0xa0 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
                offsetof(struct bootstrap_vtbl, signature) == 0x148 &&
@@ -455,7 +458,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
     .descriptors = descriptor_heap, .stride = descriptor_stride, .gap80 = xs_stop,
-    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .gapa0 = { [0 ... 4] = xs_stop },
+    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 3] = xs_stop },
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,

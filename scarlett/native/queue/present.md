@@ -95,6 +95,13 @@ texture constructor. The call requested a 3840×2160 RGBA8 texture with
 black clear, and `IID_ID3D12Resource`. Both ring pointer arrays already
 existed; their allocation alone does not identify a rendered image.
 
+With the primary SRV and RTV writers installed, retail returned two distinct
+`+0x3f8` resource identities. At the post-loop breakpoint `247af2d`, the
+iteration counter was 2. The title evaluated `[rsp+78] - [rsp+70] +
+[image+75e6ff0]` as `0x4000000 - 0 + 0`, above its unsigned limit of
+`0x1fffff`. The observed value alone does not establish what the title
+counts or whether it should equal host texture allocation bytes.
+
 `24784d5` registers ANSI `sgaWindowClass` (class name `677b672`; window
 procedure `247a660` tail-calls `DefWindowProcA`). `247853a` calls
 `CreateWindowExA` with that class, title `a9437b8`, style `00cf0000`,

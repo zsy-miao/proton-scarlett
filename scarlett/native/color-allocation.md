@@ -75,3 +75,21 @@ retires that work. It then removes the UAV descriptor and direct resource
 reference. The checked SRV resolves to its own bank; a point-sampling
 dispatch reads back the green and red texels with only the SRV retaining
 the source.
+
+### Primary texture RTV (`+0xa0`)
+
+`cc297a`–`cc2981` save a title RTV slot in the view wrapper. `cc29d8`
+loads `texture[+0x20]`; `cc29e4` calls `void(This, resource, desc, slot)`.
+The trace `scarlett-run.mkufaIhT/logs/steam-999001.log:3833,3975`
+matches that pointer to the `+0x3f8` result, with `{28,4,0,0}` in the
+active fields: `R8G8B8A8_UNORM`, Texture2D, mip 0, plane 0. The callee
+returns without further inline edits to the descriptor.
+
+The writer checks the original resource identity and a live slot in the
+device's type-2 heap. The 32-byte title slot contains the usual 16-byte
+tag; its private record retains the texture. `xs_resolve_color_rtv` checks
+the tag and returns the actual host CPU descriptor plus an owned texture
+reference. Hold the title heap and texture and synchronize rewrites through
+queue retirement. `test-allocation-info.cpp` writes two distinct colors'
+RTVs through `+0xa0`, replaces one slot, and consumes the resolved RTV
+with a real GPU clear followed by readback and SRV sampling.
