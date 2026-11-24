@@ -40,9 +40,15 @@ struct xbox_device {
     LONG refs;
     ID3D12Device *host;
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+    BYTE inline_descriptor_mode;
     struct frame_clock clock;
 #endif
 };
+
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+_Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline descriptor flag");
+#include "descriptor_heap.h"
+#endif
 
 /* Private host-side operations. No console method returns a host interface. */
 static inline HRESULT device_heap_properties(D3D12_HEAP_PROPERTIES *out,
@@ -230,7 +236,10 @@ struct bootstrap_vtbl {
     xs_stop_fn gap18[5];
     __typeof__(&bootstrap_queue) queue;
     __typeof__(&bootstrap_allocator) allocator;
-    xs_stop_fn gap50[16];
+    xs_stop_fn gap50[4];
+    __typeof__(&descriptor_heap) descriptors;
+    __typeof__(&descriptor_stride) stride;
+    xs_stop_fn gap80[10];
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
     __typeof__(&bootstrap_fence) fence;
@@ -247,6 +256,8 @@ struct bootstrap_vtbl {
     xs_stop_fn gap288;
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
+               offsetof(struct bootstrap_vtbl, descriptors) == 0x70 &&
+               offsetof(struct bootstrap_vtbl, stride) == 0x78 &&
                offsetof(struct bootstrap_vtbl, frame_interval) == 0x270 &&
                offsetof(struct bootstrap_vtbl, frame_event) == 0x278 &&
                offsetof(struct bootstrap_vtbl, frame_wait) == 0x280 &&
@@ -289,20 +300,11 @@ static HRESULT WINAPI device_query(IUnknown *iface, REFIID iid, void **out)
 
 static const IUnknownVtbl device_vtbl = { device_query, device_addref, device_release };
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
-static UINT WINAPI bootstrap_missing_stride(IUnknown *iface, UINT type)
-{
-    char msg[96];
-    (void)iface;
-    snprintf(msg, sizeof(msg), "scarlett: GetDescriptorHandleIncrementSize(type=%u) unsupported\n", type);
-    OutputDebugStringA(msg);
-    xs_stop();
-}
-
 static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
-    .allocator = bootstrap_allocator, .gap50 = { [0 ... 4] = xs_stop,
-        [5] = (xs_stop_fn)bootstrap_missing_stride, [6 ... 15] = xs_stop }, .heap = bootstrap_heap,
+    .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
+    .descriptors = descriptor_heap, .stride = descriptor_stride, .gap80 = { [0 ... 9] = xs_stop }, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,

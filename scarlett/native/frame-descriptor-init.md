@@ -61,3 +61,61 @@ grep 'PASS frame clock' "$w"/scarlett-run.*/logs/steam-999001.log
 5. `1cf32fa`: `HRESULT CreateDescriptorHeap(This, &{UINT type,count,flags,nodeMask=1}, REFIID, void **out)`, exact `IID_ID3D12DescriptorHeap = 8efb471d-616c-4f49-90f7-127bb763fa51` at `61e0628`. The backing is **not** a fifth argument or a field of that 16-byte descriptor. For a supplied address the caller installs/removes a callback around the factory; `5eb2730` returns that address on `(selector & 0x3fff)==4` and exact `count * increment` bytes, otherwise chains to the next callback.
 6. Heap `+0x48` returns CPU start in RAX without a hidden return pointer. `1cf3367` compares it to the supplied address and traps on mismatch. The wrapper saves start, end and stride at `+0x20/+0x28/+0x30`; flag bit 0 enables heap `+0x50` (GPU start, also RAX). It saves GPU-minus-CPU at `+0x38`, or `0xbadadd0000000000` for non-visible heaps.
 7. `55ac280` reads a free-list link **from the descriptor slot itself** using the reported stride. `164efb` calls device `+0x90` to create a view, and `247924f` reads device-object byte `+0x18`, either writing 16 bytes directly or calling `+0x88`. At the base revision the wrapper ends at `+0x18`; the read is beyond the object. A desktop CPU handle is opaque and may not even be a writable pointer. A working implementation needs the title's arena addresses and a descriptor representation translated at use; a host increment or heap pointer alone satisfies neither contract.
+
+### Heap creation milestone
+
+The EXE's `__XMemAllocationHooks__` is an `(alloc,free)` pair at `6844380`.
+Allocation at `4deb430` selects `table[attributes[23:16]]` (`6843370`);
+the placement installer writes the list head at `6843770`, hence allocator ID
+`0x80`. It snapshots applicable callbacks for the current thread, then invokes
+`callback(size,attributes,context,next)` at `4deb4eb`. The corresponding
+free dispatcher uses table `6843b80`, head `6843f80`. At `248b525` the
+caller installs a free interceptor around final release. `248b550` swallows
+the exact placement pointer, otherwise tail-calls the next callback. Thus
+type 0 uses `XMemAlloc(bytes,0x800004)` synchronously and `XMemFree` with
+the same attributes on final release. No need to inspect the EXE's TLS or
+call a hard-coded title address. The temporary callback context is never
+retained. A title that hands this heap to a deferred GPU consumer must still
+keep the arena alive and release the final COM reference under its free hook.
+
+The other four shapes own private committed title memory. Each wrapper owns
+a real host heap with the requested count and visibility. The shadow ABI uses
+32/16/32/32-byte slots for types 0–3: these are adapter-selected increments,
+not recovered Xbox hardware sizes. The title computes offsets from the
+returned increment at `156c251`; it stores a DWORD link in slot byte zero
+(`555e3b1`, sampler `1f76f88`, RTV `1f77023`), and writes qwords at byte
+zero and eight (`2479269`, `247926c`). The cache-flush loop at `4ecc83b`
+uses the queried stride, rounding down to the cache line. These establish
+some accesses but not a complete descriptor encoding. Type 4 is queried
+then discarded (`2478e9a`); neither this site nor the public [console enum](https://docs.xbox.com/reference/graphics/d3d12/enums/d3d12_descriptor_heap_type_public)
+identifies a fifth usable heap. It gets increment zero and no factory support.
+
+Both returned start handles are in the title address domain; invisible GPU
+start is zero. Given a **live heap reference**, private `xs_descriptor_slot`
+checks alignment, bounds and visibility and scales the index by the actual
+host stride. Only the resulting private handles may be passed to D3D12;
+they are never dereferenced by the title. The bootstrap device's byte at
+`+0x18` is explicitly allocated and zero. Raw bytes remain shadow bytes:
+there is no exposed command-list descriptor-table path, `+0x90` descriptor
+writer or automatic translation of arbitrary hardware records.
+
+`test-descriptor.cpp` models the alloc/free interceptors using a real adjacent
+`xmem.dll`. It creates the five shapes, checks placement and release, writes
+both qwords in the last slot and checks bounds. It renders a red pixel via
+the translated final RTV handle and checks the copied RGBA8 bytes after the
+retirement fence. Both RADV `1002:164e` and RTX 3070 passed. The test uses a
+committed placement region, not the retail arena's separately mapped pages.
+
+From `scarlett/native` (with an installed matching tool):
+
+```sh
+src=$PWD; w=$(mktemp -d); mkdir "$w/game"; cd "$w"
+for f in d3d12_device queue/queue; do
+  x86_64-w64-mingw32-gcc -DSCARLETT_DEVICE_BOOTSTRAP -Os -Wall -Wextra -Werror \
+    -c "$src/$f.c" -o "${f##*/}.o"
+done
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
+  "$src/test-descriptor.cpp" d3d12_device.o queue.o -ld3d12 -o game/game_scarlett_master.exe
+cp "$tool/scarlett/xmem.dll" game/
+SCARLETT_TEST_GPU=radv TMPDIR="$w" "$src/../test-launch-nixos.sh" "$w/game" "$tool"
+```
