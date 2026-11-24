@@ -1,6 +1,7 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
 enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, SRGB_ROW_VIEW=0x236, STRUCT_VIEW=0x237, ATLAS1K_VIEW, ATLAS2K_VIEW, A8_LINE_VIEW, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
 enum { TILE_UINT_SRV=0x400, TILE_UINT_UAV, TILE_RGB_SRV, TILE_R11_SRV, TILE_R11_UAV, TILE_RG_SRV, TILE_RG_UAV,TILE_F_SRV,TILE_F_UAV, TILE_UINT160_SRV,TILE_UINT160_UAV };
+enum { PLACED_RAW32_VIEW=0x500 };
 static BOOL tile_view(UINT kind) { return kind>=TILE_UINT_SRV && kind<=TILE_UINT160_UAV; }
 static UINT array_view_layers(UINT kind)
 {
@@ -25,7 +26,7 @@ struct descriptor_record {
     union { struct {UINT elements,stride;}; UINT_PTR rtv_key; }; /* kind-specific; comparison only */
     ID3D12Resource *resource;
 #ifdef SCARLETT_STAGED_PLACED
-    IUnknown *placed; /* exactly first=0, 174 MiB / 4 RAW dwords */
+    IUnknown *placed; /* Whole arena or a separately tagged bounded subview. */
 #endif
 };
 static void drop_record(struct descriptor_record r)

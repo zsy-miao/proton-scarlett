@@ -935,3 +935,19 @@ traced the two shader groups through misses in both outer caches to the
 same inner root-cache entry. The worker's stream was 688 bytes and had
 three input elements. Its complete shader hashes and fixed state were
 not recovered in that run.
+
+### Composite raw buffer view
+
+The writer accepts the measured 128-byte raw view on the original placed
+allocation. It checks the view's format, range and alignment; DWORDs 3,
+9 and 14 are not initialized by this caller. With nonzero test values in
+all three fields, both GPUs read all 32 late-written words through the
+view, got zero for the next 32 reads and retained the original backing
+after address reuse. The reported view size was 128 bytes.
+
+On the identical ordinary stage both GPUs passed device `+230`. Their first
+process and recorder stop was the composite table bind, list `+120`, return
+`+32206`, under `+1263f0`. Each issued tokens 1 and 2 and presented only
+token 1 (display count 0→1). Neither capture showed a recognizable image.
+The prior failure's operands weren't captured, so the earlier stop cannot
+be attributed to a particular uninitialized word.

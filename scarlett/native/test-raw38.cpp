@@ -40,7 +40,16 @@ constexpr SIZE_T offset=TEST_WC_OFFSET;
 constexpr UINT width=160,results=65;
 constexpr SIZE_T offset=0x1b80;
 #endif
+#ifdef TEST_RAW32
+#include "test-raw32-setup.hpp"
+#endif
 int main(){
+#ifdef TEST_RAW32
+    Raw32Setup raw;
+    auto &d=raw.d;
+    ID3D12DescriptorHeap *bank=raw.visible.Get();
+    auto gh=bank->GetGPUDescriptorHandleForHeapStart();
+#else
     auto alloc=(Alloc)(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc"); CK(alloc);
     BYTE *b=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404); CK(b);
     DWORD desc[]={1,0,0,0,width,0,1,0x10001,0,1,0,1,0};
@@ -128,6 +137,7 @@ int main(){
 #else
     HR(xs_resolve_view(dst.Get(),to,0x90,&bank,&gh));
 #endif
+#endif
     D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};
     D3D12_ROOT_PARAMETER p[2]={};p[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p[0].DescriptorTable={1,&range};
     p[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;
@@ -178,6 +188,9 @@ int main(){
     HR(l->Close());
     HR(q->Wait(gate.Get(),1));ID3D12CommandList *batch[]={l.Get()};q->ExecuteCommandLists(1,batch);HR(q->Signal(done.Get(),1));
     HR(done->SetEventOnCompletion(1,ev));CK(WaitForSingleObject(ev,50)==WAIT_TIMEOUT);
+#ifdef TEST_RAW32
+    raw.replace();
+#else
     DWORD *data=(DWORD*)(b+offset);for(UINT i=0;i<results;i++) data[i]=0x11002347+i*73;
 #ifdef STRIDE
     // Poison both sides of the range; OOB reads must not see the adjacent element.
@@ -195,6 +208,7 @@ int main(){
     BYTE *second=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404); CK(second && second+offset!=reuse+(offset&65535));
     memset(second+offset,0x6b,width); address(second+offset);
     HR(xs_write_address_srv(guest.Get(),desc,w,to+32));
+#endif
 #ifdef STRIDE
     HR(xs_write_view(guest.Get(),0x90,nullptr,nullview,to)); dst.Reset();guest.Reset();
 #ifdef TEST_NATIVE_POOL
@@ -205,6 +219,8 @@ int main(){
     DWORD *map;HR(read->Map(0,nullptr,(void**)&map));for(UINT i=0;i<results;i++){
 #ifdef STRIDE
         UINT expected=i<width/4?0x11002347+i*73:i<results-2?0:i==results-2?ELEMENTS:STRIDE;
+#elif defined(TEST_RAW32)
+        UINT expected=i==64 ? 128 : i<32 ? 0x11002347+i*73 : 0;
 #else
         UINT expected=i==64 ? 152 : i<38 ? 0x11002347+i*73 : 0;
 #endif
@@ -215,6 +231,10 @@ int main(){
     printf("PASS original 16-byte prefix, %u-byte payload and %u-byte poisoned suffix after exact VA reuse; cached descriptors released before signal\n",width,STRIDE);
 #endif
     read->Unmap(0,nullptr);
+#ifdef TEST_RAW32
+    HR(d->GetDeviceRemovedReason());CloseHandle(ev);
+    puts("PASS placed RAW32: 32 late-written words, 32 out-of-view zeros, size 128, original backing after VA reuse");
+#else
     for(UINT i=0;i<65536;i++) CK(reuse[i]==0xad);
     CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(second,0,MEM_RELEASE));CloseHandle(ev); HR(d->GetDeviceRemovedReason());
 #ifdef STRIDE
@@ -222,5 +242,6 @@ int main(){
     printf("PASS WC offset=%zx: %u original words, %u OOB zeros, count=%u stride=%u; late write, slot overwrite, cache rotation, exact VA reuse, heap release before fence\n",offset,width/4,STRIDE/4,ELEMENTS,STRIDE);
 #else
     puts("PASS 38 original DWORDs, 26 OOB zeros including both padding DWORDs; size=152, source overwrite, tag, VA reuse and guard checks");
+#endif
 #endif
 }

@@ -100,6 +100,26 @@ static bool on_device(ID3D12DeviceChild *child, IUnknown *owner)
     return same;
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedRaw32V1(const XsPlacedCapture *p,
+        UINT64 offset,ID3D12DescriptorHeap *heap,UINT index)
+{
+    if (!p || !heap || offset!=0x3de20 || !on_device(heap,p->owner)) return E_INVALIDARG;
+    auto hd=heap->GetDesc();
+    if (hd.Type!=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV || hd.Flags || index>=hd.NumDescriptors) return E_INVALIDARG;
+    ID3D12Device *d;
+    HRESULT hr=heap->GetDevice(IID_PPV_ARGS(&d));
+    if (FAILED(hr)) return hr;
+    auto cpu=heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr+=SIZE_T(index)*d->GetDescriptorHandleIncrementSize(hd.Type);
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv={};
+    srv.Format=DXGI_FORMAT_R32_TYPELESS;srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Buffer={offset/4,32,0,D3D12_BUFFER_SRV_FLAG_RAW};
+    d->CreateShaderResourceView(p->resource(0),&srv,cpu);
+    d->Release();
+    return S_OK;
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedCopyToV1(XsPlacedCapture *p,
         UINT64 at, UINT64 bytes, ID3D12GraphicsCommandList *list, ID3D12Resource *dst,
         UINT64 to, XsPlacedCapture **retained)

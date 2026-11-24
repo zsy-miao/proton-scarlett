@@ -500,6 +500,49 @@ static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,
 
 #include "r8_view.h"
 
+/* shortcut: only this measured subview of the first extent. Its record kind
+ * must not resolve as a whole-arena SRV. Validate table copies separately. */
+static HRESULT write_placed_raw32(struct xbox_device *d,const DWORD w[16],SIZE_T dest)
+{
+    /* The writer leaves DWORDs 3, 9 and 14 uninitialized. None is a range field. */
+    const DWORD expected[]={39,1,0x1688,w[3],0,0,32,0,1,w[9],w[10],w[11],0x16,0,w[14],0};
+    if(memcmp(w,expected,sizeof expected))return E_NOTIMPL;
+    UINT64 va;memcpy(&va,w+10,sizeof va);
+    const UINT offset=0x3de20;
+    HRESULT hr=E_INVALIDARG;struct descriptor_record old={0};
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    struct placed_backing *p=NULL;
+    for(struct placed_backing *it=d->placed;it;it=it->next){
+        if(va<it->guest_va || va-it->guest_va!=offset || !it->matches(it->capture,(void*)it->guest_va))continue;
+        if(p)goto done;
+        p=it;
+    }
+    if(!p)goto done;
+    BOOL visible=FALSE;D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    struct descriptor_record *r=address_view_slot(d,dest,&visible,&cpu);
+    if(!r || visible)goto done;
+    __typeof__(&ScarlettPlacedRaw32V1) raw=(void*)GetProcAddress(p->module,"ScarlettPlacedRaw32V1");
+    if(!raw){hr=E_NOTIMPL;goto done;}
+    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
+    ID3D12DescriptorHeap *staging;
+    hr=ID3D12Device_CreateDescriptorHeap(d->host,&hd,&IID_ID3D12DescriptorHeap,(void**)&staging);
+    if(FAILED(hr))goto done;
+    hr=raw(p->capture,offset,staging,0);
+    if(SUCCEEDED(hr)){
+        UINT64 tag[]={++d->descriptor_serial,0x5853444553430000ull|PLACED_RAW32_VIEW};
+        if(!store_slot_tag(dest,tag))hr=E_POINTER;
+        else{
+            D3D12_CPU_DESCRIPTOR_HANDLE src;staging->lpVtbl->GetCPUDescriptorHandleForHeapStart(staging,&src);
+            ID3D12Device_CopyDescriptorsSimple(d->host,1,cpu,src,hd.Type);
+            old=*r;placed_addref(&p->title->iface);
+            *r=(struct descriptor_record){.serial=tag[0],.kind=PLACED_RAW32_VIEW,.offset=offset,.elements=32,.placed=&p->title->iface};
+        }
+    }
+    ID3D12DescriptorHeap_Release(staging);
+done:
+    ReleaseSRWLockExclusive(&d->descriptor_lock);drop_record(old);return hr;
+}
+
 /* 5bdba51..5bdba67: SRV by title VA, not by COM identity or desktop GPU VA. */
 HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *view,SIZE_T dest)
 {
@@ -532,7 +575,10 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment ||
         rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
         rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Layout!=D3D12_TEXTURE_LAYOUT_ROW_MAJOR || rd.Flags ||
-        w[1]!=1 || w[2]!=0x1688 || w[12] || w[13] || w[14] || w[15]) return E_NOTIMPL;
+        w[1]!=1 || w[2]!=0x1688) return E_NOTIMPL;
+    if(rd.Width==128 && w[0]==DXGI_FORMAT_R32_TYPELESS)
+        return write_placed_raw32(CONTAINING_RECORD(device,struct xbox_device,iface),w,dest);
+    if(w[12] || w[13] || w[14] || w[15])return E_NOTIMPL;
     if (w[0]==DXGI_FORMAT_UNKNOWN && w[6] && w[7] && w[7]<=2048 && !(w[7]&3) &&
             rd.Width<=STRUCT_MAX_BYTES && rd.Width==(UINT64)w[6]*w[7])
         return write_wc_address_view(device,STRUCT_VIEW,w,dest);
