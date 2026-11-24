@@ -1,0 +1,41 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d729177f2ee7e6c3a7e23d113e869012eae10c65..b4cfa481f3f95acd1b74cebb5c07de8800c02dc8 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6603,13 +6603,14 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+         goto done;
+     }
+     info.size = ((struct scarlett_section_info *)buffer)->size;
+-    if (info.size && op == MemoryWineScarlettCreateV1)
++    if (info.size && (op == MemoryWineScarlettCreateV1 || op == MemoryWineScarlettCreateSpanV1))
+     {
+         LARGE_INTEGER size;
+         HANDLE section;
+ 
+         size.QuadPart = info.size;
+-        if (size.QuadPart > 0 && !(((UINT_PTR)addr | info.size) & SCARLETT_ALIGN_MASK) &&
++        SIZE_T size_mask = op == MemoryWineScarlettCreateSpanV1 ? granularity_mask : SCARLETT_ALIGN_MASK;
++        if (size.QuadPart > 0 && !((UINT_PTR)addr & SCARLETT_ALIGN_MASK) && !(info.size & size_mask) &&
+             info.size <= (UINT_PTR)user_space_limit && (UINT_PTR)addr <= (UINT_PTR)user_space_limit - info.size)
+         {
+             status = NtCreateSection( &section, SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE,
+@@ -6682,6 +6683,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+ 
+ #ifdef __x86_64__
+         case MemoryWineScarlettCreateV1:
++        case MemoryWineScarlettCreateSpanV1:
+         case MemoryWineScarlettAcquireV1:
+             return query_scarlett_section( process, addr, info_class, buffer, len, res_len );
+ #endif
+diff --git a/include/winternl.h b/include/winternl.h
+index c0bf159ac049f6b38f37b98f33b993bc9f25e383..d43097b913b14786da97063d2704b4543e035551 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2461,6 +2461,7 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+     MemoryWineUnixWow64Funcs,
+     MemoryWineScarlettCreateV1 = 0x53430001,
+     MemoryWineScarlettAcquireV1 = 0x53430002,
++    MemoryWineScarlettCreateSpanV1 = 0x53430003,
+ #endif
+ } MEMORY_INFORMATION_CLASS;
+ 
