@@ -10,6 +10,32 @@ struct xbox_device {
     ID3D12Device *host;
 };
 
+/* Private host-side operations. No console method returns a host interface. */
+static inline HRESULT device_heap_properties(D3D12_HEAP_PROPERTIES *out,
+        struct xbox_device *device, UINT node_mask, D3D12_HEAP_TYPE type)
+{
+    if (!out) return E_POINTER;
+    *out = (D3D12_HEAP_PROPERTIES){0};
+    if (node_mask != 1 || (type != D3D12_HEAP_TYPE_DEFAULT &&
+            type != D3D12_HEAP_TYPE_UPLOAD && type != D3D12_HEAP_TYPE_READBACK))
+        return E_INVALIDARG;
+    /* MinGW's typed host method takes This before the hidden return destination. */
+    device->host->lpVtbl->GetCustomHeapProperties(device->host, out, node_mask, type);
+    return S_OK;
+}
+
+static inline HRESULT device_direct_queue(struct xbox_device *device,
+        const D3D12_COMMAND_QUEUE_DESC *desc, ID3D12CommandQueue **out)
+{
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!desc || desc->Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
+            desc->Priority != D3D12_COMMAND_QUEUE_PRIORITY_NORMAL ||
+            desc->Flags != D3D12_COMMAND_QUEUE_FLAG_NONE || desc->NodeMask != 1)
+        return E_INVALIDARG;
+    return ID3D12Device_CreateCommandQueue(device->host, desc, &IID_ID3D12CommandQueue, (void **)out);
+}
+
 static ULONG WINAPI device_addref(IUnknown *iface)
 {
     struct xbox_device *device = CONTAINING_RECORD(iface, struct xbox_device, iface);

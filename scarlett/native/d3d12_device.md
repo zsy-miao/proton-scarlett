@@ -24,13 +24,38 @@ adapter, missing parameter block, or missing IID at creation returns
   at RVA `0x2478564` the call setup places the parameter block in RDX, IID at
   RVA `0x61e0638` in R8, output address in R9, and zero in RCX. The call at
   RVA `0x24785b7` goes through the `D3D12XboxCreateDevice` import thunk.
-  In the success path, the indirect call at RVA `0x247870d` uses slot `0xd0/8`,
-  with a stack destination in RCX and the object in RDX. The nearby indirect
-  call at RVA `0x2478698` uses offset `0x188`. An IID match or similar C++
-  method spelling would not establish desktop binary compatibility.
 - [Rules for implementing QueryInterface](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
   specify COM identity; [desktop D3D12CreateDevice](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-d3d12createdevice)
   documents the host device singleton per adapter.
+
+## What the initializer consumes
+
+The function at RVA `0x2478440` tests the factory HRESULT at `0x24785c5`.
+On success it copies the result from `0x75df048` to aliases including
+`0x8759d00`. The latter is the device receiver in the calls below. RVAs
+refer to the executable above; `+off` is a **byte** offset in the receiver's
+vtable. The method names are interpretations checked against Microsoft's
+[public D3D12 IDL](https://github.com/microsoft/DirectX-Headers/blob/main/include/directx/d3d12.idl).
+This is a lower bound on initialization, not a complete console interface.
+
+| Call RVA(s) | Receiver and observed behavior |
+|---|---|
+| `0x2478698` | **Device `+0x188`**, conditional on a configuration byte and version comparison. EDX=`0x11f`, R8D=`1`; no return value consumed. Purpose unknown. |
+| `0x247870d`, `0x2478731`, `0x2478758` | **Device `+0xd0`**. RCX points to the same stack destination, RDX is the device, R8D=`1`, R9D=`1,2,3`: fits `GetCustomHeapProperties(nodeMask, DEFAULT/UPLOAD/READBACK)`. The buffer is overwritten before use; this site does **not** prove the console result layout or a required RAX value. |
+| `0x247878a` | **Device `+0x40`**. Descriptor words `(0,0,0,1)` match `D3D12_COMMAND_QUEUE_DESC` (Direct, normal, no flags, node 1). R8 points to the exact `IID_ID3D12CommandQueue`; R9 is the output. Negative HRESULT calls device `+0x10` (Release shape) and returns failure. |
+| `0x24787e2` → `0x5a86180` → `0x1d0b2fa` | The queue setup helper requests a companion **fence from the device** at `+0x120`: initial value `0`, flags `1` (desktop `SHARED`), exact `IID_ID3D12Fence`, stack output. It stores the fence at helper object `+0x10` and the queue at `+0`. |
+| `0x2478813`, `0x2478853`, `0x2478893`, `0x24788d3` | **Device `+0x180`**. Four more queue outputs, same queue IID, distinct 16-byte inputs `(2,0,1,0)`, `(2,0,2,0)`, `(2,0,3,0)`, `(2,0,0,1)`; the second is built by duplicating a qword. Each queue goes through the fence setup above. The method and descriptor semantics are not established by the shared IID. |
+| `0x2478b2d`, `0x2478c3b` | **Device `+0x48`**, exact `IID_ID3D12CommandAllocator` and types Direct (`0`) / Compute (`2`). The resulting allocator goes into `+0x248`, below. The helper reached from `0x2479345` and `0x2479366` also uses this allocator slot (`0x161d0a0`). |
+| `0x2478b71`, `0x2478c70` | **Device `+0x248`**. RDX points to four words `(0,2,1,0)` or `(2,2,1,0)`, R8=allocator, R9=null, stack=IID and output. The requested list IID `c3827890-4024-474c-98cf-645b51dc4874` differs from desktop `IID_ID3D12GraphicsCommandList6`. The **returned list**, not the device, immediately receives `+0x420`, `+0x418`, then `+0x48` (Close shape, HRESULT checked). |
+| `0x2478de4`, `0x2478e42`–`0x2478e9a` | **Device `+0x278`** takes `(2,0,0,0)` and its HRESULT gates progress. **Device `+0x78`** fits `GetDescriptorHandleIncrementSize`: arguments `0..4`; nested call at `0x5c5ff2f` multiplies descriptor counts by the result. No mapping assumed for heap type 4. |
+| `0x247924f`, `0x247927a` | Reads a byte at **device object `+0x18`**, bypassing the vtable. If zero the caller writes two literal qwords into descriptor storage; otherwise it calls device `+0x88`. A correctly ordered vtable alone cannot satisfy this ABI. |
+| `0x247954e`–`0x2479646` | Five calls to **device `+0x148`** match `CreateCommandSignature`: stride/count/argument-array descriptor, null root signature, exact `IID_ID3D12CommandSignature`, stack output. Negative HRESULTs go to failure. The initializer sets its success byte at `0x247967a`. |
+
+Only two private host operations are implemented here: the three node-1 heap
+queries and the ordinary Direct queue descriptor. They use the real device
+owned by the wrapper. The heap helper writes a **desktop** `D3D12_HEAP_PROPERTIES`
+and the queue helper returns an owned **desktop** queue internally. Neither
+is installed in a console vtable or invoked for an unsupported factory IID.
 
 ## Scratch GPU test
 
@@ -49,10 +74,19 @@ cc=x86_64-w64-mingw32-gcc
   -ld3d12 device.a -o game/game_scarlett_master.exe
 TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/game"
 grep -F 'PASS Xbox device:' "$work"/scarlett-run.*/logs/steam-999001.log
+
+# Compile the private helpers into the synthetic PE; no test hooks in the DLL.
+mkdir private
+"$cc" -O2 -Wall -Wextra -Werror -DSCARLETT_DEVICE_PRIVATE_TEST \
+  "$src/test-d3d12-device.c" -ld3d12 -o private/game_scarlett_master.exe
+TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/private"
+grep -F 'PASS private device init:' "$work"/scarlett-run.*/logs/steam-999001.log
 ```
 
 The executable above is the synthetic test. It checks rejection of the retail
 IID at creation and at query time, COM identity and reference ownership. It also
 stores private data on the desktop device, drops the desktop reference, then
 reopens the device and reads the data back while only the wrapper has kept it
-alive. This test passed on an NVIDIA GeForce RTX 3070 with vkd3d-proton 3.0.0.
+alive. The private test also checks the heap query results and submits a
+Direct queue signal to a shared fence, waiting for its event and reading back
+the completed value. Both tests passed on a GeForce RTX 3070, vkd3d-proton 3.0.0.
