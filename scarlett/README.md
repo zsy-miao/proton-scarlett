@@ -87,6 +87,9 @@ It sends one Space press/release to the focused window and checks that the scree
 changes from dark gray to white. This checks Win32 input delivery, not GameInput mapping.
 
 `./scarlett/tests/queue-fence.sh` runs the hardware synchronization test without retail files.
+`./scarlett/tests/gameinput.sh` holds Space on a synthetic window for 400 ms and checks
+XCL GameInput's neutral → A → neutral readings. Its helper takes `KEYSYM HOLD_MS WINDOW_XID`
+inside the harness and verifies that its Unix socket peer is the private Xvfb before sending input.
 On the RTX 3070, the console title's CPU signal, GPU queue wait/signal, and completion event
 passed. The broader XCL test title also creates fallback graphics pipelines for two console
 shader fixtures. The descriptor-heap test verifies that the console sampler handles share their
