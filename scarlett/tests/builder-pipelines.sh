@@ -22,9 +22,10 @@ done <<'SLICES'
 builder 0xc8ab0 0x1410
 offline 0xc6be0 0x1ec4
 partitions 0xc5660 0x1580
+instances 0xc0d20 0x493c
 reset 0xb76e0 0xfe8
 SLICES
-for fixture in pipeline partitions reset; do
+for fixture in pipeline partitions instances reset; do
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
         "$s/test-bvh-$fixture.cpp" "$w/d3d12_device.o" "$w/queue.o" -ld3d12 \
         -o "$w/game/game_scarlett_master.exe"

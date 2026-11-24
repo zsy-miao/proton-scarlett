@@ -1,5 +1,11 @@
 # Write-combined graphics pool
 
+For `WriteInstances`, apply `0006-vkd3d-bounded-builder-memory.patch` after
+`0005`, and apply `../dxil-spirv-patches/0001-bounded-builder-memory.patch`
+inside vkd3d-proton's `subprojects/dxil-spirv` (`219d770799606f15abb3c57a8a9b9d19c2ae94ca`).
+Rebuild both together. The [builder fixture](../native/bvh-write-instances.md)
+checks the compiled shader's instance records and adjacent guards.
+
 Patch `0005` adds a private query and factory for the tested RADV linear
 3840×2160 RGBA8 primary image. They use the same layout: `0x1fb0000` bytes
 per slice, 64 KiB alignment, UAV initial state and a transparent-black

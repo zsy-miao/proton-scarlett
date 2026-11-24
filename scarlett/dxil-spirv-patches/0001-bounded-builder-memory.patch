@@ -1,0 +1,341 @@
+diff --git a/bc/instruction.cpp b/bc/instruction.cpp
+index 65a9710..e52f6ef 100644
+--- a/bc/instruction.cpp
++++ b/bc/instruction.cpp
+@@ -119,6 +119,7 @@ bool Instruction::is_base_of_value_kind(ValueKind kind)
+ 	case ValueKind::BinaryOperator:
+ 	case ValueKind::Cast:
+ 	case ValueKind::Select:
++	case ValueKind::InsertValue:
+ 	case ValueKind::ExtractValue:
+ 	case ValueKind::Alloca:
+ 	case ValueKind::GetElementPtr:
+diff --git a/bc/instruction.hpp b/bc/instruction.hpp
+index b18ed96..57b5440 100644
+--- a/bc/instruction.hpp
++++ b/bc/instruction.hpp
+@@ -276,6 +276,19 @@ private:
+ 	Vector<unsigned> indices;
+ };
+ 
++class InsertValueInst : public Instruction
++{
++public:
++	static constexpr ValueKind get_value_kind() { return ValueKind::InsertValue; }
++	LLVMBC_DEFAULT_VALUE_KIND_IMPL
++	InsertValueInst(Value *aggregate, Value *member, unsigned index_)
++	    : Instruction(aggregate->getType(), ValueKind::InsertValue), index(index_)
++	{
++		set_operands({ aggregate, member });
++	}
++	unsigned index;
++};
++
+ class AllocaInst : public Instruction
+ {
+ public:
+diff --git a/bc/module.cpp b/bc/module.cpp
+index d076045..f150a2a 100644
+--- a/bc/module.cpp
++++ b/bc/module.cpp
+@@ -1563,6 +1563,21 @@ bool ModuleParseContext::parse_record(const BlockOrRecord &entry)
+ 		break;
+ 	}
+ 
++	case FunctionRecord::INST_INSERTVAL:
++	{
++		unsigned pos = 0;
++		auto agg = get_value_and_type(entry.ops, pos);
++		auto member = get_value_and_type(entry.ops, pos);
++		if (!agg.first || !member.first || pos + 1 != entry.ops.size())
++			return false;
++		auto *type = dyn_cast<StructType>(agg.second);
++		if (!type || entry.ops[pos] >= type->getNumElements() || type->getElementType(entry.ops[pos]) != member.second)
++			return false;
++		if (!add_instruction(context->construct<InsertValueInst>(agg.first, member.first, unsigned(entry.ops[pos]))))
++			return false;
++		break;
++	}
++
+ 	case FunctionRecord::INST_EXTRACTVAL:
+ 	{
+ 		unsigned index = 0;
+diff --git a/bc/value.hpp b/bc/value.hpp
+index 8e4fac4..4fff542 100644
+--- a/bc/value.hpp
++++ b/bc/value.hpp
+@@ -72,7 +72,8 @@ enum class ValueKind
+ 	ShuffleVector,
+ 	ExtractElement,
+ 	InsertElement,
+-	CompositeConstruct
++	CompositeConstruct,
++	InsertValue
+ };
+ 
+ #define LLVMBC_DEFAULT_VALUE_KIND_IMPL                \
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+index 2e4a105..244c889 100644
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6312,6 +6312,118 @@ static bool instruction_has_side_effects(const llvm::Instruction &instruction)
+ 	return false;
+ }
+ 
++static unsigned xbox_memory_opcode(llvm::Function *fn)
++{
++	if (fn->begin() != fn->end()) return 0;
++	if (fn->getName() == "xbox.global_load_dword_with_cache") return 356;
++	if (fn->getName() == "xbox.global_load_dwordx3_with_cache") return 358;
++	if (fn->getName() == "xbox.global_load_dwordx4_with_cache") return 359;
++	if (fn->getName() == "xbox.global_store_dword_with_cache") return 360;
++	if (fn->getName() == "xbox.global_store_dwordx4_with_cache") return 363;
++	return 0;
++}
++
++static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
++{
++	const bool read = opnum < 360;
++	const unsigned n = opnum - (read ? 356 : 360) + 1;
++	auto integer = [](const llvm::Type *t, unsigned w) { return t->isIntegerTy() && t->getIntegerBitWidth() == w; };
++	if (!impl.options.physical_storage_buffer || impl.execution_model != spv::ExecutionModelGLCompute ||
++	    !impl.root_constant_id || impl.xbox_range_descriptor >= impl.root_descriptor_count ||
++	    impl.root_constant_num_words < 3 || impl.xbox_range_word > impl.root_constant_num_words - 3 ||
++	    read != impl.xbox_read_only || call.getNumOperands() != (read ? 4u : 5u) ||
++	    (!read && call.getType()->getTypeID() != llvm::Type::TypeID::VoidTyID))
++		return false;
++	auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
++	if (!opcode || !integer(opcode->getType(), 32) || opcode->getUniqueInteger().getZExtValue() != opnum ||
++	    !integer(call.getOperand(1)->getType(), 64)) return false;
++	for (unsigned i = read ? 2 : 3; i < call.getNumOperands(); i++)
++		if (!llvm::isa<llvm::UndefValue>(call.getOperand(i)) || !integer(call.getOperand(i)->getType(), 32)) return false;
++	auto *payload = read ? call.getType() : call.getOperand(2)->getType();
++	if (n == 1 && !integer(payload, 32)) return false;
++	if (n > 1)
++	{
++		auto *s = llvm::dyn_cast<llvm::StructType>(payload);
++		if (!s || s->getNumElements() != n) return false;
++		for (unsigned i = 0; i < n; i++) if (!integer(s->getElementType(i), 32)) return false;
++	}
++	auto &b = impl.builder();
++	auto &helper = impl.xbox_helpers[n - 1];
++	auto payload_id = impl.get_type_id(payload);
++	if (read && n > 1) impl.llvm_composite_meta[&call].forced_composite = true;
++	if (!helper)
++	{
++		auto *saved = b.getBuildPoint();
++		auto u64 = b.makeUintType(64), u32 = b.makeUintType(32), bit = b.makeBoolType();
++		spv::Block *entry;
++		Vector<spv::Id> params = {u64};
++		if (!read) params.push_back(payload_id);
++		auto *fn = b.makeFunctionEntry(spv::NoPrecision, read ? payload_id : b.makeVoidType(),
++		                               call.getCalledFunction()->getName().data(), params, {}, &entry);
++		b.setBuildPoint(entry);
++		auto storage = impl.options.inline_ubo_enable ? spv::StorageClassUniform : spv::StorageClassPushConstant;
++		auto load = [&](unsigned word) {
++			Vector<spv::Id> indices;
++			if (impl.root_constant_arrayed) indices.push_back(b.makeUintConstant(impl.root_descriptor_count));
++			indices.push_back(b.makeUintConstant(word + (impl.root_constant_arrayed ? 0 : impl.root_descriptor_count)));
++			return b.createLoad(b.createAccessChain(storage, impl.root_constant_id, indices));
++		};
++		auto guest = b.createUnaryOp(spv::OpBitcast, u64, b.createCompositeConstruct(b.makeVectorType(u32,2),
++		                       {load(impl.xbox_range_word), load(impl.xbox_range_word + 1)}));
++		auto bytes = b.createUnaryOp(spv::OpUConvert, u64, load(impl.xbox_range_word + 2));
++		auto addr = fn->getParamId(0), delta = b.createBinOp(spv::OpISub, u64, addr, guest);
++		auto width = b.makeUint64Constant(n * 4);
++		auto ok = b.createBinOp(spv::OpUGreaterThanEqual, bit, addr, guest);
++		auto require = [&](spv::Id x) { ok = b.createBinOp(spv::OpLogicalAnd, bit, ok, x); };
++		require(b.createBinOp(spv::OpUGreaterThanEqual, bit, bytes, width));
++		require(b.createBinOp(spv::OpULessThanEqual, bit, delta, b.createBinOp(spv::OpISub, u64, bytes, width)));
++		require(b.createBinOp(spv::OpIEqual, bit, b.createBinOp(spv::OpBitwiseAnd, u64, delta, b.makeUint64Constant(3)), b.makeUint64Constant(0)));
++		spv::Builder::If guard(ok, 0, b);
++		auto host = b.createUnaryOp(spv::OpBitcast, u64, b.createLoad(b.createAccessChain(storage, impl.root_constant_id,
++		                             {b.makeUintConstant(impl.xbox_range_descriptor)})));
++		auto type = n == 1 ? u32 : b.makeVectorType(u32, n);
++		auto ptr = b.createUnaryOp(spv::OpConvertUToPtr, b.makePointer(spv::StorageClassPhysicalStorageBuffer, type),
++		                           b.createBinOp(spv::OpIAdd, u64, host, delta));
++		spv::Id data;
++		if (read)
++		{
++			data = b.getUniqueId();
++			auto load_op = std::make_unique<spv::Instruction>(data, type, spv::OpLoad);
++			load_op->addIdOperand(ptr);
++			load_op->addImmediateOperand(spv::MemoryAccessAlignedMask);
++			load_op->addImmediateOperand(4);
++			b.getBuildPoint()->addInstruction(std::move(load_op));
++		}
++		else
++			data = fn->getParamId(1);
++		if (n > 1)
++		{
++			Vector<spv::Id> parts;
++			for (unsigned i = 0; i < n; i++) parts.push_back(b.createCompositeExtract(data, u32, i));
++			data = b.createCompositeConstruct(read ? payload_id : type, parts);
++		}
++		if (!read)
++		{
++			auto store = std::make_unique<spv::Instruction>(spv::OpStore);
++			store->addIdOperand(ptr); store->addIdOperand(data);
++			store->addImmediateOperand(spv::MemoryAccessAlignedMask); store->addImmediateOperand(4);
++			b.getBuildPoint()->addInstruction(std::move(store));
++		}
++		auto taken = b.getBuildPoint()->getId();
++		guard.makeEndIf();
++		b.makeReturn(true, read ? b.createOp(spv::OpPhi, payload_id,
++		             {data, taken, b.makeNullConstant(payload_id), entry->getId()}) : 0);
++		b.setBuildPoint(saved);
++		helper = fn->getId();
++	}
++	auto *op = read ? impl.allocate(spv::OpFunctionCall, &call) : impl.allocate(spv::OpFunctionCall, b.makeVoidType());
++	op->add_id(helper);
++	op->add_id(impl.get_id_for_value(call.getOperand(1)));
++	if (!read) op->add_id(impl.get_id_for_value(call.getOperand(2)));
++	impl.add(op);
++	return true;
++}
++
+ bool Converter::Impl::emit_instruction(CFGNode *block, const llvm::Instruction &instruction)
+ {
+ 	if (instruction.isTerminator())
+@@ -6343,6 +6455,8 @@ bool Converter::Impl::emit_instruction(CFGNode *block, const llvm::Instruction &
+ 		}
+ 		else
+ 		{
++			if (unsigned n = xbox_memory_opcode(called_function))
++				return emit_xbox_access(*this, *call_inst, n);
+ 			return emit_call_instruction(*this, *call_inst);
+ 		}
+ 	}
+@@ -8194,7 +8308,7 @@ void Converter::Impl::gather_function_dependencies(llvm::Function *caller, Vecto
+ 			if (const auto *call_inst = llvm::dyn_cast<llvm::CallInst>(&inst))
+ 			{
+ 				auto *fn = call_inst->getCalledFunction();
+-				if (strncmp(fn->getName().data(), "dx.op", 5) != 0 &&
++				if (!xbox_memory_opcode(fn) && strncmp(fn->getName().data(), "dx.op", 5) != 0 &&
+ 				    strncmp(fn->getName().data(), "llvm.", 5) != 0)
+ 				{
+ 					gather_function_dependencies(fn, funcs);
+@@ -9212,6 +9326,11 @@ void Converter::Impl::set_option(const OptionBase &cap)
+ 		break;
+ 	}
+ 
++	case Option::BoundedXboxRange:
++		xbox_read_only = static_cast<const OptionBoundedXboxRange &>(cap).read_only;
++		xbox_range_word = static_cast<const OptionBoundedXboxRange &>(cap).range_word;
++		xbox_range_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).range_descriptor;
++		break;
+ 	case Option::PhysicalStorageBuffer:
+ 	{
+ 		auto &psb = static_cast<const OptionPhysicalStorageBuffer &>(cap);
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+index 1a64868..32f0361 100644
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -273,6 +273,7 @@ enum class Option : uint32_t
+ 	ViewInstancing = 49,
+ 	MixedDotProduct = 50,
+ 	ComputeShaderDerivativesQuad = 51,
++	BoundedXboxRange = 52,
+ 	Count
+ };
+ 
+@@ -353,6 +354,13 @@ struct OptionBindlessCBVSSBOEmulation : OptionBase
+ 	bool enable = false;
+ };
+ 
++struct OptionBoundedXboxRange : OptionBase
++{
++	OptionBoundedXboxRange() : OptionBase(Option::BoundedXboxRange) {}
++	unsigned range_word, range_descriptor;
++	bool read_only;
++};
++
+ struct OptionPhysicalStorageBuffer : OptionBase
+ {
+ 	OptionPhysicalStorageBuffer()
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+index 111fb93..1072834 100644
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -1009,6 +1009,16 @@ dxil_spv_result dxil_spv_converter_add_option(dxil_spv_converter converter, cons
+ 		break;
+ 	}
+ 
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
++	{
++		auto *in = reinterpret_cast<const dxil_spv_option_bounded_xbox_range *>(option);
++		OptionBoundedXboxRange helper;
++		helper.range_word = in->range_word;
++		helper.range_descriptor = in->range_descriptor;
++		helper.read_only = in->read_only == DXIL_SPV_TRUE;
++		converter->options.emplace_back(duplicate(helper));
++		break;
++	}
+ 	case DXIL_SPV_OPTION_PHYSICAL_STORAGE_BUFFER:
+ 	{
+ 		OptionPhysicalStorageBuffer helper;
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+index e5fa278..589219f 100644
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -484,6 +484,7 @@ typedef enum dxil_spv_option
+ 	DXIL_SPV_OPTION_VIEW_INSTANCING = 49,
+ 	DXIL_SPV_OPTION_MIXED_FLOAT_DOT_PRODUCT = 50,
+ 	DXIL_SPV_OPTION_COMPUTE_SHADER_DERIVATIVES_QUAD = 51,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE = 52,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+ 
+@@ -508,6 +509,14 @@ typedef struct dxil_spv_option_base
+ 	dxil_spv_option type;
+ } dxil_spv_option_base;
+ 
++typedef struct dxil_spv_option_bounded_xbox_range
++{
++	dxil_spv_option_base base;
++	unsigned range_word;
++	unsigned range_descriptor;
++	dxil_spv_bool read_only;
++} dxil_spv_option_bounded_xbox_range;
++
+ typedef struct dxil_spv_option_shader_demote_to_helper
+ {
+ 	dxil_spv_option_base base;
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+index caa83de..543fd66 100644
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -469,6 +469,9 @@ struct Converter::Impl
+ 	spv::Id root_constant_id = 0;
+ 	unsigned root_descriptor_count = 0;
+ 	unsigned root_constant_num_words = 0;
++	unsigned xbox_range_word = ~0u, xbox_range_descriptor = ~0u;
++	spv::Id xbox_helpers[4] = {};
++	bool xbox_read_only = false;
+ 	bool root_constant_arrayed = false;
+ 	unsigned patch_location_offset = ~0u;
+ 	unsigned descriptor_qa_counter = 0;
+diff --git a/opcodes/opcodes_llvm_builtins.cpp b/opcodes/opcodes_llvm_builtins.cpp
+index 0a5a264..1d3b214 100644
+--- a/opcodes/opcodes_llvm_builtins.cpp
++++ b/opcodes/opcodes_llvm_builtins.cpp
+@@ -2779,6 +2779,19 @@ bool emit_llvm_instruction(Converter::Impl &impl, const llvm::Instruction &instr
+ 		return emit_store_instruction(impl, store_inst);
+ 	else if (auto *compare_inst = llvm::dyn_cast<llvm::CmpInst>(&instruction))
+ 		return emit_compare_instruction(impl, compare_inst);
++	else if (auto *insert = llvm::dyn_cast<llvm::InsertValueInst>(&instruction))
++	{
++		auto *op = impl.allocate(spv::OpCompositeInsert, insert);
++		op->add_id(impl.get_id_for_value(insert->getOperand(1)));
++		op->add_id(impl.get_id_for_value(insert->getOperand(0)));
++#ifdef HAVE_LLVMBC
++		op->add_literal(insert->index);
++#else
++		for (unsigned i : insert->getIndices()) op->add_literal(i);
++#endif
++		impl.add(op);
++		return true;
++	}
+ 	else if (auto *extract_inst = llvm::dyn_cast<llvm::ExtractValueInst>(&instruction))
+ 		return emit_extract_value_instruction(impl, extract_inst);
+ 	else if (auto *alloca_inst = llvm::dyn_cast<llvm::AllocaInst>(&instruction))

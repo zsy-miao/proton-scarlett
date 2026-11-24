@@ -5,7 +5,7 @@
 #include "bvh_offline_dxil.h"
 #include "bvh_partitions_dxil.h"
 
-enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS };
+enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -25,6 +25,8 @@ static const struct bvh_candidate {
     [BVH_RESET_COUNTERS]={0xfe8,{0xe2,0x30,0x9a,0x6f,0x2c,0x95,0xd0,0x97,0xe5,0x00,0xd4,0xc3,0x8e,0x20,0x58,0x81,
         0xa0,0xc2,0x43,0x3f,0x17,0x54,0xf9,0x7b,0xae,0xf0,0x6e,0x17,0x5e,0xd2,0xb0,0x2e},
         L"XDXR ResetCounters",3,{NULL,0}},
+    [BVH_INSTANCES]={0x493c,{0xda,0x1d,0x4b,0xc3,0xb8,0xc1,0xf6,0x85,0x19,0x76,0xd8,0x99,0x18,0xba,0xb9,0x96,
+        0x78,0xd1,0xb0,0xf7,0x4b,0x0c,0x91,0x8f,0xf1,0x58,0xe9,0xe9,0x20,0x54,0xb6,0x20},L"XDXR WriteInstances",16,{0}},
 };
 
 struct bvh_pipeline {
@@ -89,7 +91,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     if (!IsEqualIID(&id,&IID_ID3D12PipelineState)) return E_NOINTERFACE;
     if (x || y) return E_NOTIMPL;
     if (!copy_in(&w,desc,sizeof w)) return E_POINTER;
-    BYTE code[0x1ec4];
+    BYTE code[0x493c];
     enum bvh_kind kind=BVH_INIT;
     while (kind<ARRAYSIZE(bvh_candidates) && w.n!=bvh_candidates[kind].bytes) ++kind;
     if (kind==ARRAYSIZE(bvh_candidates) || w.n>sizeof code || memcmp(w.tail,(BYTE[32]){0},sizeof w.tail)) return E_NOTIMPL;
@@ -105,10 +107,19 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     if (!shader_digest_matches(code,w.n,candidate->digest)) return E_NOTIMPL;
 
     D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,0};
-    D3D12_ROOT_PARAMETER rp[2]={
+    D3D12_ROOT_PARAMETER rp[5]={
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,.DescriptorTable={1,&range}},
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,candidate->constants}}};
     D3D12_ROOT_SIGNATURE_DESC rs={2,rp,0,NULL,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    if (kind==BVH_INSTANCES) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedInstanceReadsV1")) return E_NOTIMPL;
+        rp[2]=rp[1];
+        rp[1]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,3}};
+        rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
+        rs.NumParameters=5;
+    }
     ID3DBlob *blob=NULL;
     HRESULT hr=D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,NULL);
     if (FAILED(hr)) return hr;
@@ -119,7 +130,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     ID3D10Blob_Release(blob);
     if (SUCCEEDED(hr)) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pd={.pRootSignature=p->root,.CS=candidate->cs};
-        if (kind==BVH_RESET_COUNTERS) pd.CS=(D3D12_SHADER_BYTECODE){code,w.n};
+        if (!candidate->cs.pShaderBytecode) pd.CS=(D3D12_SHADER_BYTECODE){code,w.n};
         hr=ID3D12Device_CreateComputePipelineState(d->host,&pd,&IID_ID3D12PipelineState,(void **)&p->host);
     }
     if (FAILED(hr)) {
@@ -132,10 +143,11 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     return S_OK;
 }
 
-struct xs_bvh_hold { IUnknown *pipeline; ID3D12Resource *dst; ID3D12DescriptorHeap *heap; };
+struct xs_bvh_hold { IUnknown *pipeline; ID3D12Resource *dst,*upload; ID3D12DescriptorHeap *heap; };
 void xs_drop_bvh_hold(struct xs_bvh_hold *h)
 {
     if (!h) return;
+    if (h->upload) ID3D12Resource_Release(h->upload);
     ID3D12DescriptorHeap_Release(h->heap); ID3D12Resource_Release(h->dst); IUnknown_Release(h->pipeline);
     HeapFree(GetProcessHeap(),0,h);
 }
@@ -164,7 +176,7 @@ static HRESULT bvh_record_target(IUnknown *pipeline,enum bvh_kind kind,ID3D12Gra
         delta>range->bytes || size>range->bytes-delta) return E_INVALIDARG;
     UINT64 first=range->resource_offset+delta;
     if (first%D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT) return E_INVALIDARG;
-    struct xs_bvh_hold *h=HeapAlloc(GetProcessHeap(),0,sizeof *h);
+    struct xs_bvh_hold *h=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *h);
     if (!h) return E_OUTOFMEMORY;
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
     hr=ID3D12Device_CreateDescriptorHeap(device,&hd,&IID_ID3D12DescriptorHeap,(void **)&h->heap);
@@ -203,6 +215,7 @@ HRESULT xs_record_bvh_init(IUnknown *pipeline,ID3D12GraphicsCommandList *list,co
 }
 #include "bvh_offline_record.h"
 #include "bvh_partitions_record.h"
+#include "bvh_instances_record.h"
 
 HRESULT xs_record_bvh_reset(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
         const struct xs_bvh_range *dst,UINT count,UINT value,struct xs_bvh_hold **out)

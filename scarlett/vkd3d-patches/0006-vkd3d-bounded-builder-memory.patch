@@ -1,0 +1,69 @@
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+index 63297e2..401a9e3 100644
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1310,4 +1310,6 @@ HRESULT WINAPI DLLEXPORT D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **d
+ 
+ /* Just expose the latest stable AgilitySDK version.
+  * This is actually exported as a UINT and not a function it seems. */
++/* Capability marker for the private instance-read root ABI. */
++void WINAPI DLLEXPORT ScarlettBoundedInstanceReadsV1(void) {}
+ DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+index bdad5e8..384e4dc 100644
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1258,6 +1258,7 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+     unsigned int root_constant_words = 0;
+     unsigned int heuristic_min_wave_size;
+     unsigned int heuristic_max_wave_size;
++    bool read_only;
+     dxil_spv_converter converter = NULL;
+     dxil_spv_parsed_blob blob = NULL;
+     dxil_spv_compiled_spirv compiled;
+@@ -1363,6 +1364,34 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+     remap_userdata.shader_interface_local_info = NULL;
+     remap_userdata.num_root_descriptors = num_root_descriptors;
+ 
++    /* Scratch fixture opt-in: identified builders and an explicit private range ABI. */
++    read_only = hash == UINT64_C(0xc1e76d5512cb4a65) || hash == UINT64_C(0xe3b64c009ba3851e) ||
++            (dxbc->size == 0x493c && hash == UINT64_C(0xc367e4ee1d4bdfe0));
++    if ((read_only || hash == UINT64_C(0x5ec439b66277e3af)) && stage == DXIL_SPV_STAGE_COMPUTE)
++    {
++        const dxil_spv_d3d_binding range = {.stage = stage, .kind = DXIL_SPV_RESOURCE_KIND_RAW_BUFFER,
++                .register_space = 0x5358, .register_index = 0, .range_size = 1, .alignment = 16};
++        dxil_spv_vulkan_binding vk;
++        for (i = 0; i < shader_interface_info->push_constant_buffer_count; ++i)
++        {
++            const struct vkd3d_shader_push_constant_buffer *p = &shader_interface_info->push_constant_buffers[i];
++            if (p->register_space != 0x5358 || p->register_index || p->size != 12 ||
++                    p->offset % 4 || p->offset / 4 < 2 * num_root_descriptors || !dxil_match_shader_visibility(p->shader_visibility, stage))
++                continue;
++            if (dxil_remap(&remap_userdata, read_only ? VKD3D_SHADER_DESCRIPTOR_TYPE_SRV : VKD3D_SHADER_DESCRIPTOR_TYPE_UAV,
++                    &range, &vk, VKD3D_SHADER_BINDING_FLAG_BUFFER) &&
++                    vk.descriptor_type == DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS)
++            {
++                const dxil_spv_option_bounded_xbox_range opt = {{ DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE },
++                        p->offset / 4 - 2 * num_root_descriptors, vk.root_constant_index, read_only ? DXIL_SPV_TRUE : DXIL_SPV_FALSE};
++                if (dxil_spv_converter_add_option(converter, &opt.base) != DXIL_SPV_SUCCESS)
++                {
++                    ret = VKD3D_ERROR_NOT_IMPLEMENTED;
++                    goto end;
++                }
++            }
++        }
++    }
+     dxil_spv_converter_set_root_constant_word_count(converter, root_constant_words);
+     dxil_spv_converter_set_root_descriptor_count(converter, num_root_descriptors);
+     dxil_spv_converter_set_srv_remapper(converter, dxil_srv_remap, &remap_userdata);
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettBoundedInstanceReadsV1
+     ScarlettPrimaryImageInfoV1
+     ScarlettPrimaryImageV1
+     ScarlettControlHeapV1
