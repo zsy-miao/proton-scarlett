@@ -755,3 +755,20 @@ the expected red/green primary pixels on both, rejected a bad second list
 without submitting the first, and held its command memory until the fence
 completed. Neither fixture flipped the display. A token-2 retail rendering
 batch that writes the current primary has yet to be observed.
+
+### Command memory for the first rendering batch
+
+The title can return a list to its pool as soon as queue `+118` returns.
+Reuse of the list's command bytes is a separate decision: the last hold
+puts the chunk on a return chain, the Direct producer stamps it with a
+queue sequence, and the recycler checks that dependency before advancing
+the chunk generation. Keeping the allocation mapped does not keep its
+bytes unchanged.
+
+In 21 hash-checked retail logs, 18 issued token 2 and queued its sync;
+none logged a token-2 batch end. The 100-byte range already traced for
+the clear is vertex data. To admit a rendering batch, join each member
+to its actual command ranges (or observe its whole recording with no
+packet allocation), then check what happens to an overlapping reuse
+request before and after the consuming fence. The frame token, list
+return and fence completion are distinct events.
