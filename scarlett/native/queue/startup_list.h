@@ -9,6 +9,7 @@ struct startup_list {
     IUnknown *allocator,*pool_owner,*heaps[2];
     D3D12_COMMAND_LIST_TYPE type;
     HRESULT error;
+    ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
     ID3D12CommandAllocator *tail_allocator;
@@ -47,6 +48,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
         IUnknown_Release(s->allocator);
         drop_split(s); drop_timestamp(s->stamp);
         drop_marker(s->marker);
+        if (s->primary) ID3D12Resource_Release(s->primary);
         drop_heaps(s->heaps);
         if (s->pool_owner) IUnknown_Release(s->pool_owner);
         sl_free(s);
@@ -119,6 +121,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     IUnknown_AddRef(alloc);
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
+    if (s->primary) { ID3D12Resource_Release(s->primary); s->primary=NULL; }
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
@@ -191,7 +194,7 @@ static HRESULT prefix_write(struct startup_list *s,UINT64 addr,UINT value,UINT64
     struct scarlett_section_info lease;
     /* shortcut: prefix only, before any host recorder escapes; no mid-list stage inferred. */
     if (!s->reservation || !s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        s->host_exposed || s->marker || s->stamp || control || flags) return E_NOTIMPL;
+        s->primary || s->host_exposed || s->marker || s->stamp || control || flags) return E_NOTIMPL;
     if (!addr || (addr&3)) return E_INVALIDARG;
     struct prefix_marker *m=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *m);
     if (!m) return E_OUTOFMEMORY;
@@ -320,7 +323,7 @@ static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UI
 {
     struct prefix_marker *m=s->marker,*p=s->post;
     if (!s->reservation || !s->pool_owner || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        s->closed || FAILED(s->error) || s->host_exposed || !m || m->value || !s->stamp ||
+        s->closed || FAILED(s->error) || s->host_exposed || s->primary || !m || m->value || !s->stamp ||
         op!=7 || flags!=1) return E_NOTIMPL;
     if (!addr || (addr&7)) return E_INVALIDARG;
     struct scarlett_section_info id;
@@ -363,6 +366,34 @@ static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT fla
 #else
 #define sl_wait64 xs_stop
 #endif
+/* shortcut: one observed whole-primary UAV-to-RT transition per recording. */
+static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3D12_BARRIER_GROUP *groups)
+{
+    if (!s->reservation || !s->pool_owner || s->closed || FAILED(s->error) || s->primary ||
+        s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT || count!=1) return E_NOTIMPL;
+    D3D12_BARRIER_GROUP g;
+    D3D12_TEXTURE_BARRIER b;
+    SIZE_T n;
+    if (!ReadProcessMemory(GetCurrentProcess(),groups,&g,sizeof g,&n) || n!=sizeof g) return E_POINTER;
+    if (g.Type!=D3D12_BARRIER_TYPE_TEXTURE || g.NumBarriers!=1) return E_NOTIMPL;
+    /* The guest need not supply readable tail padding after Flags. */
+    SIZE_T bytes=offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof b.Flags;
+    if (!ReadProcessMemory(GetCurrentProcess(),g.pTextureBarriers,&b,bytes,&n) || n!=bytes) return E_POINTER;
+    const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
+    if (b.SyncBefore!=D3D12_BARRIER_SYNC_ALL_SHADING || b.SyncAfter!=D3D12_BARRIER_SYNC_RENDER_TARGET ||
+        b.AccessBefore!=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS || b.AccessAfter!=D3D12_BARRIER_ACCESS_RENDER_TARGET ||
+        b.LayoutBefore!=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS || b.LayoutAfter!=D3D12_BARRIER_LAYOUT_RENDER_TARGET ||
+        b.Flags || memcmp(&b.Subresources,&all,sizeof all)) return E_NOTIMPL;
+    if (!(s->primary=xs_retain_primary(s->pool_owner,b.pResource))) return E_INVALIDARG;
+    b.pResource=s->primary;
+    g.pTextureBarriers=&b;
+    ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
+    return S_OK;
+}
+static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER_GROUP *groups)
+{
+    if (FAILED(record_primary_barrier(sl(i),count,groups))) xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
@@ -377,12 +408,13 @@ static const struct {
     __typeof__(&sl_wait64) wait64;
     xs_stop_fn gap258[64];
     __typeof__(&sl_reset) reset;
-    xs_stop_fn through490[7];
+    xs_stop_fn gap460[6];
+    __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 63]=xs_stop}, sl_reset, {[0 ... 6]=xs_stop}
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 63]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
 _Static_assert(offsetof(__typeof__(pool_vtbl),wait64)==0x250,"pooled wait ABI");
-_Static_assert(offsetof(__typeof__(pool_vtbl),through490[6])==0x490, "pooled list guard");
+_Static_assert(offsetof(__typeof__(pool_vtbl),barrier)==0x490, "pooled barrier ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
 
@@ -445,12 +477,13 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
-struct heap_retirement { ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event; };
+struct heap_retirement { ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event; };
 static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_WAIT wait,TP_WAIT_RESULT result)
 {
     struct heap_retirement *r=ctx;
     (void)instance;(void)result;
     CloseThreadpoolWait(wait);
+    if (r->primary) ID3D12Resource_Release(r->primary);
     if (r->head_alloc) IUnknown_Release(r->head_alloc);
     if (r->tail_alloc) ID3D12CommandAllocator_Release(r->tail_alloc);
     if (r->gate) ID3D12Fence_Release(r->gate);
@@ -472,14 +505,15 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     ID3D12CommandList *host = (ID3D12CommandList *)s->host;
     struct heap_retirement *r=NULL;
     PTP_WAIT wait=NULL;
-    if (s->heaps[0] || s->stamp) {
+    if (s->heaps[0] || s->stamp || s->primary) {
         r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r || FAILED(ID3D12Device_CreateFence(s->device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&r->fence)) ||
             !(r->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(wait=CreateThreadpoolWait(retire_heaps,r,NULL)) ||
             FAILED(ID3D12Fence_SetEventOnCompletion(r->fence,1,r->event))) xs_stop();
         if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
+        if ((r->primary=s->primary)) ID3D12Resource_AddRef(r->primary);
+        if (s->post || s->primary) { r->head_alloc=s->allocator; IUnknown_AddRef(r->head_alloc); }
         if (s->post) {
-            r->head_alloc=s->allocator;IUnknown_AddRef(r->head_alloc);
             r->tail_alloc=s->tail_allocator;ID3D12CommandAllocator_AddRef(r->tail_alloc);
         }
         if ((r->stamp=s->stamp)) InterlockedIncrement(&r->stamp->refs);

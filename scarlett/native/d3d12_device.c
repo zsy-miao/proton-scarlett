@@ -728,6 +728,20 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, extended) == 0x180, "bootstrap x64 ABI");
 static const struct bootstrap_vtbl bootstrap_vtbl;
 
+/* Return the retained host image, never call through the guest's resource pointer. */
+ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
+{
+    if (!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown) return NULL;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct color_resource *r=d->colors;
+    while (r && &r->iface!=identity) r=r->next;
+    ID3D12Resource *host=r && !r->msaa && r->slice ? r->host : NULL;
+    if (host) ID3D12Resource_AddRef(host);
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    return host;
+}
+
 /* Borrowed host root; caller holds the device and root live through use. */
 ID3D12RootSignature *xs_bvh_root_host(IUnknown *device,IUnknown *i)
 {

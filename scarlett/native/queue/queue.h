@@ -21,6 +21,7 @@ extern const IID xs_sync_list_id, xs_pool_list_id;
 HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *allocator, BOOL pooled, IUnknown **out);
 HRESULT xs_device_list(ID3D12Device *host,D3D12_COMMAND_LIST_TYPE type,IUnknown *allocator,BOOL pooled,IUnknown *pool_owner,IUnknown **out);
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);
+ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity);
 /* Borrowed recorder, for internal typed command translation only. */
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *list);
 #endif

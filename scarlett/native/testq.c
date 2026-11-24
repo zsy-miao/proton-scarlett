@@ -13,3 +13,5 @@ void test_post_snapshot(IUnknown *i,ID3D12Resource *rb,UINT dst,UINT stamp_offse
     for(UINT j=0;j<2;j++){b[j].Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;b[j].Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_DEST;}
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,2,b);
 }
+
+HRESULT test_primary_try(IUnknown *i,UINT n,const D3D12_BARRIER_GROUP *g){return record_primary_barrier(sl(i),n,g);}

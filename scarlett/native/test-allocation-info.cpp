@@ -64,6 +64,9 @@ static void WINAPI give(void *ptr,UINT64 attr)
 }
 extern "C" { __declspec(dllexport) struct {decltype(&take) a;decltype(&give) f;} __XMemAllocationHooks__={take,give}; }
 
+#ifdef TEST_PRIMARY_BARRIER
+#include "test-primary-barrier.hpp"
+#endif
 int main()
 {
     HMODULE xm=LoadLibraryW(L"xmem.dll"); CK(xm);
@@ -155,6 +158,9 @@ int main()
     writer(dev.Get(),surface,rw,dest); // overwrite; the last slot still refers to other
     CK(*(UINT64 *)(dest+16)==0xa0cafe);
     CK(taken==2 && !given && (64u<<20)-used==0xa0000);
+#ifdef TEST_PRIMARY_BARRIER
+    return primary_barrier(d.Get(),dev.Get(),surface,other,heap,views,slot,dest,xm);
+#endif
     CK(other->Release()==0 && given==1 && surface->Release()==0 && given==2);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv={},lastRTV={};
     *(UINT64 *)dest^=1; CK(FAILED(xs_resolve_color_rtv(views.Get(),dest,&rtv,rt.GetAddressOf())) && !rt && !rtv.ptr); *(UINT64 *)dest^=1;

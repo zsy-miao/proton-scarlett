@@ -291,3 +291,26 @@ On RTX `+0x490` received one texture barrier for the first primary's guest
 resource. The barrier covers all subresources and switches sync, access and
 layout from shader writes (`ALL_SHADING`, `UNORDERED_ACCESS`) to rendering
 (`RENDER_TARGET`). The traced call requested a transition; it did not draw.
+
+### Primary transition at pooled list `+0x490`
+
+The AMD and RTX calls returning to `+0x32113` record one enhanced texture barrier.
+The guest resource matched the first committed primary returned by the same
+`+0x3f8` device factory. The list copies the group at record time, resolves
+that identity in the device's live color registry, and records the barrier
+on its current host segment. The source is all shading / unordered access;
+the destination is render target for both sync and access. The layout also
+changes from unordered access to render target, for all subresources. A
+global UAV barrier would miss this layout change. See Microsoft's
+[texture barrier](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_texture_barrier).
+
+Build `test-allocation-info.cpp` with `-DTEST_PRIMARY_BARRIER` and put
+`dxc -T cs_6_0 -E main test-primary-barrier.hlsl -Fo test-primary-barrier.dxil`
+output next to the executable. On both GPUs the fixture submits a shader fill and
+partial RTV clear through the pooled list, resets it while the queue is
+gated, and drops the guest resources and descriptor records. It verifies
+both halves of the first image, the untouched second slice and padding,
+and destruction of the host texture after the queue retires. This fixture
+needs neither the experimental control wait nor a tagged submission.
+In staged retail runs with both experiments enabled, both GPUs next requested
+a full render-target clear at `+0x1a0` (return `+0x50a62de`) before submission.

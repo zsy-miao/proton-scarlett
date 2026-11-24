@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | Experimental builds on both GPUs get past the counter wait and a frame-tagged submission. They stop as the game prepares an image for rendering. |
+| What's blocking it? | Experimental builds on both GPUs prepare the first image for rendering. The game then asks to clear that image; startup stops before it reaches the screen. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -21,7 +21,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md) and [depth/stencil buffer](scarlett/native/msaa-depth.md): 4 MiB for each. RTX retail places both in its original pool and creates their shader, render-target and depth/stencil views. A GPU test drew through the color view: exactly 16 bytes changed in the original allocation. The [depth test](scarlett/native/rtx-depth.md) verified which samples passed or failed depth and stencil comparisons.
 
-**Counter-wait experiment:** On AMD and RTX, the original game reached list `+0x490` (return `+0x32113`) after recording the wait. On RTX the game asked to switch its first primary texture from shader writes to render-target use. [Separate GPU tests](scarlett/native/queue/README.md#experimental-whole-queue-wait) verified that earlier work finished while later work stayed blocked until the original counter reached its target. The installed build still stops at the wait.
+**Experimental retail builds:** On AMD and RTX, the game records the switch from shader writes to rendering on its first primary texture (`+0x490`), then requests a clear (`+0x1a0`, return `+0x50a62de`). On both GPUs a [separate pixel test](scarlett/native/test-primary-barrier.hpp) filled that texture green with a shader, then cleared its right half red through the render target. Every pixel matched; the second texture and padding stayed intact. The [counter wait](scarlett/native/queue/README.md#experimental-whole-queue-wait) is opt-in. The installed build still stops there.
 
 Both adapters handle the six- and [twelve-layer textures](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070). The twelve-layer image takes 4 KiB on AMD and 8 KiB on RTX; its guest layout takes 48 KiB on both. Both also passed two-layer array shader tests and the [256-pixel sRGB row](scarlett/native/xg/README.md#256-texel-srgb-texture1d).
 
