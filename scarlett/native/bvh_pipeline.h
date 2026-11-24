@@ -108,7 +108,6 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     enum bvh_kind kind=BVH_INIT;
     while (kind<ARRAYSIZE(bvh_candidates) && w.n!=bvh_candidates[kind].bytes) ++kind;
     if (kind==ARRAYSIZE(bvh_candidates) || w.n>sizeof code || memcmp(w.tail,(BYTE[32]){0},sizeof w.tail)) return E_NOTIMPL;
-    const struct bvh_candidate *candidate=&bvh_candidates[kind];
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     AcquireSRWLockShared(&d->descriptor_lock);
     struct bvh_root *r=d->bvh_roots;
@@ -117,7 +116,11 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     ReleaseSRWLockShared(&d->descriptor_lock);
     if (!known) return E_INVALIDARG;
     if (!copy_in(code,w.shader,w.n)) return E_POINTER;
-    if (!shader_digest_matches(code,w.n,candidate->digest)) return E_NOTIMPL;
+    /* Different prefix-sum kernels have identically sized containers. */
+    while (kind<ARRAYSIZE(bvh_candidates) &&
+            (w.n!=bvh_candidates[kind].bytes || !shader_digest_matches(code,w.n,bvh_candidates[kind].digest))) ++kind;
+    if (kind==ARRAYSIZE(bvh_candidates)) return E_NOTIMPL;
+    const struct bvh_candidate *candidate=&bvh_candidates[kind];
 
     D3D12_DESCRIPTOR_RANGE ranges[]={{D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,0},{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,1}};
     D3D12_ROOT_PARAMETER rp[6]={
