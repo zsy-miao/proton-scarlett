@@ -65,18 +65,27 @@ public:
         if (SUCCEEDED(hr)) hr = create(device, info.section, info.view_size);
         else {
             hr = scarlett_query_section(0x53430005, address, bytes, &info);
-            if (FAILED(hr)) return hr;
-            hr = wc(device, info.view_size, info.section, nullptr);
+            bool control = false, wb = false;
+            if (FAILED(hr)) {
+                hr = scarlett_query_section(0x5343000c,address,bytes,&info);
+                wb = SUCCEEDED(hr);
+                if (!wb) {
+                    hr = scarlett_query_section(0x5343000a,address,bytes,&info);
+                    if (FAILED(hr)) return hr;
+                    control = true;
+                }
+            }
+            hr = wc(device, info.view_size, info.section, nullptr, control, wb);
         }
         CloseHandle(info.section);
         if (SUCCEEDED(hr)) *offset = info.offset;
         return hr;
     }
 
-    HRESULT wc(ID3D12Device3 *device, SIZE_T size, HANDLE input, HANDLE *output) {
+    HRESULT wc(ID3D12Device3 *device, SIZE_T size, HANDLE input, HANDLE *output, bool control = false, bool wb = false) {
         if (!device || heap || base) return E_INVALIDARG;
         using Fn = HRESULT (WINAPI *)(ID3D12Device3 *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **);
-        auto fn = (Fn)(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");
+        auto fn = (Fn)(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),control ? "ScarlettControlHeapV1" : wb ? "ScarlettWbHeapV1" : "ScarlettWcHeapV1");
         if (!fn) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
         HRESULT hr = fn(device,size,input,output,&heap);
         if (FAILED(hr)) return hr;
@@ -87,9 +96,13 @@ public:
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         hr = device->CreatePlacedResource(heap,0,&desc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&buffer));
         if (SUCCEEDED(hr) && !buffer->GetGPUVirtualAddress()) hr = E_FAIL;
-        if (SUCCEEDED(hr)) hr = buffer->Map(0,nullptr,&base);
+        if (SUCCEEDED(hr) && wb) {
+            scarlett_section_info info;
+            hr = scarlett_query_section_handle(0x5343000b,nullptr,size,&info,input ? input : *output);
+            if (SUCCEEDED(hr)) { base = info.base; wb_mapped = true; }
+        } else if (SUCCEEDED(hr)) hr = buffer->Map(0,nullptr,&base);
         if (FAILED(hr)) { reset(); return hr; }
-        wc_mapped = true;
+        wc_mapped = !wb;
         length = size;
         return S_OK;
     }
@@ -108,11 +121,16 @@ private:
         if (wc_mapped) { buffer->Unmap(0,nullptr); wc_mapped = false; base = nullptr; }
         if (buffer) { buffer->Release(); buffer = nullptr; }
         if (heap) { heap->Release(); heap = nullptr; }
-        if (base) { UnmapViewOfFile(base); base = nullptr; }
+        if (base) {
+            if (wb_mapped) VirtualFree(base,0,MEM_RELEASE);
+            else UnmapViewOfFile(base);
+            base = nullptr; wb_mapped = false;
+        }
     }
     void *base = nullptr;
     ID3D12Heap *heap = nullptr;
     ID3D12Resource *buffer = nullptr;
     SIZE_T length = 0;
     bool wc_mapped = false;
+    bool wb_mapped = false;
 };

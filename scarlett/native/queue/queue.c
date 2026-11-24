@@ -13,6 +13,7 @@ struct adapter {
         ID3D12CommandQueue *queue;
         ID3D12Fence *fence;
         ID3D12CommandAllocator *allocator;
+        ID3D12CommandSignature *signature;
     } host;
     D3D12_COMMAND_LIST_TYPE allocator_type;
 };
@@ -35,6 +36,10 @@ struct atable {
     xs_stop_fn callback;
 };
 static const struct atable at;
+static const struct {
+    IUnknownVtbl prefix;
+    xs_stop_fn inherited[5];
+} st;
 _Static_assert(offsetof(struct atable, reset) == 0x40 && offsetof(struct atable, callback) == 0x48,
         "x64 allocator slots");
 #endif
@@ -56,6 +61,7 @@ static ULONG WINAPI release(IUnknown *iface)
         if (iface->lpVtbl == &fence_prefix) ID3D12Fence_Release(a->host.fence);
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
         else if (iface->lpVtbl == &at.prefix) ID3D12CommandAllocator_Release(a->host.allocator);
+        else if (iface->lpVtbl == &st.prefix) ID3D12CommandSignature_Release(a->host.signature);
 #endif
         else ID3D12CommandQueue_Release(a->host.queue);
         HeapFree(GetProcessHeap(), 0, a);
@@ -73,6 +79,7 @@ static HRESULT WINAPI query(IUnknown *iface, REFIID iid, void **out)
             && !(iface->lpVtbl == &queue_prefix.unknown && IsEqualIID(iid, &IID_ID3D12CommandQueue))
             && !(iface->lpVtbl == &fence_prefix && IsEqualIID(iid, &IID_ID3D12Fence))
             && !(iface->lpVtbl == &at.prefix && IsEqualIID(iid, &IID_ID3D12CommandAllocator))
+            && !(iface->lpVtbl == &st.prefix && IsEqualIID(iid, &IID_ID3D12CommandSignature))
 #endif
             ) return E_NOINTERFACE;
     addref(iface);
@@ -87,6 +94,51 @@ static ID3D12CommandQueue *as_queue(IUnknown *iface)
 }
 
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+static const __typeof__(st) st = { {query, addref, release}, { [0 ... 4] = xs_stop } };
+
+ID3D12CommandSignature *xs_signature_host(IUnknown *iface)
+{
+    return iface && iface->lpVtbl == &st.prefix ?
+            CONTAINING_RECORD(iface, struct adapter, iface)->host.signature : NULL;
+}
+
+HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT stride, IUnknown **out)
+{
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!host) return E_INVALIDARG;
+    UINT expected;
+    switch (type) {
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: expected = sizeof(D3D12_DRAW_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: expected = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: expected = sizeof(D3D12_DISPATCH_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH: {
+            D3D12_FEATURE_DATA_D3D12_OPTIONS7 caps;
+            HRESULT hr = ID3D12Device_CheckFeatureSupport(host, D3D12_FEATURE_D3D12_OPTIONS7, &caps, sizeof(caps));
+            if (FAILED(hr)) return hr;
+            if (!caps.MeshShaderTier) return DXGI_ERROR_UNSUPPORTED;
+            expected = sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
+            break;
+        }
+        default: return E_NOTIMPL;
+    }
+    if (stride != expected) return E_NOTIMPL;
+    D3D12_INDIRECT_ARGUMENT_DESC arg = {.Type = type};
+    D3D12_COMMAND_SIGNATURE_DESC desc = {stride, 1, &arg, 0};
+    struct adapter *a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
+    if (!a) return E_OUTOFMEMORY;
+    HRESULT hr = ID3D12Device_CreateCommandSignature(host, &desc, NULL,
+            &IID_ID3D12CommandSignature, (void **)&a->host.signature);
+    if (FAILED(hr)) {
+        HeapFree(GetProcessHeap(), 0, a);
+        return hr;
+    }
+    a->iface.lpVtbl = &st.prefix;
+    a->refs = 1;
+    *out = &a->iface;
+    return S_OK;
+}
+
 static HRESULT WINAPI allocator_reset(IUnknown *iface)
 {
     return ID3D12CommandAllocator_Reset(CONTAINING_RECORD(iface, struct adapter, iface)->host.allocator);

@@ -1,5 +1,7 @@
 # Write-combined graphics pool
 
+For RADV 26.3.0 on `1002:164e`, also apply Wine patch `0005` and vkd3d patch `0002` after the NVIDIA support patches. Build Wine against recent `libdrm_amdgpu` headers; additionally stage the x64 Windows `kernelbase.dll` alongside the Unix `ntdll.so`, `win32u.so` and x64 `d3d12core.dll` for `install.sh`. Only a qualified AMD control view accepts `VirtualFree(base, 65536, MEM_RELEASE)`. Run `test-control64.cpp` in `scarlett/native/xmem/` with the same build procedure as `test_wc_pages.cpp` and `SCARLETT_TEST_GPU=radv`.
+
 The allocator accepts the observed tuple `(NULL, 0x89700000, 0x20003000, 0x283, 0x2404)` on the tested RTX 3070 (PCI `10de:2484`, NVIDIA 595.112.07). The driver reported write-combined system memory. The meaning of flag bit `0x200` and physical page size are unverified.
 
 Apply `scarlett/wine-patches/*.patch` in numeric order to the pinned Wine source. Apply `0001-vkd3d-wc-heap.patch` in this directory to the pinned vkd3d-proton source (`212991fc2c266bc0d59f4c4ce8f80f7126508d71`). Build with Vulkan, GL and DRM support. In the configured Wine build run `make dlls/ntdll/ntdll.so dlls/win32u/win32u.so`; in the 64-bit MinGW vkd3d-proton build run `ninja libs/d3d12core/d3d12core.dll`. Stage all three files by basename alongside the native PE DLLs before running `scarlett/install.sh`.

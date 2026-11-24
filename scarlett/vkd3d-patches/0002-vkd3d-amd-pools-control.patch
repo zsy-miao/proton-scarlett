@@ -1,0 +1,164 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index aa18be449d5148d79f0a82e002b43734c7e2c339..c8eed4ca155608133b67a8cbcfbefec8da14d23e 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,8 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettControlHeapV1
++    ScarlettWbHeapV1
+     ScarlettWcHeapV1
+     D3D12GetInterface
+     D3D12SDKVersion DATA PRIVATE
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 854475dfbf575d6fc21ea4db819dcf2d05244d11..c555fe77a8c1a6be56b5682f84e1020de248e234 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -7848,7 +7848,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
+ 
+ #ifdef _WIN32
+ /* Private x64 ABI: the D3DKMT handle retains the allocation independently of this heap. */
+-HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *iface, SIZE_T size, HANDLE input, HANDLE *output, ID3D12Heap **result)
++static HRESULT scarlett_create_heap(d3d12_device_iface *iface, SIZE_T size, HANDLE input, HANDLE *output, ID3D12Heap **result, bool control, bool wb)
+ {
+     VkMemoryGetWin32HandleInfoKHR get = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
+     VkImportMemoryWin32HandleInfoKHR imp = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+@@ -7858,6 +7858,7 @@ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *iface, SIZE_T size, HANDLE i
+     const VkPhysicalDeviceProperties *p = &device->device_info.properties2.properties;
+     struct d3d12_heap *heap;
+     D3D12_HEAP_DESC desc = {0};
++    uint32_t wc_type = 0;
+     HRESULT hr;
+ 
+     if (!result || (!input && !output)) return E_INVALIDARG;
+@@ -7865,22 +7866,41 @@ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *iface, SIZE_T size, HANDLE i
+     if (output) *output = NULL;
+     if (!size || size % 65536) return E_INVALIDARG;
+     /* Only this device/driver/type has measured WC rather than merely non-HOST_CACHED. */
+-    if (p->vendorID != 0x10de || p->deviceID != 0x2484 || p->driverVersion != ((595u<<22)|(112u<<14)|(7u<<6)) ||
+-            device->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
+-            device->memory_properties.memoryTypeCount <= 3 || device->memory_properties.memoryTypes[3].propertyFlags !=
+-            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+-            !vk_procs->vkGetMemoryWin32HandleKHR) return DXGI_ERROR_UNSUPPORTED;
++    if (control)
++    {
++        if (size != 65536 || p->vendorID != 0x1002 || p->deviceID != 0x164e ||
++                device->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_MESA_RADV ||
++                !device->device_info.device_coherent_memory_features_amd.deviceCoherentMemory ||
++                !vk_procs->vkGetMemoryWin32HandleKHR) return DXGI_ERROR_UNSUPPORTED;
++    }
++    else
++    {
++        /* NVIDIA RM coherency / AMDGPU GTT USWC measured across PRIME import. */
++        if (p->vendorID == 0x10de && p->deviceID == 0x2484 && p->driverVersion == ((595u<<22)|(112u<<14)|(7u<<6)) &&
++                device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY) wc_type = 3;
++        else if (p->vendorID == 0x1002 && p->deviceID == 0x164e && p->driverVersion == 0x06803000 &&
++                device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV) wc_type = 2;
++        else return DXGI_ERROR_UNSUPPORTED;
++        if (wb) {
++            if (wc_type == 3) return E_NOINTERFACE; /* qualified NVIDIA system-section path */
++            if (size != 0x49400000 && size != 0x23300000) return DXGI_ERROR_UNSUPPORTED;
++            wc_type = 5;
++        }
++        if (device->memory_properties.memoryTypeCount <= wc_type || device->memory_properties.memoryTypes[wc_type].propertyFlags !=
++                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | (wb ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0)) ||
++                !vk_procs->vkGetMemoryWin32HandleKHR) return DXGI_ERROR_UNSUPPORTED;
++    }
+     desc.SizeInBytes = size;
+     desc.Properties.CreationNodeMask = desc.Properties.VisibleNodeMask = 1;
+     desc.Properties.Type = D3D12_HEAP_TYPE_CUSTOM;
+-    desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
++    desc.Properties.CPUPageProperty = wb ? D3D12_CPU_PAGE_PROPERTY_WRITE_BACK : D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
+     desc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+     desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+-    imp.handleType = SCARLETT_DMA_HANDLE;
++    imp.handleType = control ? SCARLETT_CONTROL_HANDLE : wb ? SCARLETT_WB_HANDLE : SCARLETT_DMA_HANDLE;
+     imp.handle = input;
+-    exp.handleTypes = SCARLETT_DMA_HANDLE;
+-    if (FAILED(hr = d3d12_heap_create(device, &desc, NULL, input ? (void *)&imp : (void *)&exp, &heap))) return hr;
+-    if (heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type != 3) hr = E_FAIL;
++    exp.handleTypes = wb ? SCARLETT_WB_HANDLE : SCARLETT_DMA_HANDLE;
++    if (FAILED(hr = d3d12_heap_create(device, &desc, NULL, (input || control) ? (void *)&imp : (void *)&exp, &heap))) return hr;
++    if (heap->allocation.offset || (control ? device->memory_properties.memoryTypes[heap->allocation.device_allocation.vk_memory_type].propertyFlags != 0xc6 : heap->allocation.device_allocation.vk_memory_type != wc_type)) hr = E_FAIL;
+     if (SUCCEEDED(hr) && !input)
+     {
+         get.memory = heap->allocation.device_allocation.vk_memory;
+@@ -7891,6 +7911,16 @@ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *iface, SIZE_T size, HANDLE i
+     else *result = (ID3D12Heap *)&heap->ID3D12Heap_iface;
+     return hr;
+ }
++HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
++{
++    return scarlett_create_heap(d, n, in, out, h, false, false);
++}
++HRESULT WINAPI ScarlettControlHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
++{
++    return scarlett_create_heap(d, n, in, out, h, true, false);
++}
++HRESULT WINAPI ScarlettWbHeapV1(d3d12_device_iface *d, SIZE_T n, HANDLE in, HANDLE *out, ID3D12Heap **h)
++{ return scarlett_create_heap(d,n,in,out,h,false,true); }
+ #endif
+ 
+ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromFileMapping(d3d12_device_iface *iface,
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+index d6a654400b564351375627a795bc711df6984e7a..ef00e212b3a2fe41a9f3b0fa70b6e5d1d757d79c 100644
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -2153,10 +2153,21 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+     alloc_info.host_ptr = info->host_ptr;
+     if (info->scarlett_chain)
+     {
++        const VkBaseInStructure *s = info->scarlett_chain;
++        bool control = s->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR &&
++                ((const VkImportMemoryWin32HandleInfoKHR *)s)->handleType == SCARLETT_CONTROL_HANDLE;
+         alloc_info.pNext = info->scarlett_chain;
+-        alloc_info.memory_requirements.memoryTypeBits = 1u << 3;
++        if (control)
++        {
++            unsigned i;
++            alloc_info.memory_requirements.memoryTypeBits = 0;
++            for (i = 0; i < device->memory_properties.memoryTypeCount; ++i)
++                if (device->memory_properties.memoryTypes[i].propertyFlags == 0xc6)
++                    alloc_info.memory_requirements.memoryTypeBits |= 1u << i;
++        }
++        else alloc_info.memory_requirements.memoryTypeBits = 1u << (device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV ? (info->heap_desc.Properties.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ? 5 : 2) : 3);
+         alloc_info.flags |= VKD3D_ALLOCATION_FLAG_DEDICATED | VKD3D_ALLOCATION_FLAG_NO_FALLBACK;
+-        alloc_info.heap_flags |= SCARLETT_EXTERNAL_BUFFER;
++        alloc_info.heap_flags |= control ? SCARLETT_CONTROL_BUFFER : SCARLETT_EXTERNAL_BUFFER;
+     }
+     alloc_info.vk_memory_priority = info->vk_memory_priority;
+     alloc_info.explicit_global_buffer_usage = info->explicit_global_buffer_usage;
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index 53ad0efcbdf322b01321196dd70523d1105f4612..95b532c111dad9a1ff48d276f9f9d35ed8cc63ac 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -203,11 +203,11 @@ HRESULT vkd3d_create_buffer(struct d3d12_device *device,
+         buffer_info.pNext = &external_info;
+     }
+ 
+-    if (heap_flags & SCARLETT_EXTERNAL_BUFFER)
++    if (heap_flags & (SCARLETT_EXTERNAL_BUFFER | SCARLETT_CONTROL_BUFFER))
+     {
+         external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+         external_info.pNext = NULL;
+-        external_info.handleTypes = SCARLETT_DMA_HANDLE;
++        external_info.handleTypes = heap_flags & SCARLETT_CONTROL_BUFFER ? SCARLETT_CONTROL_HANDLE : heap_properties->CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ? SCARLETT_WB_HANDLE : SCARLETT_DMA_HANDLE;
+         buffer_info.pNext = &external_info;
+     }
+ 
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index 79d06b2ea4cac8d585696066c0a8c7fc47d46266..a68026cb1251a338c4216c106a872516be40ee2a 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -770,7 +770,10 @@ struct vkd3d_allocate_memory_info
+ };
+ 
+ /* Private marker used only when creating the global VkBuffer, never exposed in GetDesc. */
++#define SCARLETT_CONTROL_BUFFER 0x20000000u
++#define SCARLETT_CONTROL_HANDLE 0x20000000u
+ #define SCARLETT_EXTERNAL_BUFFER 0x40000000u
++#define SCARLETT_WB_HANDLE 0x10000000u
+ #define SCARLETT_DMA_HANDLE 0x40000000u
+ struct vkd3d_allocate_heap_memory_info
+ {

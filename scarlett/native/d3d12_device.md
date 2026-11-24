@@ -66,9 +66,8 @@ GDK flags. The device owns a real vkd3d device. Its bootstrap prefix serves
 node-1 `DEFAULT`, `UPLOAD`, `READBACK` heap properties using destination in
 RCX and device in RDX; the return pointer is the destination. It creates
 the exact Direct queue and zero-valued shared fence using separate native
-adapters. For the first extended queue call, `+0x180` clears the output,
-logs the operation and returns `E_NOTIMPL`. The retail caller checks the
-HRESULT and contains `int3` at RVA `0x2478826` on failure.
+adapters. The previous build returned `E_NOTIMPL` for the first extended
+queue and the retail caller trapped at `0x2478826` on RADV.
 
 `+0x180` supports the sample's default Compute request `(2,0,0,0)`.
 Microsoft's [FramePacing](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/FramePacing/FramePacing.cpp#L1730-L1748)
@@ -79,7 +78,34 @@ uses ordinary default Compute alongside Direct. We create a fresh host Compute
 queue at normal priority for the all-zero options. Those assignments do not
 establish a binary offset for each optional field or a desktop equivalent for
 nonzero pipe/queue selection. Treating word 2 as desktop `Flags` or word 3
-as `NodeMask` would be unjustified. All four retail inputs still fail.
+as `NodeMask` would be unjustified.
+
+For the four observed indexed descriptors in the table, each successful call
+creates a distinct, normal-priority host Compute queue on node 1. This
+preserves stream identity, FIFO submissions and explicit fence dependencies.
+The host schedules each queue. Other indices, combinations and flags return
+`E_NOTIMPL` with null output.
+
+**Why this meets the observed scheduling requirement.** The initializer
+stores four queue pointers at `0x75e7038 + 8*i`, then passes each pointer and
+its ID (1–4) to `0x5a86180`. Each gets a separate fence and submitted counter;
+the submission worker reads the queue, fence and 64-bit value to issue
+`queue[+0x80]` (see the [queue evidence](queue/README.md)). None of those
+operations observes a hardware pipe ID. AMD's [RDNA Performance Guide](https://gpuopen.com/learn/rdna-performance-guide/#synchronization)
+describes ordered command buffers and submission-boundary cross-queue fences.
+Its [MES architecture specification](https://gpuopen.com/download/micro_engine_scheduler.pdf),
+“HW architecture overview” and “Scheduling algorithm”, distinguishes application
+queues from the physical queues to which the scheduler maps them. Separate pipes
+can improve overlap and latency; neither source establishes that Xbox placement
+is only a hint. There is no claim about physical affinity, guaranteed concurrent
+shader execution, priorities, or forward progress of shaders spinning on another
+dispatch. Those require separate evidence.
+
+Pinned vkd3d-proton [assigns each virtual queue to a host queue](https://github.com/HansKristian-Work/vkd3d-proton/blob/212991fc2c266bc0d59f4c4ce8f80f7126508d71/libs/vkd3d/command.c#L3034-L3045).
+For [shared-fence waits](https://github.com/HansKristian-Work/vkd3d-proton/blob/212991fc2c266bc0d59f4c4ce8f80f7126508d71/libs/vkd3d/command.c#L22749-L22760)
+the submitting worker waits before consuming the physical queue, so another
+logical queue can submit the GPU signal even on a shared physical queue.
+This does not infer an Xbox vtable slot for Wait, submission or cache control.
 
 ### Allocator and list boundary
 
@@ -189,12 +215,16 @@ TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/public"
 
 `test-d3d12-bootstrap.c` independently dispatches by slot, compares each
 heap result to the desktop device with surrounding canaries, submits a real
-queue signal, and checks `E_NOTIMPL` and null output at `+0x180`. The linked
+queue signal, and checks `E_NOTIMPL` and null output for unknown selectors at `+0x180`. The linked
 variant (`-DXS_TEST_LINKED -DSCARLETT_DEVICE_BOOTSTRAP` plus `d3d12_device.c`
 and `queue/queue.c`) enqueues Compute's wait before Direct's signal. A CPU
 gate holds Direct, so the final Compute event must time out until the gate
 opens and then complete. This tests independent command queues and explicit
-dependencies, not hardware-engine affinity or physical concurrency. Run after
+dependencies. It also rotates each indexed Compute queue as the sole runnable
+queue: its GPU signal retires while the other three signals remain pending,
+then its second GPU signal opens their gate. The four rounds use fence
+values above `2^40` with identical low words. The public export test checks
+distinct COM identities and rejects unsupported selector combinations. Run after
 the public test above:
 
 ```sh
@@ -206,7 +236,8 @@ TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/linked"
 grep -F 'PASS bootstrap:' "$work"/scarlett-run.*/logs/steam-999001.log
 ```
 
-Both tests passed on an RTX 3070. No private test symbol is exported by the DLL.
+Both tests passed on an RTX 3070 (595.112.7) and AMD `1002:164e` (RADV
+26.3.0). No private test symbol is exported by the DLL.
 For both allocator types the linked test also records and closes a host list,
 submits it behind a gate, observes the completion fence, calls Xbox allocator
 `+0x40`, then resets and closes the list on the same allocator. The public PE

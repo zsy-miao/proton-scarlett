@@ -7,6 +7,7 @@
 #include "queue/queue.h"
 #include "queue/bootstrap_guard.h"
 #include <stddef.h>
+#include <stdio.h>
 #endif
 
 struct xbox_device {
@@ -146,13 +147,40 @@ static HRESULT WINAPI bootstrap_extended(IUnknown *iface, const void *desc, REFI
     if (!IsEqualIID(iid, &IID_ID3D12CommandQueue)) return E_NOINTERFACE;
     if (!ReadProcessMemory(GetCurrentProcess(), desc, words, sizeof(words), &copied) || copied != sizeof(words))
         return E_POINTER;
-    /* No desktop equivalent for selecting an Xbox compute pipe or queue index. */
-    if (words[0] != D3D12_COMMAND_LIST_TYPE_COMPUTE || words[1] || words[2] || words[3]) {
-        OutputDebugStringA("scarlett: device+0x180 extended queue unsupported (E_NOTIMPL)\n");
+    /* The host schedules each logical stream; physical engine placement is not guaranteed. */
+    if (words[0] != D3D12_COMMAND_LIST_TYPE_COMPUTE || words[1] ||
+        !((words[2] <= 3 && words[3] == 0) || (words[2] == 0 && words[3] == 1))) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "scarlett: device+0x180 unsupported queue descriptor (%#x,%#x,%#x,%#x)\n",
+                 words[0], words[1], words[2], words[3]);
+        OutputDebugStringA(msg);
         return E_NOTIMPL;
     }
     hr = xs_compute_queue(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, &queue);
     *out = queue;
+    return hr;
+}
+
+static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_SIGNATURE_DESC *desc,
+        IUnknown *root, REFIID iid, void **out)
+{
+    D3D12_COMMAND_SIGNATURE_DESC d;
+    D3D12_INDIRECT_ARGUMENT_TYPE type;
+    SIZE_T n;
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!desc || !iid) return E_INVALIDARG;
+    if (!IsEqualIID(iid, &IID_ID3D12CommandSignature)) return E_NOINTERFACE;
+    if (root) return E_NOTIMPL;
+    /* NodeMask is the last field written. Do not read padding or inactive union members. */
+    const SIZE_T size = offsetof(D3D12_COMMAND_SIGNATURE_DESC, NodeMask) + sizeof(d.NodeMask);
+    if (!ReadProcessMemory(GetCurrentProcess(), desc, &d, size, &n) || n != size) return E_POINTER;
+    if (d.NodeMask || d.NumArgumentDescs != 1) return E_NOTIMPL;
+    if (!ReadProcessMemory(GetCurrentProcess(), d.pArgumentDescs, &type, sizeof(type), &n) || n != sizeof(type))
+        return E_POINTER;
+    IUnknown *signature = NULL;
+    HRESULT hr = xs_signature(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, type, d.ByteStride, &signature);
+    *out = signature;
     return hr;
 }
 
@@ -165,7 +193,9 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
     __typeof__(&bootstrap_fence) fence;
-    xs_stop_fn gap128[11];
+    xs_stop_fn gap128[4];
+    __typeof__(&bootstrap_signature) signature;
+    xs_stop_fn gap150[6];
     __typeof__(&bootstrap_extended) extended;
     xs_stop_fn gap188[24];
     __typeof__(&bootstrap_list) list;
@@ -176,6 +206,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
+               offsetof(struct bootstrap_vtbl, signature) == 0x148 &&
                offsetof(struct bootstrap_vtbl, extended) == 0x180, "bootstrap x64 ABI");
 static const struct bootstrap_vtbl bootstrap_vtbl;
 
@@ -215,7 +246,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 15] = xs_stop }, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
-    .gap128 = { [0 ... 10] = xs_stop }, .extended = bootstrap_extended,
+    .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
+    .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
     .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 7] = xs_stop }
 };
 #endif

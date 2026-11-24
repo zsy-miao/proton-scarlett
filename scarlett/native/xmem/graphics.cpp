@@ -1,7 +1,7 @@
 #include "gpu_buffer.hpp"
 #include <winternl.h>
 
-static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr)
+static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)
 {
     // Resolve only for graphics requests: CPU allocations do not require D3D12.
     HMODULE d3d = LoadLibraryExW(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -17,15 +17,15 @@ static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE
             hr = probe.acquire(device, base, size, &offset);
         } else {
             HANDLE h = nullptr;
-            hr = probe.wc(device,size,nullptr,&h);
+            hr = probe.wc(device,size,nullptr,&h,control,wb);
             ImportedBuffer rebound;
-            if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr);
+            if (SUCCEEDED(hr)) hr = rebound.wc(device,size,h,nullptr,control,wb);
             scarlett_section_info info;
             if (SUCCEEDED(hr) && wc_backing) {
                 *wc_backing = h;
                 h = nullptr;
             } else if (SUCCEEDED(hr)) {
-                hr = scarlett_query_section_handle(0x53430004,base,size,&info,h);
+                hr = scarlett_query_section_handle(control ? 0x53430008 : wb ? 0x5343000b : 0x53430004,base,size,&info,h);
                 if (SUCCEEDED(hr)) *wc_result = info.base;
             }
             if (h) CloseHandle(h);
@@ -68,12 +68,30 @@ extern "C" void *xmem_graphics_alloc(void *base, SIZE_T size, BOOL wc)
         void *result = nullptr;
         hr = validate_import(base,size,&result);
         if (SUCCEEDED(hr)) return result;
-    } else if (SUCCEEDED(hr = scarlett_query_section(size == 0x23300000 ? 0x53430003 : 0x53430001,
+    } else {
+        void *result = nullptr;
+        if ((UINT_PTR)base & ((2u << 20) - 1)) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return nullptr;
+        }
+        hr = validate_import(base,size,&result,nullptr,false,true);
+        if (SUCCEEDED(hr)) return result;
+        if (hr != E_NOINTERFACE) { set_graphics_error(hr); return nullptr; }
+        if (SUCCEEDED(hr = scarlett_query_section(size == 0x23300000 ? 0x53430003 : 0x53430001,
                                                       base, size, &info))) {
-        hr = validate_import(info.base, size, nullptr);
-        if (SUCCEEDED(hr)) return info.base;
-        VirtualFree(info.base, 0, MEM_RELEASE);
+            hr = validate_import(info.base, size, nullptr);
+            if (SUCCEEDED(hr)) return info.base;
+            VirtualFree(info.base, 0, MEM_RELEASE);
+        }
     }
     set_graphics_error(hr);
     return nullptr;
+}
+
+extern "C" void *xmem_control64_alloc(void)
+{
+    void *result = nullptr;
+    HRESULT hr = validate_import(nullptr,65536,&result,nullptr,true);
+    if (FAILED(hr)) set_graphics_error(hr);
+    return result;
 }

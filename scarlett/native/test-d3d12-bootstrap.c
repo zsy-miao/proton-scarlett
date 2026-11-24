@@ -24,6 +24,53 @@ typedef HRESULT (WINAPI *ResetAllocator)(IUnknown *);
 static const IID device_id = {0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
 static const IID list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
 
+static int test_indexed(IUnknown *d, IUnknown *direct, IUnknown *default_compute)
+{
+    const UINT desc[4][4] = {{2,0,1,0}, {2,0,2,0}, {2,0,3,0}, {2,0,0,1}};
+    IUnknown *q[4], *f[4], *gate;
+    Fence make_fence = METHOD(d,0x120,Fence);
+    CHECK(make_fence(d, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&gate) == S_OK);
+    for (unsigned i = 0; i < 4; ++i) {
+        IUnknown *identity;
+        CHECK(METHOD(d,0x180,Queue)(d, desc[i], &IID_ID3D12CommandQueue, (void **)&q[i]) == S_OK);
+        CHECK(IUnknown_QueryInterface(q[i], &IID_IUnknown, (void **)&identity) == S_OK && identity == q[i]);
+        CHECK(identity != direct && identity != default_compute);
+        for (unsigned j = 0; j < i; ++j) CHECK(identity != q[j]);
+        IUnknown_Release(identity);
+        CHECK(make_fence(d, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&f[i]) == S_OK);
+        CHECK(METHOD(q[i],0x80,Signal)(q[i], f[i], 1ull << 32) == S_OK);
+    }
+#ifdef XS_TEST_LINKED
+    for (unsigned leader = 0; leader < 4; ++leader) {
+        /* Constant low word: a truncated wait is satisfied before the GPU opens the gate. */
+        const UINT64 prev = ((UINT64)leader + 1) << 40, next = prev + (1ull << 40);
+        HANDLE blocked[3], free_queue = CreateEventW(NULL, FALSE, FALSE, NULL);
+        unsigned n = 0;
+        CHECK(free_queue && xs_cpu_signal(gate, prev) == S_OK);
+        for (unsigned i = 0; i < 4; ++i) {
+            if (i == leader) continue;
+            blocked[n] = CreateEventW(NULL, FALSE, FALSE, NULL);
+            CHECK(blocked[n] && xs_fence_event(f[i], next, blocked[n]) == S_OK);
+            CHECK(xs_queue_wait(q[i], gate, next) == S_OK);
+            CHECK(METHOD(q[i],0x80,Signal)(q[i], f[i], next) == S_OK);
+            ++n;
+        }
+        CHECK(xs_fence_event(f[leader], next, free_queue) == S_OK);
+        CHECK(METHOD(q[leader],0x80,Signal)(q[leader], f[leader], next) == S_OK);
+        CHECK(WaitForSingleObject(free_queue, 5000) == WAIT_OBJECT_0);
+        CHECK(WaitForMultipleObjects(3, blocked, FALSE, 50) == WAIT_TIMEOUT);
+        CHECK(METHOD(q[leader],0x80,Signal)(q[leader], gate, next) == S_OK);
+        CHECK(WaitForMultipleObjects(3, blocked, TRUE, 5000) == WAIT_OBJECT_0);
+        CloseHandle(free_queue);
+        for (unsigned j = 0; j < 3; ++j) CloseHandle(blocked[j]);
+    }
+    puts("PASS indexed progress: each of four Compute queues advanced with the other three gated; full-width ordered GPU signals");
+#endif
+    for (unsigned i = 0; i < 4; ++i) CHECK(!IUnknown_Release(q[i]) && !IUnknown_Release(f[i]));
+    CHECK(!IUnknown_Release(gate));
+    return 0;
+}
+
 #ifdef XS_TEST_LINKED
 static int test_retirement(ID3D12Device *host, IUnknown *wrapped, D3D12_COMMAND_LIST_TYPE type)
 {
@@ -64,7 +111,7 @@ int main(void)
 {
     DWORD params[20] = { [0]=0x20004, [2]=0x100000, [10]=1, [15]=0x20 };
     UINT direct[4] = {0,0,0,1}, compute[4] = {2,0,0,0};
-    const UINT unsupported[][4] = {{2,0,1,0}, {2,0,2,0}, {2,0,3,0}, {2,0,0,1},
+    const UINT unsupported[][4] = {{2,0,4,0}, {2,0,1,1}, {2,0,0,2}, {2,0,~0u,0},
                                    {2,1,0,0}, {3,0,0,0}};
     IUnknown *d, *q, *f, *cq;
     ID3D12Device *host;
@@ -103,6 +150,7 @@ int main(void)
     Queue extended = METHOD(d,0x180,Queue);
     CHECK(extended(d, compute, &IID_ID3D12CommandQueue, (void **)&cq) == S_OK && cq != q);
     CHECK(METHOD(cq,0x80,Signal)(cq, f, 0x100000002ull) == S_OK);
+    CHECK(!test_indexed(d, q, cq));
 #ifdef XS_TEST_LINKED
     /* Queue both sides of a dependency before opening the CPU gate. */
     const UINT64 n = 1ull << 42;
@@ -160,6 +208,6 @@ int main(void)
     CHECK(!IUnknown_Release(cq));
     CHECK(!IUnknown_Release(f) && !IUnknown_Release(q) && !IUnknown_Release(d));
     ID3D12Device_Release(host);
-    puts("PASS bootstrap: Direct and default Compute queues; all four indexed retail queues rejected");
+    puts("PASS bootstrap: Direct, default Compute and four distinct indexed queues; unsupported selectors rejected");
     return 0;
 }
