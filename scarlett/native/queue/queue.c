@@ -2,6 +2,7 @@
 #define CONST_VTABLE
 #include "queue.h"
 #include <stddef.h>
+#include <stdint.h>
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 #include "bootstrap_guard.h"
 #include "present.h"
@@ -42,8 +43,21 @@ struct qtable {
 };
 struct ftable {
     IUnknownVtbl prefix;
-    void *other[10]; /* Through observed +0x60. */
+    void *other[9];
+    const volatile UINT64 *(WINAPI *address)(IUnknown *);
 };
+_Static_assert(offsetof(struct ftable, address) == 0x60, "x64 monitored fence address");
+
+struct monitored_fence {
+    struct adapter a;
+    ID3D12Device *device; /* Kept alive by the host fence. */
+    PTP_TIMER timer;
+    SRWLOCK lock;
+    BOOL active;
+    char separate_from_sampler_lock[64]; /* Do not wake MONITORX on an unchanged sample. */
+    volatile UINT64 value;
+};
+_Static_assert(offsetof(struct monitored_fence, value) % 8 == 0, "atomic x64 reader");
 static const struct qtable qt;
 static const struct ftable ft;
 _Static_assert(offsetof(struct qtable, execute) == 0x118, "x64 queue submit");
@@ -78,7 +92,13 @@ static ULONG WINAPI release(IUnknown *iface)
     struct adapter *a = CONTAINING_RECORD(iface, struct adapter, iface);
     ULONG refs = InterlockedDecrement(&a->refs);
     if (!refs) {
-        if (iface->lpVtbl == &fence_prefix) ID3D12Fence_Release(a->host.fence);
+        if (iface->lpVtbl == &fence_prefix) {
+            struct monitored_fence *f = CONTAINING_RECORD(a, struct monitored_fence, a);
+            SetThreadpoolTimer(f->timer, NULL, 0, 0);
+            WaitForThreadpoolTimerCallbacks(f->timer, TRUE);
+            CloseThreadpoolTimer(f->timer);
+            ID3D12Fence_Release(a->host.fence);
+        }
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
         else if (iface->lpVtbl == &at.prefix) ID3D12CommandAllocator_Release(a->host.allocator);
         else if (iface->lpVtbl == &st.prefix) ID3D12CommandSignature_Release(a->host.signature);
@@ -217,6 +237,38 @@ static ID3D12Fence *as_fence(IUnknown *iface)
             CONTAINING_RECORD(iface, struct adapter, iface)->host.fence : NULL;
 }
 
+/* Called with the sampling lock. Never substitute a submitted value or apply a high-water mark. */
+static void sample_completed(struct monitored_fence *f)
+{
+    UINT64 value = ID3D12Fence_GetCompletedValue(f->a.host.fence);
+    if (FAILED(ID3D12Device_GetDeviceRemovedReason(f->device))) value = UINT64_MAX;
+    if (f->value != value) InterlockedExchange64((volatile LONG64 *)&f->value, (LONG64)value);
+}
+
+static void CALLBACK sample_timer(PTP_CALLBACK_INSTANCE instance, void *context, PTP_TIMER timer)
+{
+    struct monitored_fence *f = context;
+    (void)instance; (void)timer;
+    if (TryAcquireSRWLockExclusive(&f->lock)) {
+        sample_completed(f);
+        ReleaseSRWLockExclusive(&f->lock);
+    }
+}
+
+static const volatile UINT64 * WINAPI fence_address(IUnknown *iface)
+{
+    struct monitored_fence *f = CONTAINING_RECORD(iface, struct monitored_fence, a.iface);
+    AcquireSRWLockExclusive(&f->lock);
+    sample_completed(f);
+    if (!f->active) {
+        FILETIME due = { (DWORD)-10000, (DWORD)-1 }; /* Relative 1 ms. */
+        SetThreadpoolTimer(f->timer, &due, 1, 0);
+        f->active = TRUE;
+    }
+    ReleaseSRWLockExclusive(&f->lock);
+    return &f->value;
+}
+
 static HRESULT WINAPI queue_signal(IUnknown *queue, IUnknown *fence, UINT64 value)
 {
     ID3D12CommandQueue *q = as_queue(queue);
@@ -250,9 +302,9 @@ static const struct qtable qt = {
 #endif
 };
 static const struct ftable ft = {
-    .prefix = {query, addref, release},
+    .prefix = {query, addref, release}, .address = fence_address,
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
-    .other = { [0 ... 9] = (void *)xs_stop },
+    .other = { [0 ... 8] = (void *)xs_stop },
 #endif
 };
 
@@ -266,7 +318,13 @@ HRESULT xs_queue_wait(IUnknown *queue, IUnknown *fence, UINT64 value)
 HRESULT xs_cpu_signal(IUnknown *fence, UINT64 value)
 {
     ID3D12Fence *f = as_fence(fence);
-    return f ? ID3D12Fence_Signal(f, value) : E_INVALIDARG;
+    if (!f) return E_INVALIDARG;
+    struct monitored_fence *m = CONTAINING_RECORD(fence, struct monitored_fence, a.iface);
+    HRESULT hr = ID3D12Fence_Signal(f, value);
+    AcquireSRWLockExclusive(&m->lock);
+    if (m->active) sample_completed(m);
+    ReleaseSRWLockExclusive(&m->lock);
+    return hr;
 }
 
 HRESULT xs_fence_event(IUnknown *fence, UINT64 value, HANDLE event)
@@ -282,13 +340,24 @@ static HRESULT create(ID3D12Device *host, const D3D12_COMMAND_QUEUE_DESC *desc, 
     if (!out) return E_POINTER;
     *out = NULL;
     if (!host) return E_INVALIDARG;
-    a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*a));
+    a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, desc ? sizeof(*a) : sizeof(struct monitored_fence));
     if (!a) return E_OUTOFMEMORY;
     hr = desc ? ID3D12Device_CreateCommandQueue(host, desc, &IID_ID3D12CommandQueue, (void **)&a->host.queue) :
             ID3D12Device_CreateFence(host, 0, D3D12_FENCE_FLAG_SHARED, &IID_ID3D12Fence, (void **)&a->host.fence);
     if (FAILED(hr)) {
         HeapFree(GetProcessHeap(), 0, a);
         return hr;
+    }
+    if (!desc) {
+        struct monitored_fence *f = CONTAINING_RECORD(a, struct monitored_fence, a);
+        f->device = host;
+        f->timer = CreateThreadpoolTimer(sample_timer, f, NULL);
+        if (!f->timer) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            ID3D12Fence_Release(a->host.fence);
+            HeapFree(GetProcessHeap(), 0, a);
+            return hr;
+        }
     }
     a->iface.lpVtbl = desc ? &queue_prefix.unknown : &fence_prefix;
     a->refs = 1;

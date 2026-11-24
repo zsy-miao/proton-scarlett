@@ -15,6 +15,7 @@ typedef D3D12_HEAP_PROPERTIES *(WINAPI *Heap)(D3D12_HEAP_PROPERTIES *, IUnknown 
 typedef HRESULT (WINAPI *Queue)(IUnknown *, const void *, REFIID, void **);
 typedef HRESULT (WINAPI *Fence)(IUnknown *, UINT64, D3D12_FENCE_FLAGS, REFIID, void **);
 typedef HRESULT (WINAPI *Signal)(IUnknown *, IUnknown *, UINT64);
+typedef const volatile UINT64 *(WINAPI *FenceAddress)(IUnknown *);
 typedef HRESULT (WINAPI *Frequency)(IUnknown *, UINT64 *);
 typedef HRESULT (WINAPI *Allocator)(IUnknown *, D3D12_COMMAND_LIST_TYPE, REFIID, void **);
 typedef HRESULT (WINAPI *List)(IUnknown *, const void *, IUnknown *, IUnknown *, REFIID, void **);
@@ -238,7 +239,12 @@ int main(void)
     CHECK(IUnknown_QueryInterface(f, &IID_IUnknown, &p) == S_OK && p == f);
     IUnknown_Release((IUnknown *)p);
     CHECK(METHOD(q,0x90,Frequency)(q, &hz) == S_OK && hz);
+    const volatile UINT64 *word = METHOD(f,0x60,FenceAddress)(f);
+    CHECK(word && *word == 0);
     CHECK(METHOD(q,0x80,Signal)(q, f, 0x100000001ull) == S_OK);
+    ULONGLONG start = GetTickCount64();
+    while (*word != 0x100000001ull && GetTickCount64() - start < 5000) Sleep(1);
+    CHECK(*word == 0x100000001ull);
 #ifdef XS_TEST_LINKED
     HANDLE done = CreateEventW(NULL, FALSE, FALSE, NULL);
     CHECK(done && xs_fence_event(f, 0x100000001ull, done) == S_OK);

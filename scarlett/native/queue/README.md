@@ -3,9 +3,9 @@
 `xs_direct_queue` creates a normal-priority Direct queue on node 1.
 `xs_shared_fence` creates a zero-initialized `D3D12_FENCE_FLAG_SHARED` fence on
 the supplied desktop device. Each returns one owned `IUnknown` reference; the
-objects have independent identities and release their own vkd3d objects. Only
-`IID_IUnknown` succeeds in `QueryInterface`. These internal constructors have
-no DLL exports and are not wired into the Xbox device factory.
+objects have independent identities and release their own vkd3d objects.
+The bootstrap device exposes them under their observed IIDs; QI returns
+the wrapper, never a desktop vtable. The standalone constructors expose IUnknown.
 
 The queue prefix implements two non-IUnknown operations: `Signal(fence, UINT64)`
 at byte offset `0x80` and `GetTimestampFrequency(UINT64 *)` at `0x90`. The former
@@ -29,15 +29,39 @@ specify vtable offsets. Addresses below are RVAs.
 | `0x2484187`–`0x24841f7` | Receiver is the original queue global `0x8759ff8`. `+0x90` takes a pointer to one qword. On success with a nonzero result the caller computes `1000.0 / result`, consistent with converting GPU ticks to milliseconds. |
 | `0x248b4b5` → `0x2472f60` → `0x108660`; `0x248bcc4` | The bookkeeping fence and the original queue are independently released via slot `+0x10`. |
 
-**Retail blocker:** the title uses a different CPU wait path. At `0x4fb0a75`
-it takes a queue bookkeeping object's fence, then at `0x4fb0aec` calls
-`fence[+0x60]`. It dereferences the returned **address**, repeatedly reads its
-64-bit contents and uses `MONITORX`/`MWAITX` (`0x4fb0d21`–`0x4fb0d55`).
-A completed-value snapshot or event cannot be returned as this address.
-Exposing the fence requires evidence of the address's lifetime, update and
-device-loss semantics, plus a coherent implementation. Exposing the queue
-also requires the additional calls (including `+0x100` and `+0x118` in the
-submission worker), their argument layouts and child-object contracts.
+## Fence `+0x60`: CPU-readable completed value
+
+`4fb0a75` loads the owned fence from `book+0x10`; `4fb0aec` calls its
+`+0x60`, saves RAX in RDI and loads `[rdi]` as a qword without a null check.
+The address survives calls and sleeps in the wait loop: `4fb0d21` arms
+`MONITORX`, `4fb0d24` reloads, `4fb0d52` does a timed `MWAITX`, and
+`4fb0d55` reloads again. All ones takes a separate handler (`2474870`).
+The target is masked to 56 bits at `4fb0aba`; the default comparison tests
+bit 55 of the difference (`4fb0b2d`). These are caller conventions, **not**
+a reason to truncate the word. The caller neither frees the address nor
+passes it to a GPU. No post-final-Release reader was identified.
+
+Windows [D3DKMTOpenSyncObjectFromNtHandle2](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/ns-d3dkmthk-_d3dkmt_opensyncobjectfromnthandle2)
+can return a monitored CPU mapping; [pinned Wine](https://github.com/ValveSoftware/wine/blob/e60892cc2398b0a83c332a2078c7b85e47bdb42b/dlls/win32u/d3dkmt.c#L1794-L1815)
+sets that address to zero. Desktop `ID3D12Fence` exposes completion as
+a value or event. The adapter therefore returns its own naturally aligned
+64-bit word, borrowed for the lifetime of the fence. The first address call
+samples completion and arms a thread-pool timer (requested period 1 ms).
+The timer reads `GetCompletedValue`; CPU `Signal` also samples synchronously
+when active. Samples are serialized. Only a changed value is published,
+with a full-width interlocked store. Queue submission never publishes a
+value. Final Release cancels and drains the timer before freeing the cell
+or releasing the host fence. Outstanding GPU signals use the host fence;
+[vkd3d retains it through retirement](https://github.com/HansKristian-Work/vkd3d-proton/blob/212991fc2c266bc0d59f4c4ce8f80f7126508d71/libs/vkd3d/command.c#L22804-L22836).
+
+A failed `GetDeviceRemovedReason` publishes `UINT64_MAX`, as does a host
+completed value of all ones. Checking the device separately matters:
+[pinned shared-fence code](https://github.com/HansKristian-Work/vkd3d-proton/blob/212991fc2c266bc0d59f4c4ce8f80f7126508d71/libs/vkd3d/command.c#L1710-L1727)
+returns zero for a failed Vulkan counter query. Loss not reported by either
+host API cannot be distinguished from a valid result. Sampling can lag
+completion and skip transient values between ticks; this is a current-value
+mirror for the observed advancing counters, not a GPU-addressable mapping,
+a per-signal notification, or a way to add rewind support to the host.
 
 ## Scratch GPU test
 
@@ -49,14 +73,14 @@ work=$(mktemp -d)
 mkdir "$work/game"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror \
   "$src/queue.c" "$src/test.c" -ld3d12 -o "$work/game/game_scarlett_master.exe"
-TMPDIR="$work" "$src/../../test-launch-nixos.sh" "$work/game"
+SCARLETT_TEST_GPU=radv TMPDIR="$work" "$src/../../test-launch-nixos.sh" "$work/game"
 grep -F 'PASS queue adapter:' "$work"/scarlett-run.*/logs/steam-999001.log
 ```
 
-Passed on GeForce RTX 3070, vkd3d-proton 3.0.0. The test calls the queue
-through the two verified slots, checks distinct COM identities and rejects a
-foreign fence. A submitted GPU wait gates the subsequent queue signal: the
-completion event times out while only the low 32 bits match, then fires after
-the CPU signals the full 64-bit value. Releasing both fences and the queue
-leaves no test-owned reference on the host device. Cross-process sharing is
-not exercised.
+On an AMD CPU with user-mode MWAITX, add `-mmwaitx -DXS_TEST_MWAITX` to
+exercise the title's monitor/recheck/timed-wait sequence. On RADV the same
+pointer remained zero while the queue was gated, then published `2^63+3`
+and later `2^63+2^32+3` behind a second gate. Another monitored fence was
+released with its signal still queued. The device-removal check injects
+only the failed device reason; the host fence is real. It does not induce a
+GPU reset (`ID3D12Device5::RemoveDevice` is a stub in pinned vkd3d).
