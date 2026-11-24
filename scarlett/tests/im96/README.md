@@ -32,6 +32,12 @@ samplers, including `s14`. An AMD retail diagnostic subsequently saw both
 groups miss the group and outer caches, then hit the same inner node and
 receive the same root wrapper despite the different payloads.
 
+The device can create the exact 1,304-byte textured root when asked.
+On both GPUs, the fixture called device `+80`, rejected a separate
+mutation of each of its 22 samplers and drew with the returned root.
+All 16 shaded pixels and 48 guard pixels matched after the fence.
+Creating this layout does not repair the title's cached selection.
+
 | Stage | Register | Consumer |
 |---|---|---|
 | VS | `t7` | Structured SRV, stride 64, first **view-relative** element. Four float4 rows at bytes 0,16,32,48. Only XYZ used: start with translation, accumulate X, Y, Z by FMA. Row W is ignored even when nonzero. |

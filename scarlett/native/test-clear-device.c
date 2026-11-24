@@ -1,5 +1,11 @@
 #include "d3d12_device.c"
 
+/* Fixture-only owner/kind lookup; success pins the guest wrapper. */
+ID3D12RootSignature *test_retain_im96(IUnknown *d,IUnknown *r)
+{
+    return retain_graphics_kind(d,r,ROOT_IM96);
+}
+
 /* Fixture only: borrow the host object while the successful guest PSO is live. */
 ID3D12PipelineState *clear_test_host(IUnknown *i)
 {

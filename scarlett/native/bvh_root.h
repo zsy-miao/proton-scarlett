@@ -1,7 +1,7 @@
 enum bvh_root_kind {
     ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC, ROOT_RADIX, ROOT_PREFIX, ROOT_REARRANGE,
     ROOT_COPY, ROOT_DECOMPRESS, ROOT_APEX, ROOT_BVH4, ROOT_HIERARCHY, ROOT_LOAD_INSTANCES,
-    ROOT_LOAD_PRIMITIVES, ROOT_POSTBUILD, ROOT_SPLIT_INSTANCES, ROOT_TREELET, ROOT_SRV_SPACE3, ROOT_BINK_GROUP, ROOT_BLIT_COLOUR
+    ROOT_LOAD_PRIMITIVES, ROOT_POSTBUILD, ROOT_SPLIT_INSTANCES, ROOT_TREELET, ROOT_SRV_SPACE3, ROOT_BINK_GROUP, ROOT_BLIT_COLOUR, ROOT_IM96
 };
 
 /* Root parameter index is part of the ABI; register order need not be ascending. */
@@ -123,6 +123,7 @@ static const struct root_methods {
 } root_methods={{root_query,root_addref,root_release},{xs_stop,xs_stop,xs_stop},root_name,xs_stop};
 _Static_assert(offsetof(struct root_methods,name)==0x30,"root SetName slot");
 
+#include "im96_root.h"
 static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob,SIZE_T n,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
@@ -132,16 +133,19 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
     if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
     if (!IsEqualIID(&id,&IID_ID3D12RootSignature)) return E_NOINTERFACE;
     /* Canonical serialized signatures. Tables and static samplers have a different wire size. */
-    BYTE wire[332];
+    BYTE wire[1304];
     BOOL bink=n==308 || n==332;
-    if (node!=1 || (!bink && n!=112 && (n<68+24 || n>68+9*24 || (n-68)%24))) return E_NOTIMPL;
+    if (node!=1 || (n!=sizeof wire && !bink && n!=112 && (n<68+24 || n>68+9*24 || (n-68)%24))) return E_NOTIMPL;
     if (!copy_in(wire,blob,n)) return E_POINTER;
     ID3DBlob *serialized=NULL;
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1};
     HRESULT hr;
     enum bvh_root_kind kind;
-    for (kind=0;kind<=ROOT_BLIT_COLOUR;++kind) {
-        if(kind==ROOT_BLIT_COLOUR){
+    const enum bvh_root_kind last=n==sizeof wire?ROOT_IM96:ROOT_BLIT_COLOUR;
+    for (kind=n==sizeof wire?ROOT_IM96:0;kind<=last;++kind) {
+        if(kind==ROOT_IM96){
+            desc.Desc_1_1=im96_layout();
+        }else if(kind==ROOT_BLIT_COLOUR){
             if(n!=112)continue;
             desc.Desc_1_1=blit_colour_layout();
         }else if(kind==ROOT_BINK_GROUP){
@@ -158,7 +162,7 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
         ID3D10Blob_Release(serialized);
         if (match) break;
     }
-    if (kind>ROOT_BLIT_COLOUR) return E_NOTIMPL;
+    if (kind>last) return E_NOTIMPL;
     if(kind<ROOT_BINK_GROUP)desc.Desc_1_1.Flags=D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr=D3D12SerializeVersionedRootSignature(&desc,&serialized,NULL);
     if (FAILED(hr)) return hr;

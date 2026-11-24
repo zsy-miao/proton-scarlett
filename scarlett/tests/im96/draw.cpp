@@ -14,8 +14,15 @@ static std::vector<unsigned char> file(const char *name,size_t expected=0) {
     CK(n>0 && n<=65536 && (!expected || size_t(n)==expected)); rewind(f);
     std::vector<unsigned char> b(n); CK(fread(b.data(),1,n,f)==size_t(n)); CK(!fclose(f)); return b;
 }
+#ifdef TEST_IM96_EXACT_ROOT
+#include "test-exact.hpp"
+#endif
 int main() {
+#ifdef TEST_IM96_EXACT_ROOT
+    auto root=exact_root();ComPtr<ID3D12Device> d;HR(root->GetDevice(IID_PPV_ARGS(&d)));
+#else
     ComPtr<ID3D12Device> d; HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&d)));
+#endif
     const auto rgba=DXGI_FORMAT_R32G32B32A32_FLOAT;
     auto create=[&](D3D12_HEAP_TYPE heap,UINT64 bytes,D3D12_RESOURCE_STATES state){
         D3D12_HEAP_PROPERTIES h={}; h.Type=heap; h.CreationNodeMask=h.VisibleNodeMask=1;
@@ -34,13 +41,21 @@ int main() {
         D3D12_DESCRIPTOR_HEAP_DESC h={t,n,visible?D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE:D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
         ComPtr<ID3D12DescriptorHeap> r; HR(d->CreateDescriptorHeap(&h,IID_PPV_ARGS(&r))); return r;
     };
-    // Visible heap: structured object[0], sealed source generation 17, successor generation 18.
-    auto srv=heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,3,true),rtv=heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV,4,false);
+    // The exact table uses slot 2 for the camera; place the successor outside it.
+#ifdef TEST_IM96_EXACT_ROOT
+    constexpr UINT successor=3;
+#else
+    constexpr UINT successor=2;
+#endif
+    auto srv=heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,successor+1,true),rtv=heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV,4,false);
     auto slot=[&](ID3D12DescriptorHeap*h,UINT i){auto s=h->GetCPUDescriptorHandleForHeapStart();
         s.ptr+=d->GetDescriptorHandleIncrementSize(h->GetDesc().Type)*i; return s;};
     D3D12_SHADER_RESOURCE_VIEW_DESC obj={}; obj.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
     obj.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; obj.Buffer.NumElements=1; obj.Buffer.StructureByteStride=64;
     d->CreateShaderResourceView(object.Get(),&obj,slot(srv.Get(),0));
+#ifdef TEST_IM96_EXACT_ROOT
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cb={camera->GetGPUVirtualAddress(),512};d->CreateConstantBufferView(&cb,slot(srv.Get(),2));
+#else
     D3D12_DESCRIPTOR_RANGE ranges[]={{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,7,1,0},{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,277,1,1}};
     D3D12_ROOT_PARAMETER params[3]={};
     for(UINT i=0;i<2;++i){params[i].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -51,6 +66,7 @@ int main() {
     D3D12_ROOT_SIGNATURE_DESC rd={3,params,1,&s,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
     ComPtr<ID3DBlob>blob; HR(D3D12SerializeRootSignature(&rd,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
     ComPtr<ID3D12RootSignature>root; HR(d->CreateRootSignature(1,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
+#endif
     auto vs=file("vs.dxil"),ps=file("ps.dxil");
     D3D12_INPUT_ELEMENT_DESC il[]={{"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
         {"COLOR",0,DXGI_FORMAT_R8G8B8A8_UNORM,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,16,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}};
@@ -74,13 +90,17 @@ int main() {
         for(LONG y=0;y<8;++y)for(LONG x=0;x<8;++x){float c[4]; memcpy(c,data.data()+(8*y+x)*16,16);
             D3D12_RECT rect={x,y,x+1,y+1}; l->ClearRenderTargetView(r,c,1,&rect);}
         if(i<2){barrier(image[i].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            d->CreateShaderResourceView(image[i].Get(),nullptr,slot(srv.Get(),1+i));}
+            d->CreateShaderResourceView(image[i].Get(),nullptr,slot(srv.Get(),i?successor:1));}
     }
     auto current=slot(rtv.Get(),3); l->OMSetRenderTargets(1,&current,FALSE,nullptr);
     D3D12_RECT sc={0,0,8,8}; D3D12_VIEWPORT vp={0,0,8,8,0,1}; l->RSSetScissorRects(1,&sc); l->RSSetViewports(1,&vp);
     l->SetGraphicsRootSignature(root.Get()); ID3D12DescriptorHeap*heaps[]={srv.Get()}; l->SetDescriptorHeaps(1,heaps);
+#ifdef TEST_IM96_EXACT_ROOT
+    l->SetGraphicsRootDescriptorTable(0,srv->GetGPUDescriptorHandleForHeapStart());
+#else
     for(UINT i=0;i<2;++i) l->SetGraphicsRootDescriptorTable(i,srv->GetGPUDescriptorHandleForHeapStart());
     l->SetGraphicsRootConstantBufferView(2,camera->GetGPUVirtualAddress());
+#endif
     D3D12_VERTEX_BUFFER_VIEW view={vb->GetGPUVirtualAddress(),96,24}; l->IASetVertexBuffers(0,1,&view);
     l->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP); l->DrawInstanced(4,1,0,0);
     for(UINT i=0;i<4;++i){
