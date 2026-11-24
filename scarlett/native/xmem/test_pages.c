@@ -26,7 +26,7 @@ int main(void)
         CHECK(VirtualQuery(cpu, &m, sizeof m) && m.State == MEM_FREE);
     }
     ULONG_PTR pages[2], n = 2;
-    CHECK(!XMemAllocatePhysicalPages(0x280, &n, pages) && !n);
+    CHECK(!XMemAllocatePhysicalPages(0x281, &n, pages) && !n && GetLastError() == ERROR_NOT_SUPPORTED);
     n = 2;
     CHECK(XMemAllocatePhysicalPages(0, &n, pages) && n == 2);
     BYTE *a = ARENA(2 * PAGE64), *b = ARENA(PAGE64);

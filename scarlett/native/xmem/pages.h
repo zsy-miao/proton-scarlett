@@ -1,5 +1,7 @@
 /* Private physical-page implementation included by xmem.c. */
 #define XMEM_PAGE ((SIZE_T)65536)
+HANDLE xmem_wc_backing(SIZE_T size);
+BOOL xmem_wc_slot(PVOID addr, HANDLE backing, SIZE_T offset);
 static PVOID (WINAPI *reserve2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 static PVOID (WINAPI *map3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 static BOOL (WINAPI *unmap2)(HANDLE, PVOID, ULONG);
@@ -18,6 +20,7 @@ typedef struct PageRun {
     struct PageRun *next;
     ULONG_PTR first, count, views;
     HANDLE section;
+    BOOL wc;
 } PageRun;
 
 typedef struct PageView {
@@ -33,7 +36,7 @@ typedef struct Arena {
     PVOID base;
     SIZE_T size;
     ULONG_PTR views;
-    BOOL split;
+    BOOL split, wc;
 } Arena;
 
 static SRWLOCK page_lock = SRWLOCK_INIT;
@@ -42,7 +45,7 @@ static PageView *views;
 static Arena *arenas;
 static ULONG_PTR next_page = 1;
 
-static PVOID reserve_cpu_arena(PVOID base, SIZE_T size)
+static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
 {
     Arena *a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *a);
     if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
@@ -63,6 +66,7 @@ static PVOID reserve_cpu_arena(PVOID base, SIZE_T size)
     DWORD err = GetLastError();
     if (result) {
         a->size = size;
+        a->wc = wc;
         a->next = arenas;
         arenas = a;
     } else HeapFree(GetProcessHeap(), 0, a);
@@ -79,7 +83,7 @@ __declspec(dllexport) BOOL WINAPI XMemAllocatePhysicalPages(ULONGLONG flags, PUL
         SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
-    if (flags || !reserve2 || !map3 || !unmap2) {
+    if ((flags && flags != 0x280) || !reserve2 || !map3 || !unmap2) {
         SetLastError(ERROR_NOT_SUPPORTED);
         return FALSE;
     }
@@ -89,8 +93,9 @@ __declspec(dllexport) BOOL WINAPI XMemAllocatePhysicalPages(ULONGLONG flags, PUL
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return FALSE;
     }
-    r->section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                                     (DWORD)(size >> 32), (DWORD)size, NULL);
+    r->wc = flags == 0x280;
+    r->section = r->wc ? xmem_wc_backing(size) :
+        CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)size, NULL);
     if (!r->section) {
         DWORD err = GetLastError();
         HeapFree(GetProcessHeap(), 0, r);
@@ -159,7 +164,8 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
     if (*slot) {
         PageView *v = *slot;
         if (pages || size != v->size) err = ERROR_NOT_SUPPORTED;
-        else if (!unmap2(GetCurrentProcess(), addr, MEM_PRESERVE_PLACEHOLDER)) err = GetLastError();
+        else if (!(v->run->wc ? xmem_wc_slot(addr, NULL, 0) :
+                   unmap2(GetCurrentProcess(), addr, MEM_PRESERVE_PLACEHOLDER))) err = GetLastError();
         else {
             *slot = v->next;
             --v->run->views;
@@ -190,6 +196,7 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
             for (PageRun *r = runs; r; r = r->next) {
                 ULONG_PTR offset = pages[0] - r->first;
                 if (offset >= r->count || n > r->count - offset) continue;
+                if (r->wc != arena->wc || (r->wc && n != 1)) { err = ERROR_NOT_SUPPORTED; break; }
                 if (!consecutive(pages, n)) { err = ERROR_NOT_SUPPORTED; break; }
                 PageView *v = HeapAlloc(GetProcessHeap(), 0, sizeof *v);
                 if (!v) { err = ERROR_NOT_ENOUGH_MEMORY; break; }
@@ -198,8 +205,10 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
                     HeapFree(GetProcessHeap(), 0, v);
                     break;
                 }
-                if (!map3(r->section, GetCurrentProcess(), addr, offset * XMEM_PAGE, size,
-                          MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0)) {
+                BOOL mapped = r->wc ? xmem_wc_slot(addr, r->section, offset * XMEM_PAGE) :
+                    map3(r->section, GetCurrentProcess(), addr, offset * XMEM_PAGE, size,
+                         MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0) != NULL;
+                if (!mapped) {
                     err = GetLastError();
                     if (split)
                         VirtualFree(start.AllocationBase, start.RegionSize,

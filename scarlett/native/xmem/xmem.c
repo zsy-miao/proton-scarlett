@@ -108,7 +108,8 @@ __declspec(dllexport) PVOID WINAPI XMemVirtualAlloc(PVOID base, SIZE_T size,
     if (!base && size == 0x89700000 && type == 0x20003000 && flags == 0x283 && protect == 0x2404)
         return xmem_graphics_alloc(NULL, size, TRUE);
     BOOL cpu_commit64 = type == 0x20403000 && flags == 0x181 && protect == PAGE_READWRITE;
-    if (cpu_commit64 || (type == (0x20400000u | MEM_RESERVE) &&
+    BOOL wc_arena = type == 0x20402000 && flags == 0x23 && protect == 0x2404;
+    if (cpu_commit64 || wc_arena || (type == (0x20400000u | MEM_RESERVE) &&
         ((flags == (XMEM_CPU | 0x20) && protect == PAGE_READWRITE) ||
          (flags == 3 && protect == 0x801)))) {
         if (!size || ((size | (UINT_PTR)base) & (XMEM_PAGE - 1))) {
@@ -124,7 +125,7 @@ __declspec(dllexport) PVOID WINAPI XMemVirtualAlloc(PVOID base, SIZE_T size,
             SetLastError(ERROR_NOT_SUPPORTED);
             return NULL;
         }
-        return reserve_cpu_arena(base, size);
+        return reserve_arena(base, size, wc_arena);
     }
     if (flags != XMEM_CPU ||
         (type != MEM_RESERVE && type != MEM_COMMIT && type != (MEM_RESERVE | MEM_COMMIT)) ||

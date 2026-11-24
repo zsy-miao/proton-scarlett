@@ -1,0 +1,182 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index bc70af6928dbb1d6436c7abb09c2089764269227..0d768f2bf8fe9877360d32878975a215791a10b8 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -257,6 +257,7 @@ struct file_view
+     size_t        size;          /* size in bytes */
+     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
+     HANDLE        scarlett_section; /* owned only by opt-in public views */
++    SIZE_T        scarlett_offset, scarlett_heap_size; /* only for WC DMA views */
+ };
+ 
+ #define SCARLETT_ALIGN_MASK ((2u << 20) - 1)
+@@ -5816,7 +5817,8 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+         status = STATUS_INVALID_PARAMETER;
+     }
+     else if (!(view = find_view( base, 0 ))) status = STATUS_MEMORY_NOT_ALLOCATED;
+-    else if (view->scarlett_section && type == MEM_RELEASE && addr == view->base && !requested_size)
++    else if (view->scarlett_section && !(view->protect & VPROT_PLACEHOLDER) &&
++             type == MEM_RELEASE && addr == view->base && !requested_size)
+     {
+         size = view->size;
+         /* Recursive virtual_mutex: keep lookup and ordinary section unmap atomic. */
+@@ -6593,19 +6595,44 @@ struct scarlett_section_info
+ };
+ 
+ #ifdef __linux__
++/* NVIDIA 595.112 rejects dma-buf mmap with nonzero file offsets. Move the
++ * desired part of an offset-zero mapping. Only unmap VA we still own. */
++static NTSTATUS map_scarlett_slice( const struct file_view *view, int fd, SIZE_T offset )
++{
++    SIZE_T length = offset + view->size; /* checked against the backing size */
++    char *tmp = mmap( NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
++    if (tmp == MAP_FAILED) return STATUS_NOT_SUPPORTED;
++    if (mremap( tmp + offset, view->size, view->size, MREMAP_MAYMOVE | MREMAP_FIXED, view->base ) == MAP_FAILED)
++    {
++        munmap( tmp, length );
++        if (anon_mmap_fixed( view->base, view->size, PROT_NONE, MAP_NORESERVE ) == MAP_FAILED)
++        {
++            ERR( "cannot restore WC placeholder after mremap failure\n" );
++            abort();
++        }
++        return STATUS_NOT_SUPPORTED;
++    }
++    if (offset) munmap( tmp, offset );
++    return STATUS_SUCCESS;
++}
++
+ /* This mmap is owned by the VM, not by vkMapMemory or the source heap. */
+-static NTSTATUS map_scarlett_dma( const void *addr, SIZE_T size, HANDLE shared, void **ret )
++static NTSTATUS map_scarlett_dma( const void *addr, SIZE_T size, HANDLE shared, SIZE_T offset,
++                                  SIZE_T *heap_size, BOOL replace, void **ret )
+ {
+     struct dma_buf_sync sync = { DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW };
+     HANDLE obj = NULL, ref = NULL;
+     UINT64 wc_tag[2] = {0};
+-    struct file_view *view;
++    struct file_view *view = NULL;
+     unsigned int status, prot = VPROT_READ | VPROT_WRITE | VPROT_COMMITTED | SEC_COMMIT | VPROT_SCARLETT_DMA;
+     struct stat st;
+     int fd;
+ 
+     if (!size || ((size | (UINT_PTR)addr) & granularity_mask) || size > (UINT_PTR)user_space_limit ||
+         (UINT_PTR)addr > (UINT_PTR)user_space_limit - size) return STATUS_INVALID_PARAMETER;
++    if (offset & granularity_mask) return STATUS_INVALID_PARAMETER;
++    if (replace && (!(view = find_view( addr, 0 )) || view->base != addr || view->size != size ||
++                    !(view->protect & VPROT_FREE_PLACEHOLDER))) return STATUS_CONFLICTING_ADDRESSES;
+     if ((status = NtDuplicateObject( NtCurrentProcess(), shared, NtCurrentProcess(), &ref, 0, 0,
+                                      DUPLICATE_SAME_ACCESS ))) return status;
+     SERVER_START_REQ( d3dkmt_object_open )
+@@ -6616,25 +6643,35 @@ static NTSTATUS map_scarlett_dma( const void *addr, SIZE_T size, HANDLE shared,
+         if (!(status = wine_server_call( req ))) obj = wine_server_ptr_handle( reply->handle );
+     }
+     SERVER_END_REQ;
+-    if (!status && (wc_tag[0] != 0x5343574300000001ull || wc_tag[1] != size)) status = STATUS_INVALID_PARAMETER;
++    if (!status && (wc_tag[0] != 0x5343574300000001ull || (*heap_size && wc_tag[1] != *heap_size) ||
++                    size > wc_tag[1] || offset > wc_tag[1] - size)) status = STATUS_INVALID_PARAMETER;
+     if (!status && !(status = wine_server_handle_to_fd( obj, GENERIC_ALL, &fd, NULL )))
+     {
+         status = STATUS_INVALID_PARAMETER;
+-        if (!fstat( fd, &st ) && st.st_size > 0 && size == (SIZE_T)st.st_size &&
++        if (!fstat( fd, &st ) && st.st_size > 0 && wc_tag[1] == (SIZE_T)st.st_size &&
+             !ioctl( fd, DMA_BUF_IOCTL_SYNC, &sync ))
+         {
+             sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW;
+             if (!ioctl( fd, DMA_BUF_IOCTL_SYNC, &sync ) &&
+-                !(status = map_view( &view, (void *)addr, size, 0, prot, 0, 0, SCARLETT_ALIGN_MASK )))
++                (replace || !(status = map_view( &view, (void *)addr, size, 0, prot, 0, 0, SCARLETT_ALIGN_MASK ))))
+             {
+-                if (mmap( view->base, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0 ) == MAP_FAILED)
++                status = STATUS_SUCCESS;
++                if (replace) status = map_scarlett_slice( view, fd, offset );
++                else if (mmap( view->base, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0 ) == MAP_FAILED)
+                 {
+                     delete_view( view );
+                     status = STATUS_NOT_SUPPORTED;
+                 }
+-                else
++                if (!status)
+                 {
++                    if (replace)
++                    {
++                        view->protect = prot | VPROT_PLACEHOLDER;
++                        set_page_vprot( view->base, size, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED );
++                    }
+                     view->scarlett_section = ref;
++                    *heap_size = view->scarlett_heap_size = wc_tag[1];
++                    view->scarlett_offset = offset;
+                     ref = NULL;
+                     *ret = view->base;
+                 }
+@@ -6689,10 +6726,34 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+         }
+     }
+ #ifdef __linux__
+-    else if (op == MemoryWineScarlettMapWcV1)
++    else if (op == MemoryWineScarlettMapWcV1 || op == MemoryWineScarlettMapPagesV1)
++    {
++        const struct scarlett_section_info *in = buffer;
++        BOOL replace = op == MemoryWineScarlettMapPagesV1;
++        info.view_size = replace ? in->view_size : info.size;
++        info.offset = replace ? in->offset : 0;
++        status = map_scarlett_dma( addr, info.size, in->section, info.offset, &info.view_size, replace, &info.base );
++    }
++    else if (op == MemoryWineScarlettUnmapPagesV1)
+     {
+-        status = map_scarlett_dma( addr, info.size, ((struct scarlett_section_info *)buffer)->section, &info.base );
+-        info.view_size = info.size;
++        struct file_view *v = find_view( addr, 0 );
++        if (v && v->base == addr && v->size == info.size && (v->protect & VPROT_SCARLETT_DMA) &&
++            (v->protect & VPROT_PLACEHOLDER) &&
++            !((char *)buffer < (char *)addr + v->size && (char *)addr < (char *)buffer + len) &&
++            !(res_len && (char *)res_len < (char *)addr + v->size && (char *)addr < (char *)(res_len + 1)))
++        {
++            /* Final mapping is inaccessible anonymous VA; the driver only owns the backing. */
++            if (anon_mmap_fixed( v->base, v->size, PROT_NONE, MAP_NORESERVE ) == MAP_FAILED)
++            {
++                ERR( "cannot restore WC placeholder on unmap\n" );
++                abort();
++            }
++            v->protect = VPROT_PLACEHOLDER | VPROT_FREE_PLACEHOLDER;
++            set_page_vprot( v->base, v->size, 0 );
++            NtClose( v->scarlett_section );
++            v->scarlett_section = NULL;
++            status = STATUS_SUCCESS;
++        }
+     }
+ #endif
+     else if (info.size && (op == MemoryWineScarlettAcquireV1 || op == MemoryWineScarlettAcquireWcV1))
+@@ -6710,6 +6771,11 @@ static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY
+                                             0, 0, DUPLICATE_SAME_ACCESS );
+                 info.base = view->base;
+                 info.view_size = view->size;
++                if (view->protect & VPROT_SCARLETT_DMA)
++                {
++                    info.offset += view->scarlett_offset;
++                    info.view_size = view->scarlett_heap_size;
++                }
+             }
+         }
+     }
+@@ -6758,6 +6824,8 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+         case MemoryWineScarlettAcquireV1:
+         case MemoryWineScarlettMapWcV1:
+         case MemoryWineScarlettAcquireWcV1:
++        case MemoryWineScarlettMapPagesV1:
++        case MemoryWineScarlettUnmapPagesV1:
+             return query_scarlett_section( process, addr, info_class, buffer, len, res_len );
+ #endif
+ 
+diff --git a/include/winternl.h b/include/winternl.h
+index 113079ef4dcf7ca8afa8ebfbf87f9a80eb069ced..d336670a5bb58e027413bc296017a63e3256d28e 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2464,6 +2464,8 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+     MemoryWineScarlettCreateSpanV1 = 0x53430003,
+     MemoryWineScarlettMapWcV1 = 0x53430004,
+     MemoryWineScarlettAcquireWcV1 = 0x53430005,
++    MemoryWineScarlettMapPagesV1 = 0x53430006,
++    MemoryWineScarlettUnmapPagesV1 = 0x53430007,
+ #endif
+ } MEMORY_INFORMATION_CLASS;
+ 
