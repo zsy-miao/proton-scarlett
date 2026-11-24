@@ -34,8 +34,12 @@ wait on a 64 KiB write-combined host allocation. Raising the CPU counter above
 `0x100000003` released the wait; the CPU saw the subsequent GPU marker
 `0x53ca1234`. Exporting that allocation with `cuMemGetHandleForAddressRange`
 and `CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD` returned `CUDA_ERROR_NOT_SUPPORTED`.
-This tests the wait and write behavior; it does not supply a shared control
-page that Wine and vkd3d can import.
+The reverse direction worked in a Linux hardware test: Vulkan allocated a
+64 KiB type-3 buffer, exported a DMA-BUF for the CPU mapping and an opaque
+FD for CUDA. The wait stayed pending with the counter at zero; after a CPU
+store through the DMA-BUF mapping, both CPU mappings saw the GPU marker.
+This gives the wait and marker tests a shared backing. It does not establish
+uncached access for arbitrary title commands or exact-size Wine release.
 
 A [combined wait and marker test](https://github.com/rcx2135/proton-scarlett/tree/3991f08a/scarlett/tests/control-translation)
 also exercises exact-size release followed by immediate address reuse. A CPU
