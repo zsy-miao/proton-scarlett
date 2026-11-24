@@ -1,0 +1,131 @@
+#define COBJMACROS
+#define CONST_VTABLE
+#include "queue.h"
+#include <stddef.h>
+
+struct adapter {
+    IUnknown iface;
+    LONG refs;
+    union {
+        ID3D12CommandQueue *queue;
+        ID3D12Fence *fence;
+    } host;
+};
+
+static const struct xs_queue_prefix queue_prefix;
+static const IUnknownVtbl fence_prefix;
+_Static_assert(offsetof(struct xs_queue_prefix, signal) == 0x80, "x64 queue Signal");
+_Static_assert(offsetof(struct xs_queue_prefix, frequency) == 0x90, "x64 queue frequency");
+
+static ULONG WINAPI addref(IUnknown *iface)
+{
+    return InterlockedIncrement(&CONTAINING_RECORD(iface, struct adapter, iface)->refs);
+}
+
+static ULONG WINAPI release(IUnknown *iface)
+{
+    struct adapter *a = CONTAINING_RECORD(iface, struct adapter, iface);
+    ULONG refs = InterlockedDecrement(&a->refs);
+    if (!refs) {
+        if (iface->lpVtbl == &fence_prefix) ID3D12Fence_Release(a->host.fence);
+        else ID3D12CommandQueue_Release(a->host.queue);
+        HeapFree(GetProcessHeap(), 0, a);
+    }
+    return refs;
+}
+
+static HRESULT WINAPI query(IUnknown *iface, REFIID iid, void **out)
+{
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!iid) return E_INVALIDARG;
+    if (!IsEqualIID(iid, &IID_IUnknown)) return E_NOINTERFACE;
+    addref(iface);
+    *out = iface;
+    return S_OK;
+}
+
+static ID3D12CommandQueue *as_queue(IUnknown *iface)
+{
+    return iface && iface->lpVtbl == &queue_prefix.unknown ?
+            CONTAINING_RECORD(iface, struct adapter, iface)->host.queue : NULL;
+}
+
+static ID3D12Fence *as_fence(IUnknown *iface)
+{
+    return iface && iface->lpVtbl == &fence_prefix ?
+            CONTAINING_RECORD(iface, struct adapter, iface)->host.fence : NULL;
+}
+
+static HRESULT WINAPI queue_signal(IUnknown *queue, IUnknown *fence, UINT64 value)
+{
+    ID3D12CommandQueue *q = as_queue(queue);
+    ID3D12Fence *f = as_fence(fence);
+    return q && f ? ID3D12CommandQueue_Signal(q, f, value) : E_INVALIDARG;
+}
+
+static HRESULT WINAPI frequency(IUnknown *queue, UINT64 *out)
+{
+    ID3D12CommandQueue *q = as_queue(queue);
+    if (!out) return E_POINTER;
+    *out = 0;
+    return q ? ID3D12CommandQueue_GetTimestampFrequency(q, out) : E_INVALIDARG;
+}
+
+static const struct xs_queue_prefix queue_prefix = {
+    .unknown = {query, addref, release}, .signal = queue_signal, .frequency = frequency
+};
+static const IUnknownVtbl fence_prefix = {query, addref, release};
+
+HRESULT xs_queue_wait(IUnknown *queue, IUnknown *fence, UINT64 value)
+{
+    ID3D12CommandQueue *q = as_queue(queue);
+    ID3D12Fence *f = as_fence(fence);
+    return q && f ? ID3D12CommandQueue_Wait(q, f, value) : E_INVALIDARG;
+}
+
+HRESULT xs_cpu_signal(IUnknown *fence, UINT64 value)
+{
+    ID3D12Fence *f = as_fence(fence);
+    return f ? ID3D12Fence_Signal(f, value) : E_INVALIDARG;
+}
+
+HRESULT xs_fence_event(IUnknown *fence, UINT64 value, HANDLE event)
+{
+    ID3D12Fence *f = as_fence(fence);
+    return f ? ID3D12Fence_SetEventOnCompletion(f, value, event) : E_INVALIDARG;
+}
+
+static HRESULT create(ID3D12Device *host, BOOL fence, IUnknown **out)
+{
+    const D3D12_COMMAND_QUEUE_DESC desc = {D3D12_COMMAND_LIST_TYPE_DIRECT,
+            D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_COMMAND_QUEUE_FLAG_NONE, 1};
+    struct adapter *a;
+    HRESULT hr;
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!host) return E_INVALIDARG;
+    a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
+    if (!a) return E_OUTOFMEMORY;
+    hr = fence ? ID3D12Device_CreateFence(host, 0, D3D12_FENCE_FLAG_SHARED,
+            &IID_ID3D12Fence, (void **)&a->host.fence) :
+            ID3D12Device_CreateCommandQueue(host, &desc, &IID_ID3D12CommandQueue, (void **)&a->host.queue);
+    if (FAILED(hr)) {
+        HeapFree(GetProcessHeap(), 0, a);
+        return hr;
+    }
+    a->iface.lpVtbl = fence ? &fence_prefix : &queue_prefix.unknown;
+    a->refs = 1;
+    *out = &a->iface;
+    return S_OK;
+}
+
+HRESULT xs_direct_queue(ID3D12Device *host, IUnknown **out)
+{
+    return create(host, FALSE, out);
+}
+
+HRESULT xs_shared_fence(ID3D12Device *host, IUnknown **out)
+{
+    return create(host, TRUE, out);
+}
