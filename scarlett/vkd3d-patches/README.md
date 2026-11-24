@@ -1,5 +1,14 @@
 # Write-combined graphics pool
 
+Patch `0005` adds a private query and factory for the tested RADV linear
+3840×2160 RGBA8 primary image. They use the same layout: `0x1fb0000` bytes
+per slice, 64 KiB alignment, UAV initial state and a transparent-black
+optimized clear value. Creation leaves the caller's bytes untouched.
+`test-linear-primary.c` renders, samples and presents the imported images;
+compile it like `test-offscreen-present.c` and place its compute shader,
+`dxc -T cs_6_0 -E main -Qstrip_debug -Fo image.dxil test-linear-primary.hlsl`,
+beside the executable. Check `display.mp4` with `offscreen-pixels.py`.
+
 For the retail descriptor arena, apply all Wine patches through `0007` and all vkd3d-proton patches through `0004` in numeric order. vkd3d patch `0004` supplies the write-back page heap; Wine `0006` and `0007` implement the descriptor mappings and shader-code snapshots. See the [arena layout and tests](../native/xmem/README.md#reservation-and-mapping-milestone).
 
 For RADV 26.3.0 on `1002:164e`, also apply Wine patch `0005` and vkd3d patches `0002` and `0003` after the NVIDIA support patches. Build Wine against recent `libdrm_amdgpu` headers; additionally stage the x64 Windows `kernelbase.dll` alongside the Unix `ntdll.so`, `win32u.so` and x64 `d3d12core.dll` for `install.sh`. Only a qualified AMD control view accepts `VirtualFree(base, 65536, MEM_RELEASE)`. Run `test-control64.cpp` in `scarlett/native/xmem/` with the same build procedure as `test_wc_pages.cpp` and `SCARLETT_TEST_GPU=radv`. For write-back pools, `test_gpu.cpp` with `-DTEST_RADV_WB_RANGE` checks nine sizes from 563 to 1,172 MiB, including the retail 596 MiB request.

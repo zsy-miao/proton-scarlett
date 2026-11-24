@@ -1,0 +1,211 @@
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,8 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettPrimaryImageInfoV1
++    ScarlettPrimaryImageV1
+     ScarlettControlHeapV1
+     ScarlettWbPagesHeapV1
+     ScarlettWbHeapV1
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -2066,6 +2066,10 @@
+ }
+ 
+ static void d3d12_resource_destroy(struct d3d12_resource *resource, struct d3d12_device *device);
++#ifdef _WIN32
++#define SCARLETT_PRIMARY (1u << 11)
++static void scarlett_drop_slice(struct d3d12_resource *resource);
++#endif
+ 
+ ULONG d3d12_resource_incref(struct d3d12_resource *resource)
+ {
+@@ -3858,6 +3862,10 @@
+         VK_CALL(vkDestroyBuffer(device->vk_device, resource->res.vk_buffer, NULL));
+ 
+     d3d12_resource_close_export_kmt(resource, device);
++#ifdef _WIN32
++    if (resource->flags & SCARLETT_PRIMARY)
++        scarlett_drop_slice(resource);
++#endif
+ 
+     if ((resource->flags & VKD3D_RESOURCE_ALLOCATION) && resource->mem.device_allocation.vk_memory)
+         vkd3d_free_memory(device, &device->memory_allocator, &resource->mem);
+@@ -4173,6 +4181,10 @@
+     return hr;
+ }
+ 
++#ifdef _WIN32
++#include "scarlett_primary_image.h"
++#endif
++
+ HRESULT d3d12_resource_create_committed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
+         const D3D12_HEAP_PROPERTIES *heap_properties, D3D12_HEAP_FLAGS heap_flags, D3D12_RESOURCE_STATES initial_state,
+         const D3D12_CLEAR_VALUE *optimized_clear_value,
+--- /dev/null
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -0,0 +1,162 @@
++/* Private native-x64 ABI, one qualified typed SDR image. The trusted lease
++ * owns the stable CPU allocation until its final Release, including GPU retirement. */
++struct scarlett_slice
++{
++    struct scarlett_slice *next;
++    uintptr_t start, end;
++    IUnknown *lease;
++    VkDeviceMemory memory;
++    struct d3d12_resource *resource;
++};
++static pthread_mutex_t scarlett_slice_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct scarlett_slice *scarlett_slices;
++
++static void scarlett_remove_slice(struct scarlett_slice *s)
++{
++    struct scarlett_slice **p;
++    pthread_mutex_lock(&scarlett_slice_lock);
++    for (p = &scarlett_slices; *p != s; p = &(*p)->next) {}
++    *p = s->next;
++    pthread_mutex_unlock(&scarlett_slice_lock);
++    IUnknown_Release(s->lease);
++    vkd3d_free(s);
++}
++
++static void scarlett_drop_slice(struct d3d12_resource *resource)
++{
++    const struct vkd3d_vk_device_procs *vk_procs = &resource->device->vk_procs;
++    struct scarlett_slice *s;
++    pthread_mutex_lock(&scarlett_slice_lock);
++    for (s = scarlett_slices; s->resource != resource; s = s->next) {}
++    pthread_mutex_unlock(&scarlett_slice_lock);
++    VK_CALL(vkFreeMemory(resource->device->vk_device, s->memory, NULL));
++    scarlett_remove_slice(s);
++}
++
++static HRESULT scarlett_primary_image(struct d3d12_device *d, VkImage *image, VkMemoryRequirements *req)
++{
++    const struct vkd3d_vk_device_procs *vk_procs = &d->vk_procs;
++    const VkPhysicalDeviceProperties *p = &d->device_info.properties2.properties;
++    const VkExternalMemoryHandleTypeFlagBits type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
++    VkPhysicalDeviceExternalImageFormatInfo ext = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO, NULL, type};
++    VkExternalImageFormatProperties external = {VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
++    VkImageFormatProperties2 props = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &external};
++    VkPhysicalDeviceImageFormatInfo2 fmt = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, &ext,
++        VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
++    VkExternalMemoryImageCreateInfo chain = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, NULL, type};
++    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &chain, 0, fmt.type, fmt.format,
++        {3840,2160,1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, fmt.tiling, fmt.usage};
++    VkImageMemoryRequirementsInfo2 info = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};
++    VkMemoryDedicatedRequirements dedicated = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
++    VkMemoryRequirements2 mr = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,&dedicated};
++    VkResult vr;
++    if (p->vendorID != 0x1002 || p->deviceID != 0x164e || p->driverVersion != 0x06803000 ||
++            d->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_MESA_RADV ||
++            !d->vk_info.EXT_external_memory_host || !vk_procs->vkGetMemoryHostPointerPropertiesEXT ||
++            d->device_info.external_memory_host_properties.minImportedHostPointerAlignment != 4096 ||
++            d->memory_properties.memoryTypeCount <= 5 || d->memory_properties.memoryTypes[5].propertyFlags != 0xe)
++        return DXGI_ERROR_UNSUPPORTED;
++    if (VK_CALL(vkGetPhysicalDeviceImageFormatProperties2(d->vk_physical_device,&fmt,&props)) ||
++            !(external.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) ||
++            (external.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT))
++        return DXGI_ERROR_UNSUPPORTED;
++    if ((vr = VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,image))) < 0) return hresult_from_vk_result(vr);
++    info.image = *image;
++    VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&info,&mr));
++    *req = mr.memoryRequirements;
++    if (dedicated.requiresDedicatedAllocation || req->size != 0x1fa4000 || req->alignment > 65536 ||
++            !(req->memoryTypeBits & (1u<<5))) {
++        VK_CALL(vkDestroyImage(d->vk_device,*image,NULL));
++        return DXGI_ERROR_UNSUPPORTED;
++    }
++    return S_OK;
++}
++
++HRESULT WINAPI ScarlettPrimaryImageInfoV1(d3d12_device_iface *iface,D3D12_RESOURCE_ALLOCATION_INFO *out)
++{
++    const struct vkd3d_vk_device_procs *vk_procs;
++    struct d3d12_device *d;
++    VkMemoryRequirements mr;
++    VkImage image;
++    HRESULT hr;
++    if (!out) return E_POINTER;
++    memset(out,0,sizeof(*out));
++    if (!iface) return E_INVALIDARG;
++    d=impl_from_ID3D12Device(iface); vk_procs=&d->vk_procs;
++    if (FAILED(hr=scarlett_primary_image(d,&image,&mr))) return hr;
++    VK_CALL(vkDestroyImage(d->vk_device,image,NULL));
++    out->Alignment=65536; out->SizeInBytes=align(mr.size,out->Alignment);
++    return S_OK;
++}
++
++HRESULT WINAPI ScarlettPrimaryImageV1(d3d12_device_iface *iface,void *base,SIZE_T capacity,SIZE_T offset,
++        IUnknown *lease,ID3D12Resource **out)
++{
++    const struct vkd3d_vk_device_procs *vk_procs;
++    struct d3d12_device *d;
++    struct scarlett_slice *s,*it;
++    VkMemoryRequirements mr;
++    VkImage image;
++    VkImportMemoryHostPointerInfoEXT imp={VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,NULL,
++        VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
++    VkMemoryHostPointerPropertiesEXT props={VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
++    VkMemoryAllocateInfo ai={VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,&imp};
++    VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO};
++    D3D12_RESOURCE_DESC1 desc={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,3840,2160,1,1,DXGI_FORMAT_R8G8B8A8_UNORM,
++        {1,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
++    D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
++    const D3D12_CLEAR_VALUE clear={.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.Color={0,0,0,0}};
++    MEMORY_BASIC_INFORMATION mbi;
++    struct d3d12_resource *r;
++    uintptr_t begin=(uintptr_t)base;
++    SIZE_T slice;
++    VkResult vr;
++    HRESULT hr;
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (!iface || !base || !lease || capacity!=(64u<<20) || begin%65536 || begin>UINTPTR_MAX-capacity ||
++            !VirtualQuery(base,&mbi,sizeof(mbi)) || mbi.State!=MEM_COMMIT || mbi.Protect!=PAGE_READWRITE ||
++            mbi.Type!=MEM_PRIVATE || mbi.AllocationBase!=base || mbi.BaseAddress!=base || mbi.RegionSize<capacity)
++        return E_INVALIDARG;
++    d=impl_from_ID3D12Device(iface); vk_procs=&d->vk_procs;
++    if (FAILED(hr=scarlett_primary_image(d,&image,&mr))) return hr;
++    slice=align(mr.size,65536);
++    hr=E_INVALIDARG;
++    if ((offset && offset!=slice) || offset>capacity || slice>capacity-offset) goto fail_image;
++    imp.pHostPointer=(void *)(begin+offset);
++    if (VK_CALL(vkGetMemoryHostPointerPropertiesEXT(d->vk_device,imp.handleType,imp.pHostPointer,&props)) ||
++            !(props.memoryTypeBits & mr.memoryTypeBits & (1u<<5))) { hr=DXGI_ERROR_UNSUPPORTED; goto fail_image; }
++    if (!(s=vkd3d_calloc(1,sizeof(*s)))) { hr=E_OUTOFMEMORY; goto fail_image; }
++    s->start=begin+offset; s->end=s->start+slice;
++    s->lease=lease; IUnknown_AddRef(lease);
++    pthread_mutex_lock(&scarlett_slice_lock);
++    for (it=scarlett_slices;it;it=it->next) if (s->start<it->end && it->start<s->end) break;
++    if (!it) { s->next=scarlett_slices; scarlett_slices=s; }
++    pthread_mutex_unlock(&scarlett_slice_lock);
++    if (it) { IUnknown_Release(lease); vkd3d_free(s); hr=DXGI_ERROR_INVALID_CALL; goto fail_image; }
++    ai.allocationSize=slice; ai.memoryTypeIndex=5;
++    if ((vr=VK_CALL(vkAllocateMemory(d->vk_device,&ai,NULL,&s->memory)))==VK_SUCCESS) {
++        bi.memory=s->memory; bi.image=image;
++        vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi));
++    } else s->memory=VK_NULL_HANDLE;
++    if (vr<0) {
++        hr=hresult_from_vk_result(vr); goto fail_slice;
++    }
++    if (FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,
++            &desc,&hp,0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,&clear,0,NULL,&r))) goto fail_slice;
++    r->res.vk_image=image; r->initial_layout_transition=1; r->common_layout=VK_IMAGE_LAYOUT_GENERAL;
++    pthread_mutex_lock(&scarlett_slice_lock);
++    s->resource=r;
++    pthread_mutex_unlock(&scarlett_slice_lock);
++    *out=(ID3D12Resource *)&r->ID3D12Resource_iface;
++    return S_OK;
++fail_slice:
++    VK_CALL(vkDestroyImage(d->vk_device,image,NULL));
++    if (s->memory) VK_CALL(vkFreeMemory(d->vk_device,s->memory,NULL));
++    scarlett_remove_slice(s);
++    return hr;
++fail_image:
++    VK_CALL(vkDestroyImage(d->vk_device,image,NULL));
++    return hr;
++}
