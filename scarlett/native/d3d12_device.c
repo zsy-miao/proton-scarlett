@@ -602,6 +602,11 @@ HRESULT xs_write_sampler(IUnknown *iface,const void *desc,SIZE_T dest)
     D3D12_SAMPLER_DESC s={.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR,.AddressU=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .AddressV=D3D12_TEXTURE_ADDRESS_MODE_WRAP,.AddressW=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .MaxAnisotropy=1,.ComparisonFunc=D3D12_COMPARISON_FUNC_NEVER,.MaxLOD=12.0f};
+    /* +1dc6d3b/+1dc6d60 use these same records with only W changed to CLAMP. */
+    if (w[8]==D3D12_TEXTURE_ADDRESS_MODE_CLAMP) {
+        s.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        w[8]=D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    }
     if (!memcmp(w,point,sizeof w)) s.Filter=D3D12_FILTER_MIN_MAG_MIP_POINT;
     else if (memcmp(w,linear,sizeof w)) return E_NOTIMPL;
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
