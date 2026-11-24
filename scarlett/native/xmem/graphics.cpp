@@ -215,6 +215,7 @@ static bool traced_control_title()
     return ok;
 }
 
+#include "native_pool.hpp"
 static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)
 {
     // Resolve only for graphics requests: CPU allocations do not require D3D12.
@@ -222,8 +223,12 @@ static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE
     if (!d3d) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     auto create = (PFN_D3D12_CREATE_DEVICE)(void *)GetProcAddress(d3d, "D3D12CreateDevice");
     ID3D12Device3 *device = nullptr;
+    bool native=wc_result && !base && !control && !wb && size==0x89700000u;
+    if(native)native_pool_ctl(0x53430101,nullptr,nullptr,0);
     HRESULT hr = create ? create(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device))
                         : HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    if(native)native_pool_ctl(0x53430100,nullptr,nullptr,0);
+    if(native && SUCCEEDED(hr)){hr=create_native_pool(device,wc_result);if(hr!=S_FALSE){device->Release();FreeLibrary(d3d);return hr;}hr=S_OK;}
     if (SUCCEEDED(hr)) {
         ImportedBuffer probe;
         if (!wc_result && !wc_backing) {

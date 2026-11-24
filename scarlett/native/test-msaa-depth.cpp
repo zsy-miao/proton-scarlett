@@ -50,22 +50,37 @@ int main() {
     rd.Width=rd.Height=rd.DepthOrArraySize=rd.MipLevels=1;rd.SampleDesc.Count=4;
     rd.Format=DXGI_FORMAT_R32G8X24_TYPELESS;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     D3D12_CLEAR_VALUE cv={};cv.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+#ifdef TEST_NATIVE_POOL
+    auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc");CK(alloc);
+    BYTE *wc=(BYTE*)alloc(nullptr,0x89700000,0x20003000,0x283,0x2404);CK(wc);
+#endif
     auto g=checked_device(rd);auto place=(Place)(*(void***)g.Get())[0x428/8];
     ComPtr<ID3D12Device>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
+#ifndef TEST_NATIVE_POOL
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc");CK(alloc);
-    BYTE *wc=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(wc);memset(wc+off-16,0xac,span+32);
+    BYTE *wc=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(wc);
+#endif
+    memset(wc+off-16,0xac,span+32);
+#ifdef TEST_NATIVE_POOL
+    auto get=(HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*))(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"ScarlettAcquireNativePoolV1");
+    UINT offset;ComPtr<ID3D12Heap>wcHeap;ComPtr<ID3D12Resource> backing;CK(get && get(d.Get(),wc+off,span,&wcHeap,&backing,&offset)==S_OK && offset==off);
+    CK(wcHeap->GetDesc().SizeInBytes==pool && backing->GetDesc().Width==pool);
+#else
     scarlett_section_info pin;HR(scarlett_query_section(0x53430005,wc+off,span,&pin));CK(pin.offset==off && pin.view_size==pool);
     auto open=(HRESULT(WINAPI*)(ID3D12Device*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**))(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");CK(open);
     ComPtr<ID3D12Heap>wcHeap;HR(open(d.Get(),pool,pin.section,nullptr,wcHeap.GetAddressOf()));CK(wcHeap->GetDesc().Flags&D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES);
+#endif
     ComPtr<ID3D12Resource>rejected;CK(d->CreatePlacedResource(wcHeap.Get(),off,&rd,D3D12_RESOURCE_STATE_DEPTH_WRITE,&cv,IID_PPV_ARGS(&rejected))==E_INVALIDARG && !rejected);
     BYTE *pg=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(pg&&VirtualAlloc(pg,4096,MEM_COMMIT,PAGE_READWRITE));
     constexpr UINT n=offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+1;BYTE *clear=pg+4096-n;memcpy(clear,&cv,n);
     auto attempt=[&](BYTE *va,UINT state,const void *c){void *obj=(void*)1;HRESULT hr=place(g.Get(),(UINT_PTR)va,&rd,state,c,__uuidof(ID3D12Resource),&obj);CK(!obj);return hr;};
     CK(attempt(wc+off+65536,6,clear)==E_INVALIDARG && attempt(wc+off,6,clear+1)==E_POINTER && attempt(wc+off,5,clear)==E_NOTIMPL);
+#ifndef TEST_NATIVE_POOL
     auto query=(decltype(&NtQueryObject))(void*)GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtQueryObject");CK(query);
     auto count=[&](){OBJECT_BASIC_INFORMATION info={};CK(query(pin.section,ObjectBasicInformation,&info,sizeof info,nullptr)==0);return info.HandleCount;};
     ULONG before=count();HANDLE extra;CK(before && DuplicateHandle(GetCurrentProcess(),pin.section,GetCurrentProcess(),&extra,0,FALSE,DUPLICATE_SAME_ACCESS));
     CK(count()==before+1 && CloseHandle(extra) && count()==before);
+#endif
 #ifdef TEST_NV_DEPTH
     void *wrapper=nullptr; HR(place(g.Get(),(UINT_PTR)wc+off,&rd,6,clear,__uuidof(ID3D12Resource),&wrapper)); CK(wrapper);
     using Make=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**); using Start=SIZE_T(WINAPI*)(IUnknown*);
@@ -115,8 +130,12 @@ int main() {
     for(unsigned i=0;i<64;i++)CK(attempt(wc+off,6,clear)==DXGI_ERROR_UNSUPPORTED);
     CK(count()==before);
 #endif
+#ifdef TEST_NATIVE_POOL
+    wcHeap.Reset();CK(VirtualFree(wc,0,MEM_RELEASE));
+#else
     scarlett_section_info alias;HR(scarlett_query_section_handle(0x53430004,nullptr,pool,&alias,pin.section));
     CK(CloseHandle(pin.section));wcHeap.Reset();CK(VirtualFree(wc,0,MEM_RELEASE));
+#endif
     BYTE *reuse=wc+off;CK(VirtualAlloc(reuse,span,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==reuse);memset(reuse,0x37,span);
     CK(FAILED(attempt(reuse,6,clear)));CK(VirtualFree(pg,0,MEM_RELEASE));
 #ifdef TEST_NV_DEPTH
@@ -207,7 +226,14 @@ int main() {
         CK(z==(s<2?(s+1)*0.125f:0.3125f) && st==(s<2?0xa2u:0x66u));}
 #endif
     rb->Unmap(0,nullptr);
-#ifdef TEST_NV_DEPTH
+#ifdef TEST_NATIVE_POOL
+    /* The retained buffer reads the actual pool, independent of the released title VA. */
+    ComPtr<ID3D12Resource> snapshot;buf.Width=span+32;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&snapshot)));
+    HR(a->Reset());HR(l->Reset(a.Get(),nullptr));l->CopyBufferRegion(snapshot.Get(),0,backing.Get(),off-16,span+32);HR(l->Close());q->ExecuteCommandLists(1,ls);HR(q->Signal(f.Get(),2));HR(f->SetEventOnCompletion(2,nullptr));HR(d->GetDeviceRemovedReason());
+    BYTE *raw;HR(snapshot->Map(0,nullptr,(void**)&raw));UINT changed=0;for(UINT i=0;i<16;i++)CK(raw[i]==0xac && raw[16+span+i]==0xac);
+    for(UINT i=0;i<span;i++)changed+=raw[16+i]!=0xac;
+    CK(changed>=16);printf("PASS retained native pool GPU readback after public release: %u bytes changed; both guards intact\n",changed);snapshot->Unmap(0,nullptr);
+#elif defined(TEST_NV_DEPTH)
     BYTE *slice=(BYTE*)alias.base+off;
     for(UINT i=0;i<16;i++)CK(slice[(int)i-16]==0xac && slice[span+i]==0xac);
     auto verify_alias=[&](){
@@ -227,6 +253,9 @@ int main() {
     for(UINT i=0;i<span+32;i++)CK(((BYTE*)alias.base)[off-16+i]==0xac);
 #endif
     for(UINT i=0;i<span;i++)CK(reuse[i]==0x37);
-    CK(VirtualFree(reuse,0,MEM_RELEASE)&&VirtualFree(alias.base,0,MEM_RELEASE));
+    CK(VirtualFree(reuse,0,MEM_RELEASE));
+#ifndef TEST_NATIVE_POOL
+    CK(VirtualFree(alias.base,0,MEM_RELEASE));
+#endif
     puts("PASS native per-sample depth/stencil and both neighboring placements; original allocation guards and replacement VA intact");
 }

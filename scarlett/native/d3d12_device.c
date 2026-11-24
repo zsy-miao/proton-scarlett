@@ -453,7 +453,10 @@ static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UI
     } else if (cv.Format!=format || memcmp(cv.Color,(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
     const UINT span=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
-    HRESULT hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
+    ID3D12Heap *native=NULL;UINT off=0;
+    HRESULT hr=native_pool_ref(d->host,(void*)va,span,&native,NULL,&off);
+    if(hr==S_FALSE)hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
+    else if(SUCCEEDED(hr))i=(struct scarlett_section_info){span,(void *)(va-off),WC_POOL_BYTES,off,NULL};
     if (FAILED(hr)) return hr;
     if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset%span || i.offset>i.view_size-span) hr=E_INVALIDARG;
     else {
@@ -462,7 +465,10 @@ static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UI
         struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r) hr=E_OUTOFMEMORY;
         else {
-            hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
+            if(native){
+                HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,BOOL,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettNativeImageV1");
+                hr=place?place(d->host,native,off,depth,&r->host):DXGI_ERROR_UNSUPPORTED;
+            }else hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
             if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
             else {
                 r->iface.lpVtbl=&color_vtbl.unknown; r->msaa=TRUE; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
@@ -471,7 +477,7 @@ static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UI
             }
         }
     }
-    CloseHandle(i.section);
+    if(native)ID3D12Heap_Release(native);else CloseHandle(i.section);
     return hr;
 }
 #endif

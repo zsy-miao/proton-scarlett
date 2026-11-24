@@ -81,3 +81,7 @@ the original allocation on RTX; RADV checks explicit import refusal.
 `0027` adds `ScarlettMsaaDepthV1` at ordinal 29 for the [RTX depth/stencil
 target](../native/rtx-depth.md). Apply it after `0026` and rebuild the x64
 core and graphics provider. It uses the same Wine `0012` import path.
+
+`0028` adds the [directly mapped RADV pool](../native/radv-retained-pool.md).
+Use it with Wine `0013` and the matching XMem, XG and graphics providers.
+The RTX 3070 continues to use the `0026`/`0027` image imports.

@@ -1,0 +1,115 @@
+diff --git a/libs/vkd3d/scarlett_primary_image.h b/libs/vkd3d/scarlett_primary_image.h
+index 1eb38a0..51a4075 100644
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -31,7 +31,7 @@ static void scarlett_drop_slice(struct d3d12_resource *resource)
+     pthread_mutex_lock(&scarlett_slice_lock);
+     for (s = scarlett_slices; s->resource != resource; s = s->next) {}
+     pthread_mutex_unlock(&scarlett_slice_lock);
+-    VK_CALL(vkFreeMemory(resource->device->vk_device, s->memory, NULL));
++    if (s->memory) VK_CALL(vkFreeMemory(resource->device->vk_device, s->memory, NULL));
+     scarlett_remove_slice(s);
+ }
+ 
+@@ -262,3 +262,60 @@ HRESULT WINAPI ScarlettMsaaDepthV1(d3d12_device_iface *iface,HANDLE section,SIZE
+ {
+     return scarlett_msaa_image(iface,section,size,off,out,true);
+ }
++
++/* Same-device, non-exported RADV host-visible pool. The validated heap is the image lease. */
++HRESULT WINAPI ScarlettNativePoolV1(d3d12_device_iface *iface, ID3D12Heap **out, void **base)
++{
++    struct d3d12_device *d=impl_from_ID3D12Device(iface);
++    const VkPhysicalDeviceProperties *p=&d->device_info.properties2.properties;
++    D3D12_HEAP_DESC hd={0};struct d3d12_heap *heap;HRESULT hr;
++    if (!out || !base) return E_POINTER;
++    *out=NULL;*base=NULL;
++    if(p->vendorID!=0x1002 || p->deviceID!=0x164e || p->driverVersion!=0x06803000 || d->device_info.vulkan_1_2_properties.driverID!=VK_DRIVER_ID_MESA_RADV) return S_FALSE;
++    hd.SizeInBytes=0x89700000u;hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
++    hd.Properties=(D3D12_HEAP_PROPERTIES){D3D12_HEAP_TYPE_CUSTOM,D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE,D3D12_MEMORY_POOL_L0,1,1};
++    if(FAILED(hr=d3d12_heap_create(d,&hd,NULL,NULL,&heap)))return hr;
++    if(heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type!=2 || heap->allocation.device_allocation.size!=hd.SizeInBytes || !heap->allocation.cpu_address) {
++        ID3D12Heap1_Release(&heap->ID3D12Heap_iface);return DXGI_ERROR_UNSUPPORTED;
++    }
++    typedef LONG (WINAPI *query_fn)(HANDLE,const void *,ULONG,void *,SIZE_T,SIZE_T *);
++    query_fn query=(query_fn)(void*)GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtQueryVirtualMemory");UINT64 id=0;
++    if(!query || query(GetCurrentProcess(),heap->allocation.cpu_address,0x53430103,&id,sizeof id,NULL) || !id){ID3D12Heap1_Release(&heap->ID3D12Heap_iface);return S_FALSE;}
++    heap->scarlett_native_pool=true;
++    *base=heap->allocation.cpu_address;heap->allocation.cpu_address=NULL;
++    heap->allocation.flags&=~VKD3D_ALLOCATION_FLAG_CPU_ACCESS;
++    *out=(ID3D12Heap*)&heap->ID3D12Heap_iface;return S_OK;
++}
++HRESULT WINAPI ScarlettNativeImageV1(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,BOOL depth,ID3D12Resource **out)
++{
++    struct d3d12_device *d=impl_from_ID3D12Device(iface);
++    struct d3d12_heap *heap=impl_from_ID3D12Heap(h);
++    const struct vkd3d_vk_device_procs *vk_procs=&d->vk_procs;
++    VkImage im;VkResult vr;HRESULT hr;struct d3d12_resource *r;struct scarlett_slice *s,*it;
++    VkImageCreateInfo ci={VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,NULL,VK_IMAGE_CREATE_ALIAS_BIT,VK_IMAGE_TYPE_2D,
++        depth?VK_FORMAT_D32_SFLOAT_S8_UINT:VK_FORMAT_R8G8B8A8_UNORM,{1,1,1},1,1,VK_SAMPLE_COUNT_4_BIT,VK_IMAGE_TILING_OPTIMAL,
++        (depth?VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT:VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT};
++    VkImageMemoryRequirementsInfo2 ri={VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};VkMemoryDedicatedRequirements dd={VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};VkMemoryRequirements2 mr={VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,&dd};VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,NULL,0,0,off};
++    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,1,1,1,1,depth?DXGI_FORMAT_R32G8X24_TYPELESS:DXGI_FORMAT_R8G8B8A8_UNORM,{4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth?D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL:D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
++    D3D12_CLEAR_VALUE cv={.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.Color={1,1,1,1}};D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
++    if(!out)return E_POINTER;
++    *out=NULL;
++    if(!heap || !heap->scarlett_native_pool || heap->device!=d || heap->desc.SizeInBytes!=0x89700000u || off%0x400000 || off>0x89300000u || heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type!=2)return E_INVALIDARG;
++    if(FAILED(hr=ID3D12Device_GetDeviceRemovedReason((ID3D12Device*)iface)))return hr;
++    if(depth)cv=(D3D12_CLEAR_VALUE){.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
++    if ((vr=VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,&im)))<0)return hresult_from_vk_result(vr);
++    ri.image=im;VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&ri,&mr));hr=DXGI_ERROR_UNSUPPORTED;
++    if(dd.requiresDedicatedAllocation || !mr.memoryRequirements.alignment || off%mr.memoryRequirements.alignment || mr.memoryRequirements.size>0x400000 || !(mr.memoryRequirements.memoryTypeBits&4)) goto fail;
++    if(!(s=vkd3d_calloc(1,sizeof *s))){hr=E_OUTOFMEMORY;goto fail;}
++    s->start=off;s->end=off+0x400000;s->lease=(IUnknown*)h;IUnknown_AddRef(s->lease);
++    pthread_mutex_lock(&scarlett_slice_lock);for(it=scarlett_slices;it;it=it->next)if(it->lease==s->lease && it->start<s->end && s->start<it->end)break;
++    if(!it){s->next=scarlett_slices;scarlett_slices=s;}pthread_mutex_unlock(&scarlett_slice_lock);
++    if(it){IUnknown_Release(s->lease);vkd3d_free(s);hr=DXGI_ERROR_INVALID_CALL;goto fail;}
++    bi.image=im;bi.memory=heap->allocation.device_allocation.vk_memory;
++    if((vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi)))<0){hr=hresult_from_vk_result(vr);goto fail_slice;}
++    if(FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,&rd,&hp,0,depth?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET,&cv,0,NULL,&r)))goto fail_slice;
++    r->res.vk_image=im;r->initial_layout_transition=1;r->common_layout=VK_IMAGE_LAYOUT_GENERAL;
++    pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;pthread_mutex_unlock(&scarlett_slice_lock);*out=(ID3D12Resource*)&r->ID3D12Resource_iface;return S_OK;
++fail_slice:VK_CALL(vkDestroyImage(d->vk_device,im,NULL));scarlett_remove_slice(s);return hr;
++fail:VK_CALL(vkDestroyImage(d->vk_device,im,NULL));return hr;
++}
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index 92e729d..e311acd 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -2094,8 +2094,9 @@ ULONG d3d12_resource_decref(struct d3d12_resource *resource)
+ 
+ bool d3d12_resource_is_cpu_accessible(const struct d3d12_resource *resource)
+ {
+-    return !(resource->flags & VKD3D_RESOURCE_RESERVED) &&
+-            is_cpu_accessible_heap(&resource->heap_properties);
++    /* This mapping belongs to the Wine view, not to the retained GPU buffer. */
++    return !(resource->heap && resource->heap->scarlett_native_pool) &&
++            !(resource->flags & VKD3D_RESOURCE_RESERVED) && is_cpu_accessible_heap(&resource->heap_properties);
+ }
+ 
+ static bool d3d12_resource_validate_box(const struct d3d12_resource *resource,
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index a68026c..a5a933b 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -1007,6 +1007,7 @@ struct d3d12_heap
+     struct d3d12_device *device;
+     struct vkd3d_private_store private_store;
+     struct d3d_destruction_notifier destruction_notifier;
++    bool scarlett_native_pool;
+ };
+ 
+ HRESULT d3d12_heap_create(struct d3d12_device *device, const D3D12_HEAP_DESC *desc,
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index c29f191..f3dba51 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,8 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettNativePoolV1 @30
++    ScarlettNativeImageV1 @31
+     ScarlettMsaaDepthV1 @29
+     ScarlettMsaaColorV1 @28
+     ScarlettCpuControlViewV1 @27

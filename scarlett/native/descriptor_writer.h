@@ -362,11 +362,18 @@ static void WINAPI write_srv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T des
 #include "xmem/marked_section.h"
 /* Each lookup pins the live section; a reused VA cannot hit another generation's import. */
 enum { WC_POOL_BYTES=0x89700000u };
+static HRESULT native_pool_ref(ID3D12Device *host,const void *va,SIZE_T bytes,ID3D12Heap **heap,ID3D12Resource **buffer,UINT *off)
+{
+    typedef HRESULT(WINAPI *Fn)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*);
+    Fn f=(Fn)(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"ScarlettAcquireNativePoolV1");return f?f(host,va,bytes,heap,buffer,off):S_FALSE;
+}
 static HRESULT retain_wc_buffer(IUnknown *device,const void *va,UINT64 bytes,ID3D12Resource **out,UINT *offset)
 {
     const SIZE_T pool_size=WC_POOL_BYTES;
     struct scarlett_section_info i;
-    HRESULT hr=scarlett_query_section(0x53430005,va,bytes,&i);
+    HRESULT hr=native_pool_ref(CONTAINING_RECORD(device,struct xbox_device,iface)->host,va,bytes,NULL,out,offset);
+    if(hr!=S_FALSE)return hr;
+    hr=scarlett_query_section(0x53430005,va,bytes,&i);
     if (FAILED(hr)) return hr;
     if (!i.section) return E_INVALIDARG;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);

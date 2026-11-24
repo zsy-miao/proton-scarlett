@@ -25,6 +25,10 @@ static unsigned load(const char *name,BYTE (&bytes)[8192]) {
 int main() {
     constexpr UINT span=4<<20; D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;rd.Width=rd.Height=rd.DepthOrArraySize=rd.MipLevels=1;
     rd.Format=DXGI_FORMAT_R8G8B8A8_UNORM;rd.SampleDesc.Count=4;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+#ifdef TEST_NATIVE_POOL
+    auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc");CK(alloc);
+    BYTE *wc=(BYTE*)alloc(nullptr,0x89700000,0x20003000,0x283,0x2404);CK(wc);
+#endif
     DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
     IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> g;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)g.GetAddressOf()));
@@ -41,11 +45,20 @@ int main() {
     ComPtr<ID3D12Device>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     D3D12_CLEAR_VALUE clear={};clear.Format=rd.Format;for(float &c:clear.Color)c=1;
     constexpr UINT pool=0x89700000, off=0xe800000;
+#ifndef TEST_NATIVE_POOL
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc");CK(alloc);
-    BYTE *wc=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(wc); memset(wc+off-16,0xa7,span+32);
+    BYTE *wc=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(wc);
+#endif
+    memset(wc+off-16,0xa7,span+32);
+#ifdef TEST_NATIVE_POOL
+    auto get=(HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*))(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"ScarlettAcquireNativePoolV1");
+    UINT offset;ComPtr<ID3D12Heap>wcHeap;ComPtr<ID3D12Resource> backing;CK(get && get(d.Get(),wc+off,span,&wcHeap,&backing,&offset)==S_OK && offset==off);
+    CK(wcHeap->GetDesc().SizeInBytes==pool && backing->GetDesc().Width==pool);
+#else
     scarlett_section_info pin;HR(scarlett_query_section(0x53430005,wc+off,span,&pin));CK(pin.offset==off && pin.view_size==pool);
     auto open=(HRESULT(WINAPI*)(ID3D12Device*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**))(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");CK(open);
     ComPtr<ID3D12Heap>wcHeap;HR(open(d.Get(),pool,pin.section,nullptr,wcHeap.GetAddressOf()));
+#endif
     ComPtr<ID3D12Resource> reject;CK((wcHeap->GetDesc().Flags&D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES)!=0);
     CK(d->CreatePlacedResource(wcHeap.Get(),off,&rd,D3D12_RESOURCE_STATE_RENDER_TARGET,&clear,IID_PPV_ARGS(&reject))==E_INVALIDARG && !reject);
     auto place=(Place)vt[0x428/8];void *guest=(void*)1;
@@ -111,8 +124,12 @@ int main() {
     }
     for(UINT i=0;i<span+32;i++) CK((wc+off-16)[i]==0xa7);
     // Independent CPU alias remains valid after release of the title mapping.
+#ifdef TEST_NATIVE_POOL
+    wcHeap.Reset();CK(VirtualFree(wc,0,MEM_RELEASE));
+#else
     scarlett_section_info alias; HR(scarlett_query_section_handle(0x53430004,nullptr,pool,&alias,pin.section));
     CK(CloseHandle(pin.section));wcHeap.Reset();CK(VirtualFree(wc,0,MEM_RELEASE));
+#endif
     BYTE *replacement=wc+off;CK(VirtualAlloc(replacement,span,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==replacement);memset(replacement,0xad,span);
     guest=(void*)1;CK(FAILED(place(g.Get(),(UINT_PTR)replacement,&rd,6,&clear,__uuidof(ID3D12Resource),&guest)) && !guest);
     puts("PASS guest +c8/+360 4MiB/4MiB, bounded descriptor/outputs; original WC slice and both guards unchanged at creation");
@@ -154,6 +171,14 @@ int main() {
     HR(l->Close());if (imported) rt[1].Reset();ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence>f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));HR(q->Signal(f.Get(),1));HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(f->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);CloseHandle(e);HR(d->GetDeviceRemovedReason());
     DWORD *m;HR(rb->Map(0,nullptr,(void**)&m));for(UINT s=0;s<4;s++) CK(m[s]==((4+4*s)|((12+8*s)<<8)|((128+12*s)<<16)|((240-16*s)<<24)));
     CK(m[128]==0xff0000ff && m[256]==0xd892180a && m[384]==0xff00ff00);printf("PASS native 4x samples=%08lx,%08lx,%08lx,%08lx resolve=%08lx, adjacent red/green placements intact\n",m[0],m[1],m[2],m[3],m[256]);rb->Unmap(0,nullptr);
+#ifdef TEST_NATIVE_POOL
+    /* The retained buffer reads the actual pool, independent of the released title VA. */
+    ComPtr<ID3D12Resource> snapshot;buf.Width=span+32;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&snapshot)));
+    HR(a->Reset());HR(l->Reset(a.Get(),nullptr));l->CopyBufferRegion(snapshot.Get(),0,backing.Get(),off-16,span+32);HR(l->Close());q->ExecuteCommandLists(1,ls);HR(q->Signal(f.Get(),2));HR(f->SetEventOnCompletion(2,nullptr));HR(d->GetDeviceRemovedReason());
+    BYTE *raw;HR(snapshot->Map(0,nullptr,(void**)&raw));UINT changed=0;for(UINT i=0;i<16;i++)CK(raw[i]==0xa7 && raw[16+span+i]==0xa7);
+    for(UINT i=0;i<span;i++)changed+=raw[16+i]!=0xa7;
+    CK(changed>=16);printf("PASS retained native pool GPU readback after public release: %u bytes changed; both guards intact\n",changed);snapshot->Unmap(0,nullptr);
+#else
     BYTE *base=(BYTE*)alias.base; UINT changed=0;
     for(UINT i=0;i<span;i++) changed+=base[off+i]!=0xa7;
     printf("original bytes changed=%u (imported=%d)\n",changed,imported); CK(changed==(imported?16u:0u));
@@ -179,6 +204,10 @@ int main() {
         puts("PASS +a0 Texture2DMS RTV wrote four original WC samples; after fence and SRV overwrite, only RTV heap release freed the slice");
     }
     for(UINT i=0;i<16;i++)CK(base[off-16+i]==0xa7 && base[off+span+i]==0xa7);
+#endif
     for(UINT i=0;i<span;i++)CK(replacement[i]==0xad);
-    CK(VirtualFree(replacement,0,MEM_RELEASE)&&VirtualFree(alias.base,0,MEM_RELEASE));
+    CK(VirtualFree(replacement,0,MEM_RELEASE));
+#ifndef TEST_NATIVE_POOL
+    CK(VirtualFree(alias.base,0,MEM_RELEASE));
+#endif
 }

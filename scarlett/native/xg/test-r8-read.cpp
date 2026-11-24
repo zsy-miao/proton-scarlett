@@ -21,14 +21,22 @@ int main(){
     desc[2]=4096;
     void **c=nullptr;HR(XGCreateTextureComputer(desc,(void**)&c));auto v=*(void***)c;auto copy=(Copy)v[8];
     ComPtr<ID3D12Device3>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
+#ifdef TEST_NATIVE_POOL
+    ComPtr<ID3D12Resource> binding;UINT off;
+    using Get=HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*);
+    auto get=(Get)(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"ScarlettAcquireNativePoolV1");CK(get && get(d.Get(),b+offset,N,nullptr,&binding,&off)==S_OK && off==offset);
+    auto raw=binding.Get();
+#else
     scarlett_section_info held;HR(scarlett_query_section(0x53430005,b+offset,N,&held));CK(held.section&&held.base==b&&held.offset==offset&&held.view_size==span);
     ImportedBuffer binding; HR(binding.wc(d.Get(),span,held.section,nullptr)); CK(CloseHandle(held.section));
+    auto raw=binding.resource();
+#endif
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
     ComPtr<ID3D12DescriptorHeap> table;HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&table)));
     D3D12_SHADER_RESOURCE_VIEW_DESC view={};view.Format=DXGI_FORMAT_R32_TYPELESS;
     view.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;view.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     view.Buffer.FirstElement=offset/4;view.Buffer.NumElements=N/4;view.Buffer.Flags=D3D12_BUFFER_SRV_FLAG_RAW;
-    d->CreateShaderResourceView(binding.resource(),&view,table->GetCPUDescriptorHandleForHeapStart());
+    d->CreateShaderResourceView(raw,&view,table->GetCPUDescriptorHandleForHeapStart());
     D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};
     D3D12_ROOT_PARAMETER p[2]={};p[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p[0].DescriptorTable={1,&range};
     p[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;

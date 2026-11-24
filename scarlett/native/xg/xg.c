@@ -77,6 +77,7 @@ static HRESULT texture_alias(const void *at,SIZE_T bytes,BOOL wc,void **mapping,
     return hr;
 }
 
+#include "../xmem/native_pool.h"
 static HRESULT WINAPI copy_texture(struct computer *c,void *dst,UINT plane,UINT sub,const void *src,UINT row,UINT slice)
 {
     if (!dst || !src) return E_POINTER;
@@ -95,17 +96,31 @@ static HRESULT WINAPI copy_texture(struct computer *c,void *dst,UINT plane,UINT 
         hr=texture_alias(src,R8_BYTES,FALSE,&wb,&in,&system);
         if (FAILED(hr)) return hr;
     }
-    hr=texture_alias(dst,c->texel32?c->layers*R8_ALIGNMENT:R8_BYTES,TRUE,&wc,&out,NULL);
+    SIZE_T span=c->texel32?c->layers*R8_ALIGNMENT:R8_BYTES,layer_offset=sub*R8_ALIGNMENT;
+    struct {UINT64 id;BYTE data[R8_BYTES];} *stage=NULL;UINT64 id=0;
+    if(native_pool_ctl(0x53430103,dst,&id,sizeof id)==0){
+        UINT64 last=0;
+        if ((UINT_PTR)dst%R8_ALIGNMENT || (UINT_PTR)dst>UINTPTR_MAX-(span-1) ||
+            native_pool_ctl(0x53430103,(BYTE*)dst+span-1,&last,sizeof last)<0 || last!=id) hr=E_INVALIDARG;
+        else {
+            stage=HeapAlloc(GetProcessHeap(),0,sizeof(UINT64)+(c->texel32?4:R8_BYTES));hr=stage?S_OK:E_OUTOFMEMORY;
+            if(stage){stage->id=id;out=stage->data;}
+        }
+    }else {
+        hr=texture_alias(dst,span,TRUE,&wc,&out,NULL);
+        if (SUCCEEDED(hr)) out+=layer_offset;
+    }
     if (SUCCEEDED(hr)) {
         /* A one-texel 4KB_S texture starts at the tile origin. Preserve all padding. */
-        if (c->texel32) memcpy(out+sub*R8_ALIGNMENT,&texel,sizeof texel);
+        if (c->texel32) memcpy(out,&texel,sizeof texel);
         else for (UINT i=0;i<R8_BYTES;i+=16) {
             UINT x=((i>>12)&3)*64+((i>>5)&16)+((i>>6)&32);
             UINT y=(i>>14)*64+((i>>5)&32)+((i>>4)&31);
             memcpy(out+i,in+y*256+x,16);
         }
         MemoryBarrier();
-        VirtualFree(wc,0,MEM_RELEASE);
+        if(stage){LONG st=native_pool_ctl(0x53430104,(BYTE*)dst+layer_offset,stage,sizeof(UINT64)+(c->texel32?4:R8_BYTES));hr=st<0?HRESULT_FROM_NT(st):S_OK;HeapFree(GetProcessHeap(),0,stage);}
+        else VirtualFree(wc,0,MEM_RELEASE);
     }
     if (system) UnmapViewOfFile(wb);
     else if (wb) VirtualFree(wb,0,MEM_RELEASE);
