@@ -9,6 +9,16 @@
 #include "../frame.h"
 #endif
 
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+#include "title_window.h"
+/* One exposed queue or recorder can reach other primaries. Fail closed across this provider. */
+static SRWLOCK escape_lock=SRWLOCK_INIT;
+static BOOL bridge_escaped;
+static BOOL escape_native(void) {
+    if(!TryAcquireSRWLockExclusive(&escape_lock))return FALSE;
+    bridge_escaped=TRUE;ReleaseSRWLockExclusive(&escape_lock);return TRUE;
+}
+#endif
 struct adapter {
     IUnknown iface;
     LONG refs;
@@ -41,6 +51,17 @@ struct adapter {
         ID3D12Resource *primary;
         UINT64 primary_token;
         D3D12_RESOURCE_STATES primary_state;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+        ID3D12CommandQueue *wsi;
+        DWORD creator;
+        LONG public_chain;
+        struct xs_title_window captured;
+        SIZE_T clear_slot;
+        UINT64 clear_serial;
+        ID3D12Resource *released;
+        ID3D12Fence *released_end;
+        UINT64 released_token;
+#endif
     } display;
 #endif
 };
@@ -134,6 +155,11 @@ static ULONG WINAPI release(IUnknown *iface)
             if (a->display.window && GetPropW(a->display.window,L"Scarlett.Present.Owner")==a->display.cookie)
                 RemovePropW(a->display.window,L"Scarlett.Present.Owner");
             if (a->display.chain) IDXGISwapChain3_Release(a->display.chain);
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+            if (a->display.wsi) ID3D12CommandQueue_Release(a->display.wsi);
+            if (a->display.released) ID3D12Resource_Release(a->display.released);
+            if (a->display.released_end) ID3D12Fence_Release(a->display.released_end);
+#endif
             if (a->display.owner) IUnknown_Release(a->display.owner);
 #endif
             ID3D12CommandQueue_Release(a->host.queue);

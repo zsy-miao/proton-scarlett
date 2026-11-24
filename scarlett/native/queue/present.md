@@ -169,6 +169,36 @@ ownership. `test-offscreen-present.c` with `-DTEST_CAPTURE_HWND` checks
 the actual DXGI swapchain HWND and presents two independently decoded frames.
 Retail has not yet reached the swapchain handoff.
 
+### Opt-in private PresentX bridge
+
+With the tagged batch and `SCARLETT_EXPERIMENTAL_BRIDGE=1` build options, creation
+of a Direct queue on the unique title-window thread captures the Wine generation
+and opens a private chain without submitting a frame. The paired experimental
+win32u/wineserver patch grants a same-process worker a lease on that generation.
+Window retirement and lease acquisition serialize; the caller releases the lease
+after the private copy and flip. No creator message dispatch is required.
+No display handle escapes. Genuine raw queue/list exposure vetoes this bridge
+across the provider, including exposure before capture.
+
+An original primary becomes ineligible if multiple tracked queues have written
+it before its first claim. After the claim, another queue cannot submit a writer;
+during the copy and flip even a writer on the owning queue is refused. Both
+checks are serialized with the live primary registry. The bridge verifies the
+exact primary wrapper, recorded clear-slot tag/serial, queue, issuance and
+batch fence. The worker polls the producer for up to 250 ms before requesting
+a window lease; a still-pending batch returns `DXGI_ERROR_WAS_STILL_DRAWING`.
+This budget covers the producer wait, not the copy or DXGI flip. The private
+Direct queue synchronously retires the copy before DXGI flips. The source pin
+and generation lease span the flip. The model covers provider-owned GPU
+writers; independent native aliases or CPU writes outside that model are not
+made safe by a fence or descriptor tag.
+
+Run `scarlett/tests/tail-timestamp.sh radv STAGED-TOOL bridge` or substitute
+`nvidia`. The fixture uses the real guest `+100` slot on a worker, two distinct
+factory primaries, a gated producer and independently decoded screen captures.
+It checks a foreign writer, slot reuse, a destroyed/replaced window, and an
+attempt on the creator to destroy the window while a lease is held.
+
 At Direct queue creation, a new retail trace on each GPU found the live
 title HWND on its creator thread. The flags-zero submit used that exact guest
 queue on a different thread (RADV `1c8` → `1cc`, RTX `1e8` → `1f4`); RTX
@@ -252,4 +282,5 @@ producer list with the full render-target release to host `COMMON`. The
 handoff uses that actual final state when copying to the DXGI buffer.
 Recordings on RADV and RTX decoded both color patterns in order; neither
 the release nor arming the handoff incremented the present count.
-Retail has not reached this handoff.
+For the retail result, use the bounded bridge above: with the `0033` backend
+and Wine `0016`, the title presented token 1 once on each adapter.

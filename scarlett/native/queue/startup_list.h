@@ -13,6 +13,10 @@ struct startup_list {
     enum batch_phase phase;
     IUnknown *sync_owner;
 #endif
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    SIZE_T clear_slot;
+    UINT64 clear_serial;
+#endif
     void *reservation;
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
@@ -440,7 +444,11 @@ static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLO
     UINT bits[4]; SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),color,bits,sizeof bits,&n) || n!=sizeof bits) return E_POINTER;
     if (bits[0] || bits[1] || bits[2] || bits[3]) return E_NOTIMPL;
-    HRESULT hr=xs_clear_primary_rtv(s->pool_owner,s->host,slot,s->primary);
+    UINT64 serial=0;
+    HRESULT hr=xs_clear_primary_rtv(s->pool_owner,s->host,slot,s->primary,&serial);
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if(SUCCEEDED(hr)){s->clear_slot=slot;s->clear_serial=serial;}
+#endif
     if (SUCCEEDED(hr)) s->primary_cleared=TRUE;
     return hr;
 }
@@ -533,6 +541,9 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 {
     if (!i || (i->lpVtbl!=&sl_vtbl.prefix && i->lpVtbl!=&pool_vtbl.prefix)) return NULL;
     if (sl(i)->primary_released) return NULL; /* No untracked use after ending primary access. */
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if(!escape_native())return NULL;
+#endif
     sl(i)->host_exposed=TRUE;
     return sl(i)->host;
 }
@@ -597,6 +608,15 @@ static void execute_recording(ID3D12CommandQueue *q,struct startup_list *s,struc
     if (r && FAILED(ID3D12CommandQueue_Signal(q,r->fence,1))) xs_stop();
 }
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+/* Under submit_lock. A later command list invalidates the captured final layout. */
+static void forget_release(struct adapter *a)
+{
+    if (a->display.released) ID3D12Resource_Release(a->display.released);
+    if (a->display.released_end) ID3D12Fence_Release(a->display.released_end);
+    a->display.released=NULL;a->display.released_end=NULL;a->display.released_token=0;
+}
+#endif
 #include "tagged_batch.h"
 #endif
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
@@ -632,6 +652,10 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
     if (s->post && s->post->counter && CONTAINING_RECORD(iface,struct adapter,iface)->external_submissions)
         xs_stop(); /* cannot atomically submit the split around an untracked producer */
+#endif
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if(s->primary && FAILED(xs_primary_writer(s->pool_owner,s->primary,q)))xs_stop();
+    forget_release(CONTAINING_RECORD(iface,struct adapter,iface));
 #endif
     execute_recording(q,s,r);
     if (r) SetThreadpoolWait(wait,r->event,NULL);

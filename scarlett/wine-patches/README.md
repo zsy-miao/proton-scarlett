@@ -1,5 +1,14 @@
 # Scarlett section lifetime ABI v1 (native x64)
 
+For the opt-in private PresentX bridge, apply `0016-wine-title-window-lease.patch`
+after `0015` in the numbered Wine series. It extends the title-window generation
+from `0008`: win32u requests a lease, and wineserver serializes it against
+retirement. From the matching x64 Wine build, run
+`make -j8 dlls/win32u/win32u.so server/wineserver`. Stage **both** outputs
+at `files/lib/wine/x86_64-unix/win32u.so` and `files/bin/wineserver` in the
+private tool. Keep the matched ntdll, 0033 graphics core and remaining providers.
+See the [creator-blocked fixture and bridge build flags](../native/queue/present.md#opt-in-private-presentx-bridge).
+
 Patch `0009` adds a separate CPU-only, write-combined control-page view for
 the RTX startup path. `0x53430014` maps the tagged 64 KiB backing;
 `0x53430015` returns its allocation identity without a handle; `0x53430016`

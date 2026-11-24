@@ -1,4 +1,14 @@
 #include "queue/queue.c"
+#ifdef TEST_PRESENT_BRIDGE
+HANDLE test_pending_present;
+ULONG_PTR test_generation(IUnknown *q){return CONTAINING_RECORD(q,struct adapter,iface)->display.captured.generation;}
+HRESULT test_bridge_count(IUnknown *q,UINT *count)
+{
+    struct adapter *a=CONTAINING_RECORD(q,struct adapter,iface);
+    if (!a->display.wsi || a->display.wsi==a->host.queue || !bridge_window(a)) return E_INVALIDARG;
+    return IDXGISwapChain3_GetLastPresentCount(a->display.chain,count);
+}
+#endif
 ID3D12CommandQueue *test_host_queue(IUnknown *q){return as_queue(q);}
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
 HRESULT test_tagged(IUnknown *q,UINT n,IUnknown *const *lists,UINT64 token,UINT flags)

@@ -34,6 +34,9 @@ struct marker_job {
     ID3D12Device *device; /* Owned by the private fence until this job closes. */
     ID3D12Fence *fence;
     HANDLE event;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    unsigned polls;
+#endif
 };
 static void CALLBACK publish_marker(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_WAIT wait,TP_WAIT_RESULT result)
 {
@@ -47,10 +50,16 @@ static void CALLBACK publish_marker(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP
         /* Experimental whole-direct-queue gate: a timer wake is only a request
          * to sample the original again. Never park a pool worker or queue lock. */
         if (j->m->counter && __atomic_load_n(j->m->counter,__ATOMIC_ACQUIRE)<j->m->threshold) {
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+            if (!j->polls++) fprintf(stderr,"WSI producer gate pending tick=%llu\n",GetTickCount64());
+#endif
             FILETIME due={(DWORD)-10000,(DWORD)-1}; /* relative 1 ms */
             SetThreadpoolWait(wait,j->event,&due);
             return;
         }
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+        if (j->m->counter) fprintf(stderr,"WSI producer gate satisfied tick=%llu polls=%u threshold=%llu\n",GetTickCount64(),j->polls,j->m->threshold);
+#endif
         if (FAILED(ID3D12Fence_Signal(j->fence,2)) &&
             SUCCEEDED(ID3D12Device_GetDeviceRemovedReason(j->device))) xs_stop();
     }

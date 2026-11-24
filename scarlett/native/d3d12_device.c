@@ -27,6 +27,10 @@ struct frame_record {
     BOOL presenting;
 };
 struct frame_clock {
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    BOOL bridge_presenting;
+    UINT interval_us;
+#endif
     SRWLOCK lock;
     CONDITION_VARIABLE change;
     LONGLONG step, due, freq, base;
@@ -910,6 +914,42 @@ ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
     return host;
 }
 
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+/* Multi-queue history before the first present makes this source ineligible.
+ * Once claimed, never let an unordered writer take over its layout. */
+HRESULT xs_primary_writer(IUnknown *owner,ID3D12Resource *src,ID3D12CommandQueue *q)
+{
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    HRESULT hr=S_OK;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    for(struct color_resource *r=d->colors;r;r=r->next) if(r->slice && r->host==src) {
+        if(r->flipping){hr=DXGI_ERROR_WAS_STILL_DRAWING;break;}
+        if(!r->writer){r->writer=q;ID3D12CommandQueue_AddRef(q);}
+        else if(r->writer!=q){if(r->claimed)hr=E_ACCESSDENIED;else r->multi_writer=TRUE;}
+        break;
+    }
+    ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
+}
+IUnknown *xs_claim_view(IUnknown *owner,IUnknown *key,ID3D12Resource *src,ID3D12CommandQueue *q,SIZE_T slot,UINT64 serial,BOOL flip)
+{
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);IUnknown *pin=NULL;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    for(struct color_resource *r=d->colors;r;r=r->next) if(&r->iface==key && r->slice && r->host==src && r->writer==q && !r->multi_writer && !r->flipping) {
+        for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+            if(attachment_locked(h,slot,RTV,&cpu)==src && h->records[(slot-h->start)/h->stride].serial==serial){
+                r->claimed=TRUE;r->flipping=flip;pin=key;IUnknown_AddRef(pin);break;
+            }
+        }
+        break;
+    }
+    ReleaseSRWLockExclusive(&d->descriptor_lock);return pin;
+}
+void xs_finish_flip(IUnknown *pin)
+{
+    struct color_resource *r=CONTAINING_RECORD(pin,struct color_resource,iface);
+    AcquireSRWLockExclusive(&r->owner->descriptor_lock);r->flipping=FALSE;ReleaseSRWLockExclusive(&r->owner->descriptor_lock);
+}
+#endif
 /* Borrowed host root; caller holds the device and root live through use. */
 ID3D12RootSignature *xs_bvh_root_host(IUnknown *device,IUnknown *i)
 {

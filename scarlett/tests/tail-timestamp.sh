@@ -14,10 +14,11 @@ case $gpu in
     radv) display=sway; f+=(-DTEST_WB_TAIL) ;;
     *) exit 2 ;;
 esac
-if [[ ${3:-} == tagged ]]; then
+if [[ ${3:-} == tagged || ${3:-} == bridge ]]; then
     head=${4:-0x6218}
     case $head in 0x6218|0x64a8|0x6698) ;; *) exit 2 ;; esac
     f+=(-DSCARLETT_EXPERIMENTAL_TAGGED_BATCH -DTEST_TAGGED_BATCH "-DTEST_BATCH_HEAD=$head")
+    if [[ $3 == bridge ]]; then f+=(-DSCARLETT_EXPERIMENTAL_BRIDGE -DTEST_PRESENT_BRIDGE);export SCARLETT_RECORD=1;fi
 elif (($#>2)); then exit 2; fi
 for c in d3d12_device d3d12_vm testq; do
     x86_64-w64-mingw32-gcc "${f[@]}" -c "$s/native/$c.c" -o "$c.o"
@@ -26,5 +27,10 @@ x86_64-w64-mingw32-g++ "${f[@]}" -std=c++17 -static -DTEST_PRIMARY_BARRIER -DTES
     "$s/native/test-allocation-info.cpp" testq.o d3d12_device.o d3d12_vm.o -ld3d12 -ldxguid -ldxgi -o game/game_scarlett_master.exe
 "${DXC:-dxc}" -WX -T cs_6_0 -E main "$s/native/test-primary-barrier.hlsl" -Fo game/test-primary-barrier.dxil
 TMPDIR="$w" SCARLETT_TEST_GPU="$gpu" SCARLETT_TEST_DISPLAY="$display" "$s/test-launch-nixos.sh" game "$tool"
+if [[ ${3:-} == bridge ]]; then
+    grep -hF 'PASS scoped private WSI:' scarlett-run.*/logs/steam-*.log
+    python3 "$s/tests/offscreen-pixels.py" scarlett-run.*/display.mp4
+    exit
+fi
 grep -hF 'PASS +240 pair:' scarlett-run.*/logs/steam-*.log
 if [[ ${3:-} == tagged ]]; then grep -hF 'PASS tagged singleton:' scarlett-run.*/logs/steam-*.log; fi

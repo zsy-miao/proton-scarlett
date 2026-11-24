@@ -1,0 +1,194 @@
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -5297,6 +5297,20 @@
+            !wcsnicmp( path->Buffer+len-n, exe, n );
+ }
+ 
++static BOOL scarlett_server( HWND hwnd, int op, ULONG_PTR generation )
++{
++    BOOL ok;
++    SERVER_START_REQ( set_window_info )
++    {
++        req->handle = wine_server_user_handle( hwnd );
++        req->offset = -0x534300 - op;
++        req->new_info = generation;
++        ok = !wine_server_call( req ) && reply->old_info == generation;
++    }
++    SERVER_END_REQ;
++    return ok;
++}
++
+ static void scarlett_register( HWND hwnd )
+ {
+     struct scarlett_window *s;
+@@ -5308,6 +5322,7 @@
+         s->hwnd = win->handle;
+         s->tid = GetCurrentThreadId();
+         s->generation = scarlett_generation;
++        if (!scarlett_server( hwnd, 1, s->generation )) { free(s); release_win_ptr(win); return; }
+         s->next = scarlett_windows;
+         scarlett_windows = s;
+     }
+@@ -5315,11 +5330,15 @@
+ }
+ 
+ /* Caller holds user_lock. Also used when a thread exits without DestroyWindow. */
+-static void scarlett_forget( HWND hwnd )
++static BOOL scarlett_forget( HWND hwnd )
+ {
+     struct scarlett_window **p, *s;
+     for (p = &scarlett_windows; (s = *p); p = &s->next)
+-        if (s->hwnd == hwnd) { *p = s->next; free(s); break; }
++        if (s->hwnd == hwnd) {
++            if (!scarlett_server( hwnd, 4, s->generation )) return FALSE;
++            *p = s->next; free(s); break;
++        }
++    return TRUE;
+ }
+ 
+ static ULONG_PTR scarlett_query( HWND hwnd, ULONG_PTR param, DWORD code )
+@@ -5327,6 +5346,9 @@
+     ULONG_PTR result = 0;
+     struct scarlett_window *s;
+     user_lock();
++    if (code == 0x53435704) result = scarlett_server( hwnd, 3, param );
++    if (code == 0x53435703 && !scarlett_unavailable && (s = scarlett_windows) && !s->next &&
++        s->generation == param && s->hwnd == hwnd) result = scarlett_server( hwnd, 2, param );
+     if (!scarlett_unavailable && (s = scarlett_windows) && !s->next && s->tid == GetCurrentThreadId())
+     {
+         if (code == 0x53435701 && !hwnd && param == GetCurrentProcessId()) result = s->generation;
+@@ -5373,6 +5395,9 @@
+ 
+     TRACE( "%p\n", hwnd );
+ 
++    user_lock();
++    if (!scarlett_forget( hwnd )) { user_unlock(); return 0; }
++    user_unlock();
+     unregister_imm_window( hwnd );
+ 
+     /* free child windows */
+@@ -5454,7 +5479,7 @@
+ 
+     if (call_hooks( WH_CBT, HCBT_DESTROYWND, (WPARAM)hwnd, 0, 0 )) return FALSE;
+     user_lock();
+-    scarlett_forget( hwnd );
++    if (!scarlett_forget( hwnd )) { user_unlock(); return FALSE; }
+     user_unlock();
+ 
+     if (is_menu_active() == hwnd) NtUserEndMenu();
+@@ -5556,7 +5581,10 @@
+         BOOL is_child = (win->dwStyle & (WS_CHILD | WS_POPUP)) == WS_CHILD;
+         struct destroy_entry tmp = {0};
+ 
+-        scarlett_forget( win->handle );
++        while (!scarlett_forget( win->handle )) {
++            LARGE_INTEGER delay = { .QuadPart = -10000 };
++            user_unlock(); NtDelayExecution( FALSE, &delay ); user_lock();
++        }
+         free_dce( win->dce, win->handle, &drawables );
+         set_user_handle_ptr( handle, NULL );
+         free( win->pScroll );
+@@ -6306,7 +6334,7 @@
+ {
+     switch (code)
+     {
+-    case 0x53435701: case 0x53435702:
++    case 0x53435701: case 0x53435702: case 0x53435703: case 0x53435704:
+         return scarlett_query( hwnd, param, code );
+     case NtUserCallHwndParam_ClientToScreen:
+         return client_to_screen( hwnd, (POINT *)param );
+--- a/server/window.c
++++ b/server/window.c
+@@ -62,6 +62,9 @@
+     struct list      unlinked;        /* list of children not linked in the Z-order list */
+     struct list      entry;           /* entry in parent's children list */
+     user_handle_t    handle;          /* full handle for this window */
++    struct thread *presenter;
++    int deferred_destroy;
++    lparam_t title_generation;
+     struct thread   *thread;          /* thread owning the window */
+     struct desktop  *desktop;         /* desktop that the window belongs to */
+     struct window_class *class;       /* window class */
+@@ -658,6 +661,9 @@
+     win->parent         = parent ? (struct window *)grab_object( parent ) : NULL;
+     win->owner          = owner ? owner->handle : 0;
+     win->thread         = current;
++    win->presenter = NULL;
++    win->deferred_destroy = 0;
++    win->title_generation = 0;
+     win->desktop        = desktop;
+     win->class          = class;
+     win->atom           = atom;
+@@ -751,6 +757,15 @@
+     return NULL;
+ }
+ 
++/* The user handle must survive asynchronous death of its creator too. */
++static void release_present_lease( struct window *win )
++{
++    struct thread *creator = win->thread;
++    win->presenter = NULL;
++    if (win->deferred_destroy) free_window_handle( win );
++    release_object( creator );
++}
++
+ /* destroy all windows belonging to a given thread */
+ void destroy_thread_windows( struct thread *thread )
+ {
+@@ -759,6 +774,11 @@
+ 
+     while ((win = next_user_handle( &handle, NTUSER_OBJ_WINDOW )))
+     {
++        if (win->presenter == thread)
++        {
++            release_present_lease( win );
++            continue; /* cannot be both presenter and creator */
++        }
+         if (win->thread != thread) continue;
+         if (is_desktop_window( win )) detach_window_thread( win );
+         else free_window_handle( win );
+@@ -2151,6 +2171,7 @@
+     struct window *child, *next;
+ 
+     assert( win->handle );
++    if (win->presenter) { win->deferred_destroy = 1; return; }
+ 
+     /* hide the window */
+     if (is_visible(win))
+@@ -2306,6 +2327,7 @@
+         set_error( STATUS_INVALID_PARAMETER );
+         return;
+     }
++    if (win->presenter) { set_error( STATUS_DEVICE_BUSY ); return; }
+     reply->old_parent  = win->parent->handle;
+     reply->full_parent = parent ? parent->handle : 0;
+     set_parent_window( win, parent );
+@@ -2455,6 +2477,28 @@
+ 
+     switch (req->offset)
+     {
++    case -0x534301: /* register exact generation on the creating thread */
++        if (!req->new_info || win->thread != current || win->title_generation || !is_desktop_window( win->parent )) break;
++        win->title_generation = reply->old_info = req->new_info;
++        return;
++    case -0x534302: /* acquire; only the same process, never the GUI thread */
++        if (!win->thread || win->thread == current || win->thread->process != current->process ||
++            !req->new_info || win->title_generation != req->new_info || win->presenter ||
++            win->deferred_destroy || !win->parent || !is_desktop_window( win->parent )) break;
++        grab_object( win->thread );
++        win->presenter = current;
++        reply->old_info = req->new_info;
++        return;
++    case -0x534303:
++        if (win->presenter != current || win->title_generation != req->new_info) break;
++        reply->old_info = req->new_info;
++        release_present_lease( win );
++        return;
++    case -0x534304: /* retirement and acquisition linearize on the server */
++        if (win->thread != current || !req->new_info || win->title_generation != req->new_info || win->presenter) break;
++        reply->old_info = req->new_info;
++        win->title_generation = 0;
++        return;
+     case GWL_STYLE:
+         reply->old_info = win->style;
+         win->style = req->new_info;

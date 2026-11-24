@@ -26,6 +26,9 @@ struct PrimaryWitness : IUnknown {
     ULONG WINAPI AddRef() override {return InterlockedIncrement(&refs);}
     ULONG WINAPI Release() override {LONG n=InterlockedDecrement(&refs);if(n==1)SetEvent(gone);return n;}
 };
+#ifdef TEST_PRESENT_BRIDGE
+#include "test-present-bridge.hpp"
+#endif
 static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnknown *other,
         ComPtr<IUnknown> &heap,ComPtr<IUnknown> &views,SIZE_T slot,SIZE_T dest,HMODULE xm)
 {
@@ -131,10 +134,28 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     // A release that discards contents could pass a black-only readback.
     const FLOAT red[]={1,0,0,1};D3D12_RECT stripe={0,0,1,2160};
     l->ClearRenderTargetView(ignored,red,1,&stripe);
+#ifdef TEST_PRESENT_BRIDGE
+    D3D12_HEAP_PROPERTIES up={};up.Type=D3D12_HEAP_TYPE_UPLOAD;up.CreationNodeMask=up.VisibleNodeMask=1;
+    D3D12_RESOURCE_DESC uploadDesc={};uploadDesc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
+    uploadDesc.Width=3840*2160*4;uploadDesc.Height=uploadDesc.DepthOrArraySize=uploadDesc.MipLevels=uploadDesc.SampleDesc.Count=1;
+    uploadDesc.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;ComPtr<ID3D12Resource> upload;UINT *pattern=nullptr;
+    HR(d->CreateCommittedResource(&up,D3D12_HEAP_FLAG_NONE,&uploadDesc,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&upload)));
+    HR(upload->Map(0,nullptr,(void**)&pattern));D3D12_RESOURCE_BARRIER toCopy={};
+    toCopy.Transition={texture.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_DEST};l->ResourceBarrier(1,&toCopy);
+    D3D12_TEXTURE_COPY_LOCATION from={},to={};from.pResource=upload.Get();from.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    from.PlacedFootprint={0,{DXGI_FORMAT_R8G8B8A8_UNORM,3840,2160,1,3840*4}};to.pResource=texture.Get();l->CopyTextureRegion(&to,0,0,0,&from,nullptr);
+    toCopy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;toCopy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;l->ResourceBarrier(1,&toCopy);
+#endif
 #endif
     clear[0]=1; // caller storage is reusable immediately
-    DWORD view[]={28,4,0,0,0,0};HR(xs_write_view(dev,0xa0,other,view,dest)); // same slot now names the other image
-    ComPtr<ID3D12Resource> sibling,read;HR(xs_resolve_color_rtv(views.Get(),dest,&ignored,sibling.GetAddressOf()));CK(sibling.Get()!=texture.Get());
+    DWORD view[]={28,4,0,0,0,0};
+#ifdef TEST_PRESENT_BRIDGE
+    SIZE_T secondSlot=dest+4095*32;
+#else
+    SIZE_T secondSlot=dest;
+#endif
+    HR(xs_write_view(dev,0xa0,other,view,secondSlot)); // same slot now names the other image
+    ComPtr<ID3D12Resource> sibling,read;HR(xs_resolve_color_rtv(views.Get(),secondSlot,&ignored,sibling.GetAddressOf()));CK(sibling.Get()!=texture.Get());
     const UINT width=3840,height=2160,imageBytes=width*height*4;
     D3D12_RESOURCE_DESC bd={};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=2*imageBytes;
     bd.Height=bd.DepthOrArraySize=bd.MipLevels=bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -183,6 +204,24 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     const FLOAT red[]={1,0,0,1};D3D12_RECT right={1920,0,3840,2160}; l->ClearRenderTargetView(rtv,red,1,&right);
 #endif
     HR(SLOT(list.Get(),0x48,Close)(list.Get()));
+#ifdef TEST_PRESENT_BRIDGE
+    ComPtr<IUnknown> second;
+    HR(SLOT(dev,0x248,List)(dev,ld,b.Get(),nullptr,xs_pool_list_id,(void**)second.GetAddressOf()));
+    IUnknown *s2=second.Get();HR(xs_bind_pool_heaps(s2,2,pair));SLOT(s2,0x238,Mark)(s2,ctrl+2,0,0,0);
+    HR(xs_bind_pool_heaps(s2,2,pair));SLOT(s2,0x240,Stamp)(s2,head,0,0,1);SLOT(s2,0x238,Mark)(s2,ctrl+3,post,0,0);SLOT(s2,0x250,Mark)(s2,ctrl,7,1,1);
+    t={D3D12_BARRIER_SYNC_ALL_SHADING,D3D12_BARRIER_SYNC_RENDER_TARGET,D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,D3D12_BARRIER_ACCESS_RENDER_TARGET,
+        D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,D3D12_BARRIER_LAYOUT_RENDER_TARGET,(ID3D12Resource*)other,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    group.pTextureBarriers=&t;SLOT(s2,0x490,Barrier)(s2,1,&group);FLOAT zero[4]={};SLOT(s2,0x1a0,Clear)(s2,secondSlot,zero,0,nullptr);
+    auto tail=test_clear_recorder(s2);toCopy.Transition={sibling.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_DEST};
+    tail->ResourceBarrier(1,&toCopy);to.pResource=sibling.Get();tail->CopyTextureRegion(&to,0,0,0,&from,nullptr);
+    toCopy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;toCopy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;tail->ResourceBarrier(1,&toCopy);
+    t={D3D12_BARRIER_SYNC_RENDER_TARGET,D3D12_BARRIER_SYNC_NONE,D3D12_BARRIER_ACCESS_RENDER_TARGET,D3D12_BARRIER_ACCESS_NO_ACCESS,
+       D3D12_BARRIER_LAYOUT_RENDER_TARGET,(D3D12_BARRIER_LAYOUT)0x1f,(ID3D12Resource*)other,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    SLOT(s2,0x490,Barrier)(s2,1,&group);SLOT(s2,0x240,Stamp)(s2,head-8,0,0,1);HR(SLOT(s2,0x48,Close)(s2));
+    IUnknown *keys[]={surface,other},*batches[]={list.Get(),s2};ID3D12Resource *sources[]={texture.Get(),sibling.Get()};
+    int checked=bridge_fixture(d,dev,keys,batches,sources,dest,pattern,ctrl,ticks);
+    upload->Unmap(0,nullptr);other->Release();surface->Release();return checked;
+#endif
     PrimaryWitness witness;CK(witness.gone);const GUID tag={0x490,0,0,{}};
     HR(texture->SetPrivateDataInterface(tag,&witness));CK(witness.refs==2);
     auto pin=(decltype(&ScarlettRetainDisplayBackingV1))(void*)GetProcAddress(xm,"ScarlettRetainDisplayBackingV1");

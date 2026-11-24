@@ -20,6 +20,9 @@ ID3D12CommandQueue *xs_display_queue(IUnknown *queue)
     ID3D12CommandQueue *q=as_queue(queue);
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
     if (q) {
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+        if(!escape_native())return NULL;
+#endif
         struct adapter *a=CONTAINING_RECORD(queue,struct adapter,iface);
         AcquireSRWLockExclusive(&a->submit_lock);
         a->external_submissions=TRUE;
@@ -29,6 +32,9 @@ ID3D12CommandQueue *xs_display_queue(IUnknown *queue)
     return q;
 }
 
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+static void initialize_private_display(struct adapter *a);
+#endif
 HRESULT xs_console_direct_queue(ID3D12Device *host, IUnknown *owner, IUnknown **out)
 {
     if (!out) return E_POINTER;
@@ -37,17 +43,20 @@ HRESULT xs_console_direct_queue(ID3D12Device *host, IUnknown *owner, IUnknown **
     HRESULT hr=xs_direct_queue(host,out);
     if (SUCCEEDED(hr)) {
         IUnknown_AddRef(owner);
-        CONTAINING_RECORD(*out,struct adapter,iface)->display.owner=owner;
+        struct adapter *a=CONTAINING_RECORD(*out,struct adapter,iface);a->display.owner=owner;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+        if(xs_title_window_query(&a->display.captured,NULL)) initialize_private_display(a);
+#endif
     }
     return hr;
 }
 
 #include "title_window.h"
 static HRESULT display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
-        UINT width, UINT height, IDXGISwapChain3 **out,const struct xs_title_window *title)
+        UINT width, UINT height, IDXGISwapChain3 **out,const struct xs_title_window *title,ID3D12CommandQueue *private_queue)
 {
-    if (!out) return E_POINTER;
-    *out=NULL;
+    if (!out && !private_queue) return E_POINTER;
+    if (out) *out=NULL;
     ID3D12CommandQueue *q=as_queue(queue);
     if (!q || !factory || !window || !width || !height) return E_INVALIDARG;
     DWORD pid=0;
@@ -65,8 +74,8 @@ static HRESULT display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window
             .SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD};
         IDXGISwapChain1 *chain;
         /* DXGI can enqueue outside our submit lock, just like a borrowed host queue. */
-        xs_display_queue(queue);
-        hr=IDXGIFactory2_CreateSwapChainForHwnd(factory,(IUnknown *)q,window,&sd,NULL,NULL,&chain);
+        if (out && !xs_display_queue(queue)) {ReleaseSRWLockExclusive(&a->display.lock);return E_ACCESSDENIED;}
+        hr=IDXGIFactory2_CreateSwapChainForHwnd(factory,(IUnknown *)(private_queue?private_queue:q),window,&sd,NULL,NULL,&chain);
         if (SUCCEEDED(hr)) {
             hr=IDXGISwapChain1_QueryInterface(chain,&IID_IDXGISwapChain3,(void **)&a->display.chain);
             IDXGISwapChain1_Release(chain);
@@ -85,7 +94,26 @@ static HRESULT display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window
             }
             a->display.window=window;
             a->display.width=width; a->display.height=height;
-            IDXGISwapChain3_AddRef(a->display.chain); *out=a->display.chain;
+            if (private_queue) fprintf(stderr,"scarlett: private chain opened on creator %lu\n",GetCurrentThreadId());
+            if (out) {
+                IDXGISwapChain3_AddRef(a->display.chain); *out=a->display.chain;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+                InterlockedExchange(&a->display.public_chain,1);
+#endif
+            }
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+            else {
+                AcquireSRWLockExclusive(&a->submit_lock);
+                if (a->external_submissions) {
+                    RemovePropW(window,L"Scarlett.Present.Owner");a->display.window=NULL;
+                    IDXGISwapChain3_Release(a->display.chain);a->display.chain=NULL;hr=E_ACCESSDENIED;
+                } else {
+                    a->display.creator=title->tid;
+                    ID3D12CommandQueue_AddRef(private_queue);a->display.wsi=private_queue;
+                }
+                ReleaseSRWLockExclusive(&a->submit_lock);
+            }
+#endif
         }
     }
     ReleaseSRWLockExclusive(&a->display.lock);
@@ -94,7 +122,7 @@ static HRESULT display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window
 
 HRESULT xs_display_open(IUnknown *queue,IDXGIFactory2 *factory,HWND window,UINT width,UINT height,IDXGISwapChain3 **out)
 {
-    return display_open(queue,factory,window,width,height,out,NULL);
+    return display_open(queue,factory,window,width,height,out,NULL,NULL);
 }
 
 HRESULT xs_display_open_title(IUnknown *queue,IDXGIFactory2 *factory,UINT width,UINT height,IDXGISwapChain3 **out)
@@ -103,8 +131,50 @@ HRESULT xs_display_open_title(IUnknown *queue,IDXGIFactory2 *factory,UINT width,
     if (!out) return E_POINTER;
     *out=NULL;
     if (!xs_title_window_query(&title,NULL)) return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
-    return display_open(queue,factory,title.hwnd,width,height,out,&title);
+    return display_open(queue,factory,title.hwnd,width,height,out,&title,NULL);
 }
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+/* No native queue or chain crosses the API. DXGI gets a separate Direct queue. */
+static HRESULT open_on_creator(struct adapter *a,const struct xs_title_window *expected)
+{
+    struct xs_title_window w;ID3D12Device *d;IDXGIFactory2 *factory;ID3D12CommandQueue *wsi;
+    IUnknown *iface=&a->iface;ID3D12CommandQueue *q=as_queue(iface);
+    if (!xs_title_window_query(&w,expected)) return DXGI_ERROR_INVALID_CALL;
+    HRESULT hr=ID3D12CommandQueue_GetDevice(q,&IID_ID3D12Device,(void**)&d);
+    if (FAILED(hr)) return hr;
+    D3D12_COMMAND_QUEUE_DESC desc={.Type=D3D12_COMMAND_LIST_TYPE_DIRECT,.NodeMask=1};
+    hr=ID3D12Device_CreateCommandQueue(d,&desc,&IID_ID3D12CommandQueue,(void**)&wsi);
+    ID3D12Device_Release(d);
+    if (FAILED(hr)) return hr;
+    hr=CreateDXGIFactory1(&IID_IDXGIFactory2,(void**)&factory);
+    if (SUCCEEDED(hr)) {
+        hr=display_open(iface,factory,w.hwnd,3840,2160,NULL,&w,wsi);
+        IDXGIFactory2_Release(factory);
+    }
+    ID3D12CommandQueue_Release(wsi);
+    return hr;
+}
+static SRWLOCK initializing=SRWLOCK_INIT;
+static HWND opening;
+static LRESULT CALLBACK guard_open(int code,WPARAM w,LPARAM l)
+{
+    if(code==HCBT_DESTROYWND && (HWND)w==opening)return 1;
+    return CallNextHookEx(NULL,code,w,l);
+}
+static void initialize_private_display(struct adapter *a)
+{
+    if(!TryAcquireSRWLockExclusive(&initializing))return;
+    opening=a->display.captured.hwnd;
+    HHOOK h=SetWindowsHookExW(WH_CBT,guard_open,NULL,GetCurrentThreadId());
+    HRESULT hr=h?open_on_creator(a,&a->display.captured):E_ACCESSDENIED;
+    UINT count=~0u;
+    HRESULT query=SUCCEEDED(hr)?IDXGISwapChain3_GetLastPresentCount(a->display.chain,&count):hr;
+    fprintf(stderr,"WSI init tid=%lu hwnd=%p generation=%zu hr=%lx count_hr=%lx count=%u\n",GetCurrentThreadId(),opening,a->display.captured.generation,hr,query,count);
+    if(h)UnhookWindowsHookEx(h);
+    opening=NULL;ReleaseSRWLockExclusive(&initializing);
+}
+
+#endif
 
 /* Private identity only: don't advertise a console resource ABI we cannot service. */
 static const IUnknownVtbl surface_vtbl = {query, addref, release};
@@ -123,6 +193,9 @@ HRESULT xs_display_wrap(IUnknown *queue, UINT index, ID3D12Resource *render, IUn
     struct adapter *a=CONTAINING_RECORD(queue,struct adapter,iface);
     AcquireSRWLockExclusive(&a->display.lock);
     HRESULT hr=DXGI_ERROR_INVALID_CALL;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if (a->display.wsi) {ReleaseSRWLockExclusive(&a->display.lock);return E_ACCESSDENIED;}
+#endif
     if (a->display.chain && !a->display.keys[index]) {
         ID3D12Resource *buffer;
         hr=IDXGISwapChain3_GetBuffer(a->display.chain,index,&IID_ID3D12Resource,(void **)&buffer);
@@ -152,6 +225,9 @@ static BOOL read_wire(const void *src, void *dst, SIZE_T bytes)
 }
 
 #include "offscreen.h"
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+#include "present_relay.h"
+#endif
 
 static HRESULT WINAPI queue_present(IUnknown *iface, UINT count, const void *planes, const void *params)
 {
@@ -171,6 +247,16 @@ static HRESULT WINAPI queue_present(IUnknown *iface, UINT count, const void *pla
     if (!read_wire(p.dst,dst,sizeof(dst)) || !read_wire(p.src,&rect,sizeof(rect))) return E_POINTER;
     if (dst[0]!=0 || dst[1]!=0 || dst[2]!=1 || dst[3]!=1) return E_NOTIMPL;
     struct adapter *a=CONTAINING_RECORD(iface,struct adapter,iface);
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if (a->display.captured.hwnd && !InterlockedCompareExchange(&a->display.public_chain,0,0)) {
+        UINT_PTR ret=(UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL);
+        fprintf(stderr,"scarlett: captured-window PresentX return RVA +%zx token=%llu key=%p queue=%p tid=%lu creator=%lu src=%ld,%ld,%ld,%ld\n",
+                ret,p.token,key,iface,GetCurrentThreadId(),a->display.captured.tid,rect.left,rect.top,rect.right,rect.bottom);
+        HRESULT hr=(rect.left || rect.top || rect.right!=3840 || rect.bottom!=2160)?E_INVALIDARG:worker_present(a,p.token,key);
+        fprintf(stderr,"scarlett: private PresentX result=%lx token=%llu\n",hr,p.token);
+        return hr;
+    }
+#endif
     AcquireSRWLockExclusive(&a->display.lock);
     HRESULT hr=E_NOTIMPL;
     if (a->display.chain && !rect.left && !rect.top && rect.right==(LONG)a->display.width &&

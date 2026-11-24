@@ -22,7 +22,12 @@ HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnk
 HRESULT xs_device_list(ID3D12Device *host,D3D12_COMMAND_LIST_TYPE type,IUnknown *allocator,BOOL pooled,IUnknown *pool_owner,IUnknown **out);
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity);
-HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary);
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);
+IUnknown *xs_claim_view(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,SIZE_T,UINT64,BOOL);
+void xs_finish_flip(IUnknown *);
+#endif
+HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary,UINT64 *serial);
 /* Borrowed recorder, for internal typed command translation only. */
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *list);
 #endif

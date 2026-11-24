@@ -14,11 +14,14 @@ static BOOL tagged_pool_ready(struct startup_list *s)
         p->counter==m->alias && s->stamp->mapping;
 }
 struct tagged_submission {ID3D12CommandQueue *q;IUnknown *iface;struct startup_list *s;struct heap_retirement *r;};
-static void execute_tagged(void *ctx)
+static HRESULT execute_tagged(void *ctx)
 {
     struct tagged_submission *t=ctx;
     struct startup_list *s=t->s;
     struct heap_retirement *r=t->r;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if(s->primary && FAILED(xs_primary_writer(s->pool_owner,s->primary,t->q)))return E_ACCESSDENIED;
+#endif
     retain_recording(r,s);
     r->tag_queue=t->iface;IUnknown_AddRef(r->tag_queue);
     if (!r->head_alloc) {r->head_alloc=s->allocator;IUnknown_AddRef(r->head_alloc);}
@@ -26,7 +29,7 @@ static void execute_tagged(void *ctx)
     if ((r->tag_post=s->post)) InterlockedIncrement(&r->tag_post->refs);
     if ((r->tag_head=s->head)) ID3D12GraphicsCommandList7_AddRef(r->tag_head);
     r->tag_tail=s->host;ID3D12GraphicsCommandList7_AddRef(r->tag_tail);
-    execute_recording(t->q,s,r);
+    execute_recording(t->q,s,r);return S_OK;
 }
 static HRESULT checked_tagged_submit(IUnknown *iface,UINT count,IUnknown *const *lists,UINT64 token,UINT flags)
 {
@@ -63,6 +66,16 @@ static HRESULT checked_tagged_submit(IUnknown *iface,UINT count,IUnknown *const 
     AcquireSRWLockExclusive(&queue->submit_lock);
     AcquireSRWLockExclusive(&a->lock);
     hr=queue->external_submissions?E_ACCESSDENIED:xs_frame_submit(owner,token,q,flags==3,r->fence,execute_tagged,&t);
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if (hr==S_OK) {
+        forget_release(queue);
+        if (flags==3 && queue->display.captured.hwnd) {
+            queue->display.released=s->primary;ID3D12Resource_AddRef(s->primary);
+            queue->display.released_end=r->fence;ID3D12Fence_AddRef(r->fence);
+            queue->display.released_token=token;queue->display.clear_slot=s->clear_slot;queue->display.clear_serial=s->clear_serial;
+        }
+    }
+#endif
     ReleaseSRWLockExclusive(&a->lock);
     ReleaseSRWLockExclusive(&queue->submit_lock);
     if (hr==S_OK) {

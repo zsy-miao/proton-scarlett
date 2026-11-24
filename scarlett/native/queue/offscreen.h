@@ -29,6 +29,9 @@ HRESULT xs_display_arm_primary(IUnknown *queue,ID3D12CommandQueue *producer,HWND
         hp.CreationNodeMask!=1 || hp.VisibleNodeMask!=1) return E_INVALIDARG;
     struct adapter *a=CONTAINING_RECORD(queue,struct adapter,iface);
     AcquireSRWLockExclusive(&a->display.lock);
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if (a->display.wsi) {ReleaseSRWLockExclusive(&a->display.lock);return E_ACCESSDENIED;}
+#endif
     hr=DXGI_ERROR_INVALID_CALL;
     if (a->display.chain && !a->display.primary && a->display.width==3840 && a->display.height==2160 &&
         !a->display.keys[0] && !a->display.keys[1] && a->display.window==window &&
@@ -50,6 +53,9 @@ static HRESULT copy_primary(void *context)
     ID3D12GraphicsCommandList *list=NULL;
     ID3D12Fence *done=NULL;
     ID3D12CommandQueue *q=a->host.queue;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    if (a->display.wsi) q=a->display.wsi;
+#endif
     IDXGISwapChain3 *chain=a->display.chain;
     UINT index=IDXGISwapChain3_GetCurrentBackBufferIndex(chain);
     HRESULT hr=IDXGISwapChain3_GetBuffer(chain,index,&IID_ID3D12Resource,(void **)&dst);
@@ -92,3 +98,55 @@ end:
     ID3D12Resource_Release(dst);
     return hr;
 }
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+static BOOL bridge_window(struct adapter *a)
+{
+    DWORD pid=0;HWND hwnd=NULL;
+    return SUCCEEDED(IDXGISwapChain3_GetHwnd(a->display.chain,&hwnd)) && hwnd==a->display.window &&
+        GetWindowThreadProcessId(hwnd,&pid)==a->display.creator && pid==GetCurrentProcessId() &&
+        GetPropW(hwnd,L"Scarlett.Present.Owner")==a->display.cookie;
+}
+struct bridge_copy {struct adapter *a;BOOL locked;};
+static HRESULT bridge_copy(void *ctx)
+{
+    struct bridge_copy *c=ctx;
+    HRESULT hr=copy_primary(c->a);
+#ifdef TEST_PRESENT_BRIDGE
+    if(SUCCEEDED(hr) && xs_primary_writer(c->a->display.owner,c->a->display.primary,c->a->host.queue)!=DXGI_ERROR_WAS_STILL_DRAWING) xs_stop();
+#endif
+    if (SUCCEEDED(hr) && !bridge_window(c->a)) hr=DXGI_ERROR_INVALID_CALL;
+    /* Source state is restored and the copy fence has retired. DXGI may dispatch
+     * window messages during Present; no producer lock is needed for the flip. */
+    forget_release(c->a);ReleaseSRWLockExclusive(&c->a->submit_lock);c->locked=FALSE;
+    return hr;
+}
+static HRESULT present_released(struct adapter *a,UINT64 token,IUnknown *key,ID3D12Fence *end)
+{
+    HRESULT hr=DXGI_ERROR_INVALID_CALL;
+    struct bridge_copy c={a,TRUE};
+    AcquireSRWLockExclusive(&a->submit_lock);
+    if (a->external_submissions) hr=E_ACCESSDENIED;
+    else if (a->display.released && token==a->display.released_token && end==a->display.released_end) {
+        ID3D12Resource *src=a->display.released;
+        IUnknown *pin=xs_claim_view(a->display.owner,key,src,a->host.queue,a->display.clear_slot,a->display.clear_serial,TRUE);
+        if (pin) {
+            UINT64 done=ID3D12Fence_GetCompletedValue(a->display.released_end);
+            fprintf(stderr,"WSI lease: primary=%p token=%llu serial=%llu fence=%p entry=%llu\n",key,token,a->display.clear_serial,a->display.released_end,done);
+            if (done==0) hr=DXGI_ERROR_WAS_STILL_DRAWING;
+            else if (done==UINT64_MAX) hr=DXGI_ERROR_DEVICE_REMOVED;
+            else if (done==1 && !bridge_window(a)){HWND h=NULL;HRESULT hhr=IDXGISwapChain3_GetHwnd(a->display.chain,&h);fprintf(stderr,"DETAIL window get=%lx chain=%p live=%p tid=%lu/%lu cookie=%p/%p\n",hhr,h,a->display.window,GetWindowThreadProcessId(h,NULL),a->display.creator,GetPropW(h,L"Scarlett.Present.Owner"),a->display.cookie);}
+            else if (done==1) {
+                a->display.primary=src;a->display.primary_state=D3D12_RESOURCE_STATE_COMMON;
+                /* Serialize against tracked submissions and raw queue exposure until the
+                 * private queue has retired the copy. Only its independent DXGI flip follows. */
+                hr=xs_frame_present_release(a->display.owner,token,(IDXGISwapChain *)a->display.chain,bridge_copy,&c,
+                        a->host.queue,a->display.released_end);
+                a->display.primary=NULL;
+            }
+        }
+        if (pin) {xs_finish_flip(pin);IUnknown_Release(pin);}
+    }
+    if (c.locked) ReleaseSRWLockExclusive(&a->submit_lock);
+    return hr;
+}
+#endif

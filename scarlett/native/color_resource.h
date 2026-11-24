@@ -40,6 +40,10 @@ struct color_resource {
     LONG refs;
     struct xbox_device *owner;
     ID3D12Resource *host;
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+    ID3D12CommandQueue *writer;
+    BOOL multi_writer,claimed,flipping;
+#endif
     BOOL msaa,depth,tiled_r32,tiled_r11;
     DXGI_FORMAT single_format;
     void *slice;
@@ -66,6 +70,9 @@ static ULONG WINAPI color_release(IUnknown *i)
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     if (!refs) {
+#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+        if(r->writer) ID3D12CommandQueue_Release(r->writer);
+#endif
         if (r->xfree) r->xfree(r->slice,XS_DISPLAY_ATTR); /* hook runs now, irrespective of host refs */
         ID3D12Resource_Release(r->host);
         if (r->tile_heap) ID3D12Heap_Release(r->tile_heap);

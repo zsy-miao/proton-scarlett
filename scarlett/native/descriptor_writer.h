@@ -368,7 +368,7 @@ static HRESULT resolve_attachment(IUnknown *heap,SIZE_T slot,UINT kind,D3D12_CPU
 }
 /* Non-shader-visible RTVs are consumed at record time; serialize that read with all rewrites.
  * The +490 recording and its submission fence already own the destination image. */
-HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary)
+HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary,UINT64 *serial)
 {
     if (!owner || !list || !primary) return E_INVALIDARG;
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
@@ -377,6 +377,7 @@ HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SI
     for (struct desc_heap *h=d->rtv_heaps;h;h=h->next) {
         D3D12_CPU_DESCRIPTOR_HANDLE cpu;
         if (attachment_locked(h,slot,RTV,&cpu)!=primary) continue;
+        if (serial) *serial=h->records[(slot-h->start)/h->stride].serial;
         ID3D12GraphicsCommandList7_ClearRenderTargetView(list,cpu,(const FLOAT[4]){0},0,NULL);
         hr=S_OK;
         break;
