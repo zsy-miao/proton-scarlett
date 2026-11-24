@@ -98,10 +98,14 @@ requests `WritePartitions` (RVA `+c6260`, 5,504 bytes).
 with the pinned desktop backend. The factory submits the unmodified shader
 after checking its digest and root identity. It writes four identical DWORDs
 per counter using `u0` and `b0`. The private recorder bounds the destination
-to `16 * count` bytes. `test-bvh-reset.cpp` takes `private-reset.bin` and
-checks 33 counters across two workgroups, including untouched words on both
-sides and rejection of a range one byte too short. This is a fixture result;
-retail dispatch has not been observed.
+to `16 * count` bytes. In [`test-bvh-reset.cpp`](test-bvh-reset.cpp) the pinned
+DLL's utility function at `+0x20760` writes a 13-DWORD recording into a private
+list: a `u0` address, three `b0` writes and a `(2,1,1)` dispatch. The fixture
+preselects the root and PSO, supplies private parameter tags, and resolves the
+recorded address to one known buffer. It rejects mutations of the address,
+tags, count and dimensions, as well as truncated and overlong recordings.
+After the fence all 33 counters and both guards matched on RADV and RTX 3070.
+The retail list's PSO and root binding paths are still unverified.
 
 The tenth utility constructor call (DLL `+206f4`) selects `ResetToIndexBuffer`
 at `+b4bd0` (`0x1004` bytes). It takes the same three constants as `ResetCounters`

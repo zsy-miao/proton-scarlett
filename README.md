@@ -17,6 +17,8 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
+In a separate [command-recording test](scarlett/native/test-bvh-reset.cpp), the original builder DLL wrote a counter-reset command into a test list. Using preselected bindings, the recorder ran it on RADV and RTX 3070. All 192 words matched after GPU completion, including the untouched guards.
+
 GPU tests on RADV and RTX 3070 checked 46 radix cases per adapter, including histogram counts, scans that restart at each workgroup, and scatter writes that preserve the original key/index pairs.
 
 The [Morton test](scarlett/tests/morton-root.sh) checked 1,960 words after GPU completion. The [bitonic sort test](scarlett/tests/bitonic-pipelines.sh) compared 32- and 64-bit results with `std::sort` and checked that each key still had its original index. Both tests passed on RADV and RTX 3070; retail has reached pipeline creation only.

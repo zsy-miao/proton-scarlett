@@ -69,23 +69,40 @@ static int run(bool index)
     auto reset=[&](){return xs_record_bvh_reset(ps.Get(),list.Get(),&dr,count,first,&h);};
     if (index) HR(reset());
     else {
-        // XboxBvhBuilder.dll +2093a..+20990: cursor < dispatch limit, four DWORDs, cursor += 16.
-        UINT words[5]={};
-        struct Cursor { BYTE pad[0x18]; UINT *write; UINT64 unused; UINT *limit; };
-        static_assert(offsetof(Cursor,write)==0x18 && offsetof(Cursor,limit)==0x28);
-        Cursor guest={{},words,0,words+1}; // last permitted packet start is words[0]
-        CK(guest.write < guest.limit);
-        const UINT direct[]={0x4002c400,2,1,1};
-        memcpy(guest.write,direct,sizeof direct); guest.write+=4;
+        // The harness pins this image's SHA-256. The leaf writer needs no imports.
+        HMODULE image=LoadLibraryExW(L"G:\\private-builder-image.bin",nullptr,DONT_RESOLVE_DLL_REFERENCES);
+        CK(image);
+        struct Cursor {
+            BYTE prefix[0x18]; UINT *write; UINT64 unused; UINT *dispatch_limit,*ordinary_limit;
+            BYTE pad[0x348-0x38]; UINT uav_tag,constants_tag;
+        } guest={};
+        static_assert(offsetof(Cursor,write)==0x18 && offsetof(Cursor,dispatch_limit)==0x28 &&
+                offsetof(Cursor,ordinary_limit)==0x30 && offsetof(Cursor,uav_tag)==0x348);
+        // Private tags supplied by the fixture, not console packet encodings.
+        guest.uav_tag=0x100; guest.constants_tag=0x200;
+        UINT storage[16]; for (auto &v:storage) v=0xdeadf00d;
+        UINT *words=storage+1; guest.write=words;
+        guest.ordinary_limit=words+9; guest.dispatch_limit=words+10;
+        struct Bindings { void *context; IUnknown *root,*pso; };
+        Bindings utility={nullptr,root.Get(),ps.Get()}, cached={&guest,root.Get(),ps.Get()};
+        using Writer=void(WINAPI *)(Bindings *,Bindings *,UINT64,UINT,UINT);
+        auto writer=reinterpret_cast<Writer>(reinterpret_cast<BYTE *>(image)+0x20760);
+        writer(&utility,&cached,dr.guest_base,4*count,first);
+        CK(FreeLibrary(image));
+        CK(guest.write==words+13 && storage[0]==0xdeadf00d && words[13]==0xdeadf00d);
         auto record=[&]() -> HRESULT {
-            // Read only owned storage, and only after qualifying the entire written span.
-            if (guest.write!=words+4 || words[0]!=0x4002c400 ||
-                    words[1]!=(count+31)/32 || words[2]!=1 || words[3]!=1) return E_INVALIDARG;
-            return reset();
+            if (guest.write!=words+13 || words[0]!=guest.uav_tag ||
+                    (UINT64(words[2])<<32 | words[1])!=dr.guest_base ||
+                    words[3]!=guest.constants_tag || words[4]!=1 || words[5]!=guest.constants_tag+4 ||
+                    words[7]!=guest.constants_tag+8 || words[9]!=0x4002c400 ||
+                    !words[6] || words[6]>dr.bytes/16 || words[10]!=1+(words[6]-1)/32 ||
+                    words[11]!=1 || words[12]!=1) return E_INVALIDARG;
+            return xs_record_bvh_reset(ps.Get(),list.Get(),&dr,words[6],words[8],&h);
         };
-        for (UINT i=0;i<4;++i) {
-            words[i]=i ? direct[i]+1 : 0x4002e800;
-            CK(record()==E_INVALIDARG && !h); words[i]=direct[i];
+        CK(words[6]==count && words[8]==first);
+        for (UINT i=0;i<13;++i) {
+            if (i==8) continue; // any fill value is valid
+            ++words[i]; CK(record()==E_INVALIDARG && !h); --words[i];
         }
         --guest.write; CK(record()==E_INVALIDARG && !h);
         guest.write+=2; CK(record()==E_INVALIDARG && !h); // valid prefix plus trailing word
@@ -102,7 +119,7 @@ static int run(bool index)
     CloseHandle(event); CK(fence->GetCompletedValue()==1); xs_drop_bvh_hold(h);
     HR(rb->Map(0,nullptr,(void **)&mapped)); CK(!memcmp(mapped,expected,sizeof expected)); rb->Unmap(0,nullptr);
     printf("PASS synthetic +1f0 %s: unaltered bytecode, two workgroups, short range rejected, all 192 fenced DWORDs\n",
-            index?"ResetToIndexBuffer":"ResetCounters via guest direct packet");
+            index?"ResetToIndexBuffer":"ResetCounters via original DLL writer");
     return 0;
 }
 int main() { return run(false) || run(true); }
