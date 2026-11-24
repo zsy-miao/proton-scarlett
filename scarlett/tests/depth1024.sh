@@ -12,4 +12,4 @@ x86_64-w64-mingw32-g++ -std=c++17 -Os -static -Wall -Wextra -Werror "$s/test-dep
 "${DXC:-dxc}" -WX -T cs_6_0 -E main "$s/test-depth1024.hlsl" -Fo "$w/game/depth1024.dxil"
 SCARLETT_TEST_GPU="${SCARLETT_TEST_GPU:-nvidia}" "$s/../test-launch-nixos.sh" "$w/game" "$@" | tee "$w/result"
 run=$(sed -n 's/^Test output (including prefix): //p' "$w/result")
-grep '^PASS depth1024:' "$run/logs/steam-999001.log"
+grep '^PASS depth994:' "$run/logs/steam-999001.log"
