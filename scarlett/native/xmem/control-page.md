@@ -74,3 +74,19 @@ store to the replacement page did not satisfy the original wait. A store to
 the retained original backing did, and the subsequent GPU marker left the
 replacement untouched. This uses a synthetic allocation and known offsets;
 the retail method's scope and pipeline stage have not been verified.
+
+### RADV startup marker at page offset 8
+
+At list `+0x238` (title return `+0x4ed46aa`), AMD retail passed the original
+64 KiB WC page plus 8 and a zero value, control and flags. The preceding
+64-bit counter held 1; all 54 marker words were already zero. Those values
+alone cannot show whether or when the GPU wrote anything.
+
+[`test-control-immediate.cpp`](test-control-immediate.cpp) distinguishes a
+queued write from a no-op. It starts the marker at `0x76100002` and holds a
+native `WriteBufferImmediate` behind a queue fence. The marker stays nonzero
+while the title address is released and reused. After the fence, only the
+original four bytes at offset 8 are zero; the replacement page is unchanged.
+This establishes the backing and queue ordering on RADV. It does not establish
+the retail command's pipeline stage. Build with x64 MinGW C++17, `-static
+-ld3d12`, and run with the RADV harness.
