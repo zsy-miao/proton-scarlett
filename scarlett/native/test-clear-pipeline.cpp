@@ -1,6 +1,10 @@
 #include "test-clear-common.hpp"
 #include "../tests/clear-fallback/source-control.hpp"
 #include "test-attachment-pair.hpp"
+#ifdef TEST_LATE_COLOUR
+#include "test-colour-root.hpp"
+#include "test-colour-late.hpp"
+#endif
 extern "C" BOOL test_clear4_bind(ID3D12Device *,IUnknown *,IUnknown *,IUnknown *,IUnknown *,IUnknown *,IUnknown *);
 static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb,bool with_ds=false,ClearSourceControl *control=nullptr) {
     constexpr UINT W=16,H=8;
@@ -145,7 +149,13 @@ int main(){
     ComPtr<IUnknown> srgb;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)srgb.GetAddressOf()));
     hp=clear_test_host(srgb.Get());CK(hp);
     for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode,true);
+#ifdef TEST_LATE_COLOUR
+    late_owner=d.Get();late_root=colour_root(d.Get());late_wrong=colour_root(other.Get());gate=CreateEventW(nullptr,TRUE,FALSE,nullptr);CK(gate);worker=CreateThread(nullptr,0,make_late,nullptr,0,nullptr);CK(worker);
+#endif
     test_pair(wc,hd.Get(),d.Get(),ds4.Get(),r.Get(),other.Get(),control);}
+#ifdef TEST_LATE_COLOUR
+    CloseHandle(worker);CloseHandle(gate);late_pso.Reset();late_root.Reset();late_wrong.Reset();
+#endif
     auto second=root(d.Get());CK(test_clear4_bind(hd.Get(),d.Get(),other.Get(),r.Get(),second.Get(),ds4.Detach(),p.Get()));
     puts("PASS clear sRGB: dark RGB, linear alpha, coverage and guards");
     puts("PASS +2b0 qualified creation, guest identity and rejection controls");

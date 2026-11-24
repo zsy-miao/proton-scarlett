@@ -2,15 +2,7 @@
 #include "test-clear-common.hpp"
 
 extern "C" ID3D12PipelineState *xs_pin_clear4(IUnknown*,ID3D12Device*,IUnknown*,IUnknown**);
-static ComPtr<IUnknown> colour_root(IUnknown *d){
-    D3D12_DESCRIPTOR_RANGE1 range={D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,27,1,D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE,UINT_MAX};
-    D3D12_ROOT_PARAMETER1 p={};p.DescriptorTable={1,&range};
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={};desc.Version=D3D_ROOT_SIGNATURE_VERSION_1_1;
-    desc.Desc_1_1={1,&p,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
-    ComPtr<ID3DBlob> blob;HR(D3D12SerializeVersionedRootSignature(&desc,&blob,nullptr));
-    using Make=HRESULT(WINAPI*)(IUnknown*,UINT,const void*,SIZE_T,REFIID,void**);
-    ComPtr<IUnknown> r;HR(((Make)(*(void***)d)[16])(d,1,blob->GetBufferPointer(),blob->GetBufferSize(),IID_ID3D12RootSignature,(void**)r.GetAddressOf()));return r;
-}
+#include "test-colour-root.hpp"
 int main(){
     auto d=device(),other=device(),r=colour_root(d.Get()),foreign=colour_root(other.Get()),wrong=root(d.Get());
     UINT_PTR q[86];BYTE vs[1100],ps[1180];load("stream.bin",q,sizeof q);load("VS.bin",vs,sizeof vs);load("PS.bin",ps,sizeof ps);

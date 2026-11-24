@@ -8,7 +8,7 @@ static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
     (void)i; (void)name;
     return E_NOTIMPL;
 }
-struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next; ID3D12PipelineState *diagonal;};
+struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next; ID3D12PipelineState *diagonal; BOOL colour;};
 static ULONG WINAPI clear_release(IUnknown *i)
 {
     struct clear_wrapper *p=CONTAINING_RECORD(i,struct clear_wrapper,pso.iface);
@@ -16,7 +16,7 @@ static ULONG WINAPI clear_release(IUnknown *i)
     AcquireSRWLockExclusive(&d->descriptor_lock);
     ULONG refs=InterlockedDecrement(&p->pso.refs);
     if(!refs && p->root){
-        struct clear_wrapper **link=&d->clear4;while(*link!=p)link=&(*link)->next;
+        struct clear_wrapper **link=p->colour?&d->colour_psos:&d->clear4;while(*link!=p)link=&(*link)->next;
         *link=p->next;
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
@@ -135,11 +135,12 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     p->iface.lpVtbl=&clear_methods.unknown; p->refs=1;
     p->owner=d; IUnknown_AddRef(device);
     p->root=host; p->host=pso;
-    if (clear4){
+    if (colour || clear4){
+        wrap->colour=colour;
         wrap->diagonal=diag;
         wrap->root=guest_root;
         AcquireSRWLockExclusive(&d->descriptor_lock);
-        wrap->next=d->clear4;d->clear4=wrap;
+        struct clear_wrapper **list=colour?&d->colour_psos:&d->clear4;wrap->next=*list;*list=wrap;
         ReleaseSRWLockExclusive(&d->descriptor_lock);
     }else IUnknown_Release(guest_root);
     *out=&p->iface;

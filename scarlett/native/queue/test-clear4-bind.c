@@ -40,6 +40,26 @@ static UINT binds;static UINT64 last_va;static ID3D12GraphicsCommandList7 *src_h
 static void count_bind(ID3D12GraphicsCommandList7 *l,UINT i,UINT64 va){if(i==0){++binds;src_host=l;last_va=va;}ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView(l,i,va);}
 #undef ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView
 #define ID3D12GraphicsCommandList7_SetGraphicsRootShaderResourceView count_bind
+static UINT topo_calls;static ID3D12GraphicsCommandList7 *ia_list;static D3D_PRIMITIVE_TOPOLOGY ia_value;
+static void probe_topology(ID3D12GraphicsCommandList7 *l,D3D_PRIMITIVE_TOPOLOGY t){ia_list=l;ia_value=t;++topo_calls;ID3D12GraphicsCommandList7_IASetPrimitiveTopology(l,t);}
+#undef ID3D12GraphicsCommandList7_IASetPrimitiveTopology
+#define ID3D12GraphicsCommandList7_IASetPrimitiveTopology probe_topology
+#ifdef TEST_LATE_COLOUR
+extern IUnknown *late_root_id(BOOL),*publish_late(void);
+static UINT roots,psos;static ID3D12RootSignature *seen_root;static ID3D12GraphicsCommandList7 *seen_rec;
+static void probe_root(ID3D12GraphicsCommandList7 *l,ID3D12RootSignature *r){++roots;seen_rec=l;seen_root=r;ID3D12GraphicsCommandList7_SetGraphicsRootSignature(l,r);}
+static void probe_pso(ID3D12GraphicsCommandList7 *l,ID3D12PipelineState *p){++psos;seen_rec=l;ID3D12GraphicsCommandList7_SetPipelineState(l,p);}
+static UINT creates;static ID3D12PipelineState *last_initial;
+static HRESULT probe_create(ID3D12Device *d,UINT node,D3D12_COMMAND_LIST_TYPE t,ID3D12CommandAllocator *a,ID3D12PipelineState *p,REFIID iid,void **result){
+    last_initial=p;++creates;return ID3D12Device_CreateCommandList(d,node,t,a,p,iid,result);
+}
+#undef ID3D12Device_CreateCommandList
+#define ID3D12Device_CreateCommandList probe_create
+#undef ID3D12GraphicsCommandList7_SetGraphicsRootSignature
+#define ID3D12GraphicsCommandList7_SetGraphicsRootSignature probe_root
+#undef ID3D12GraphicsCommandList7_SetPipelineState
+#define ID3D12GraphicsCommandList7_SetPipelineState probe_pso
+#endif
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
@@ -143,11 +163,11 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(FAILED(record_source(s,1,va)) && FAILED(record_source(s,0,va+16)) && !binds && !s->source.buffer);
     pool_vtbl.source(l,0,va);UINT64 private_va=ID3D12Resource_GetGPUVirtualAddress(s->source.buffer);
     REQUIRE(private_va!=va && binds==1 && src_host==s->host && last_va==private_va && FAILED(record_source(s,0,va)) && !xs_list_host(l));
-    REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)) && !can_set_topology(s,17));pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     REQUIRE(FAILED(record_clear4_draw(s,4,1,0,0)) && FAILED(record_clear4_draw(s,3,2,0,0)) &&
             FAILED(record_clear4_draw(s,3,1,1,0)) && FAILED(record_clear4_draw(s,3,1,0,1)));
     D3D12_HEAP_PROPERTIES rbh={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
-    D3D12_RESOURCE_DESC rbd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=1536,.Height=1,.DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+    D3D12_RESOURCE_DESC rbd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=2048,.Height=1,.DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
     ID3D12Resource *quad_rb;REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(hd,&rbh,0,&rbd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&quad_rb)));
     ID3D12PipelineState *full=s->pipeline;const FLOAT guard[]={1,0,1,1};
     ID3D12GraphicsCommandList7_ClearDepthStencilView(s->host,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
@@ -156,26 +176,65 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     ID3D12PipelineState *diag=s->pipeline;
     REQUIRE(FAILED(record_470(l,0xffff)) && s->pipeline==diag && s->clear4_lanes==0xffff00000000ffffULL);
     pool_vtbl.pipeline(l,pso);REQUIRE(s->pipeline==diag);
+#ifdef TEST_LATE_COLOUR
+    REQUIRE(FAILED(record_graphics_root(s,late_root_id(FALSE))) && !s->prior_pso);
+#endif
     pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,0);
+    REQUIRE(!can_set_topology(s,17));
+    pool_vtbl.state470(l,UINT64_MAX);pool_vtbl.draw(l,3,1,0,0);
+    UINT nia=topo_calls;pool_vtbl.topology(l,17);
+    REQUIRE(s->guest_topology==17 && topo_calls==nia+1 && ia_list==s->host && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST &&
+            !can_set_topology(s,16) && !can_set_topology(s,18) && FAILED(record_clear4_draw(s,3,1,0,0)) && !xs_list_host(l));
+    pool_vtbl.state470(l,0xffff00000000ffffULL);
     DWORD rt[]={28,4,0,0},ds[]={20,3,0,0,0,0};
     REQUIRE(xs_write_view(owner,0xa8,ids[1],ds,slots[1])==S_OK && FAILED(record_om(s,1,slots,FALSE,slots+1)));
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,slots[0])==S_OK && xs_write_view(owner,0xa8,siblings[1],ds,slots[1])==S_OK);
     REQUIRE(FAILED(record_om(s,1,slots,FALSE,slots+1)) && !memcmp(&frozen,&s->om,sizeof frozen) && om_calls==ob+1);
     s->marker=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *s->marker);struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);REQUIRE(s->marker && post);s->marker->refs=1;
+#ifdef TEST_LATE_COLOUR
+    UINT old_psos=psos,old_roots=roots;IUnknown *colour=late_root_id(FALSE);
+    REQUIRE(FAILED(record_graphics_root(s,late_root_id(TRUE))) && !s->prior_pso);
+    UINT old_creates=creates;struct xs_clear_source held=s->source;
+    REQUIRE(s->guest_topology==17 && s->pipeline==diag);
+    pool_vtbl.root(l,colour);REQUIRE(s->prior_pso==pso && s->prior_root==root && s->graphics_identity==colour && !s->pipeline && !s->bound && roots==old_roots+1 && seen_rec==s->host && seen_root==s->graphics_root && FAILED(record_clear4(s,pso)));
+    REQUIRE(s->guest_topology==17 && !memcmp(&held,&s->source,sizeof held) && binds==1 &&
+            FAILED(record_clear4_draw(s,3,1,0,0)) && FAILED(record_470(l,UINT64_MAX)));
+#endif
     REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
+    REQUIRE(s->guest_topology==17 && topo_calls==nia+2 && ia_list==s->host && ia_list!=s->head && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
+    REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));sample_quad(s->host,images[0],quad_rb,3);
     REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
+#ifdef TEST_LATE_COLOUR
+    REQUIRE(binds==1 && src_host==s->head && roots==old_roots+2 && seen_rec==s->host && seen_root==s->graphics_root && !s->pipeline && psos==old_psos);
+    REQUIRE(creates==old_creates+1 && !last_initial &&
+            s->clear4_lanes==0xffff00000000ffffULL && s->prior_pso==pso && s->prior_root==root &&
+            !memcmp(&held,&s->source,sizeof held));
+    IUnknown *ready=publish_late();REQUIRE(ready && !s->pipeline && !s->bound && !xs_list_host(l));
+    pool_vtbl.pipeline(l,ready);REQUIRE(s->bound==ready && psos==old_psos+1 && seen_rec==s->host && s->required_root==colour && FAILED(record_graphics_root(s,root)));
+    REQUIRE(s->pipeline!=diag && s->pipeline!=full && FAILED(record_470(l,UINT64_MAX)) && FAILED(record_clear4_draw(s,3,1,0,0)) &&
+            s->prior_pso==pso && s->prior_root==root && topo_calls==nia+2 && binds==1);
+#else
     REQUIRE(binds==2 && src_host==s->host && last_va==private_va && s->pending_470);
-    ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
+    pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,1);
     pool_vtbl.state470(l,UINT64_MAX);REQUIRE(s->pipeline==full && s->clear4_lanes==UINT64_MAX);
     pool_vtbl.root(l,root);REQUIRE(binds==3 && src_host==s->host && last_va==private_va);
     pool_vtbl.draw(l,3,1,0,0);sample_quad(s->host,images[0],quad_rb,2);
+    pool_vtbl.topology(l,17);
+#endif
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
     REQUIRE(execute_quad_fixture(hd,s,quad_rb));ID3D12Resource_Release(quad_rb);
+    REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->guest_topology==17 && !can_set_topology(s,17));
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
+#ifdef TEST_LATE_COLOUR
+    REQUIRE(!s->prior_pso && !s->prior_root && !s->graphics_identity && !s->pipeline && !s->bound);puts("PASS controlled late worker: root on current and split recorder, source not rebound under CBV table, publication alone ineffective, explicit PSO on tail, denied submit and reset");
+#endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
+    REQUIRE(!s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
+    puts("PASS +a0(17): host triangle input on head/tail, rectangle rejects #4, fenced unchanged guard and reset");
     puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");
     IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;
 }

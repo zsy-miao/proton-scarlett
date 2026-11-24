@@ -772,3 +772,20 @@ to its actual command ranges (or observe its whole recording with no
 packet allocation), then check what happens to an overlapping reuse
 request before and after the consuming fence. The frame token, list
 return and fence completion are distinct events.
+
+### After the clear on both GPUs
+
+On the same ordinary stage, RADV and RTX each recorded one offscreen clear
+with the all-ones mask and attachment serials 119/121. The game selected
+rectangle-list topology (17) and reached the vertex-buffer bind. On each
+adapter the first process and recorder stop was list `+180`, title return
+`+32966`. Token 2 had only a sync submission with no rendering batch.
+Token 1 was the only successful `PresentX`; both display counts went 0→1.
+
+Before those launches, the clear and delayed-pipeline fixtures passed on
+both adapters. Splitting the list preserved the rectangle selection and
+the clear's original resources. The new root did not inherit the clear's
+vertex source; the colour pipeline became current only on an explicit
+bind. Both depth and stencil remained unchanged at all 3840×2160 pixels.
+The ordinary provider SHA-256 was
+`a7aefdcf31b0c57cba4a85b900a1259c72139037cd4c4f43624846fa9868cecc`.

@@ -24,15 +24,26 @@ static BOOL execute_quad_fixture(ID3D12Device *hd,struct startup_list *s,ID3D12R
     REQUIRE(e && SUCCEEDED(ID3D12CommandQueue_Signal(q,f,1)) && SUCCEEDED(ID3D12Fence_SetEventOnCompletion(f,1,e)) &&
             WaitForSingleObject(e,15000)==WAIT_OBJECT_0 && ID3D12Fence_GetCompletedValue(f)==1 && SUCCEEDED(ID3D12Device_GetDeviceRemovedReason(hd)));
     BYTE *p;REQUIRE(SUCCEEDED(ID3D12Resource_Map(read,0,NULL,(void**)&p)));
-    const DWORD want[3][4]={{0xdf9f6020,0xffff00ff,0xffff00ff,0xdf9f6020},
+    const DWORD want[][4]={{0xdf9f6020,0xffff00ff,0xffff00ff,0xdf9f6020},
                            {0xdf9f6020,0xffff00ff,0xffff00ff,0xdf9f6020},
-                           {0xdf9f6020,0xdf9f6020,0xdf9f6020,0xdf9f6020}};
-    for(UINT i=0;i<3;i++)for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++){
+                           {0xdf9f6020,0xdf9f6020,0xdf9f6020,0xdf9f6020},
+                           {0xffff00ff,0xffff00ff,0xffff00ff,0xffff00ff}};
+    for(UINT i=0;i<ARRAYSIZE(want);i++){
+#ifdef TEST_LATE_COLOUR
+        if(i==1 || i==2)continue; /* No further clear draws after the colour root transition. */
+#endif
+        for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++){
         DWORD got;memcpy(&got,p+512*i+y*256+x*4,4);
         if(got!=want[i][2*y+x])fprintf(stderr,"phase %u (%u,%u) got %08lx want %08lx\n",i,x,y,got,want[i][2*y+x]);
         REQUIRE(got==want[i][2*y+x]);
+        }
     }
     ID3D12Resource_Unmap(read,0,NULL);
     CloseHandle(e);ID3D12Fence_Release(f);ID3D12CommandQueue_Release(q);
-    puts("PASS original #4 recorder +470/+258/+60: diagonal before/after split, real all-ones restore, three fenced 2x2 readbacks");return TRUE;
+#ifdef TEST_LATE_COLOUR
+    puts("PASS #4 to colour: fenced diagonal head and untouched guard after split with rectangle topology and NULL initial PSO");
+#else
+    puts("PASS original #4 recorder +470/+258/+60: diagonal before/after split, real all-ones restore, three fenced 2x2 draw readbacks");
+#endif
+    return TRUE;
 }

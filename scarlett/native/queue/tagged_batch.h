@@ -42,7 +42,7 @@ static HRESULT checked_tagged_submit(IUnknown *iface,UINT count,IUnknown *const 
     struct adapter *queue=CONTAINING_RECORD(iface,struct adapter,iface);
     struct startup_list *s=sl(list);
     if (!s->closed || s->error!=S_OK) return E_INVALIDARG;
-    if (s->pending_470) return E_ACCESSDENIED;
+    if (s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;q->lpVtbl->GetDesc(q,&desc);
     IUnknown *owner=flags?s->pool_owner:s->sync_owner;
     if (!owner || owner!=queue->display.owner || s->host_exposed ||

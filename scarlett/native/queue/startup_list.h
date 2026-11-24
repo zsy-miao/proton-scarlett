@@ -31,6 +31,8 @@ struct startup_list {
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
     BYTE *cache_page;
+    /* These pins keep the earlier #4 recording alive after its bindings cease to be active. */
+    IUnknown *prior_pso,*prior_root;
     IUnknown *graphics_identity,*bound,*required_root;
     ID3D12PipelineState *pipeline; /* borrowed from bound */
     ID3D12RootSignature *graphics_root; /* borrowed from graphics_identity */
@@ -50,7 +52,8 @@ struct startup_list {
     SRWLOCK borrow_lock; /* Serialize a native borrow against recording deferred guest state. */
     BOOL depth_zero_pending,pending_470;
     UINT64 clear4_lanes;
-    BOOL triangle_list;
+    UINT guest_topology;
+    BOOL clear4_drew;
     struct list_face local; /* Non-pooled lists need no inline ABI. */
 };
 const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
@@ -105,6 +108,8 @@ static ULONG WINAPI sl_release(IUnknown *i)
         if (s->sync_owner) IUnknown_Release(s->sync_owner);
 #endif
         if(s->graphics_identity)IUnknown_Release(s->graphics_identity);
+        if(s->prior_pso)IUnknown_Release(s->prior_pso);
+        if(s->prior_root)IUnknown_Release(s->prior_root);
         if(s->bound)IUnknown_Release(s->bound);
         sl_free(s);
     }
@@ -190,13 +195,16 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
     drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
     AcquireSRWLockExclusive(&s->borrow_lock);
-    if(s->bound){IUnknown_Release(s->bound);s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;}
+    if(s->prior_pso){IUnknown_Release(s->prior_pso);s->prior_pso=NULL;}
+    if(s->prior_root){IUnknown_Release(s->prior_root);s->prior_root=NULL;}
+    if(s->bound)IUnknown_Release(s->bound);
+    s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;
     if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
     s->stencil_zero=FALSE;
     s->blend_ones=FALSE;
     s->full_bounds=s->full_rect=s->full_vp=FALSE;
     s->pending_470=FALSE;
-    s->clear4_lanes=0;s->triangle_list=FALSE;
+    s->clear4_lanes=0;s->guest_topology=0;s->clear4_drew=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -335,7 +343,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     ID3D12CommandAllocator *a=NULL;
     HRESULT hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void **)&a);
     if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,s->pipeline,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
-    if (SUCCEEDED(hr) && s->triangle_list)ID3D12GraphicsCommandList7_IASetPrimitiveTopology(tail,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    if (SUCCEEDED(hr) && s->guest_topology)ID3D12GraphicsCommandList7_IASetPrimitiveTopology(tail,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->blend_ones) ID3D12GraphicsCommandList7_OMSetBlendFactor(tail,ones_factor);
     if (SUCCEEDED(hr))replay_om(&s->om,tail);
@@ -343,7 +351,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr) && s->full_rect) ID3D12GraphicsCommandList7_RSSetScissorRects(tail,1,&clear_rect);
     if (SUCCEEDED(hr) && s->full_vp) ID3D12GraphicsCommandList7_RSSetViewports(tail,1,&clear_viewport);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
-    if (SUCCEEDED(hr) && s->source.buffer)bind_source(tail,&s->source);
+    if (SUCCEEDED(hr) && !s->prior_pso && s->source.buffer)bind_source(tail,&s->source);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
         if (SUCCEEDED(hr)) ID3D12GraphicsCommandList7_SetDescriptorHeaps(tail,2,banks);
@@ -529,7 +537,7 @@ static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER
 /* shortcut: first full transparent-black clear after this recording's primary transition. */
 static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
 {
-    if (s->pending_470) return E_ACCESSDENIED;
+    if (s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     if (!s->primary || s->closed || FAILED(s->error) || s->host_exposed || s->primary_cleared || count || rects) return E_NOTIMPL;
     UINT bits[4]; SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),color,bits,sizeof bits,&n) || n!=sizeof bits) return E_POINTER;
@@ -568,9 +576,12 @@ static BOOL open_direct_state(struct startup_list *s)
     return s->pool_owner && s->reservation && s->type==D3D12_COMMAND_LIST_TYPE_DIRECT &&
         !s->closed && SUCCEEDED(s->error) && !s->host_exposed && !s->primary_released;
 }
+enum { XS_RECTLIST=17 };
 static BOOL can_set_topology(struct startup_list *s,UINT topology)
 {
-    return open_direct_state(s) && topology==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    return open_direct_state(s) && (topology==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ||
+        (topology==XS_RECTLIST && !s->prior_pso && s->clear4_drew && s->pending_470 && s->clear4_lanes==UINT64_MAX &&
+         s->bound && s->required_root && s->graphics_identity==s->required_root));
 }
 static void recorded_direct_state(struct startup_list *s)
 {
@@ -584,7 +595,8 @@ static void WINAPI pool_topology(IUnknown *i,UINT topology)
     struct startup_list *s=sl(i);
     if (!can_set_topology(s,topology)) xs_stop();
     ID3D12GraphicsCommandList7_IASetPrimitiveTopology(s->host,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    s->triangle_list=TRUE;
+    /* RECTLIST feeds vertex triples to a rectangle GS. #4 has no GS and must reject it. */
+    s->guest_topology=topology;
     recorded_direct_state(s);
 }
 /* shortcut: retain zero without emitting a host mode. Draw/indirect/bundle slots must
@@ -624,6 +636,18 @@ static void WINAPI pool_rate(IUnknown *i,UINT rate,const D3D12_SHADING_RATE_COMB
 static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
 {
     if(!open_direct_state(s) || !identity)return E_INVALIDARG;
+    /* No +c8 is issued when request+38 is null. +110 is still a real root bind. */
+    if(s->required_root && identity!=s->required_root && !s->prior_pso && s->bound &&
+       s->graphics_identity==s->required_root && s->source.buffer && s->om.heap[1] && s->full_vp &&
+       s->pending_470 && s->depth_zero_pending && s->clear4_drew){
+        ID3D12RootSignature *root=xs_retain_colour_root(s->pool_owner,identity);
+        if(!root)return E_NOTIMPL;
+        s->prior_pso=s->bound;s->prior_root=s->graphics_identity;
+        s->bound=NULL;s->pipeline=NULL;s->required_root=s->graphics_identity=identity;s->graphics_root=root;
+        /* Keep the old logical mask for its recording; the colour root has
+         * neither a clear-source argument nor an installed parity PSO. */
+        if(s->guest_topology!=XS_RECTLIST)s->guest_topology=0;
+    }
     if((s->required_root && s->required_root!=identity) ||
         (s->graphics_identity && s->graphics_identity!=identity))return E_NOTIMPL;
     if(!s->graphics_identity){
@@ -632,7 +656,7 @@ static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
         s->graphics_identity=identity;
     }
     ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,s->graphics_root);
-    if(s->source.buffer)bind_source(s->host,&s->source);
+    if(!s->prior_pso && s->source.buffer)bind_source(s->host,&s->source);
     recorded_direct_state(s);return S_OK;
 }
 static void WINAPI pool_root(IUnknown *i,IUnknown *root)
@@ -669,7 +693,9 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
     if(open_direct_state(s) && s->cache_page && !memcmp(s->cache_page,cache_template,sizeof cache_template) &&
         (!s->bound || s->bound==identity)){
         IUnknown *root=NULL;
-        ID3D12PipelineState *p=xs_pin_clear4(s->pool_owner,s->device,identity,&root);
+        ID3D12PipelineState *p;
+        if(s->prior_pso){root=s->graphics_identity;p=xs_pin_colour_pso(s->pool_owner,s->device,identity,root);}
+        else p=xs_pin_clear4(s->pool_owner,s->device,identity,&root);
         if(p){
             if(!s->graphics_identity || s->graphics_identity==root){
                 if(!s->bound){s->bound=identity;s->pipeline=p;s->required_root=root;}
@@ -740,7 +766,7 @@ static void WINAPI pool_rect(IUnknown *i,UINT n,const D3D12_RECT *r){if(FAILED(r
 static void WINAPI pool_vp(IUnknown *i,UINT n,const D3D12_VIEWPORT *v){if(FAILED(record_clear_raster(sl(i),n,v,TRUE)))xs_stop();}
 static HRESULT record_source(struct startup_list *s,UINT index,UINT64 va)
 {
-    if(!open_direct_state(s) || index || !s->full_vp || !s->pending_470 || !s->depth_zero_pending ||
+    if(!open_direct_state(s) || s->prior_pso || index || !s->full_vp || !s->pending_470 || !s->depth_zero_pending ||
         !s->om.heap[1] || !s->bound || !s->required_root || s->graphics_identity!=s->required_root || s->source.buffer)return E_NOTIMPL;
     HRESULT hr=xs_copy_clear_source(s->pool_owner,s->device,s->host,va,&s->source);
     if(SUCCEEDED(hr)){bind_source(s->host,&s->source);recorded_direct_state(s);}return hr;
@@ -753,8 +779,8 @@ static void WINAPI pool_source(IUnknown *i,UINT index,UINT64 va)
  * depth/bounds/stencil, no PS memory effects, and no depth or stencil output. */
 static HRESULT record_clear4_draw(struct startup_list *s,UINT n,UINT instances,UINT first,UINT base)
 {
-    if(n!=3 || instances!=1 || first || base || !open_direct_state(s) || !s->depth_zero_pending ||
-       !s->pending_470 || !s->triangle_list || !s->source.buffer || !s->source.placed ||
+    if(n!=3 || instances!=1 || first || base || s->prior_pso || !open_direct_state(s) || !s->depth_zero_pending ||
+       !s->pending_470 || s->guest_topology!=D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST || !s->source.buffer || !s->source.placed ||
        !s->om.heap[0] || !s->om.heap[1] || !s->attachments[0].identity || !s->attachments[1].identity ||
        !s->full_bounds || !s->full_rect || !s->full_vp || !s->stencil_zero || !s->blend_ones ||
        !s->graphics_root || !s->required_root || s->graphics_identity!=s->required_root)return E_NOTIMPL;
@@ -764,6 +790,7 @@ static HRESULT record_clear4_draw(struct startup_list *s,UINT n,UINT instances,U
     IUnknown_Release(s->bound);
     if(!match)return E_NOTIMPL;
     ID3D12GraphicsCommandList7_DrawInstanced(s->host,n,instances,first,base);
+    s->clear4_drew=TRUE;
     recorded_direct_state(s);
     fprintf(stderr,"scarlett: recorded #4 DrawInstanced(3,1,0,0) recorder=%p host=%p lanes=%016llx RTV/DSV=%llu/%llu\n",
             s,s->host,s->clear4_lanes,s->attachments[0].serial,s->attachments[1].serial);
@@ -833,7 +860,7 @@ static HRESULT record_470(IUnknown *i,UINT64 value)
     HRESULT hr=E_NOTIMPL;
     AcquireSRWLockExclusive(&s->borrow_lock);
     /* record_clear4 already pins bound for this exact pool owner and host device. */
-    if (open_direct_state(s) && s->bound && s->required_root && s->graphics_identity==s->required_root) {
+    if (open_direct_state(s) && !s->prior_pso && s->bound && s->required_root && s->graphics_identity==s->required_root) {
         ID3D12PipelineState *effective=xs_clear4_effective(s->bound,value);
         if(effective){
             ID3D12GraphicsCommandList7_SetPipelineState(s->host,effective);
@@ -923,7 +950,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
     struct startup_list *s=sl(i);
     ID3D12GraphicsCommandList7 *host=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
-    if (!s->primary_released && !s->depth_zero_pending && !s->pending_470 && !s->bound
+    if (!s->prior_pso && !s->primary_released && !s->depth_zero_pending && !s->pending_470 && !s->bound
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
         && escape_native()
 #endif
@@ -1027,7 +1054,7 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
         (vt!=&sl_vtbl.prefix && vt!=&pool_vtbl.prefix)) return E_INVALIDARG;
     struct startup_list *s = sl(list);
     if (!s->closed || FAILED(s->error)) return E_INVALIDARG;
-    if (s->pending_470) return E_ACCESSDENIED;
+    if (s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;
     q->lpVtbl->GetDesc(q, &desc);
     ID3D12Device *device;
