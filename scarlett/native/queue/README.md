@@ -1021,3 +1021,16 @@ to complete, then one batch-end fence signaled. Both captures changed from
 red/blue to green/magenta and the display count advanced 0→1→2. This
 fixture's successor contained only the release; it did not test the AMD
 retail timestamp that follows it.
+
+A second RTX diagnostic captured all 39 calls on the producer and all four
+on the successor. The latter bound its heaps, recorded the primary release,
+recorded a timestamp, then closed. Its timestamp used its own query and
+destination, eight bytes before the producer's head timestamp. The producer's
+token-2 wait used threshold 1. The CPU sampled the counter at 1 when the
+batch was rejected; the GPU never ran the wait.
+
+Neither recording requested more command storage from the allocator
+callback. Publication associated the producer's acquire and the successor's
+release with the same chunk, generation 1. Its hold count was zero at both
+observations. Submitting the pair still requires keeping the recorded work
+and everything it references alive through the batch fence.
