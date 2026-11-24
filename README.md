@@ -13,11 +13,11 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates the [utility root signature and first compute pipeline](scarlett/native/bvh-root.md), `XDXR InitPartitionedHeaders`. The next pipeline, `XDXR WriteOfflinePartition` (7,876-byte shader, device `+0x1f0`), is the current stop. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates the [utility root signature and two compute pipelines](scarlett/native/bvh-root.md): `InitPartitionedHeaders` and `WriteOfflinePartition`. The third pipeline, `WritePartitions` (5,504 bytes, builder shader RVA `+0xc6260`), is the current stop. **No retail frame has been presented.**
 
 Each [primary texture](scarlett/native/color-allocation.md) consumes a 33,226,752-byte slice through the game's allocator hook, leaving 640 KiB unused. A [GPU test](scarlett/native/test-allocation-info.cpp) verified that rendering and shader writes changed the original arena bytes and that the memory stayed live until the last texture reference was released.
 
-A scratch translation of `WriteOfflinePartition` passed GPU readback on RADV and RTX 3070 for 0, 2 and 33 commands. Its embedded addresses point to source nodes; the shader writes through a separate destination buffer. The installed build still rejects this pipeline.
+The [pipeline regression](scarlett/native/test-bvh-pipeline.cpp) checked all 1,280 destination words after `WriteOfflinePartition` ran on the GPU, including a parent link 40 bytes before its table anchor. Retail has reached pipeline creation; these dispatch results are from the fixture.
 
 Both retail display textures were created on the thread that owns the game window. A [separate presentation test](scarlett/native/queue/present.md) opened DXGI on a window captured by the same Wine hook and verified two displayed frames.
 

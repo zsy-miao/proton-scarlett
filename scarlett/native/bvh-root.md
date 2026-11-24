@@ -49,7 +49,7 @@ The private recorder reads 40 immutable input bytes and uses a bounded UAV
 for the resolved destination; the host shader never receives a guest address.
 `test-bvh-pipeline.cpp` checks all 96 seeded words after dispatch, including
 the untouched parts of each partition. Build it like `test-bvh-root.cpp`,
-supplying the matching shader as `private-builder.bin` outside the repository.
+supplying the matching shaders as `private-builder.bin` and `private-offline.bin` beside the fixture outside the repository.
 The guest command-list dispatch path is still unqualified.
 
 `bvh_init_dxil.h` contains only the compiled project shader. To regenerate
@@ -74,5 +74,9 @@ links follow the anchor.
 
 A scratch translation using known live host addresses passed fenced
 readback on RADV and RTX 3070 for 0, 2 and 33 commands. All 1,280 words
-of the destination and both unchanged inputs were checked. Retail still
-requires a pipeline and a checked binding for the guest source addresses.
+of the destination and both unchanged inputs were checked. The installed
+factory uses [project HLSL](bvh_offline.hlsl) for the exact second shader.
+The private recorder validates the batch before recording and snapshots
+source nodes from a resolved upload-buffer range. The public-slot test
+also verifies the write at byte 4056. Retail passes creation and next
+requests `WritePartitions` (RVA `+c6260`, 5,504 bytes).
