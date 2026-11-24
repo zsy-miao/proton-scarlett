@@ -45,6 +45,12 @@ qualify the specific result using the matching version's suggestion and
 copy. The R8 suggestion and auto-layout creation
 remain unsupported. The experimental query/selection was not included.
 
+To measure the missing recommendation with a matching x64 reference library,
+build `test-r8-suggest.c` with `x86_64-w64-mingw32-gcc -std=c11 -municode
+-Wall -Wextra -Werror test-r8-suggest.c -o test-r8-suggest.exe`.
+Pass the DLL's full Windows path as the only argument. The probe prints the
+HRESULT and resulting layout for the retail descriptor; it needs no game files.
+
 ## Evidence for the suggestion
 
 Microsoft's [DirectStorageTextureShuffling sample][sample] selects 64KB_S in
