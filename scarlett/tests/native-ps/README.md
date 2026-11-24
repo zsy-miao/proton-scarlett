@@ -111,7 +111,9 @@ particular retail draw, or implement the guest vtable slot.
 checks the two exact embedded spans used by this call. With a local capture
 (`stream.bin`, `vs.bin`, `ps.bin`) it also checks both stages byte-for-byte and
 all stream bytes except the three process-specific pointers. No title bytes
-are needed in the source tree. This is a **negative qualification oracle**.
+are needed in the source tree. This checks the limits of the generic translator.
+The [device implementation](../../native/clear-pair.md) handles this exact pair
+with a separate digest-checked translation.
 
 The 688-byte stream requested the pipeline-state IID. A lookup under the
 calling device's live root registry lock found a non-null host signature for

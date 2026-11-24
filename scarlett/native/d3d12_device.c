@@ -71,6 +71,7 @@ _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline
 #include "page_pool.h"
 #include "bvh_root.h"
 #include "bvh_pipeline.h"
+#include "clear_pipeline.h"
 #ifdef SCARLETT_STAGED_PLACED
 #include "placed_shader.h"
 #endif
@@ -550,7 +551,9 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_frame_event) frame_event;
     __typeof__(&bootstrap_frame_wait) frame_wait;
     xs_stop_fn gap288;
-    xs_stop_fn gap290[45];
+    xs_stop_fn gap290[4];
+    __typeof__(&clear_pipeline) graphics_stream;
+    xs_stop_fn gap2b8[40];
     __typeof__(&bootstrap_committed) committed;
     xs_stop_fn gap400[5];
     __typeof__(&bootstrap_placed) placed;
@@ -560,6 +563,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, copy_simple) == 0xc0 &&
                offsetof(struct bootstrap_vtbl, readback) == 0xd8 &&
                offsetof(struct bootstrap_vtbl, committed) == 0x3f8 &&
+               offsetof(struct bootstrap_vtbl, graphics_stream) == 0x2b0 &&
                offsetof(struct bootstrap_vtbl, placed) == 0x428 &&
                offsetof(struct bootstrap_vtbl, address_srv) == 0x230 &&
                offsetof(struct bootstrap_vtbl, descriptors) == 0x70 &&
@@ -684,7 +688,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap238 = {xs_stop,xs_stop}, .list = bootstrap_list, .register_pool = register_page_pool,
     .gap258 = {xs_stop,xs_stop,xs_stop},
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
-    .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 44] = xs_stop },
+    .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 3] = xs_stop },
+    .graphics_stream = clear_pipeline, .gap2b8 = { [0 ... 39] = xs_stop },
     .committed = bootstrap_committed, .gap400 = { [0 ... 4] = xs_stop }, .placed = bootstrap_placed
 };
 #endif
