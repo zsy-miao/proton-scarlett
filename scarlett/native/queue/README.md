@@ -803,3 +803,18 @@ Setting the table selects a slot; it doesn't freeze that slot's contents
 until execution. A successful bind-time comparison alone cannot qualify
 a later submission using a private copy of the descriptor. This matters
 even when the 96 bytes of constant data come from the correct allocation.
+
+### Staged rectangle vertex bind
+
+The next private stage (`4df41ad6…`) passed its integrated fixture on
+each GPU before the ordinary runs. Both recorded the offscreen clear,
+bound the 4,080-byte vertex view and passed the offscreen barrier pair.
+AMD stopped at the descriptor-table bind (`+120`, return `+32206`). RTX
+first hit `+1d52fa1` on another thread; its recorder stopped at the same
+table bind. Both issued tokens 1 and 2, with only a sync submission for
+token 2. Only token 1 presented (display count 0→1).
+
+In a separate AMD diagnostic the destination was in the active visible
+heap, but eleven nonvisible heaps met the producer search criteria.
+The candidate rejected the bind before its transactional read. The colour
+PSO was still null. No draw or skip after this call was observed.

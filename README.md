@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | Both GPUs [record the offscreen clear](scarlett/native/queue/README.md#after-the-clear-on-both-gpus), then stop while binding the vertices for a rectangle. Neither has submitted that work for display. |
+| What's blocking it? | On the latest staged build, both GPUs [bind the rectangle's vertices](scarlett/native/queue/README.md#staged-rectangle-vertex-bind), then the recorder stops while selecting its colour data. Neither has submitted that work for display. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress
