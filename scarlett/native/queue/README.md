@@ -879,3 +879,19 @@ Before ordinary testing, both GPUs passed fenced comparisons of the two
 at index 167. Splitting the recording bound the replacement buffer and
 preserved both original ranges. Ordinary provider SHA-256:
 `cf348e198ef8ea021a038ed7be0bc720112d53ec8f0b0d5dac42c9fcd28c235b`.
+
+### What the offscreen clear would display
+
+In the saved AMD startup capture, all 72 decoded 800×600 RGB samples
+match an all-zero image. The single successful presentation in that
+run was token 1. A later retail draw trace measured leading-vertex RGBA
+`(0,0,0,1)` and a full-screen triangle for clear #4. With the full 4K
+scissor and all mask lanes enabled, that draw would write opaque black
+to the offscreen target. This is a shader prediction; execution of the
+retail clear has not been fenced and read back.
+
+A copy of that clear alone would leave displayed RGB unchanged. The
+technique-96 shader also multiplies sampled RGB by vertex colour, so
+sampling an unchanged black clear would still produce black RGB.
+Identifying the intended primary or advancing a presentation counter is
+therefore insufficient to establish a visibly different retail frame.
