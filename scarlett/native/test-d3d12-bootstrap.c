@@ -16,9 +16,49 @@ typedef HRESULT (WINAPI *Queue)(IUnknown *, const void *, REFIID, void **);
 typedef HRESULT (WINAPI *Fence)(IUnknown *, UINT64, D3D12_FENCE_FLAGS, REFIID, void **);
 typedef HRESULT (WINAPI *Signal)(IUnknown *, IUnknown *, UINT64);
 typedef HRESULT (WINAPI *Frequency)(IUnknown *, UINT64 *);
+typedef HRESULT (WINAPI *Allocator)(IUnknown *, D3D12_COMMAND_LIST_TYPE, REFIID, void **);
+typedef HRESULT (WINAPI *List)(IUnknown *, const void *, IUnknown *, IUnknown *, REFIID, void **);
+typedef HRESULT (WINAPI *ResetAllocator)(IUnknown *);
 #define METHOD(obj, offset, type) ((type)((void *const *)(obj)->lpVtbl)[(offset)/8])
 #define CHECK(e) do { if (!(e)) { fprintf(stderr, "FAIL %d: %s\n", __LINE__, #e); return 1; } } while (0)
 static const IID device_id = {0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
+static const IID list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
+
+#ifdef XS_TEST_LINKED
+static int test_retirement(ID3D12Device *host, IUnknown *wrapped, D3D12_COMMAND_LIST_TYPE type)
+{
+    ID3D12CommandAllocator *a = xs_allocator_host(wrapped, type);
+    D3D12_COMMAND_QUEUE_DESC desc = {type, 0, 0, 1};
+    ID3D12CommandQueue *q;
+    ID3D12GraphicsCommandList *list;
+    ID3D12Fence *gate, *done;
+    HANDLE event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    CHECK(a && event);
+    CHECK(ID3D12Device_CreateCommandQueue(host, &desc, &IID_ID3D12CommandQueue, (void **)&q) == S_OK);
+    CHECK(ID3D12Device_CreateFence(host, 0, 0, &IID_ID3D12Fence, (void **)&gate) == S_OK);
+    CHECK(ID3D12Device_CreateFence(host, 0, 0, &IID_ID3D12Fence, (void **)&done) == S_OK);
+    CHECK(ID3D12Device_CreateCommandList(host, 1, type, a, NULL, &IID_ID3D12GraphicsCommandList,
+            (void **)&list) == S_OK);
+    CHECK(ID3D12GraphicsCommandList_Close(list) == S_OK);
+    ID3D12CommandList *submit = (ID3D12CommandList *)list;
+    CHECK(ID3D12CommandQueue_Wait(q, gate, 1) == S_OK);
+    ID3D12CommandQueue_ExecuteCommandLists(q, 1, &submit);
+    CHECK(ID3D12CommandQueue_Signal(q, done, 1) == S_OK);
+    CHECK(ID3D12Fence_SetEventOnCompletion(done, 1, event) == S_OK);
+    CHECK(WaitForSingleObject(event, 50) == WAIT_TIMEOUT);
+    CHECK(ID3D12Fence_Signal(gate, 1) == S_OK);
+    CHECK(WaitForSingleObject(event, 5000) == WAIT_OBJECT_0 && ID3D12Fence_GetCompletedValue(done) == 1);
+    CHECK(METHOD(wrapped,0x40,ResetAllocator)(wrapped) == S_OK);
+    CHECK(ID3D12GraphicsCommandList_Reset(list, a, NULL) == S_OK);
+    CHECK(ID3D12GraphicsCommandList_Close(list) == S_OK);
+    ID3D12GraphicsCommandList_Release(list);
+    ID3D12CommandQueue_Release(q);
+    ID3D12Fence_Release(gate);
+    ID3D12Fence_Release(done);
+    CloseHandle(event);
+    return 0;
+}
+#endif
 
 int main(void)
 {
@@ -92,6 +132,31 @@ int main(void)
     p = q;
     CHECK(extended(d, NULL, &IID_ID3D12CommandQueue, &p) == E_INVALIDARG && !p);
     CHECK(extended(d, compute, &IID_ID3D12CommandQueue, NULL) == E_POINTER);
+    Allocator new_allocator = METHOD(d,0x48,Allocator);
+    List new_list = METHOD(d,0x248,List);
+    CHECK(new_allocator(d, D3D12_COMMAND_LIST_TYPE_COPY, &IID_ID3D12CommandAllocator, &p) == E_NOTIMPL && !p);
+    CHECK(new_allocator(d, 0, &IID_ID3D12Fence, &p) == E_NOINTERFACE && !p);
+    for (int type = 0; type <= 2; type += 2) {
+        IUnknown *a;
+        UINT desc[] = {type, 2, 1, 0};
+        CHECK(new_allocator(d, type, &IID_ID3D12CommandAllocator, (void **)&a) == S_OK && a);
+        CHECK(IUnknown_QueryInterface(a, &IID_ID3D12CommandAllocator, &p) == S_OK && p == a);
+        IUnknown_Release((IUnknown *)p);
+        CHECK(IUnknown_QueryInterface(a, &IID_IUnknown, &p) == S_OK && p == a);
+        IUnknown_Release((IUnknown *)p);
+        CHECK(IUnknown_QueryInterface(a, &IID_ID3D12Device, &p) == E_NOINTERFACE && !p);
+        p = a;
+        CHECK(new_list(d, desc, a, NULL, &list_id, &p) == E_NOTIMPL && !p);
+        CHECK(new_list(d, desc, q, NULL, &list_id, &p) == E_INVALIDARG && !p);
+        CHECK(new_list(d, desc, a, NULL, &IID_ID3D12GraphicsCommandList, &p) == E_NOINTERFACE && !p);
+        desc[0] ^= 2;
+        CHECK(new_list(d, desc, a, NULL, &list_id, &p) == E_INVALIDARG && !p);
+#ifdef XS_TEST_LINKED
+        CHECK(!test_retirement(host, a, type));
+#endif
+        CHECK(!IUnknown_Release(a));
+    }
+    puts("PASS allocator: Direct/Compute factory, identity, guarded extended list");
     CHECK(!IUnknown_Release(cq));
     CHECK(!IUnknown_Release(f) && !IUnknown_Release(q) && !IUnknown_Release(d));
     ID3D12Device_Release(host);

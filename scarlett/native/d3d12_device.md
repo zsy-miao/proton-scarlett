@@ -81,6 +81,30 @@ establish a binary offset for each optional field or a desktop equivalent for
 nonzero pipe/queue selection. Treating word 2 as desktop `Flags` or word 3
 as `NodeMask` would be unjustified. All four retail inputs still fail.
 
+### Allocator and list boundary
+
+Device `+0x48` creates a real Direct or Compute host allocator behind a
+separate console object. It accepts `{6102dee4-af59-4b09-b999-b44d73f09b24}`;
+QI for that IID or `IUnknown` retains the same identity. At `0x248bc9d`
+the title loads the first allocator, calls `+0x10` and clears its pointer.
+The pooled path at `0x161d0a0` stores its allocator in word zero of a
+48-byte entry; `0x4e9b575` takes this pointer, calls `+0x40` with only
+`this`, and passes EAX to the HRESULT handler. This matches
+[allocator Reset](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12commandallocator-reset).
+Fence retirement before reset remains the caller's responsibility. Separate
+calls at `0x1884fe` and `0x2474b5e` use allocator `+0x48` with a function
+address and a context; they are not Reset. The adapter guards this slot.
+
+The `+0x248` constructor takes `(device, desc, allocator, initialState,
+riid, out)`; the last two arguments are on the stack. The first descriptions
+are `(0,2,1,0)` and `(2,2,1,0)` with null initial state. The method checks
+the retail list IID and allocator type, clears the output and returns
+`E_NOTIMPL`. Returning a host list or implementing Close alone would expose
+unverified `+0x420` and `+0x418` before Close (`+0x48`). A separate helper
+at `0x17f6d34` uses `(type,6,1,0)`, requests a different list IID
+`{5b160d0f-ac1b-4185-8ba8-b3ae42a5a455}`, and closes the result at
+`0x17f6d48`. Neither description establishes the semantics of words 1–3.
+
 The prior trace stops at `0x19f4f58` with ECX=`0x80004002`, before any
 success-path calls. `+0x188` **is not needed with this runtime/prefix**:
 `0x24785cd` first checks the title configuration byte. Even when set, the
@@ -131,6 +155,10 @@ grep -F 'PASS bootstrap:' "$work"/scarlett-run.*/logs/steam-999001.log
 ```
 
 Both tests passed on an RTX 3070. No private test symbol is exported by the DLL.
+For both allocator types the linked test also records and closes a host list,
+submits it behind a gate, observes the completion fence, calls Xbox allocator
+`+0x40`, then resets and closes the list on the same allocator. The public PE
+checks allocator and list factory HRESULTs, COM identity and release.
 
 ## Scratch GPU test
 

@@ -12,7 +12,9 @@ struct adapter {
     union {
         ID3D12CommandQueue *queue;
         ID3D12Fence *fence;
+        ID3D12CommandAllocator *allocator;
     } host;
+    D3D12_COMMAND_LIST_TYPE allocator_type;
 };
 
 struct qtable {
@@ -25,6 +27,17 @@ struct ftable {
 };
 static const struct qtable qt;
 static const struct ftable ft;
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+struct atable {
+    IUnknownVtbl prefix;
+    xs_stop_fn gap18[5];
+    HRESULT (WINAPI *reset)(IUnknown *);
+    xs_stop_fn callback;
+};
+static const struct atable at;
+_Static_assert(offsetof(struct atable, reset) == 0x40 && offsetof(struct atable, callback) == 0x48,
+        "x64 allocator slots");
+#endif
 #define queue_prefix qt.prefix
 #define fence_prefix ft.prefix
 _Static_assert(offsetof(struct xs_queue_prefix, signal) == 0x80, "x64 queue Signal");
@@ -41,6 +54,9 @@ static ULONG WINAPI release(IUnknown *iface)
     ULONG refs = InterlockedDecrement(&a->refs);
     if (!refs) {
         if (iface->lpVtbl == &fence_prefix) ID3D12Fence_Release(a->host.fence);
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+        else if (iface->lpVtbl == &at.prefix) ID3D12CommandAllocator_Release(a->host.allocator);
+#endif
         else ID3D12CommandQueue_Release(a->host.queue);
         HeapFree(GetProcessHeap(), 0, a);
     }
@@ -56,6 +72,7 @@ static HRESULT WINAPI query(IUnknown *iface, REFIID iid, void **out)
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
             && !(iface->lpVtbl == &queue_prefix.unknown && IsEqualIID(iid, &IID_ID3D12CommandQueue))
             && !(iface->lpVtbl == &fence_prefix && IsEqualIID(iid, &IID_ID3D12Fence))
+            && !(iface->lpVtbl == &at.prefix && IsEqualIID(iid, &IID_ID3D12CommandAllocator))
 #endif
             ) return E_NOINTERFACE;
     addref(iface);
@@ -68,6 +85,46 @@ static ID3D12CommandQueue *as_queue(IUnknown *iface)
     return iface && iface->lpVtbl == &queue_prefix.unknown ?
             CONTAINING_RECORD(iface, struct adapter, iface)->host.queue : NULL;
 }
+
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+static HRESULT WINAPI allocator_reset(IUnknown *iface)
+{
+    return ID3D12CommandAllocator_Reset(CONTAINING_RECORD(iface, struct adapter, iface)->host.allocator);
+}
+
+static const struct atable at = {
+    .prefix = {query, addref, release}, .gap18 = { [0 ... 4] = xs_stop },
+    .reset = allocator_reset, .callback = xs_stop
+};
+
+ID3D12CommandAllocator *xs_allocator_host(IUnknown *iface, D3D12_COMMAND_LIST_TYPE type)
+{
+    if (!iface || iface->lpVtbl != &at.prefix) return NULL;
+    struct adapter *a = CONTAINING_RECORD(iface, struct adapter, iface);
+    return a->allocator_type == type ? a->host.allocator : NULL;
+}
+
+HRESULT xs_allocator(ID3D12Device *host, D3D12_COMMAND_LIST_TYPE type, IUnknown **out)
+{
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!host) return E_INVALIDARG;
+    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE) return E_NOTIMPL;
+    struct adapter *a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
+    if (!a) return E_OUTOFMEMORY;
+    HRESULT hr = ID3D12Device_CreateCommandAllocator(host, type, &IID_ID3D12CommandAllocator,
+            (void **)&a->host.allocator);
+    if (FAILED(hr)) {
+        HeapFree(GetProcessHeap(), 0, a);
+        return hr;
+    }
+    a->refs = 1;
+    a->allocator_type = type;
+    a->iface.lpVtbl = &at.prefix;
+    *out = &a->iface;
+    return S_OK;
+}
+#endif
 
 static ID3D12Fence *as_fence(IUnknown *iface)
 {

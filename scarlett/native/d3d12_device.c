@@ -93,6 +93,38 @@ static HRESULT WINAPI bootstrap_fence(IUnknown *iface, UINT64 initial, D3D12_FEN
     return hr;
 }
 
+static HRESULT WINAPI bootstrap_allocator(IUnknown *iface, D3D12_COMMAND_LIST_TYPE type, REFIID iid, void **out)
+{
+    IUnknown *allocator = NULL;
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!iid) return E_INVALIDARG;
+    if (!IsEqualIID(iid, &IID_ID3D12CommandAllocator)) return E_NOINTERFACE;
+    HRESULT hr = xs_allocator(CONTAINING_RECORD(iface, struct xbox_device, iface)->host, type, &allocator);
+    *out = allocator;
+    return hr;
+}
+
+static HRESULT WINAPI bootstrap_list(IUnknown *iface, const void *desc, IUnknown *allocator,
+        IUnknown *initial_state, REFIID iid, void **out)
+{
+    static const IID list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
+    UINT words[4];
+    SIZE_T copied;
+    (void)iface;
+    (void)initial_state;
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!desc || !allocator || !iid) return E_INVALIDARG;
+    if (!IsEqualIID(iid, &list_id)) return E_NOINTERFACE;
+    if (!ReadProcessMemory(GetCurrentProcess(), desc, words, sizeof(words), &copied) || copied != sizeof(words))
+        return E_POINTER;
+    if (!xs_allocator_host(allocator, words[0])) return E_INVALIDARG;
+    /* Even with a null PSO the first consumer requires +0x420 and +0x418 before Close. */
+    OutputDebugStringA("scarlett: device+0x248 Xbox command list unsupported (E_NOTIMPL)\n");
+    return E_NOTIMPL;
+}
+
 static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, IUnknown *iface,
         UINT mask, D3D12_HEAP_TYPE type)
 {
@@ -128,15 +160,20 @@ struct bootstrap_vtbl {
     IUnknownVtbl unknown;
     xs_stop_fn gap18[5];
     __typeof__(&bootstrap_queue) queue;
-    xs_stop_fn gap48[17];
+    __typeof__(&bootstrap_allocator) allocator;
+    xs_stop_fn gap50[16];
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
     __typeof__(&bootstrap_fence) fence;
     xs_stop_fn gap128[11];
     __typeof__(&bootstrap_extended) extended;
-    xs_stop_fn gap188[33]; /* Through +0x288, including the conditional +0x188. */
+    xs_stop_fn gap188[24];
+    __typeof__(&bootstrap_list) list;
+    xs_stop_fn gap250[8];
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
+               offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
+               offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
                offsetof(struct bootstrap_vtbl, extended) == 0x180, "bootstrap x64 ABI");
@@ -176,10 +213,10 @@ static const IUnknownVtbl device_vtbl = { device_query, device_addref, device_re
 static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
-    .gap48 = { [0 ... 16] = xs_stop }, .heap = bootstrap_heap,
+    .allocator = bootstrap_allocator, .gap50 = { [0 ... 15] = xs_stop }, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 10] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 32] = xs_stop }
+    .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 7] = xs_stop }
 };
 #endif
 
