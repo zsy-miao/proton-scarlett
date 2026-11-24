@@ -88,6 +88,13 @@ copy it to the wrap limit. `247afa2` resets index to zero, `24747c6`–`24747dc`
 increment then wrap at that limit. This is ascending title order, not an
 observed equality with the host index at the first present.
 
+In the RADV retail run that reached `+0x3f8`, the wrap limit at `a94390c`
+was 2. The failure unwound to `247aeb6`, the return from the primary
+texture constructor. The call requested a 3840×2160 RGBA8 texture with
+`ALLOW_DISPLAY`, default heap properties `{1,0,0,1,1}`, a transparent
+black clear, and `IID_ID3D12Resource`. Both ring pointer arrays already
+existed; their allocation alone does not identify a rendered image.
+
 `24784d5` registers ANSI `sgaWindowClass` (class name `677b672`; window
 procedure `247a660` tail-calls `DefWindowProcA`). `247853a` calls
 `CreateWindowExA` with that class, title `a9437b8`, style `00cf0000`,
