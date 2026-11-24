@@ -1,0 +1,223 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 2455c91..c55fb60 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -256,6 +256,8 @@ struct file_view
+     void         *base;          /* base address */
+     size_t        size;          /* size in bytes */
+     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
++    void *native_wc_cookie;
++    NTSTATUS (*native_wc_unmap)(void *);
+     HANDLE        scarlett_section; /* owned only by opt-in public views */
+     BOOL          scarlett_code_store; /* snapshot only; no GPU buffer imports */
+     UINT64        scarlett_cpu_id; /* CPU-only incarnation; never returned as a handle */
+@@ -1951,6 +1953,8 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
+     view->base    = base;
+     view->size    = size;
+     view->protect = vprot;
++    view->native_wc_cookie = NULL;
++    view->native_wc_unmap = NULL;
+     view->scarlett_section = NULL;
+     view->scarlett_cpu_id = 0;
+     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
+@@ -2597,6 +2601,37 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
+  * Wrapper for mmap() to map a file into a view, falling back to read if mmap fails.
+  * virtual_mutex must be held by caller.
+  */
++/* Scratch ABI between Unix modules only. PE never supplies an address or callback. */
++static __thread ULONG native_wc_arm;
++static UINT64 native_wc_serial;
++DECLSPEC_EXPORT BOOL CDECL ntdll_test_wc_consume(ULONG op)
++{
++    if (native_wc_arm!=op) return FALSE;
++    native_wc_arm=0;return TRUE;
++}
++DECLSPEC_EXPORT NTSTATUS CDECL ntdll_test_wc_publish(void *cookie,NTSTATUS (*place)(void *,void *),
++        NTSTATUS (*unmap)(void *),void **out)
++{
++    struct file_view *v;
++    sigset_t sigset;
++    NTSTATUS st;
++    server_enter_uninterrupted_section(&virtual_mutex,&sigset);
++    if(native_wc_serial==~(UINT64)0) st=STATUS_INTEGER_OVERFLOW;
++    else st=map_view(&v,NULL,0x89700000,0,SEC_COMMIT|VPROT_SCARLETT_DMA|VPROT_COMMITTED|VPROT_READ|VPROT_WRITE,0,0,SCARLETT_ALIGN_MASK);
++    if (!st) {
++        if (!(st=place(cookie,v->base))) {v->native_wc_cookie=cookie;v->native_wc_unmap=unmap;v->scarlett_cpu_id=++native_wc_serial;*out=v->base;}
++        else delete_view(v);
++    }
++    server_leave_uninterrupted_section(&virtual_mutex,&sigset);return st;
++}
++/* The cookie check prevents an old memory object's cleanup from freeing a reused VA. */
++DECLSPEC_EXPORT NTSTATUS CDECL ntdll_test_wc_withdraw(void *base,void *cookie)
++{
++    struct file_view *v;sigset_t sigset;NTSTATUS st=STATUS_NOT_MAPPED_VIEW;
++    server_enter_uninterrupted_section(&virtual_mutex,&sigset);
++    if((v=find_view(base,0)) && v->base==base && v->native_wc_cookie==cookie && !(st=v->native_wc_unmap(cookie)))delete_view(v);
++    server_leave_uninterrupted_section(&virtual_mutex,&sigset);return st;
++}
+ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start, size_t size,
+                                     off_t offset, unsigned int vprot, BOOL removable )
+ {
+@@ -2760,6 +2795,8 @@ static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size
+         new_view->base    = base + size;
+         new_view->size    = (char *)view->base + view->size - (char *)new_view->base;
+         new_view->protect = view->protect;
++        new_view->native_wc_cookie = NULL;
++        new_view->native_wc_unmap = NULL;
+         new_view->scarlett_section = NULL;
+         new_view->scarlett_cpu_id = 0;
+ 
+@@ -5824,6 +5861,10 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+         status = STATUS_INVALID_PARAMETER;
+     }
+     else if (!(view = find_view( base, 0 ))) status = STATUS_MEMORY_NOT_ALLOCATED;
++    else if (view->native_wc_cookie) {
++        if (type!=MEM_RELEASE || addr!=view->base || requested_size) status=STATUS_INVALID_PARAMETER;
++        else if (!(status=view->native_wc_unmap(view->native_wc_cookie))) {size=view->size;delete_view(view);}
++    }
+     else if (view->scarlett_section && !(view->protect & VPROT_PLACEHOLDER) &&
+              type == MEM_RELEASE && addr == view->base && !requested_size)
+     {
+@@ -6864,6 +6905,30 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+             return get_memory_image_info( process, addr, buffer, len, res_len );
+ 
+ #ifdef __x86_64__
++        case 0x53430101: /* opt in this thread's next device creation */
++        case 0x53430102: /* opt in this thread's next pool map */
++            if (process!=NtCurrentProcess() || is_wow64() || addr || buffer || len || res_len) return STATUS_INVALID_PARAMETER;
++            native_wc_arm=info_class;return STATUS_SUCCESS;
++        case 0x53430103: /* capture the current native pool incarnation */
++        case 0x53430104: /* bounded XG-style write: generation followed by staged bytes */
++        {
++            struct file_view *v;sigset_t sigset;UINT64 id=0;void *tmp=NULL;
++            SIZE_T bytes=len>sizeof(id)?len-sizeof(id):0;
++            if(process!=NtCurrentProcess() || is_wow64() || !buffer || res_len || ((UINT_PTR)addr&4095))return STATUS_INVALID_PARAMETER;
++            if(info_class==0x53430103) {if(len!=sizeof(id))return STATUS_INVALID_PARAMETER;}
++            else if(bytes!=4 && bytes!=32768)return STATUS_INVALID_PARAMETER;
++            else if(!(tmp=malloc(bytes)))return STATUS_NO_MEMORY;
++            server_enter_uninterrupted_section(&virtual_mutex,&sigset);
++            status=STATUS_NOT_MAPPED_VIEW;
++            if ((v=find_view(addr,bytes?bytes:1)) && v->native_wc_cookie) {
++                if(!tmp)status=virtual_uninterrupted_write_memory(buffer,&v->scarlett_cpu_id,sizeof(id));
++                else if(virtual_uninterrupted_read_memory(buffer,&id,sizeof(id))!=sizeof(id))status=STATUS_ACCESS_VIOLATION;
++                else if(id!=v->scarlett_cpu_id)status=STATUS_NOT_MAPPED_VIEW;
++                else if(virtual_uninterrupted_read_memory((char*)buffer+sizeof(id),tmp,bytes)!=bytes)status=STATUS_ACCESS_VIOLATION;
++                else {memcpy((char*)addr,tmp,bytes);__sync_synchronize();status=STATUS_SUCCESS;}
++            }
++            server_leave_uninterrupted_section(&virtual_mutex,&sigset);free(tmp);return status;
++        }
+         case MemoryWineScarlettSnapshotCodeV1:
+         {
+             struct file_view *v;
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index b73a64c..ee1faf0 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -23,6 +23,7 @@
+ #endif
+ 
+ #include "config.h"
++#include <assert.h>
+ 
+ #include <math.h>
+ #include <dlfcn.h>
+@@ -125,8 +126,13 @@ static struct instance *instance_from_handle( VkInstance handle )
+     return CONTAINING_RECORD( object, struct instance, obj );
+ }
+ 
++extern BOOL CDECL ntdll_test_wc_consume(ULONG);
++extern NTSTATUS CDECL ntdll_test_wc_withdraw(void*,void*);
++extern NTSTATUS CDECL ntdll_test_wc_publish(void *,NTSTATUS (*)(void*,void*),NTSTATUS (*)(void*),void**);
+ struct device_memory
+ {
++    struct vulkan_device *native_wc_owner;
++    void *native_wc_base;
+     struct vulkan_device_memory obj;
+     VkDeviceSize size;
+     void *vm_map;
+@@ -877,7 +883,15 @@ static VkResult convert_device_create_info( struct vulkan_physical_device *physi
+     if (device->extensions.has_VK_EXT_external_memory_dma_buf)
+         device->extensions.has_VK_KHR_external_memory_fd = 1;
+ 
+-    if (physical_device->map_placed_align)
++    BOOL optin=ntdll_test_wc_consume(0x53430101);
++    if (optin) {
++        VkPhysicalDeviceMapMemoryPlacedFeaturesEXT caps={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT};
++        VkPhysicalDeviceFeatures2 f={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&caps};
++        if(!physical_device->extensions.has_VK_EXT_map_memory_placed || !physical_device->extensions.has_VK_KHR_map_memory2)return VK_ERROR_FEATURE_NOT_PRESENT;
++        instance->p_vkGetPhysicalDeviceFeatures2KHR(physical_device->host.physical_device,&f);
++        if(!caps.memoryMapPlaced || !caps.memoryUnmapReserve)return VK_ERROR_FEATURE_NOT_PRESENT;
++    }
++    if (physical_device->map_placed_align || optin)
+     {
+         VkPhysicalDeviceMapMemoryPlacedFeaturesEXT *map_placed_features;
+ 
+@@ -1339,6 +1353,11 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
+ 
+     vulkan_object_init( &memory->obj.obj, host_device_memory );
+     memory->size = alloc_info->allocationSize;
++    if (!alloc_info->pNext && alloc_info->allocationSize==0x89700000 && alloc_info->memoryTypeIndex==2 &&
++        device->extensions.has_VK_EXT_map_memory_placed && physical_device->memory_properties.memoryTypes[2].propertyFlags==6) {
++        VkPhysicalDeviceProperties pp;instance->p_vkGetPhysicalDeviceProperties(physical_device->host.physical_device,&pp);
++        if(pp.vendorID==0x1002 && pp.deviceID==0x164e && pp.driverVersion==0x06803000)memory->native_wc_owner=device;
++    }
+     memory->vm_map = mapping;
+     instance->p_insert_object( instance, &memory->obj.obj );
+ 
+@@ -1368,6 +1387,10 @@ static void win32u_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_m
+     if (!client_memory) return;
+     memory = device_memory_from_handle( client_memory );
+ 
++    if (memory->native_wc_base) {
++        NTSTATUS st=ntdll_test_wc_withdraw(memory->native_wc_base,memory);
++        if (st!=STATUS_SUCCESS && st!=STATUS_NOT_MAPPED_VIEW) {ERR("Failed to retire native WC view %#x\n",st);return;}
++    }
+     if (memory->vm_map && !physical_device->external_memory_align)
+     {
+         const VkMemoryUnmapInfoKHR info =
+@@ -1444,6 +1467,21 @@ static VkResult win32u_vkGetMemoryWin32HandlePropertiesKHR( VkDevice client_devi
+     return VK_SUCCESS;
+ }
+ 
++static NTSTATUS place_test_wc(void *cookie,void *base)
++{
++    struct device_memory *m=cookie;struct vulkan_device *d=m->native_wc_owner;void *p=NULL;
++    VkMemoryMapPlacedInfoEXT pi={VK_STRUCTURE_TYPE_MEMORY_MAP_PLACED_INFO_EXT,NULL,base};
++    VkMemoryMapInfoKHR mi={VK_STRUCTURE_TYPE_MEMORY_MAP_INFO_KHR,&pi,VK_MEMORY_MAP_PLACED_BIT_EXT,m->obj.host.device_memory,0,VK_WHOLE_SIZE};
++    if(d->p_vkMapMemory2KHR(d->host.device,&mi,&p))return STATUS_NOT_SUPPORTED;
++    assert(p==base);m->native_wc_base=base;return STATUS_SUCCESS;
++}
++static NTSTATUS unmap_test_wc(void *cookie)
++{
++    struct device_memory *m=cookie;struct vulkan_device *d=m->native_wc_owner;
++    VkMemoryUnmapInfoKHR u={VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR,NULL,VK_MEMORY_UNMAP_RESERVE_BIT_EXT,m->obj.host.device_memory};
++    if(d->p_vkUnmapMemory2KHR(d->host.device,&u))return STATUS_UNSUCCESSFUL;
++    return STATUS_SUCCESS;
++}
+ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMapInfoKHR *map_info, void **data )
+ {
+     struct vulkan_device *device = vulkan_device_from_handle( client_device );
+@@ -1456,6 +1494,11 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
+     };
+     VkResult res;
+ 
++    if(ntdll_test_wc_consume(0x53430102)) {
++        if(memory->native_wc_owner!=device || memory->vm_map || info.pNext || info.flags || info.offset ||
++            (info.size!=VK_WHOLE_SIZE && info.size!=0x89700000))return VK_ERROR_MEMORY_MAP_FAILED;
++        return ntdll_test_wc_publish(memory,place_test_wc,unmap_test_wc,data)?VK_ERROR_MEMORY_MAP_FAILED:VK_SUCCESS;
++    }
+     info.memory = memory->obj.host.device_memory;
+     if (memory->vm_map)
+     {
+@@ -1540,6 +1583,11 @@ static VkResult win32u_vkUnmapMemory2KHR( VkDevice client_device, const VkMemory
+     VkMemoryUnmapInfoKHR info;
+     VkResult res;
+ 
++    if (memory->native_wc_base) {
++        NTSTATUS st=ntdll_test_wc_withdraw(memory->native_wc_base,memory);
++        if(!st)return VK_SUCCESS;
++        if(st!=STATUS_NOT_MAPPED_VIEW)return VK_ERROR_MEMORY_MAP_FAILED;
++    }
+     if (memory->vm_map && physical_device->external_memory_align) return VK_SUCCESS;
+ 
+     if (!device->p_vkUnmapMemory2KHR)
