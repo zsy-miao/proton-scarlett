@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 29 compute pipelines: 11 utility, two Morton-code, six bitonic-sort and ten [radix-sort](scarlett/native/bvh-radix.md) pipelines. `RearrangeElementsPass` creates its 260-byte root signature. Startup stops at its first pipeline, `RearrangeTriangles` (builder shader RVA `+0xa4780`, 7,296 bytes). **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 31 compute pipelines: 11 utility, two Morton-code, six bitonic-sort, ten [radix-sort](scarlett/native/bvh-radix.md), and two [element-rearrangement](scarlett/native/bvh-rearrange.md) pipelines. Startup stops at the 164-byte `LoadInstancesPass` root signature (device `+0x80`, builder return `+0xdafc`). **No retail frame has been presented.**
 
 GPU tests on RADV and RTX 3070 checked 46 radix cases per adapter, including histogram counts, scans that restart at each workgroup, and scatter writes that preserve the original key/index pairs.
 

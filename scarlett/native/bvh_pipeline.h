@@ -10,7 +10,8 @@
 enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX, BVH_COPY_UPDATE, BVH_COPY_COUNTERS, BVH_LOAD_INSTANCES, BVH_BEGIN_PASS, BVH_HEADERS, BVH_MORTON32, BVH_MORTON64,
     BVH_BITONIC_PRE, BVH_BITONIC_OUTER, BVH_BITONIC_INNER, BVH_BITONIC_PRE64, BVH_BITONIC_OUTER64, BVH_BITONIC_INNER64,
     BVH_RADIX_RESET, BVH_RADIX_COUNT, BVH_RADIX_ALLOC,
-    BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096 };
+    BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096,
+    BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -39,6 +40,10 @@ static const struct bvh_candidate {
         0xea,0x35,0x81,0x66,0xa8,0x37,0x25,0x5a,0xf6,0x31,0xdd,0x28,0xfe,0x08,0x82,0x53},L"XDXR RadixSortPrefixSum2048",1,{bvh_prefix2048_dxil,sizeof bvh_prefix2048_dxil}},
     [BVH_PREFIX4096]={0x16cc,{0xaf,0xb4,0x42,0x56,0xc7,0x40,0x07,0xcc,0xd6,0xd9,0xd3,0x65,0xf0,0xeb,0x1c,0x36,
         0x1b,0x1a,0xba,0xe3,0x16,0x6e,0xba,0x4e,0x31,0x03,0xd5,0x82,0x18,0x61,0x47,0x38},L"XDXR RadixSortPrefixSum4096",1,{bvh_prefix4096_dxil,sizeof bvh_prefix4096_dxil}},
+    [BVH_REARRANGE_TRIANGLES]={0x1c80,{0xd2,0x91,0x26,0x59,0x3c,0xb2,0xd0,0x4e,0x6b,0x66,0x33,0x3c,0xb2,0x87,0x75,0x98,
+        0x1e,0xb3,0xb8,0xed,0xeb,0xd3,0x8d,0x0d,0xc2,0xce,0xe9,0xaa,0xe4,0x89,0xa0,0x45},L"XDXR RearrangeTriangles",4,{0}},
+    [BVH_REARRANGE_BVHS]={0x1794,{0x29,0x63,0x30,0x83,0x51,0x53,0x15,0xf9,0x22,0x33,0xce,0x4b,0x7c,0xf0,0x56,0xec,
+        0x7a,0x0e,0x0a,0xdb,0xf0,0xdb,0xd5,0x70,0xe4,0x18,0xec,0xed,0x3c,0xa9,0xf8,0xf4},L"XDXR RearrangeBVHs",4,{0}},
     [BVH_HEADERS]={0x1488,{0x7b,0xdd,0x8b,0x5b,0xf4,0x76,0xe7,0xf2,0x09,0x51,0xa9,0x2c,0x55,0x6d,0x6f,0x39,
         0x4d,0x4e,0xf9,0xbd,0x4c,0xa3,0x39,0x69,0x69,0x29,0x8d,0x3e,0xe1,0xd8,0xdd,0x7d},L"XDXR InitHeaders",1,{0}},
     [BVH_BEGIN_PASS]={0x1118,{0x9b,0xa6,0x1b,0x8f,0x5b,0x27,0x54,0x1f,0x62,0xe4,0x92,0x2d,0x1c,0x97,0xa2,0x0c,
@@ -161,7 +166,8 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     BOOL bitonic=kind>=BVH_BITONIC_PRE && kind<=BVH_BITONIC_INNER64;
     BOOL prefix=kind>=BVH_PREFIX64 && kind<=BVH_PREFIX4096;
     BOOL original_radix=kind==BVH_RADIX_RESET || kind==BVH_RADIX_COUNT;
-    int required_root=prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
+    BOOL rearrange=kind==BVH_REARRANGE_TRIANGLES || kind==BVH_REARRANGE_BVHS;
+    int required_root=rearrange ? ROOT_REARRANGE : prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
             bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY;
     AcquireSRWLockShared(&d->descriptor_lock);
     struct bvh_root *r=d->bvh_roots;
@@ -188,6 +194,16 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         rp[2]=rp[1];
         for (UINT i=0;i<2;i++) rp[i]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0}};
         rs.NumParameters=3;
+    }
+    if (rearrange) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedRearrangeV1")) return E_NOTIMPL;
+        ranges[0].NumDescriptors=7; /* structured UAV views u0..u6 */
+        /* b0.xy is also loaded as i64: retain its byte representation in a CBV. */
+        rp[1]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_CBV};
+        rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,3}};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV,.Descriptor={0,0x5358}};
+        rs.NumParameters=4;
     }
     if (kind==BVH_HEADERS) {
         HMODULE core=GetModuleHandleW(L"d3d12core.dll");

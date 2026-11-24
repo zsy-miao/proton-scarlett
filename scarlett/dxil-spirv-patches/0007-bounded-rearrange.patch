@@ -1,0 +1,70 @@
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -489,6 +489,7 @@
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS = 54,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON = 55,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC = 56,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ = 58,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+ 
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -936,7 +936,7 @@
+ /* Useful to check if the implementation recognizes a particular capability for ABI compatibility. */
+ dxil_spv_bool dxil_spv_converter_supports_option(dxil_spv_option cap)
+ {
+-	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
++	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC ||
+ 	     cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS)
+ 		cap = DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE;
+ 	return Converter::recognizes_option(static_cast<Option>(cap)) ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+@@ -1014,6 +1014,7 @@
+ 
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS:
+@@ -1022,6 +1023,7 @@
+ 		OptionBoundedXboxRange helper;
+ 		helper.bitonic = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BITONIC;
+ 		helper.morton = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_MORTON;
++		helper.scalar_read = helper.bitonic || helper.morton || option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_HEADER_READ;
+ 		helper.range_word = in->range_word;
+ 		helper.range_descriptor = in->range_descriptor;
+ 		helper.centroid_descriptor_plus_one = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS ?
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -359,7 +359,7 @@
+ 	OptionBoundedXboxRange() : OptionBase(Option::BoundedXboxRange) {}
+ 	unsigned range_word, range_descriptor, atomic_descriptor;
+ 	unsigned centroid_descriptor_plus_one;
+-	bool read_only, morton = false, bitonic = false;
++	bool read_only, morton = false, bitonic = false, scalar_read = false;
+ };
+ 
+ struct OptionPhysicalStorageBuffer : OptionBase
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -477,2 +477,3 @@
+ 	bool root_constant_arrayed = false;
++	bool xbox_scalar_read = false;
+ 	unsigned patch_location_offset = ~0u;
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6340,3 +6340,3 @@
+ 	const bool read = opnum < 360 || opnum == 364;
+-	if (opnum == 364 && !impl.xbox_morton && !impl.xbox_bitonic) return false;
++	if (opnum == 364 && !impl.xbox_scalar_read) return false;
+ 	if (opnum == 23)
+@@ -9441,2 +9441,3 @@
+ 		xbox_atomic_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).atomic_descriptor;
++		xbox_scalar_read = static_cast<const OptionBoundedXboxRange &>(cap).scalar_read;
+ 		xbox_bitonic = static_cast<const OptionBoundedXboxRange &>(cap).bitonic;
