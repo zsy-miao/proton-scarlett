@@ -29,6 +29,7 @@ load-instances 0xb97f0 0x752c
 reset 0xb76e0 0xfe8
 index 0xb3fd0 0x1004
 copy-update 0xb4fe0 0x126c
+copy-compact 0x24b00 0x1134
 copycounters 0xb2ee0 0x10e8
 beginpass 0xb86d0 0x1118
 headers 0xb6250 0x1488
@@ -43,7 +44,7 @@ prefix1024 0x9be80 0x1644
 prefix2048 0x9a830 0x1644
 prefix4096 0x99160 0x16cc
 SLICES
-for fixture in root-registry pipeline partitions instances load-instances reset copy-update copycounters beginpass headers radix prefix radix-alloc; do
+for fixture in root-registry pipeline partitions instances load-instances reset copy-update copy-compact copycounters beginpass headers radix prefix radix-alloc; do
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
         "$s/test-bvh-$fixture.cpp" "$w/test-bvh-radix-device.o" "$w/queue.o" -ld3d12 \
         -o "$w/game/game_scarlett_master.exe"

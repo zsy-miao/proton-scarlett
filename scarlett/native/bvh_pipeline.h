@@ -13,7 +13,7 @@ enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_I
     BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096,
     BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS, BVH_LOAD_PASS, BVH_SPLIT_PASS,
     BVH_LOAD_TRIANGLES, BVH_RELOAD_TRIANGLES, BVH_LOAD_PROCEDURAL, BVH_RELOAD_PROCEDURAL,
-    BVH_PARTITION_CONSTRUCT, BVH_CONSTRUCT, BVH_REFIT, BVH_SPLITS32, BVH_SPLITS64, BVH_POSTBUILD };
+    BVH_PARTITION_CONSTRUCT, BVH_CONSTRUCT, BVH_REFIT, BVH_SPLITS32, BVH_SPLITS64, BVH_POSTBUILD, BVH_COPY_COMPACT };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -102,6 +102,8 @@ static const struct bvh_candidate {
         0x78,0xd1,0xb0,0xf7,0x4b,0x0c,0x91,0x8f,0xf1,0x58,0xe9,0xe9,0x20,0x54,0xb6,0x20},L"XDXR WriteInstances",16,{0}},
     [BVH_COPY_UPDATE]={0x126c,{0x96,0xfd,0xbb,0x6d,0x8c,0x64,0xad,0x8a,0x39,0x5f,0xc8,0x8f,0x28,0x4b,0xcd,0x48,
         0x3d,0xa7,0x71,0x94,0x37,0x6d,0xc5,0x29,0x07,0xed,0x93,0x1a,0x25,0x5e,0xbd,0x12},L"XDXR CopyForUpdate",2,{0}},
+    [BVH_COPY_COMPACT]={0x1134,{0xad,0xa9,0x95,0x4c,0x4b,0x89,0xa8,0x7e,0x6b,0xe2,0x1a,0x1b,0x21,0x0f,0x72,0x4c,
+        0xf3,0x12,0xef,0xfa,0xaa,0xe0,0x6a,0xd9,0x18,0x36,0x7e,0x43,0xbe,0x87,0xe5,0x05},L"XDXR CopyAndCompact",1,{0}},
     [BVH_LOAD_INSTANCES]={0x752c,{0xee,0x24,0xd3,0x76,0x1d,0xc2,0xfa,0x3a,0x74,0xf3,0x9e,0x97,0xfd,0x6b,0xf6,0xe8,
         0x68,0xf4,0x15,0x65,0xf6,0x0f,0x8b,0xdc,0x46,0x94,0x27,0x69,0xb5,0x5a,0x73,0x21},L"XDXR LoadInstances",16,{0}},
     [BVH_COPY_COUNTERS]={0x10e8,{0x1b,0x08,0x3c,0x49,0xc7,0x32,0xe1,0x85,0x49,0xcf,0xb7,0x53,0x78,0xe9,0x14,0xdb,
@@ -217,12 +219,12 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     int required_root=kind==BVH_POSTBUILD ? ROOT_POSTBUILD : splits ? ROOT_HIERARCHY : builder ? ROOT_BVH4 : triangles || procedural ? ROOT_LOAD_PRIMITIVES :
             kind==BVH_SPLIT_PASS ? ROOT_SPLIT_INSTANCES : kind==BVH_LOAD_PASS ? ROOT_LOAD_INSTANCES :
             rearrange ? ROOT_REARRANGE : prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
-            bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY;
+            bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : kind==BVH_COPY_COMPACT ? ROOT_COPY : ROOT_UTILITY;
     AcquireSRWLockShared(&d->descriptor_lock);
     struct bvh_root *r=d->bvh_roots;
     while (r && &r->iface!=w.root) r=r->next;
     BOOL known=r && r->owner==d && (int)r->kind==required_root;
-    ID3D12RootSignature *shared=known && original_radix ? r->host : NULL;
+    ID3D12RootSignature *shared=known && (original_radix || kind==BVH_COPY_COMPACT) ? r->host : NULL;
     if (shared) ID3D12RootSignature_AddRef(shared);
     ReleaseSRWLockShared(&d->descriptor_lock);
     if (!known) return E_INVALIDARG;
