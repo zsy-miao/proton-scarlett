@@ -105,3 +105,9 @@ orders, cross-format overlap rejection, original backing and descriptor views.
 Apply `0033` after `0032` for five-mip R11 placement on RADV and RTX.
 Run `scarlett/tests/rtx-r32-tile.sh TOOL radv-r11` and repeat with `rtx-r11`
 to check all mip views, padding and overlapping allocation reuse after retirement.
+
+`0034` accepts a second RTX allocation order. The new R11 range must follow
+two live tiled R32 buffers on the same device and section. The overlap check
+and reservation happen under the same lock. Run `python3 scarlett/tests/test-r11-pair-cpu.py
+PATH/TO/libs/vkd3d/scarlett_primary_image.h` on the patched source, then
+`scarlett/tests/rtx-r32-tile.sh TOOL rtx-r11` for the GPU checks.

@@ -28,6 +28,27 @@ int main(){
     for(UINT i=0;i<2;i++)if(native){auto take=(Acquire)(void*)GetProcAddress(xm,"ScarlettAcquireNativePoolV1");UINT at=0;CK(take && take(d.Get(),base[i]+off,span,heap[i].GetAddressOf(),nullptr,&at)==S_OK && at==off);}else{scarlett_section_info info;HR(scarlett_query_section(0x53430005,base[i]+off,span,&info));CK(info.base==base[i] && info.offset==off && info.view_size==pool);section[i]=info.section;}
     if(!native)CK(DuplicateHandle(GetCurrentProcess(),section[0],GetCurrentProcess(),&dup,0,FALSE,DUPLICATE_SAME_ACCESS));
     auto r32=[&](UINT id,UINT ofs,ID3D12Resource **out){return place(d.Get(),heap[id].Get(),section[id],pool,ofs,out);};
+    if(!native){
+        constexpr SIZE_T alt=0x13d08000, first=alt-2*span;
+        auto five=(Place)(void*)GetProcAddress(core,"ScarlettTiledR11FiveV1");CK(five);
+        ComPtr<ID3D12Resource> lo,hi,other,image;
+        ID3D12Resource *reject=nullptr;
+        auto trial=[&](SIZE_T ofs,HRESULT expected){
+            reject=(ID3D12Resource*)1;
+            return five(d.Get(),nullptr,dup,pool,ofs,&reject)==expected && !reject;
+        };
+        CK(trial(alt,E_INVALIDARG));
+        HR(r32(0,first,lo.GetAddressOf()));HR(r32(1,first+span,other.GetAddressOf()));
+        CK(trial(alt,E_INVALIDARG)); /* second neighbor exists on the other allocation */
+        HR(r32(0,first+span,hi.GetAddressOf()));
+        CK(trial(alt+256,E_INVALIDARG));CK(trial(~SIZE_T(0x3fff),E_INVALIDARG));
+        CK(trial(alt-0x4000,DXGI_ERROR_INVALID_CALL));
+        HR(five(d.Get(),nullptr,dup,pool,alt,image.GetAddressOf()));
+        CK(image->GetDesc().Width==0x4b1400);CK(trial(alt,DXGI_ERROR_INVALID_CALL));
+        image.Reset();lo.Reset();CK(trial(alt,E_INVALIDARG));
+        HR(five(d.Get(),nullptr,dup,pool,0x13d14000,image.GetAddressOf()));
+        printf("PASS 9 RTX R11 placement outcomes: alternate and legacy success; missing, split backing, misaligned, overflow, partial overlap, duplicate, retired predecessor denied\n");
+    }
     auto bg=[&](ID3D12Resource **out){return native?in(d.Get(),heap[0].Get(),off,out):ix(d.Get(),dup,pool,off,out);};
     ComPtr<ID3D12Resource> a,neighbor,other;ID3D12Resource *bad=(ID3D12Resource*)1;
     CK(FAILED(r32(0,off+0x100,&bad)) && !bad);CK(FAILED(place(d.Get(),nullptr,nullptr,pool,off,&bad)) && !bad);
