@@ -1,0 +1,33 @@
+# First XboxBvhBuilder utility root
+
+The title's `+247944f` calls the imported constructor with the device and
+`false`. `+2479455` is its return address. The native DLL shipped with the
+title (April 2025 GXDK Update 5) takes the branch at `+21374`. Its call chain
+is `+2139c -> +d850`, `+d89c -> +20270`, `+203b2 -> +c2d0`.
+The helper ORs `0x03000000` into the flags and calls the forwarded desktop
+`D3D12SerializeVersionedRootSignature` at `+c32f`. At `+c388` it invokes
+device `+0x80` with `(This, UINT nodeMask, const void *data, SIZE_T bytes,
+REFIID iid, void **out)`. On success it invokes root `+0x30` with the name
+`XDXR UtilityShaders`. The helper releases its own serialized blob.
+
+The evidenced input is node 1, `IID_ID3D12RootSignature`, one 140-byte DXBC
+RTS0 (SHA-256 `8cb102b5bdc14649e4945275bc672894443646b915e89fbc3b8a981a9ec81a4b`).
+Match independent serialization of v1.1 SRV t0 / UAV u0 / 16 DWORDs b0,
+space 0, visibility ALL, no root-descriptor flags or samplers. Only for this
+match, serialize the same bindings with desktop signature flags zero. The
+meaning of the two console flag bits in other signatures is unverified.
+
+The synthetic `test-bvh-root.cpp` links the adapter objects like
+`test-allocation-info.cpp`. Compile `test-bvh-root.hlsl` with `dxc -T cs_6_0
+-E main -Fo test-bvh-root.dxil` and place the DXIL beside the fixture EXE.
+The fixture needs no captured bytes. It dispatches one group, reversing 16
+distinct SRV words and XORing each with a different root constant; the UAV
+is copied back after a transition and read only after the fence.
+
+The next retail call is a separate operation: DLL `+204b7 -> +c470`, then
+`+c4e1` submits the first compute PSO to device `+0x1f0` with the root and
+shader RVA `+c96b0`, length `0x1410` (`XDXR InitPartitionedHeaders`).
+At this call the root matched the wrapper returned by `+0x80`; both extra
+arguments were null, the IID was `ID3D12PipelineState` and no cached
+pipeline was supplied. This identifies the first requested compute pipeline;
+it does not establish shader compatibility or execution.

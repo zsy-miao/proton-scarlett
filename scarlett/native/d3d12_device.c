@@ -63,6 +63,7 @@ _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline
 #include "placed_resource.h"
 #endif
 #include "descriptor_writer.h"
+#include "bvh_root.h"
 #ifdef SCARLETT_STAGED_PLACED
 #include "placed_shader.h"
 #endif
@@ -408,7 +409,7 @@ struct bootstrap_vtbl {
     xs_stop_fn gap50[4];
     __typeof__(&descriptor_heap) descriptors;
     __typeof__(&descriptor_stride) stride;
-    xs_stop_fn gap80;
+    __typeof__(&bootstrap_root) root;
     __typeof__(&write_cbv) cbv;
     __typeof__(&write_srv) srv;
     __typeof__(&write_uav) uav;
@@ -454,6 +455,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
                offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
+               offsetof(struct bootstrap_vtbl, root) == 0x80 &&
                offsetof(struct bootstrap_vtbl, rtv) == 0xa0 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
@@ -496,7 +498,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
-    .descriptors = descriptor_heap, .stride = descriptor_stride, .gap80 = xs_stop,
+    .descriptors = descriptor_heap, .stride = descriptor_stride, .root = bootstrap_root,
     .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 3] = xs_stop },
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
