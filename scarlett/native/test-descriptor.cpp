@@ -75,6 +75,9 @@ static void check_rtv(ID3D12Device *d,D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     CloseHandle(event); fence->Release(); list->Release(); alloc->Release(); queue->Release(); readback->Release(); target->Release();
 }
 #include "test-view.hpp"
+#ifdef TEST_POOL_SRV
+#include "test-pool-srv.hpp"
+#endif
 static void test_dma_slot(IUnknown *d,ID3D12Device *host)
 {
     HMODULE xm=GetModuleHandleW(L"xmem.dll");
@@ -104,6 +107,9 @@ static void test_dma_slot(IUnknown *d,ID3D12Device *host)
     extent=38u<<20;
     IUnknown *heap; alloc_hook=true; HR(SLOT(d,0x70,Make)(d,desc,IID_ID3D12DescriptorHeap,(void **)&heap)); alloc_hook=false;
     SIZE_T slot=SLOT(heap,0x48,Start)(heap); CK(slot==(SIZE_T)arena);
+#ifdef TEST_POOL_SRV
+    test_pool_srv(d,host,heap,slot+0x2e0);
+#endif
     CK(xs_write_view(d,0x90,nullptr,(void *)1,slot)==E_POINTER);
     CK(xs_write_view(d,0x90,nullptr,words,slot+1)==E_INVALIDARG);
     *(UINT64 *)(slot+16)=0x0190face;
