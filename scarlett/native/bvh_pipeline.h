@@ -13,7 +13,7 @@ enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_I
     BVH_PREFIX64, BVH_PREFIX128, BVH_PREFIX256, BVH_PREFIX512, BVH_PREFIX1024, BVH_PREFIX2048, BVH_PREFIX4096,
     BVH_REARRANGE_TRIANGLES, BVH_REARRANGE_BVHS, BVH_LOAD_PASS, BVH_SPLIT_PASS,
     BVH_LOAD_TRIANGLES, BVH_RELOAD_TRIANGLES, BVH_LOAD_PROCEDURAL, BVH_RELOAD_PROCEDURAL,
-    BVH_PARTITION_CONSTRUCT, BVH_CONSTRUCT, BVH_REFIT, BVH_SPLITS32, BVH_SPLITS64 };
+    BVH_PARTITION_CONSTRUCT, BVH_CONSTRUCT, BVH_REFIT, BVH_SPLITS32, BVH_SPLITS64, BVH_POSTBUILD };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -21,6 +21,8 @@ static const struct bvh_candidate {
     UINT constants;
     D3D12_SHADER_BYTECODE cs;
 } bvh_candidates[]={
+    [BVH_POSTBUILD]={0x14a4,{0x7c,0x93,0x75,0xfc,0x0c,0x72,0xf7,0xac,0x09,0xed,0xa6,0xd9,0x6b,0x15,0x64,0x52,
+        0xff,0x9b,0x16,0x76,0x97,0xaa,0xfa,0xd5,0x24,0xd3,0x6a,0xbb,0xf4,0xee,0x66,0xa1},L"XDXR GetBVHCompactedSize",4,{0}},
     [BVH_PARTITION_CONSTRUCT]={0x5e60,{0x9a,0x43,0x95,0xf1,0x51,0xa8,0xb7,0x95,0xf3,0xed,0xc0,0xce,0x3c,0x0c,0x6b,0x13,
         0x88,0x05,0x7f,0x96,0xf7,0x1e,0x7d,0x9a,0x7f,0x43,0xf5,0x1f,0xcb,0x26,0x50,0xab},L"XDXR PartitionConstruct",3,{0}},
     [BVH_CONSTRUCT]={0x7160,{0x3c,0x12,0x64,0x75,0x69,0x3c,0xf4,0x7f,0x83,0x89,0xb7,0xf1,0xa1,0xae,0x0f,0xdd,
@@ -212,7 +214,7 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     BOOL procedural=kind==BVH_LOAD_PROCEDURAL || kind==BVH_RELOAD_PROCEDURAL;
     BOOL builder=kind>=BVH_PARTITION_CONSTRUCT && kind<=BVH_REFIT;
     BOOL splits=kind==BVH_SPLITS32 || kind==BVH_SPLITS64;
-    int required_root=splits ? ROOT_HIERARCHY : builder ? ROOT_BVH4 : triangles || procedural ? ROOT_LOAD_PRIMITIVES :
+    int required_root=kind==BVH_POSTBUILD ? ROOT_POSTBUILD : splits ? ROOT_HIERARCHY : builder ? ROOT_BVH4 : triangles || procedural ? ROOT_LOAD_PRIMITIVES :
             kind==BVH_SPLIT_PASS ? ROOT_SPLIT_INSTANCES : kind==BVH_LOAD_PASS ? ROOT_LOAD_INSTANCES :
             rearrange ? ROOT_REARRANGE : prefix ? ROOT_PREFIX : original_radix || kind==BVH_RADIX_ALLOC ? ROOT_RADIX :
             bitonic ? ROOT_BITONIC : morton ? ROOT_MORTON : ROOT_UTILITY;
@@ -284,10 +286,11 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         rp[6]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
         rs.NumParameters=7;
     }
-    if (rearrange || splits) {
+    if (rearrange || splits || kind==BVH_POSTBUILD) {
         HMODULE core=GetModuleHandleW(L"d3d12core.dll");
-        if (!core || !GetProcAddress(core,splits ? "ScarlettBoundedHierarchyV1" : "ScarlettBoundedRearrangeV1")) return E_NOTIMPL;
-        ranges[0].NumDescriptors=splits ? 3 : 7;
+        const char *marker=splits ? "ScarlettBoundedHierarchyV1" : rearrange ? "ScarlettBoundedRearrangeV1" : "ScarlettBoundedPostbuildV1";
+        if (!core || !GetProcAddress(core,marker)) return E_NOTIMPL;
+        ranges[0].NumDescriptors=rearrange ? 7 : 3;
         /* b0.xy is also loaded as i64: retain its byte representation in a CBV. */
         rp[1]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_CBV};
         rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,3}};

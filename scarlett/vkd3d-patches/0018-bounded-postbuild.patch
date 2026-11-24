@@ -1,0 +1,35 @@
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1403,7 +1403,8 @@
+             (dxbc->size == 0x2204 && hash == UINT64_C(0xd94c62f47a4dc2cf)) ||
+             (dxbc->size == 0x1554 && hash == UINT64_C(0x6418df8f45aa5520)) ||
+             (dxbc->size == 0x2094 && hash == UINT64_C(0xbe761fb667184255));
+-    header_read = (dxbc->size == 0x1c80 && hash == UINT64_C(0x338965854453d35d)) ||
++    header_read = (dxbc->size == 0x14a4 && hash == UINT64_C(0x827443b28f6865ee)) ||
++            (dxbc->size == 0x1c80 && hash == UINT64_C(0x338965854453d35d)) ||
+             (dxbc->size == 0x1794 && hash == UINT64_C(0x8a1f344edf785181)) ||
+             (dxbc->size == 0x1e68 && hash == UINT64_C(0xb79d27d4432d86ec)) ||
+             (dxbc->size == 0x2094 && hash == UINT64_C(0x4896871e638169b6));
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1316,6 +1316,7 @@
+ void WINAPI DLLEXPORT ScarlettBoundedBeginPassV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedInitHeadersV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedRearrangeV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedPostbuildV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedHierarchyV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedMortonV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBitonicV1(void) {}
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -12,6 +12,7 @@
+     ScarlettBoundedBeginPassV1
+     ScarlettBoundedInitHeadersV1
+     ScarlettBoundedRearrangeV1
++    ScarlettBoundedPostbuildV1
+     ScarlettBoundedHierarchyV1
+     ScarlettBoundedMortonV1
+     ScarlettBoundedBitonicV1
