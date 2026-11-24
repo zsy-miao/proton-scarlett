@@ -5,6 +5,11 @@
 #include <vector>
 using Microsoft::WRL::ComPtr;
 #define CK(e) do {if(!(e)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#e);return 1;}}while(0)
+#ifdef TEST_SEVEN_PLACE
+extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
+extern "C" ID3D12Resource *test_row_backing(IUnknown*);
+extern "C" HRESULT xs_write_view(IUnknown*,UINT,IUnknown*,const void*,SIZE_T);
+#endif
 static int exercise(bool line){
     const UINT pool=0x89700000,off=line?0xe6cf800:0x1c3eb000,span=line?256:0xd900,guard=256,total=span+2*guard;
     auto xm=LoadLibraryA("xmem.dll"),xg=LoadLibraryA("xg_xs.dll");CK(xm && xg);
@@ -49,14 +54,63 @@ static int exercise(bool line){
         CK(!memcmp(dst-guard,expect.data(),total));
     }
     CK(((ULONG(WINAPI*)(void*))vt[1])(c)==0);UnmapViewOfFile(src);CloseHandle(h);
+#ifdef TEST_SEVEN_PLACE
+    CK(!line && !native);
+    DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
+    IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
+    ComPtr<IUnknown> device;CK(SUCCEEDED(D3D12XboxCreateDevice(nullptr,params,boot,(void**)device.GetAddressOf())));
+    auto dv=*(void***)device.Get();
+    using Place=HRESULT(WINAPI*)(IUnknown*,UINT64,const void*,UINT,const void*,REFIID,void**);
+    void *obj=nullptr;
+    auto place=[&](UINT at,UINT state=6,const void *clear=nullptr,REFIID iid=IID_ID3D12Resource){
+        obj=(void*)1;
+        return ((Place)dv[0x428/8])(device.Get(),(UINT_PTR)b+at,desc,state,clear,iid,&obj);
+    };
+    for(UINT i=0;i<13;i++)if(i!=1){desc[i]^=1;CK(FAILED(place(off)) && !obj);desc[i]^=1;}
+    CK(FAILED(place(off+256)) && !obj && FAILED(place(off,3)) && !obj && FAILED(place(off,6,params)) && !obj);
+    CK(place(off,6,nullptr,IID_ID3D12Heap)==E_NOINTERFACE && !obj && SUCCEEDED(place(off)) && obj);
+    ComPtr<IUnknown> title;title.Attach((IUnknown*)obj);
+    ComPtr<ID3D12Resource> placed;placed.Attach(test_row_backing(title.Get()));
+    CK(placed && placed->GetDesc().Width==span && placed->GetDesc().Flags==D3D12_RESOURCE_FLAG_NONE);
+    CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
+    using Make=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);using Start=SIZE_T(WINAPI*)(IUnknown*);
+    UINT hd[]={0,4,1,1};ComPtr<IUnknown> slots;
+    CK(SUCCEEDED(((Make)dv[0x70/8])(device.Get(),hd,IID_ID3D12DescriptorHeap,(void**)slots.GetAddressOf())));
+    SIZE_T slot=((Start)((*(void***)slots.Get())[0x48/8]))(slots.Get());
+    DWORD view[]={41,4,0x1688,0,0,7,0,0,0,0};BYTE before[64];memcpy(before,(void*)slot,sizeof before);
+    CK(FAILED(xs_write_view(device.Get(),0x90,title.Get(),view,slot)) && !memcmp(before,(void*)slot,sizeof before));
+    title.Reset();CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
+#endif
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=total;rd.Height=rd.DepthOrArraySize=rd.MipLevels=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ComPtr<ID3D12Resource> read;CK(SUCCEEDED(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read))));
     D3D12_COMMAND_QUEUE_DESC qd={};ComPtr<ID3D12CommandQueue> q;ComPtr<ID3D12CommandAllocator>a;ComPtr<ID3D12GraphicsCommandList>l;
     CK(SUCCEEDED(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q))) && SUCCEEDED(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a))) && SUCCEEDED(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l))));
-    l->CopyBufferRegion(read.Get(),0,raw,off-guard,total);CK(SUCCEEDED(l->Close()));ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
+#ifdef TEST_SEVEN_PLACE
+    l->CopyBufferRegion(read.Get(),guard,placed.Get(),0,span);
+    D3D12_RESOURCE_BARRIER barrier={};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+    barrier.Aliasing={placed.Get(),raw};l->ResourceBarrier(1,&barrier);
+    l->CopyBufferRegion(read.Get(),0,raw,off-guard,guard);
+    l->CopyBufferRegion(read.Get(),guard+span,raw,off+span,guard);
+    // Late writes distinguish the original WC range from a detached copy.
+    dst[0]^=0x57;expect[guard]^=0x57;MemoryBarrier();
+    CK(VirtualFree(b,0,MEM_RELEASE) && VirtualAlloc(b,pool,MEM_RESERVE,PAGE_NOACCESS)==b);
+    CK(VirtualAlloc(dst-guard,total,MEM_COMMIT,PAGE_READWRITE));memset(dst-guard,0x8d,total);
+    CK(FAILED(place(off)) && !obj);
+#else
+    l->CopyBufferRegion(read.Get(),0,raw,off-guard,total);
+#endif
+    CK(SUCCEEDED(l->Close()));ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
     ComPtr<ID3D12Fence> f;HANDLE ev=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(ev && SUCCEEDED(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f))) && SUCCEEDED(q->Signal(f.Get(),1)) && SUCCEEDED(f->SetEventOnCompletion(1,ev)) && WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
     void *mapped;CK(SUCCEEDED(read->Map(0,nullptr,&mapped))&&!memcmp(mapped,expect.data(),total));read->Unmap(0,nullptr);CloseHandle(ev);
+#ifdef TEST_SEVEN_PLACE
+    for(UINT i=0;i<total;i++)CK(dst[(ptrdiff_t)i-guard]==0x8d);
+    CK(SUCCEEDED(d->GetDeviceRemovedReason()));
+#endif
     CK(VirtualFree(b,0,MEM_RELEASE));printf("PASS %s: %s original WC GPU readback, all bytes, padding, adjacent guards and negatives\n",line?"A8 line from thread stack":"seven XG copies",native?"native":"section");return 0;
 }
+#ifdef TEST_SEVEN_PLACE
+int main(){return exercise(false);}
+#else
 int main(){return exercise(false)||exercise(true); }
+#endif

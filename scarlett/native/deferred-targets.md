@@ -400,6 +400,14 @@ offset `0x1c3eb000`. Device `+428` received the same address, state 6
 and no clear value; it returned `E_NOTIMPL` and no resource. Both GPUs
 passed fenced readback of every copied row, padding byte and end guard.
 
+Backend patch `0045` adds placement for this RTX 3070 section and offset.
+The placement fixture read all `0xd900` bytes through the new resource,
+including all seven levels and their padding; both 256-byte guards stayed
+intact. It saw a late write to the original allocation after the guest
+address was reused, and the replacement stayed untouched. A second
+overlapping placement and an unsupported view were rejected. Retail
+creation with this patch and subsequent shader sampling remain unverified.
+
 Four retail launches: one RTX diagnostic, two matched staged ordinary
 runs and a separate RTX run through the installed `bdc4efab` baseline.
 The two fixtures ran before ordinary verification. AMD stopped at

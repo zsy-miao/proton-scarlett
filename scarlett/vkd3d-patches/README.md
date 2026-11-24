@@ -171,3 +171,8 @@ Seven retail launches (five diagnostic, two ordinary). The final RADV
 run stopped at pooled list `+418` (return `+156099a`), with tokens 1 and
 2 issued. The final RTX run stopped earlier at `+5707b8c`, with token 1
 issued. Both presented only token 1.
+
+`0045` adds `ScarlettLinearSevenV1` for the RTX 3070's seven-level 128×72
+`R32_FLOAT` texture at section offset `0x1c3eb000`. The [placement
+fixture](../native/deferred-targets.md#small-linear-texture-size-queries)
+verified the original bytes, padding and both guards after address reuse.

@@ -87,10 +87,11 @@ static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT bytes,UINT
     if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
     if (!IsEqualIID(&id,&IID_ID3D12Resource)) return E_NOINTERFACE;
     BOOL atlas=bytes==0x400000 || bytes==0x100000;
-    if (!va || state!=(atlas?6u:UINT_MAX) || clear) return E_INVALIDARG;
+    BOOL seven=bytes==0xd900;
+    if (!va || state!=((atlas || seven)?6u:UINT_MAX) || clear) return E_INVALIDARG;
     struct row_buffer *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r) return E_OUTOFMEMORY;
-    const char *name=atlas?(bytes==0x400000?"ScarlettAtlas2kV1":"ScarlettAtlas1kV1"):bytes==16?"ScarlettRow16V1":"ScarlettRowBufferV1";
+    const char *name=seven?"ScarlettLinearSevenV1":atlas?(bytes==0x400000?"ScarlettAtlas2kV1":"ScarlettAtlas1kV1"):bytes==16?"ScarlettRow16V1":"ScarlettRowBufferV1";
     ID3D12Heap *heap=NULL;
     r->va=(void*)va;
     if(atlas)native_pool_ctl(0x53430103,r->va,&r->generation,sizeof r->generation);

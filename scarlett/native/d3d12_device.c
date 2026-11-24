@@ -773,6 +773,8 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
         rd.Layout==D3D12_TEXTURE_LAYOUT_ROW_MAJOR && rd.Flags==D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
         return create_row_buffer(d,address,(UINT)rd.Width,state,clear,iid,out);
     if(read && atlas_desc(&rd))return create_row_buffer(d,address,(UINT)(rd.Width*rd.Height),state,clear,iid,out);
+    if(read && !rd.Alignment && state==6 && !clear && linear_small_size(&rd,TRUE)==0xd900 && xs_is_rtx3070(d->host))
+        return create_row_buffer(d,address,0xd900,state,clear,iid,out);
     BOOL small=read && !rd.Alignment && small_tile_bytes(&rd,FALSE);
     if (small || (read && ((rd.MipLevels==5 && tiled_r11_chain(&rd)) || tiled_r32_desc(&rd))))
         return create_tiled_buffer(d,rd.Format,small,address,state,clear,iid,out);

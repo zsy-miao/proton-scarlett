@@ -1,0 +1,24 @@
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -588,3 +588,11 @@
+ 
+ HRESULT WINAPI ScarlettAtlas2kV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
+ {return scarlett_atlas(iface,native,section,size,off,0x400000,out);}
++
++HRESULT WINAPI ScarlettLinearSevenV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (native || off!=0x1c3eb000) return E_NOTIMPL;
++    return scarlett_wc_buffer(iface,NULL,section,size,off,0xd900,out,true);
++}
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettLinearSevenV1 @51
+     ScarlettAtlas1kV1 @49
+     ScarlettAtlas2kV1 @50
+     ScarlettRow16V1 @48
