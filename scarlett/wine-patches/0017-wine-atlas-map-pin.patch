@@ -1,0 +1,70 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -257,6 +257,7 @@
+     size_t        size;          /* size in bytes */
+     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
+     HANDLE native_retired;
++    unsigned int native_wc_maps;
+     void *native_wc_cookie;
+     NTSTATUS (*native_wc_unmap)(void *);
+     HANDLE        scarlett_section; /* owned only by opt-in public views */
+@@ -1956,6 +1957,7 @@
+     view->size    = size;
+     view->protect = vprot;
+     view->native_retired = NULL;
++    view->native_wc_maps = 0;
+     view->native_wc_cookie = NULL;
+     view->native_wc_unmap = NULL;
+     view->scarlett_section = NULL;
+@@ -2632,7 +2634,7 @@
+ {
+     struct file_view *v;sigset_t sigset;NTSTATUS st=STATUS_NOT_MAPPED_VIEW;
+     server_enter_uninterrupted_section(&virtual_mutex,&sigset);
+-    if((v=find_view(base,0)) && v->base==base && v->native_wc_cookie==cookie && !(st=v->native_wc_unmap(cookie)))delete_view(v);
++    if((v=find_view(base,0)) && v->base==base && v->native_wc_cookie==cookie && !v->native_wc_maps && !(st=v->native_wc_unmap(cookie)))delete_view(v);
+     server_leave_uninterrupted_section(&virtual_mutex,&sigset);return st;
+ }
+ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start, size_t size,
+@@ -2799,6 +2801,7 @@
+         new_view->size    = (char *)view->base + view->size - (char *)new_view->base;
+         new_view->protect = view->protect;
+         new_view->native_retired=NULL;
++        new_view->native_wc_maps = 0;
+         new_view->native_wc_cookie = NULL;
+         new_view->native_wc_unmap = NULL;
+         new_view->scarlett_section = NULL;
+@@ -5866,7 +5869,8 @@
+     }
+     else if (!(view = find_view( base, 0 ))) status = STATUS_MEMORY_NOT_ALLOCATED;
+     else if (view->native_wc_cookie) {
+-        if (type!=MEM_RELEASE || addr!=view->base || requested_size) status=STATUS_INVALID_PARAMETER;
++        if (view->native_wc_maps) status=STATUS_DEVICE_BUSY;
++        else if (type!=MEM_RELEASE || addr!=view->base || requested_size) status=STATUS_INVALID_PARAMETER;
+         else if (!(status=view->native_wc_unmap(view->native_wc_cookie))) {size=view->size;delete_view(view);}
+     }
+     else if (view->scarlett_section && !(view->protect & VPROT_PLACEHOLDER) &&
+@@ -6947,6 +6951,24 @@
+         case 0x53430102: /* opt in this thread's next pool map */
+             if (process!=NtCurrentProcess() || is_wow64() || addr || buffer || len || res_len) return STATUS_INVALID_PARAMETER;
+             native_wc_arm=info_class;return STATUS_SUCCESS;
++        case 0x53430106: /* Pin the original atlas VA until resource Unmap. */
++        case 0x53430107:
++        {
++            struct file_view *v; sigset_t sigset; UINT64 id;
++            if (process!=NtCurrentProcess() || is_wow64() || !buffer || len!=sizeof(id) || res_len)
++                return STATUS_INVALID_PARAMETER;
++            server_enter_uninterrupted_section(&virtual_mutex,&sigset);
++            status=STATUS_NOT_MAPPED_VIEW;
++            if ((v=find_view(addr,0x400000)) && v->native_wc_cookie && v->size==0x89700000 &&
++                (UINT_PTR)addr-(UINT_PTR)v->base==0x19d70000 &&
++                virtual_uninterrupted_read_memory(buffer,&id,sizeof(id))==sizeof(id) && id==v->scarlett_cpu_id)
++            {
++                status=STATUS_INVALID_PARAMETER;
++                if (info_class==0x53430106 && v->native_wc_maps!=~0u) {++v->native_wc_maps;status=STATUS_SUCCESS;}
++                if (info_class==0x53430107 && v->native_wc_maps) {--v->native_wc_maps;status=STATUS_SUCCESS;}
++            }
++            server_leave_uninterrupted_section(&virtual_mutex,&sigset);return status;
++        }
+         case 0x53430103: /* capture the current native pool incarnation */
+         case 0x53430104: /* bounded XG-style write: generation followed by staged bytes */
+         {

@@ -1,5 +1,6 @@
 /* The title gets its own identity; only the host resource owns the pool reservation. */
-struct row_buffer { IUnknown iface; LONG refs; UINT bytes; ID3D12Resource *host; struct xbox_device *owner; struct row_buffer *next; };
+#include "xmem/native_pool.h"
+struct row_buffer { IUnknown iface; LONG refs; UINT bytes; void *va,*mapped; HANDLE section; UINT64 generation; UINT_PTR off; SRWLOCK map_lock; ID3D12Resource *host; struct xbox_device *owner; struct row_buffer *next; };
 static ID3D12Resource *row_host_locked(struct xbox_device *d,IUnknown *iface,UINT bytes)
 {
     for(struct row_buffer *r=d->rows;r;r=r->next) if(&r->iface==iface && r->bytes==bytes)return r->host;
@@ -9,6 +10,13 @@ static ULONG WINAPI row_addref(IUnknown *iface)
 {
     return InterlockedIncrement(&CONTAINING_RECORD(iface,struct row_buffer,iface)->refs);
 }
+static void atlas_end_map(struct row_buffer *r)
+{
+    MemoryBarrier();
+    if (r->section) VirtualFree((BYTE*)r->mapped-r->off,0,MEM_RELEASE);
+    else if (native_pool_ctl(0x53430107,r->va,&r->generation,sizeof r->generation)<0) xs_stop();
+    r->mapped=NULL;
+}
 static ULONG WINAPI row_release(IUnknown *iface)
 {
     struct row_buffer *r=CONTAINING_RECORD(iface,struct row_buffer,iface);
@@ -16,7 +24,7 @@ static ULONG WINAPI row_release(IUnknown *iface)
     ULONG refs=InterlockedDecrement(&r->refs);
     if(!refs){struct row_buffer **p=&d->rows;while(*p!=r)p=&(*p)->next;*p=r->next;}
     ReleaseSRWLockExclusive(&d->descriptor_lock);
-    if (!refs){ ID3D12Resource_Release(r->host); HeapFree(GetProcessHeap(),0,r);IUnknown_Release(&d->iface); }
+    if (!refs){ if(r->mapped)atlas_end_map(r); if(r->section)CloseHandle(r->section); ID3D12Resource_Release(r->host); HeapFree(GetProcessHeap(),0,r);IUnknown_Release(&d->iface); }
     return refs;
 }
 static HRESULT WINAPI row_query(IUnknown *iface,REFIID iid,void **out)
@@ -28,6 +36,50 @@ static HRESULT WINAPI row_query(IUnknown *iface,REFIID iid,void **out)
 }
 static const struct { IUnknownVtbl unknown; xs_stop_fn rest[64]; } row_vtbl={
     {row_query,row_addref,row_release},{[0 ... 63]=xs_stop}};
+struct atlas_slots { IUnknownVtbl unknown; xs_stop_fn gap[5];
+    HRESULT (WINAPI *map)(IUnknown*,UINT,const D3D12_RANGE*,void**);
+    void (WINAPI *unmap)(IUnknown*,UINT,const D3D12_RANGE*); xs_stop_fn rest[57]; };
+static const struct atlas_slots atlas_vtbl;
+static HRESULT WINAPI atlas_map(IUnknown *iface,UINT sub,const D3D12_RANGE *range,void **out)
+{
+    struct row_buffer *r=CONTAINING_RECORD(iface,struct row_buffer,iface);
+    D3D12_RANGE read; SIZE_T n; void *zero=NULL;
+    if (!out || !WriteProcessMemory(GetCurrentProcess(),out,&zero,sizeof zero,&n) || n!=sizeof zero) return E_POINTER;
+    if (!iface || iface->lpVtbl!=&atlas_vtbl.unknown || sub || !copy_in(&read,range,sizeof read) ||
+        read.Begin || read.End!=r->bytes) return E_INVALIDARG;
+    AcquireSRWLockExclusive(&r->map_lock);
+    HRESULT hr=DXGI_ERROR_INVALID_CALL;
+    if (!r->mapped && r->section){
+        struct scarlett_section_info live,alias;
+        BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+        hr=scarlett_query_section(0x53430005,r->va,r->bytes,&live);
+        if (SUCCEEDED(hr)){
+            hr=(live.offset==r->off && same && same(live.section,r->section))?
+                scarlett_query_section_handle(0x53430004,NULL,WC_POOL_BYTES,&alias,r->section):E_INVALIDARG;
+            CloseHandle(live.section);
+            if (SUCCEEDED(hr))r->mapped=(BYTE*)alias.base+r->off;
+        }
+    }else if(!r->mapped){
+        LONG st=native_pool_ctl(0x53430106,r->va,&r->generation,sizeof r->generation);
+        hr=st<0?HRESULT_FROM_NT(st):S_OK;
+        if(SUCCEEDED(hr))r->mapped=r->va;
+    }
+    if(SUCCEEDED(hr) && (!WriteProcessMemory(GetCurrentProcess(),out,&r->mapped,sizeof r->mapped,&n) || n!=sizeof r->mapped)){
+        atlas_end_map(r);hr=E_POINTER;
+    }
+    ReleaseSRWLockExclusive(&r->map_lock);return hr;
+}
+static void WINAPI atlas_unmap(IUnknown *iface,UINT sub,const D3D12_RANGE *written)
+{
+    struct row_buffer *r=CONTAINING_RECORD(iface,struct row_buffer,iface);
+    if (!iface || iface->lpVtbl!=&atlas_vtbl.unknown || sub || written)xs_stop();
+    AcquireSRWLockExclusive(&r->map_lock);
+    if (!r->mapped)xs_stop();
+    atlas_end_map(r);ReleaseSRWLockExclusive(&r->map_lock);
+}
+static const struct atlas_slots atlas_vtbl={{row_query,row_addref,row_release},{[0 ... 4]=xs_stop},
+    atlas_map,atlas_unmap,{[0 ... 56]=xs_stop}};
+_Static_assert(offsetof(struct atlas_slots,map)==0x40 && offsetof(struct atlas_slots,unmap)==0x48,"atlas ABI");
 static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT bytes,UINT state,const void *clear,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
@@ -39,9 +91,18 @@ static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT bytes,UINT
     struct row_buffer *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r) return E_OUTOFMEMORY;
     const char *name=atlas?(bytes==0x400000?"ScarlettAtlas2kV1":"ScarlettAtlas1kV1"):bytes==16?"ScarlettRow16V1":"ScarlettRowBufferV1";
-    HRESULT hr=open_wc_buffer(d,va,bytes,name,&r->host,NULL,NULL,NULL);
+    ID3D12Heap *heap=NULL;
+    r->va=(void*)va;
+    if(atlas)native_pool_ctl(0x53430103,r->va,&r->generation,sizeof r->generation);
+    HRESULT hr=open_wc_buffer(d,va,bytes,name,&r->host,&heap,&r->section,atlas?&r->off:NULL);
+    if(heap){
+        UINT64 id=0;ID3D12Heap_Release(heap);
+        if(!r->generation || native_pool_ctl(0x53430103,r->va,&id,sizeof id)<0 || id!=r->generation){
+            ID3D12Resource_Release(r->host);hr=E_INVALIDARG;
+        }
+    }
     if (FAILED(hr)){HeapFree(GetProcessHeap(),0,r);return hr;}
-    r->iface.lpVtbl=&row_vtbl.unknown; r->refs=1;r->bytes=bytes;r->owner=d;IUnknown_AddRef(&d->iface);
+    r->iface.lpVtbl=atlas?&atlas_vtbl.unknown:&row_vtbl.unknown; r->refs=1;r->bytes=bytes;r->owner=d;IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);r->next=d->rows;d->rows=r;ReleaseSRWLockExclusive(&d->descriptor_lock);
     *out=&r->iface; return S_OK;
 }

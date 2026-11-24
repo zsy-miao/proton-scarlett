@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | AMD and RTX both display the startup image and issue a second frame token. Neither has displayed a second frame. |
-| What's blocking it? | Both GPUs now record the graphics barrier after the alpha atlas setup. They stop at the same next call; the object receiving it is still being traced. |
+| What's blocking it? | The game now gets past mapping the alpha atlas. Two threads fault during startup on both GPUs; which failure causes the other, if either, is still unknown. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

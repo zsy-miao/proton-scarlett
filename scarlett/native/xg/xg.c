@@ -5,6 +5,7 @@
 #include "../xmem/marked_section.h"
 #include "../queue/bootstrap_guard.h"
 #include "r8_layout.h"
+#include "atlas_desc.h"
 
 _Static_assert(sizeof(void *) == 8 && sizeof(D3D12_RESOURCE_DESC) == 0x38,
                "requires the x64 descriptor ABI");
@@ -137,6 +138,23 @@ static const struct {
     xs_stop_fn other[3];
 } methods={add_ref,release,{[0 ... 5]=xs_stop},copy_texture,{[0 ... 2]=xs_stop}};
 
+/* One linear A8 plane and one mip. The two measured square layouts differ only in side and span. */
+static HRESULT WINAPI atlas_layout(struct computer *c,DWORD *out)
+{
+    UINT side=c->stack_bytes, bytes=side*side;
+    DWORD layout[0x1b40/4]={
+        [0]=bytes,[2]=256,[4]=1,[5]=1,[6]=1,
+        [0x20/4]=bytes,[0x28/4]=bytes,[0x38/4]=256,[0x40/4]=1,[0x44/4]=1,
+        [0x50/4]=bytes,[0x60/4]=bytes,[0x68/4]=side,[0x6c/4]=side,[0x70/4]=256,
+        [0x74/4]=side,[0x78/4]=side,[0x7c/4]=1,[0x80/4]=side,[0x84/4]=side,
+        [0x88/4]=side,[0x8c/4]=side,[0x90/4]=1,[0x94/4]=1,[0xb0/4]=1,[0x1b38/4]=3};
+    if(!out)return E_POINTER;
+    memcpy(out,layout,sizeof layout);return S_OK;
+}
+static const struct { __typeof__(&add_ref) retain; __typeof__(&release) drop;
+    __typeof__(&atlas_layout) layout; xs_stop_fn rest[9];
+} atlas_methods={add_ref,release,atlas_layout,{[0 ... 8]=xs_stop}};
+
 __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     const D3D12_RESOURCE_DESC *d, void **out)
 {
@@ -147,10 +165,12 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     if (!d || !ReadProcessMemory(GetCurrentProcess(),d,&desc,n,&got) || got!=n) return E_POINTER;
     BOOL layered=is_layered_texel(&desc),texel32=layered || is_texel32(&desc);
     BOOL row=is_srgb_row(&desc);
-    if ((!row && !texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=(row?SRGB_ROW_LAYOUT:R8_LAYOUT) || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
+    BOOL atlas=atlas_desc(&desc);
+    if (!atlas && ((!row && !texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=(row?SRGB_ROW_LAYOUT:R8_LAYOUT) || desc.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
     *c=(struct computer){&methods,1,row?SRGB_ROW_BYTES:texel32?4:0,layered?desc.DepthOrArraySize:1};
+    if(atlas){c->vt=&atlas_methods;c->stack_bytes=(UINT)desc.Width;}
     *out=c;
     return S_OK;
 }

@@ -1,5 +1,10 @@
 # Scarlett section lifetime ABI v1 (native x64)
 
+For the 1024² and 2048² linear A8 atlas maps, apply `0017-wine-atlas-map-pin.patch`
+after `0016` and stage the rebuilt `ntdll.so` with the matching `xg_xs.dll`
+and `d3d12_xs.dll`. Native Map pins the pool generation until Unmap; on RTX
+the wrapper maps an alias of the retained section at the atlas offset.
+
 For the opt-in private PresentX bridge, apply `0016-wine-title-window-lease.patch`
 after `0015` in the numbered Wine series. It extends the title-window generation
 from `0008`: win32u requests a lease, and wineserver serializes it against

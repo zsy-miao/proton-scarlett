@@ -340,13 +340,7 @@ static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
     return NULL;
 }
 
-static BOOL atlas_desc(const D3D12_RESOURCE_DESC *rd)
-{
-    return rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==rd->Height &&
-        (rd->Width==2048 || rd->Width==1024) && rd->MipLevels==1 && rd->DepthOrArraySize==1 &&
-        rd->Format==DXGI_FORMAT_A8_UNORM && rd->SampleDesc.Count==1 && !rd->SampleDesc.Quality &&
-        (UINT)rd->Layout==0x100 && (UINT)rd->Flags==0x300000;
-}
+#include "xg/atlas_desc.h"
 
 /* Both public slots require matching aggregate and per-resource results. */
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
