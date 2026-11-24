@@ -37,6 +37,9 @@ struct om_views;
 HRESULT xs_freeze_om(IUnknown *,const struct xs_attachment_pin [2],const SIZE_T [2],struct om_views *);
 HRESULT xs_pin_attachment_pair(IUnknown *,ID3D12Device *,const D3D12_TEXTURE_BARRIER *,struct xs_attachment_pin [2]);
 ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity);
+ID3D12Resource *xs_acquire_primary(IUnknown *,const void *,IUnknown **);
+HRESULT xs_freeze_primary_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,
+        ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *,UINT64 *);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
 HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);
 IUnknown *xs_claim_view(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,SIZE_T,UINT64,BOOL);

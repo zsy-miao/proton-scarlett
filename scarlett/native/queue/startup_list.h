@@ -31,10 +31,12 @@ struct startup_list {
     enum batch_phase phase;
     IUnknown *sync_owner;
 #endif
-#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
     SIZE_T clear_slot;
     UINT64 clear_serial;
-#endif
+    ID3D12DescriptorHeap *output_heap;
+    D3D12_CPU_DESCRIPTOR_HANDLE output_cpu;
+    UINT64 output_serial;
+    IUnknown *primary_pin;
     void *reservation;
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
@@ -53,7 +55,7 @@ struct startup_list {
     struct xs_attachment_pin attachments[2];
     BOOL rt_roundtripped,offscreen_sr;
     ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
-    UINT_PTR primary_key; /* Exclusion only: never dereference. Key reuse conservatively rejects the SR edge. */
+    UINT_PTR primary_key; /* Comparison only; primary_pin owns the registration. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
     ID3D12CommandAllocator *tail_allocator;
@@ -136,6 +138,8 @@ static ULONG WINAPI sl_release(IUnknown *i)
         drop_split(s); drop_timestamp(s->stamp);
         drop_marker(s->marker);
         if (s->primary) ID3D12Resource_Release(s->primary);
+        if(s->output_heap)ID3D12DescriptorHeap_Release(s->output_heap);
+        if(s->primary_pin)IUnknown_Release(s->primary_pin);
         drop_heaps(s->heaps);
         if (s->pool_owner) IUnknown_Release(s->pool_owner);
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
@@ -227,6 +231,9 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     s->primary_cleared=FALSE;
     s->primary_released=FALSE;
     s->primary_key=0;
+    if(s->output_heap){ID3D12DescriptorHeap_Release(s->output_heap);s->output_heap=NULL;}
+    if(s->primary_pin){IUnknown_Release(s->primary_pin);s->primary_pin=NULL;}
+    s->output_cpu.ptr=0;s->output_serial=s->clear_serial=s->clear_slot=0;
     if (s->primary) { ID3D12Resource_Release(s->primary); s->primary=NULL; }
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
@@ -387,6 +394,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->blend_ones) ID3D12GraphicsCommandList7_OMSetBlendFactor(tail,ones_factor);
     if (SUCCEEDED(hr) && !s->offscreen_sr)replay_om(&s->om,tail);
+    if (SUCCEEDED(hr) && s->output_heap)ID3D12GraphicsCommandList7_OMSetRenderTargets(tail,1,&s->output_cpu,FALSE,NULL);
     if (SUCCEEDED(hr) && s->full_bounds) ID3D12GraphicsCommandList7_OMSetDepthBounds(tail,0.f,1.f);
     if (SUCCEEDED(hr) && s->full_rect) ID3D12GraphicsCommandList7_RSSetScissorRects(tail,1,&clear_rect);
     if (SUCCEEDED(hr) && s->full_vp) ID3D12GraphicsCommandList7_RSSetViewports(tail,1,&clear_viewport);
@@ -603,7 +611,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
         if (b.SyncBefore!=D3D12_BARRIER_SYNC_ALL_SHADING || b.SyncAfter!=D3D12_BARRIER_SYNC_RENDER_TARGET ||
             b.AccessBefore!=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS || b.AccessAfter!=D3D12_BARRIER_ACCESS_RENDER_TARGET ||
             b.LayoutBefore!=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS || b.LayoutAfter!=D3D12_BARRIER_LAYOUT_RENDER_TARGET) return E_NOTIMPL;
-        if (!(s->primary=xs_retain_primary(s->pool_owner,b.pResource))) return E_INVALIDARG;
+        if (!(s->primary=xs_acquire_primary(s->pool_owner,b.pResource,&s->primary_pin))) return E_INVALIDARG;
         s->primary_key=(UINT_PTR)b.pResource;
     }
     b.pResource=s->primary;
@@ -626,9 +634,7 @@ static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLO
     if (bits[0] || bits[1] || bits[2] || bits[3]) return E_NOTIMPL;
     UINT64 serial=0;
     HRESULT hr=xs_clear_primary_rtv(s->pool_owner,s->host,slot,s->primary,&serial);
-#ifdef SCARLETT_EXPERIMENTAL_BRIDGE
     if(SUCCEEDED(hr)){s->clear_slot=slot;s->clear_serial=serial;}
-#endif
     if (SUCCEEDED(hr)) s->primary_cleared=TRUE;
     return hr;
 }
@@ -805,9 +811,27 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
 }
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
-    if(!open_direct_state(s) || s->offscreen_sr || !s->pending_470 || !s->attachments[0].identity ||
+    if(!open_direct_state(s) || !s->pending_470 || !s->attachments[0].identity ||
         !s->attachments[1].identity || count!=1 || range)return E_NOTIMPL;
     SIZE_T slots[2],got;
+    if(s->offscreen_sr){
+        if(ds || s->output_heap || !s->previous_vb.buffer || !s->vb.buffer || !s->rt_roundtripped ||
+           !s->clear4_drew || !s->depth_zero_pending || !s->om.heap[0] || !s->om.heap[1] ||
+           s->guest_topology!=XS_RECTLIST || !s->prior_pso || !s->b27.heap || s->b27.heap!=s->heaps[0] ||
+           s->b27.root!=s->graphics_identity || s->bound || s->pipeline ||
+           !s->primary_pin || (UINT_PTR)s->primary_pin!=s->primary_key ||
+           s->primary_pin==s->attachments[0].identity || s->primary==s->attachments[0].host ||
+           s->primary==s->attachments[1].host)return E_NOTIMPL;
+        if(!ReadProcessMemory(GetCurrentProcess(),rt,slots,sizeof *slots,&got) || got!=sizeof *slots)return E_POINTER;
+        HRESULT hr=xs_freeze_primary_output(s->pool_owner,s->primary_pin,s->primary,slots[0],
+                s->primary_cleared && slots[0]==s->clear_slot?s->clear_serial:0,
+                &s->output_heap,&s->output_cpu,&s->output_serial);
+        if(SUCCEEDED(hr)){
+            ID3D12GraphicsCommandList7_OMSetRenderTargets(s->host,1,&s->output_cpu,FALSE,NULL);
+            recorded_direct_state(s);
+        }
+        return hr;
+    }
     if(!ReadProcessMemory(GetCurrentProcess(),rt,slots,sizeof *slots,&got) || got!=sizeof *slots ||
        !ReadProcessMemory(GetCurrentProcess(),ds,slots+1,sizeof *slots,&got) || got!=sizeof *slots)return E_POINTER;
     HRESULT hr=xs_freeze_om(s->pool_owner,s->attachments,slots,&s->om);
@@ -1091,6 +1115,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
 struct heap_retirement { struct xs_clear_source previous_vb,vb,source; IUnknown *bound; ID3D12RootSignature *root; ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event;
+    ID3D12DescriptorHeap *output_heap;IUnknown *output_key;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     ID3D12GraphicsCommandList7 *tag_head,*tag_tail;
     ID3D12Fence *prefix_gate;
@@ -1120,6 +1145,8 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
     if(r->bound)IUnknown_Release(r->bound);
     if(r->root)ID3D12RootSignature_Release(r->root);
     if (r->primary) ID3D12Resource_Release(r->primary);
+    if(r->output_heap)ID3D12DescriptorHeap_Release(r->output_heap);
+    if(r->output_key)IUnknown_Release(r->output_key);
     if (r->head_alloc) IUnknown_Release(r->head_alloc);
     if (r->tail_alloc) ID3D12CommandAllocator_Release(r->tail_alloc);
     if (r->gate) ID3D12Fence_Release(r->gate);
@@ -1138,6 +1165,7 @@ static void retain_recording(struct heap_retirement *r,struct startup_list *s)
     if ((r->bound=s->bound))IUnknown_AddRef(r->bound);
     if ((r->root=s->graphics_root))ID3D12RootSignature_AddRef(r->root);
     if ((r->primary=s->primary)) ID3D12Resource_AddRef(r->primary);
+    if((r->output_heap=s->output_heap)){ID3D12DescriptorHeap_AddRef(r->output_heap);r->output_key=s->primary_pin;IUnknown_AddRef(r->output_key);}
     if (s->post || s->primary) {r->head_alloc=s->allocator;IUnknown_AddRef(r->head_alloc);}
     if (s->post) {r->tail_alloc=s->tail_allocator;ID3D12CommandAllocator_AddRef(r->tail_alloc);}
     if ((r->stamp=s->stamp)) InterlockedIncrement(&r->stamp->refs);

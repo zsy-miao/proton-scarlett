@@ -920,3 +920,18 @@ no pipeline.
 An independent output-binding fixture passed on both GPUs: after a public
 slot rewrite and command-list split, the fenced readback was cyan on the
 original primary. That establishes the fixture binding, not a retail draw.
+
+### Composite display target bound
+
+The same ordinary build on AMD and RTX bound the selected primary as the
+sole render target, with no depth view. The first process and API stop on
+both was device `+230`, return `+4d9f369`, under composite parent `+1263f0`.
+Each issued tokens 1 and 2. Only token 1 presented (display count 0→1);
+both private captures showed a blank client.
+
+The AMD diagnostic identified a 32-element raw shader view of a 128-byte
+buffer at `0x1143de20`. Creation returned `E_NOTIMPL`. The same run also
+traced the two shader groups through misses in both outer caches to the
+same inner root-cache entry. The worker's stream was 688 bytes and had
+three input elements. Its complete shader hashes and fixed state were
+not recovered in that run.

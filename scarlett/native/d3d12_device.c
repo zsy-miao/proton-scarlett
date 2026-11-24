@@ -1139,7 +1139,7 @@ HRESULT xs_b27_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT *slot)
     if(offset%32 || offset/32>=DESC_BANK)return E_INVALIDARG;
     *slot=(UINT)(offset/32);return S_OK;
 }
-ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
+ID3D12Resource *xs_acquire_primary(IUnknown *owner,const void *identity,IUnknown **key)
 {
     if (!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown) return NULL;
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
@@ -1148,8 +1148,42 @@ ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
     while (r && &r->iface!=identity) r=r->next;
     ID3D12Resource *host=r && !r->msaa && r->slice ? r->host : NULL;
     if (host) ID3D12Resource_AddRef(host);
+    if(host && key){IUnknown_AddRef(&r->iface);*key=&r->iface;}
     ReleaseSRWLockShared(&d->descriptor_lock);
     return host;
+}
+ID3D12Resource *xs_retain_primary(IUnknown *owner,const void *identity)
+{
+    return xs_acquire_primary(owner,identity,NULL);
+}
+HRESULT xs_freeze_primary_output(IUnknown *owner,IUnknown *key,ID3D12Resource *primary,SIZE_T slot,UINT64 expected,
+        ID3D12DescriptorHeap **heap,D3D12_CPU_DESCRIPTOR_HANDLE *at,UINT64 *serial)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !key || !primary || !slot || *heap)return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
+    ID3D12DescriptorHeap *next;D3D12_CPU_DESCRIPTOR_HANDLE dst,src={0};UINT64 gen=0;
+    HRESULT hr=ID3D12Device_CreateDescriptorHeap(d->host,&hd,&IID_ID3D12DescriptorHeap,(void**)&next);
+    if(FAILED(hr))return hr;
+    next->lpVtbl->GetCPUDescriptorHandleForHeapStart(next,&dst);
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct color_resource *r=d->colors;while(r && &r->iface!=key)r=r->next;
+    UINT matches=0;
+    if(r && r->owner==d && r->slice && !r->msaa && r->host==primary)
+        for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){
+            D3D12_CPU_DESCRIPTOR_HANDLE p;if(FAILED(descriptor_slot(&h->iface,slot,&p,NULL)))continue;
+            ++matches;
+            if(attachment_locked(h,slot,RTV,&p)!=primary)continue;
+            struct descriptor_record *rec=&h->records[(slot-h->start)/h->stride];
+            if(rec->rtv_key==(UINT_PTR)key && (!expected || rec->serial==expected)){src=p;gen=rec->serial;}
+        }
+    if(matches==1 && gen){
+        ID3D12Device_CopyDescriptorsSimple(d->host,1,dst,src,D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        *heap=next;*at=dst;*serial=gen;
+    }else hr=E_INVALIDARG;
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if(FAILED(hr))ID3D12DescriptorHeap_Release(next);
+    return hr;
 }
 
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE

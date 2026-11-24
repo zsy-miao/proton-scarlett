@@ -21,7 +21,7 @@ static void checked_barrier(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_BAR
 #define ID3D12GraphicsCommandList7_Barrier checked_barrier
 static UINT om_calls;static SIZE_T last_rt,last_ds;
 static void count_om(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_CPU_DESCRIPTOR_HANDLE *rt,BOOL range,const D3D12_CPU_DESCRIPTOR_HANDLE *ds){
-    ++om_calls;last_rt=rt->ptr;last_ds=ds->ptr;ID3D12GraphicsCommandList7_OMSetRenderTargets(l,n,rt,range,ds);
+    ++om_calls;last_rt=rt->ptr;last_ds=ds?ds->ptr:0;ID3D12GraphicsCommandList7_OMSetRenderTargets(l,n,rt,range,ds);
 }
 #undef ID3D12GraphicsCommandList7_OMSetRenderTargets
 #define ID3D12GraphicsCommandList7_OMSetRenderTargets count_om
@@ -289,6 +289,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     single.SyncAfter=0;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.SyncAfter=0x1000;
     REQUIRE(FAILED(record_primary_barrier(s,2,&sg)) && barrier_total==before_single && !s->offscreen_sr);
 #ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(FAILED(record_om(s,1,&ps,FALSE,NULL)) && !s->output_heap);
     /* Isolate each exclusion even though an ordinary immutable wrapper cannot change its host. */
     s->primary_key=(UINT_PTR)ids[0];REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));s->primary_key=(UINT_PTR)pk;
     s->primary=images[0];REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));s->primary=primary;
@@ -299,6 +300,25 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     pool_vtbl.barrier(l,1,&sg);
 #ifdef TEST_DISTINCT_PRIMARY
     REQUIRE(s->phase==phase && s->primary==primary && s->primary_key==(UINT_PTR)pk && s->primary_cleared && !s->primary_released);
+    UINT pre_om=om_calls;
+    SIZE_T other_slot=ps+32;
+    IUnknown *same_host=test_texture(owner,primary,FALSE);REQUIRE(same_host && same_host!=pk);
+    REQUIRE(xs_write_view(owner,0xa0,same_host,rt,other_slot)==S_OK && FAILED(record_om(s,1,&other_slot,FALSE,NULL)));
+    IUnknown_Release(same_host);
+    REQUIRE(FAILED(record_om(s,0,&ps,FALSE,NULL)) && FAILED(record_om(s,1,&ps,TRUE,NULL)) &&
+            FAILED(record_om(s,1,&ps,FALSE,slots+1)) && FAILED(record_om(s,1,slots,FALSE,NULL)) &&
+            record_om(s,1,NULL,FALSE,NULL)==E_POINTER);
+    UINT64 *rt_tag=(UINT64*)ps;UINT64 saved=*rt_tag;*rt_tag^=1;
+    REQUIRE(FAILED(record_om(s,1,&ps,FALSE,NULL)));*rt_tag=saved;
+    REQUIRE(xs_write_view(owner,0xa0,pk,rt,ps)==S_OK && FAILED(record_om(s,1,&ps,FALSE,NULL)));
+    REQUIRE(record_primary_clear(s,ps,(FLOAT[4]){0},0,NULL)==E_ACCESSDENIED);
+    /* Prepare a different valid RTV generation; the overwritten clear slot stays stale. */
+    REQUIRE(xs_write_view(owner,0xa0,pk,rt,other_slot)==S_OK && !s->output_heap && om_calls==pre_om);
+    pool_vtbl.om(l,1,&other_slot,FALSE,NULL);
+    UINT64 output_gen=*(UINT64*)other_slot;SIZE_T private_rtv=s->output_cpu.ptr;
+    REQUIRE(s->output_heap && output_gen==s->output_serial && om_calls==pre_om+1 && last_rt==private_rtv && !last_ds);
+    REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,other_slot)==S_OK && *(UINT64*)other_slot!=output_gen);
+    REQUIRE(IUnknown_Release(pk)==1 && FAILED(record_om(s,1,&other_slot,FALSE,NULL)) && om_calls==pre_om+1);
 #endif
     REQUIRE(barrier_total==before_single+1 && barrier_host==s->host && s->offscreen_sr && seen[0].pResource==images[0]);
     D3D12_TEXTURE_BARRIER native=single;native.pResource=images[0];
@@ -324,7 +344,11 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #endif
 #endif
     UINT before_split_om=om_calls;
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(split_native_list(s,post)==S_OK && om_calls==before_split_om+1 && last_rt==private_rtv && !last_ds);
+#else
     REQUIRE(split_native_list(s,post)==S_OK && om_calls==before_split_om+!s->offscreen_sr && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
+#endif
     REQUIRE(s->guest_topology==17 && topo_calls==nia+2 && ia_list==s->host && ia_list!=s->head && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 #ifdef TEST_SECOND_VB
     REQUIRE(s->offscreen_sr && barrier_total==before_single+1 && FAILED(record_primary_barrier(s,1,&sg)) &&
@@ -332,6 +356,10 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #ifdef TEST_DISTINCT_PRIMARY
     REQUIRE(s->primary==primary && s->primary_key==(UINT_PTR)pk && s->clear_serial==ps_serial &&
             s->clear_slot==ps && s->primary_cleared && !s->primary_released);
+    const FLOAT cyan[]={0,1,1,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,s->output_cpu,cyan,0,NULL);
+    D3D12_TEXTURE_BARRIER rel=acquire;rel.SyncBefore=0x40;rel.SyncAfter=0;rel.AccessBefore=8;
+    rel.AccessAfter=D3D12_BARRIER_ACCESS_NO_ACCESS;rel.LayoutBefore=2;rel.LayoutAfter=(D3D12_BARRIER_LAYOUT)31;
+    ag.pTextureBarriers=&rel;REQUIRE(FAILED(record_primary_barrier(s,1,&ag)) && !s->primary_released);
     sample_quad(s->host,primary,quad_rb,1);
 #endif
     /* Test readback only: return the image to RT for the independent OM/DSV fixture that follows. */
@@ -405,9 +433,9 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(execute_quad_fixture(hd,s,quad_rb));
 #ifdef TEST_DISTINCT_PRIMARY
     REQUIRE(SUCCEEDED(ID3D12Resource_Map(quad_rb,0,NULL,(void**)&qp)));
-    for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++)REQUIRE(*(DWORD*)(qp+512+y*256+x*4)==0);
-    ID3D12Resource_Unmap(quad_rb,0,NULL);IUnknown_Release(pk);
-    puts("PASS distinct retained primary: alias guards, unchanged clear generation/release and black primary pixels across offscreen SR edge and split");
+    for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++)REQUIRE(*(DWORD*)(qp+512+y*256+x*4)==0xffffff00);
+    ID3D12Resource_Unmap(quad_rb,0,NULL);
+    REQUIRE(s->primary_pin==pk && s->output_heap);
 #endif
     ID3D12Resource_Release(quad_rb);
 #ifdef TEST_SECOND_VB
@@ -425,6 +453,10 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
     REQUIRE(!s->offscreen_sr && !s->rt_roundtripped && !s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(!s->primary_pin && !s->output_heap && !xs_retain_primary(owner,pk));
+    puts("PASS ordinary composite +190: unique live primary RTV, no DSV, generation/alias rejects, original cyan output after slot rewrite and split, reset retired key");
+#endif
     puts("PASS +a0(17): host triangle input on head/tail, rectangle rejects #4, fenced unchanged guard and reset");
     puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");
     IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;

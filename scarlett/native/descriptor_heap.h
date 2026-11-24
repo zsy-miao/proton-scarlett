@@ -22,7 +22,7 @@ static BOOL refresh_required(UINT kind) { return kind==STRUCT_VIEW || refresh_fo
 struct descriptor_record {
     UINT64 serial;
     UINT kind, offset; /* Address views: byte offset in the retained WC buffer */
-    UINT elements,stride; /* structured SRV only */
+    union { struct {UINT elements,stride;}; UINT_PTR rtv_key; }; /* kind-specific; comparison only */
     ID3D12Resource *resource;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *placed; /* exactly first=0, 174 MiB / 4 RAW dwords */

@@ -28,8 +28,9 @@ With the colour root already in the cache, all four retrieved that
 wrapper without invoking the decoder. On a miss the layouts differed:
 the 16-byte colour payload decoded to `b27` alone; the 220-byte textured
 payload decoded to one table (`t7`, `t277`, `b0`, in order) and 22 static
-samplers, including `s14`. The retail trace established the shared
-wrapper, but did not identify which cache supplied it.
+samplers, including `s14`. An AMD retail diagnostic subsequently saw both
+groups miss the group and outer caches, then hit the same inner node and
+receive the same root wrapper despite the different payloads.
 
 | Stage | Register | Consumer |
 |---|---|---|

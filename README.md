@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | Both GPUs [make the offscreen image readable](scarlett/native/queue/README.md#first-composite-output-bind), then stop when the game selects the display image to draw into. |
+| What's blocking it? | Both GPUs [bind the display image for drawing](scarlett/native/queue/README.md#composite-display-target-bound). They then stop when the game asks to expose a small buffer to a shader. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress
