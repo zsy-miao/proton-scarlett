@@ -25,7 +25,7 @@ Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) thro
 
 In a [controlled draw test](scarlett/tests/clear-fallback/README.md), the original title routine recorded a clear through nine graphics calls. AMD and RTX 3070 both rendered the expected color in all 256 pixels inside the scissor rectangle. All 1,344 pixels outside it and all 1,600 pixels on a second target stayed unchanged.
 
-The [texture computer](scarlett/native/xg/README.md) can copy a 256×128 R8 texture when the caller specifies `4KB_S`. On AMD and RTX 3070, two coordinate patterns verified every byte in the original destination allocation and preserved its guards. Retail asks for an automatic layout, which is still unresolved.
+The [texture computer](scarlett/native/xg/README.md) can copy a 256×128 R8 texture when the caller specifies `4KB_S`. On AMD and RTX 3070, a [compute shader test](scarlett/native/xg/test-r8-read.cpp) read all 32,768 texels from the original allocation, even after the game’s address was reused. The retail texture view and automatic layout selection remain unresolved.
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 

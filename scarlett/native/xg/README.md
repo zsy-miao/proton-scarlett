@@ -115,3 +115,13 @@ library, name the executable `game_scarlett_master.exe`, and run with
 Two coordinate passes distinguish every destination byte; neighboring
 guards, wrong pools, short ranges, misalignment, pitches and descriptor
 mutations are negative controls.
+
+For the shader readback, compile `test-r8-read.hlsl` with DXC
+`-T cs_6_0 -E main -Fo sample.dxil`. Build `test-r8-read.cpp` with x64
+MinGW C++17, `-I../xmem -static -Lbuild -lxg_xs -ld3d12`, then place
+`sample.dxil` beside the test executable. Run as above on RADV or RTX.
+The compute shader uses an 8,192-DWORD raw view of the original WC range.
+Both passes wait for the CPU conversion after submission; the second
+reads the original after exact address reuse. This checks in-bounds
+integer coordinates at mip zero. It does not exercise a retail shader or
+texture filtering.
