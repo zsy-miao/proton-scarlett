@@ -223,17 +223,18 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
     return out;
 }
 
-static BOOL msaa_color_desc(const D3D12_RESOURCE_DESC *r)
+static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
 {
     return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment && r->Width==1 &&
-        r->Height==1 && r->DepthOrArraySize==1 && r->MipLevels==1 && r->Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
+        r->Height==1 && r->DepthOrArraySize==1 && r->MipLevels==1 &&
         r->SampleDesc.Count==4 && !r->SampleDesc.Quality && r->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN &&
-        r->Flags==D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        ((r->Format==DXGI_FORMAT_R8G8B8A8_UNORM && r->Flags==D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) ||
+         (r->Format==DXGI_FORMAT_R32G8X24_TYPELESS && r->Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL));
 }
 
 /* Both public slots consume the same descriptor. Require the per-resource and
  * aggregate results from the host to agree for this one-resource query. */
-static HRESULT msaa_color_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
+static HRESULT msaa_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
 {
     ID3D12Device4 *d=NULL;
@@ -253,7 +254,7 @@ static HRESULT msaa_color_info(ID3D12Device *host,const D3D12_RESOURCE_DESC *rd,
 static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
 {
     if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
-    if (msaa_color_desc(out)) return S_OK;
+    if (msaa_desc(out)) return S_OK;
     if (is_volume1(out) && (UINT)out->Layout==R8_LAYOUT && out->Alignment==R8_ALIGNMENT) return S_OK;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
         out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
@@ -293,7 +294,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
-    if (msaa_color_desc(&rd)) return msaa_color_info(host,&rd,out,NULL);
+    if (msaa_desc(&rd)) return msaa_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
     BOOL texel32=is_texel32(&rd);
     if (texel32 && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
@@ -330,8 +331,8 @@ HRESULT xs_msaa_allocation_info1(IUnknown *iface,UINT node,UINT count,const void
     if (!iface || count!=1 || node!=1) return E_INVALIDARG;
     HRESULT hr=read_texture_desc(wire,&rd);
     if (FAILED(hr)) return hr;
-    if (!msaa_color_desc(&rd)) return E_NOTIMPL;
-    return msaa_color_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&rd,out,detail);
+    if (!msaa_desc(&rd)) return E_NOTIMPL;
+    return msaa_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&rd,out,detail);
 }
 static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info1(D3D12_RESOURCE_ALLOCATION_INFO *out,
         IUnknown *iface,UINT node,UINT count,const void *wire,D3D12_RESOURCE_ALLOCATION_INFO1 *detail)
@@ -435,20 +436,28 @@ static HRESULT resource_gap(UINT slot, UINT64 address, const void *wire, UINT st
     return E_NOTIMPL;
 }
 #ifdef SCARLETT_STAGED_PLACED
-static HRESULT create_msaa_color(struct xbox_device *d,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
+static HRESULT create_msaa(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,UINT state,const void *clear,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
     *out=NULL;
     if (!iid || !va) return E_INVALIDARG;
-    if (!IsEqualIID(iid,&IID_ID3D12Resource)) return E_NOINTERFACE;
-    D3D12_CLEAR_VALUE cv;
-    if (!copy_in(&cv,clear,sizeof cv)) return E_POINTER;
-    if (state!=6 || cv.Format!=DXGI_FORMAT_R8G8B8A8_UNORM || memcmp(cv.Color,(float[4]){1,1,1,1},16)) return E_NOTIMPL;
+    IID id;
+    if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
+    if (!IsEqualIID(&id,&IID_ID3D12Resource)) return E_NOINTERFACE;
+    BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS;
+    D3D12_CLEAR_VALUE cv={0};
+    if (!copy_in(&cv,clear,depth ? offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+sizeof cv.DepthStencil.Stencil : sizeof cv)) return E_POINTER;
+    if (state!=6) return E_NOTIMPL;
+    if (depth) {
+        if (cv.Format!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || cv.DepthStencil.Depth!=0 || cv.DepthStencil.Stencil) return E_NOTIMPL;
+    } else if (cv.Format!=format || memcmp(cv.Color,(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
     const UINT span=D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     HRESULT hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
     if (FAILED(hr)) return hr;
     if (i.view_size!=WC_POOL_BYTES || i.offset!=va-(UINT_PTR)i.base || i.offset%span || i.offset>i.view_size-span) hr=E_INVALIDARG;
+    /* The WC heap denies RT/DS. Only color has a qualified external-image importer. */
+    else if (depth) hr=DXGI_ERROR_UNSUPPORTED;
     else {
         HRESULT (WINAPI *import)(ID3D12Device *,HANDLE,SIZE_T,SIZE_T,ID3D12Resource **)=
             (void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettMsaaColorV1");
@@ -474,8 +483,8 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
 #ifdef SCARLETT_STAGED_PLACED
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_RESOURCE_DESC rd={0};
-    if (copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) && msaa_color_desc(&rd))
-        return create_msaa_color(d,address,state,clear,iid,out);
+    if (copy_in(&rd,desc,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) && msaa_desc(&rd))
+        return create_msaa(d,address,rd.Format,state,clear,iid,out);
     return placed_create(d,address,desc,state,clear,iid,out);
 #else
     (void)iface; (void)iid;
