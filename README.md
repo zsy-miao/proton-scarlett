@@ -17,7 +17,7 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 
-Two RADV tests now check the placed buffer's backing lifetime. A delayed GPU copy read the original code-region byte after its address was reused. A [separate test](scarlett/native/xmem/placed_capture.md) reused the same addresses for two whole allocations and read distinct data from each. Binding the title's full-width shader views to those regions remains the blocker.
+A [RADV shader test](scarlett/native/xmem/placed_capture.md) read and wrote every 32-bit word in the 147 MiB writable portion of that buffer. After the original allocation was freed and its addresses were reused, a second dispatch updated only the original pages. Binding the title's full-width shader views, including read-only shader access to the first 27 MiB, remains unverified.
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 

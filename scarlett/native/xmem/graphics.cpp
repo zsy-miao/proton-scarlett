@@ -1,5 +1,6 @@
 #include "gpu_buffer.hpp"
 #include "placed_capture.h"
+#include "arena_data_uav.hpp"
 #include <new>
 #include <winternl.h>
 
@@ -34,8 +35,11 @@ extern "C" HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[
 
 struct XsPlacedCapture {
     HANDLE code; /* owned, private to xmem; never a data operand */
-    ImportedBuffer data[2];
-    ~XsPlacedCapture() { CloseHandle(code); }
+    ID3D12Resource *data[2]{};
+    ~XsPlacedCapture() {
+        for (auto *r : data) if (r) r->Release();
+        CloseHandle(code);
+    }
 };
 
 extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12Device3 *device,
@@ -50,8 +54,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12De
     auto *p = new(std::nothrow) XsPlacedCapture;
     if (p) {
         p->code = parts[0];
-        hr = p->data[0].wc(device,47u<<20,parts[1],nullptr);
-        if (SUCCEEDED(hr)) hr = p->data[1].wc(device,100u<<20,parts[2],nullptr,false,true,true);
+        hr = xs_place_arena_data_uav(device,parts[1],0x2404,47u<<20,&p->data[0]);
+        if (SUCCEEDED(hr)) hr = xs_place_arena_data_uav(device,parts[2],0x2004,100u<<20,&p->data[1]);
         if (FAILED(hr)) delete p;
         else *out = p;
     } else {
@@ -72,7 +76,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedDataV1(const XsPla
     if (!p || !bytes || at < first || at >= end) return E_INVALIDARG;
     bool wb = at >= second;
     if (bytes > (wb ? end : second) - at) return E_INVALIDARG;
-    *out = {p->data[wb].resource(),at - (wb ? second : first),bytes};
+    *out = {p->data[wb],at - (wb ? second : first),bytes};
     return S_OK;
 }
 
