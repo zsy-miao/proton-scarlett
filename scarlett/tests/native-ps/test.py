@@ -11,6 +11,7 @@ import tempfile
 from local_record import read_native
 from native_ps import lower, need
 import test_pair
+import test_sample
 
 
 def encode(*words):
@@ -91,3 +92,9 @@ void main() {
         test_pair.check(Path(work, "pixels").read_bytes(),oracle)
         print(f"PASS {label}: 3556 distinct RGBA16F pixels, 540 magenta guards after fence",
               flush=True)
+    for label,(vertex,pixel),linear in test_sample.cases(sys.argv[1] if len(sys.argv)>1 else None):
+        compile_module("sample.vert",vertex)
+        compile_module("sample.frag",pixel)
+        run("./draw","sample.vert.spv","sample.frag.spv","pixels","sample")
+        test_sample.check(Path(work,"pixels").read_bytes(),linear)
+        print(f"PASS {label}: 196 sampled pixels + 60 guards after fence",flush=True)

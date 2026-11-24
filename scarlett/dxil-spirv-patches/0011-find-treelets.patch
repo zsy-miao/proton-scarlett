@@ -1,0 +1,123 @@
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -242,6 +242,7 @@
+ 	DXIL_SPV_SHADER_QUIRK_PRECISE_FMA = 13,
+ 	DXIL_SPV_SHADER_QUIRK_XBOX_RADIX_COUNT = 14,
+ 	DXIL_SPV_SHADER_QUIRK_XBOX_BVH4_MATH = 15,
++	DXIL_SPV_SHADER_QUIRK_XBOX_TREELETS = 16,
+ 	DXIL_SPV_SHADER_QUIRK_INT_MAX = 0x7fffffff
+ } dxil_spv_shader_quirk;
+ 
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -773,7 +773,8 @@
+ 	RobustComputeQuadBroadcast,
+ 	PreciseFMA,
+ 	XboxRadixCount,
+-	XboxBVH4Math
++	XboxBVH4Math,
++	XboxTreelets
+ };
+ 
+ struct OptionShaderQuirk : OptionBase
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -477,7 +477,8 @@
+ 	bool xbox_load_pass = false, xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
+ 	bool root_constant_arrayed = false;
+ 	bool xbox_scalar_read = false;
+-	bool xbox_bvh4_math = false;
++	enum class XboxMath : uint8_t { None, BVH4, Treelets };
++	XboxMath xbox_math = XboxMath::None;
+ 	unsigned patch_location_offset = ~0u;
+ 	unsigned descriptor_qa_counter = 0;
+ 	spv::Id primitive_index_array_id = 0;
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6319,6 +6319,8 @@
+ 	if (fn->getName() == "xbox.Max3_U32") return 15;
+ 	if (fn->getName() == "xbox.Med3_U32") return 16;
+ 	if (fn->getName() == "xbox.Ballot64") return 25;
++	if (fn->getName() == "xbox.WaveMin_U32") return 113;
++	if (fn->getName() == "xbox.MakeUniform.i64") return 50;
+ 	if (fn->getName() == "xbox.MakeUniform.i32") return 50;
+ 	if (fn->getName() == "xbox.V_ALIGNBYTE_B32") return 332;
+ 	if (fn->getName() == "xbox.BFI") return 23;
+@@ -6391,6 +6393,32 @@
+ 
+ static bool emit_xbox_access(Converter::Impl &impl, const llvm::CallInst &call, unsigned opnum)
+ {
++	const bool treelets = impl.xbox_math == Converter::Impl::XboxMath::Treelets;
++	if (treelets && (opnum == 50 || opnum == 113))
++	{
++		auto &threads = impl.execution_mode_meta.workgroup_threads;
++		if (impl.execution_model != spv::ExecutionModelGLCompute || threads[0] != 32 ||
++		    threads[1] != 1 || threads[2] != 1 || call.getNumOperands() != 2) return false;
++		auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
++		auto *ty = call.getType();
++		if (!opcode || opcode->getType()->getIntegerBitWidth() != 32 || opcode->getUniqueInteger().getZExtValue() != opnum ||
++		    !ty->isIntegerTy() || call.getOperand(1)->getType() != ty) return false;
++		auto &b = impl.builder();
++		if (call.getCalledFunction()->getName() == "xbox.MakeUniform.i64")
++		{
++			// Both 64-bit calls broadcast the literal zero.
++			auto *arg = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(1));
++			if (ty->getIntegerBitWidth() != 64 || !arg || arg->getUniqueInteger().getZExtValue()) return false;
++			auto *op = impl.allocate(spv::OpCopyObject, &call); op->add_id(b.makeUint64Constant(0)); impl.add(op); return true;
++		}
++		if (ty->getIntegerBitWidth() != 32) return false;
++		auto *op = impl.allocate(opnum == 50 ? spv::OpGroupNonUniformBroadcastFirst : spv::OpGroupNonUniformUMin, &call);
++		op->add_id(b.makeUintConstant(spv::ScopeSubgroup));
++		if (opnum == 113) op->add_literal(spv::GroupOperationReduce);
++		b.addCapability(opnum == 50 ? spv::CapabilityGroupNonUniformBallot : spv::CapabilityGroupNonUniformArithmetic);
++		op->add_id(impl.get_id_for_value(call.getOperand(1))); impl.add(op); return true;
++	}
++	if (opnum == 113 || call.getCalledFunction()->getName() == "xbox.MakeUniform.i64") return false;
+ 	if (opnum == 25 || opnum == 50) return emit_radix_count_wave(impl, call, opnum);
+ 	const bool counter = opnum == 355 || opnum == 367;
+ 	if ((counter || opnum == 357) && !impl.xbox_load_pass) return false;
+@@ -6418,7 +6446,7 @@
+ 	if (opnum == 23)
+ 	{
+ 		auto u32 = [](const llvm::Type *t) { return t->isIntegerTy() && t->getIntegerBitWidth() == 32; };
+-		if (!impl.xbox_bitonic || call.getNumOperands() != 4 || !u32(call.getType())) return false;
++		if ((!impl.xbox_bitonic && !treelets) || call.getNumOperands() != 4 || !u32(call.getType())) return false;
+ 		for (unsigned i = 0; i < 4; ++i) if (!u32(call.getOperand(i)->getType())) return false;
+ 		auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 		if (!opcode || opcode->getUniqueInteger().getZExtValue() != 23) return false;
+@@ -6436,7 +6464,7 @@
+ 	{
+ 		const bool u32 = opnum >= 14;
+ 		auto matches = [&](const llvm::Type *t) { return u32 ? t->isIntegerTy() && t->getIntegerBitWidth() == 32 : t->getTypeID() == f32; };
+-		if ((u32 ? !impl.xbox_morton : !impl.xbox_bvh4_math && impl.xbox_atomic_descriptor >= impl.root_descriptor_count) ||
++		if ((u32 ? !impl.xbox_morton : impl.xbox_math == Converter::Impl::XboxMath::None && impl.xbox_atomic_descriptor >= impl.root_descriptor_count) ||
+ 		    call.getNumOperands() != 4 || !matches(call.getType())) return false;
+ 		auto *num = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 		if (!num || num->getType()->getIntegerBitWidth() != 32 || num->getUniqueInteger().getZExtValue() != opnum) return false;
+@@ -6619,7 +6647,7 @@
+ 		}
+ 		else if (strncmp(called_function->getName().data(), "llvm.", 5) == 0)
+ 		{
+-			if (called_function->getName() == "llvm.copysign.f32" && (xbox_bvh4_math || xbox_atomic_descriptor < root_descriptor_count))
++			if (called_function->getName() == "llvm.copysign.f32" && (xbox_math == XboxMath::BVH4 || xbox_atomic_descriptor < root_descriptor_count))
+ 			{
+ 				auto f32 = llvm::Type::TypeID::FloatTyID;
+ 				if (called_function->begin() != called_function->end() || call_inst->getNumOperands() != 2 ||
+@@ -9839,7 +9867,12 @@
+ 			break;
+ 
+ 		case ShaderQuirk::XboxBVH4Math:
+-			xbox_bvh4_math = true;
++			xbox_math = XboxMath::BVH4;
++			break;
++
++		case ShaderQuirk::XboxTreelets:
++			xbox_math = XboxMath::Treelets;
++			options.quirks.group_shared_auto_barrier = true;
+ 			break;
+ 
+ 		case ShaderQuirk::XboxRadixCount:

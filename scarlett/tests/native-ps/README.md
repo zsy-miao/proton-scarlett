@@ -46,3 +46,31 @@ untouched border pixels. Names and hashes identify inputs only in tests.
 The supported ABI is a non-indexed three-vertex draw starting at vertex ID
 zero, one position, one perspective-linear float2 varying and one RGBA16F
 target. This does not reconstruct retail PSO, binding, or presentation state.
+
+## Sampled copy
+
+The optional local run also translates `VS_BlurFilter_1a08fc46_Wrapped` and
+`PS_PassthroughCopy_1a08fc46_Wrapped`. The PS has one full-mask 2D `image_sample`.
+The linker checks the two space-1 singleton PSV records against the FSSM
+resource rows, then maps their logical registers to separate Vulkan set-0
+image and sampler bindings. A descriptor load at table offset zero is symbolic:
+the fixture supplies a checked host view instead of dereferencing a guest address.
+The translator checks the interpolation base, quad/exact-mask sequence, wait
+instructions, descriptor SGPR groups and inline sampler state. The coordinate
+VGPRs, four sampled results, two half packs and export operands drive the
+generated fragment program. Names and digests are not translation inputs.
+
+The fixture binds both 4×3 RGBA32F views and two clamp-to-edge samplers.
+The original selects `t72/s3` and linear filtering. The project-owned case
+selects `t73/s4` and nearest filtering, swaps UV and exports BGRA. The 16×16
+target magnifies the asymmetric input. Independent texel and four-tap oracles
+check every half-float channel of 196 sampled pixels and 60 border pixels
+after the queue fence. The texture values and weights are binary fractions.
+
+Scope is one normalized, single-level, non-array color view, one implicit-LOD
+sample and one of two checked sampler descriptor tuples. No dynamic indexing,
+arbitrary descriptor heaps, mip behavior, comparison sampling or general wave
+execution is modeled. Tests reject absent or mistyped bindings, disagreement
+between stages of binding resolution, wrong sampler state, altered descriptor
+address, missing waits or mask restore, wrong image mask/SGPR tuple and missing
+coordinate registers before Vulkan submission.

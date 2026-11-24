@@ -1,0 +1,104 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettBoundedTreeletsV1
+     ScarlettBoundedBVH4V1
+     ScarlettBoundedProceduralsV1
+     ScarlettBoundedTrianglesV1
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1322,6 +1322,7 @@
+ void WINAPI DLLEXPORT ScarlettBoundedBitonicV1(void) {}
+ void WINAPI DLLEXPORT ScarlettRadixCountV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedLoadPassV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedTreeletsV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBVH4V1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedProceduralsV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedTrianglesV1(void) {}
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1258,7 +1258,8 @@
+     unsigned int root_constant_words = 0;
+     unsigned int heuristic_min_wave_size;
+     unsigned int heuristic_max_wave_size;
+-    bool refit, triangles, load_pass, read_only, instances, boxes, morton, bitonic, header_read;
++    bool treelet_window = false;
++    bool treelets, refit, triangles, load_pass, read_only, instances, boxes, morton, bitonic, header_read;
+     dxil_spv_converter converter = NULL;
+     dxil_spv_parsed_blob blob = NULL;
+     dxil_spv_compiled_spirv compiled;
+@@ -1374,6 +1375,17 @@
+         }
+     }
+ 
++    treelets = dxbc->size == 0x4dd8 && hash == UINT64_C(0x3b1bb5613f9b7419) && stage == DXIL_SPV_STAGE_COMPUTE;
++    if (treelets)
++    {
++        const dxil_spv_option_shader_quirk q = {{DXIL_SPV_OPTION_SHADER_QUIRK}, DXIL_SPV_SHADER_QUIRK_XBOX_TREELETS};
++        if (compiler_args->min_subgroup_size > 32 || compiler_args->max_subgroup_size < 32 ||
++                dxil_spv_converter_add_option(converter, &q.base) != DXIL_SPV_SUCCESS)
++        {
++            ret = VKD3D_ERROR_NOT_IMPLEMENTED;
++            goto end;
++        }
++    }
+     refit = dxbc->size == 0x84e4 && hash == UINT64_C(0x4783c9d87ad5a263);
+     if ((refit || (dxbc->size == 0x7160 && hash == UINT64_C(0xe4263ede88ccc3fa))) && stage == DXIL_SPV_STAGE_COMPUTE)
+     {
+@@ -1403,7 +1415,7 @@
+             (dxbc->size == 0x2204 && hash == UINT64_C(0xd94c62f47a4dc2cf)) ||
+             (dxbc->size == 0x1554 && hash == UINT64_C(0x6418df8f45aa5520)) ||
+             (dxbc->size == 0x2094 && hash == UINT64_C(0xbe761fb667184255));
+-    header_read = (dxbc->size == 0x14a4 && hash == UINT64_C(0x827443b28f6865ee)) ||
++    header_read = treelets || (dxbc->size == 0x14a4 && hash == UINT64_C(0x827443b28f6865ee)) ||
+             (dxbc->size == 0x1c80 && hash == UINT64_C(0x338965854453d35d)) ||
+             (dxbc->size == 0x1794 && hash == UINT64_C(0x8a1f344edf785181)) ||
+             (dxbc->size == 0x1e68 && hash == UINT64_C(0xb79d27d4432d86ec)) ||
+@@ -1419,6 +1431,12 @@
+         for (i = 0; i < shader_interface_info->push_constant_buffer_count; ++i)
+         {
+             const struct vkd3d_shader_push_constant_buffer *p = &shader_interface_info->push_constant_buffers[i];
++            /* FindTreelets loads the public b0 as both i64 and i32. */
++            if (treelets && !p->register_space && !p->register_index)
++            {
++                ret = VKD3D_ERROR_INVALID_SHADER;
++                goto end;
++            }
+             if (p->register_space != 0x5358 || p->register_index || p->size != (boxes ? 48 : instances ? 24 : 12) ||
+                     p->offset % 4 || p->offset / 4 < 2 * num_root_descriptors || !dxil_match_shader_visibility(p->shader_visibility, stage))
+                 continue;
+@@ -1455,6 +1473,7 @@
+                         atom.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS ||
+                         atom.root_constant_index == vk.root_constant_index))
+                     continue;
++                if (treelets) treelet_window = true;
+                 if (instances) opt.atomic_descriptor = atom.root_constant_index;
+                 if (dxil_spv_converter_add_option(converter, &opt.range.base) != DXIL_SPV_SUCCESS)
+                 {
+@@ -1463,6 +1482,11 @@
+                 }
+             }
+         }
++    }
++    if (treelets && !treelet_window)
++    {
++        ret = VKD3D_ERROR_INVALID_SHADER;
++        goto end;
+     }
+     dxil_spv_converter_set_root_constant_word_count(converter, root_constant_words);
+     dxil_spv_converter_set_root_descriptor_count(converter, num_root_descriptors);
+@@ -1550,6 +1574,8 @@
+ 
+     dxil_spv_converter_get_compute_wave_size_range(converter,
+             &wave_size_min, &wave_size_max, &wave_size_preferred);
++
++    if (treelets) wave_size_min = wave_size_max = wave_size_preferred = 32;
+ 
+     /* Ensure that the maximum wave size is always valid */
+     if (!wave_size_max)

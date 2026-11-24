@@ -1,5 +1,9 @@
 # Write-combined graphics pool
 
+For [ApexPointMapComputer](../native/bvh-apex.md), apply `0020-bounded-apex.patch` after `0019`. Reuse dxil-spirv through `0011`; run `scarlett/tests/apex.sh` with the matched adapter/core.
+
+For [FindTreelets](../native/find-treelets.md), apply `0019-find-treelets.patch` after `0018`, with dxil-spirv through `0011`. Run `scarlett/tests/find-treelets.sh` with the matched adapter/core.
+
 For [BuildSplits 0 and 1](../native/bvh-hierarchy.md), apply `0017-bounded-hierarchy.patch` after `0016`, with dxil-spirv through `0010`. Rebuild the adapter and core and run `scarlett/tests/hierarchy-pipelines.sh`.
 
 For the [BVH4 construction stages](../native/bvh4.md), apply `0016-bvh4.patch` after `0015` with dxil-spirv through `0010`. Run `scarlett/tests/bvh4.sh` with the rebuilt core and adapter.

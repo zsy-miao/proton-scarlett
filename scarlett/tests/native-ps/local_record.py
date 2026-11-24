@@ -32,6 +32,7 @@ class Record(NamedTuple):
     inputs: bytes
     outputs: bytes
     psv: bytes
+    resources: tuple = ()
 
 
 def dxbc(data, kind):
@@ -47,7 +48,8 @@ def dxbc(data, kind):
     need(end == size and {b"DXIL", b"ISG1", b"OSG1", b"PSV0"} <= parts.keys(), "required chunks")
     need(kind in (0, 1), "expected PS or VS")
     psv = parts[b"PSV0"]
-    need(fields(psv, 0, "I") == (52,) and fields(psv, 56, "I") == (0,), "resource-free PSV")
+    resources, = fields(psv, 56, "I")
+    need(fields(psv, 0, "I") == (52,) and (resources==0 or (not kind and resources==2)), "PSV resources")
 
     x = parts[b"DXIL"]
     stage, words, magic, version, bc, n = fields(x, 0, "II4sIII")
@@ -78,7 +80,10 @@ def dxbc(data, kind):
          "native stage descriptor")
     off, n = fields(f, desc, "QQ")
     need(off % 4 == 0 and 16+off >= desc+72 and 0 < n <= 4096, "ISA extent")
-    return Record(span(f, 16+off, n), parts[b"ISG1"], parts[b"OSG1"], psv)
+    table, = fields(f, desc+48, "Q")
+    need(fields(f, desc+60, "I") == (resources,), "native/PSV resource counts")
+    mapping = tuple(fields(f, 16+table+20*i, "5I") for i in range(resources))
+    return Record(span(f, 16+off, n), parts[b"ISG1"], parts[b"OSG1"], psv, mapping)
 
 
 def read_record(path, name, kind):
@@ -100,6 +105,7 @@ def read_record(path, name, kind):
 
 def read_native(path, name):
     ps = read_record(path, name, 0)
+    need(not ps.resources, "expected resource-free PS")
     sig = ps.outputs
     count, header, stream, name, index, semantic, component, reg, mask, prec = fields(sig, 0, "10I")
     need((count,header,stream,index,semantic,component,reg,mask,prec) ==

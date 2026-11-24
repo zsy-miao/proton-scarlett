@@ -29,9 +29,12 @@ static VkShaderModule module(const char *path) {
     VkShaderModule m; VK(vkCreateShaderModule(device,&mi,NULL,&m)); return m;
 }
 
+#include "sample_draw.h"
+
 int main(int argc,char **argv) {
-    CHECK(argc==4 || (argc==5 && !strcmp(argv[4],"lut")));
-    const uint32_t W=argc==5?256:8, H=argc==5?16:6, BYTES=W*H*8;
+    const int sample=argc==5 && !strcmp(argv[4],"sample");
+    CHECK(argc==4 || sample || (argc==5 && !strcmp(argv[4],"lut")));
+    const uint32_t W=sample?16:argc==5?256:8, H=argc==5?16:6, BYTES=W*H*8;
     VkInstanceCreateInfo ici={INFO(INSTANCE_CREATE_INFO)};
     VkInstance instance; VK(vkCreateInstance(&ici,NULL,&instance));
     uint32_t n=0; VK(vkEnumeratePhysicalDevices(instance,&n,NULL)); CHECK(n && n<=64);
@@ -55,6 +58,7 @@ int main(int argc,char **argv) {
     VkMemoryRequirements req; vkGetImageMemoryRequirements(device,image,&req);
     VkDeviceMemory imem=allocate(req,0); VK(vkBindImageMemory(device,image,imem,0));
     VkBufferCreateInfo bc={INFO(BUFFER_CREATE_INFO),.size=BYTES,.usage=VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    if (sample) bc.usage|=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     VkBuffer buffer; VK(vkCreateBuffer(device,&bc,NULL,&buffer)); vkGetBufferMemoryRequirements(device,buffer,&req);
     VkDeviceMemory bmem=allocate(req,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VK(vkBindBufferMemory(device,buffer,bmem,0));
@@ -80,6 +84,13 @@ int main(int argc,char **argv) {
         {INFO(PIPELINE_SHADER_STAGE_CREATE_INFO),.stage=VK_SHADER_STAGE_VERTEX_BIT,.module=module(argv[1]),.pName="main"},
         {INFO(PIPELINE_SHADER_STAGE_CREATE_INFO),.stage=VK_SHADER_STAGE_FRAGMENT_BIT,.module=module(argv[2]),.pName="main"}};
     VkPipelineLayoutCreateInfo lc={INFO(PIPELINE_LAYOUT_CREATE_INFO)};
+    struct sources src={0};
+    if (sample) {
+        VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(gpu,VK_FORMAT_R32G32B32A32_SFLOAT,&fp);
+        CHECK(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+        create_sources(&src,bmem);
+        lc.setLayoutCount=1; lc.pSetLayouts=&src.layout;
+    }
     VkPipelineLayout layout; VK(vkCreatePipelineLayout(device,&lc,NULL,&layout));
     VkViewport viewport={0,0,W,H,0,1}; VkRect2D scissor={{1,1},{W-2,H-2}};
     VkPipelineViewportStateCreateInfo vp={INFO(PIPELINE_VIEWPORT_STATE_CREATE_INFO),.viewportCount=1,
@@ -100,6 +111,10 @@ int main(int argc,char **argv) {
     VkCommandBufferAllocateInfo alloc={INFO(COMMAND_BUFFER_ALLOCATE_INFO),.commandPool=pool,.commandBufferCount=1};
     VkCommandBuffer cmd; VK(vkAllocateCommandBuffers(device,&alloc,&cmd));
     VkCommandBufferBeginInfo begin={INFO(COMMAND_BUFFER_BEGIN_INFO)}; VK(vkBeginCommandBuffer(cmd,&begin));
+    if (sample) {
+        upload_sources(&src,cmd,buffer);
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&src.set,0,NULL);
+    }
     VkClearValue clear={.color.float32={1,0,1,1}};
     VkRenderPassBeginInfo rp={INFO(RENDER_PASS_BEGIN_INFO),.renderPass=render,.framebuffer=fb,
         .renderArea={{0,0},{W,H}},.clearValueCount=1,.pClearValues=&clear};
@@ -117,6 +132,7 @@ int main(int argc,char **argv) {
     FILE *out=fopen(argv[3],"wb"); CHECK(out && fwrite(pixels,1,BYTES,out)==BYTES && fclose(out)==0);
     vkUnmapMemory(device,bmem); vkDestroyFence(device,fence,NULL); vkDestroyCommandPool(device,pool,NULL);
     vkDestroyPipeline(device,pipeline,NULL); vkDestroyPipelineLayout(device,layout,NULL);
+    if (sample) destroy_sources(&src);
     for (int i=0;i<2;i++) vkDestroyShaderModule(device,stages[i].module,NULL);
     vkDestroyFramebuffer(device,fb,NULL); vkDestroyRenderPass(device,render,NULL);
     vkDestroyImageView(device,view,NULL); vkDestroyImage(device,image,NULL); vkDestroyBuffer(device,buffer,NULL);

@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 42 compute pipelines, including the [BVH4 construction stages](scarlett/native/bvh4.md) and [both hierarchy split stages](scarlett/native/bvh-hierarchy.md). Startup stops at `FindTreelets` (`XboxBvhBuilder.dll` shader RVA `+0xaed00`, 19,928 bytes). **No retail builder dispatch or presented frame has been observed.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder creates 47 compute pipelines, through [treelet reordering](scarlett/native/find-treelets.md), [apex-map construction](scarlett/native/bvh-apex.md), and the [postbuild size query](scarlett/native/bvh-postbuild.md). Startup stops at `DecompressHeader` (`XboxBvhBuilder.dll` shader RVA `+0x35720`, 4,500 bytes). **No retail builder dispatch or presented frame has been observed.**
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
@@ -35,7 +35,7 @@ Both retail display textures were created on the thread that owns the game windo
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused.
 
-An [offscreen draw test](scarlett/tests/native-ps/) translated the title's native `VS_Passthrough` and `PS_LUT3DIdentity` shaders and linked them through their texture coordinates. On RADV and RTX 3070, all 3,556 drawn pixels matched the expected identity lookup table and all 540 border pixels stayed unchanged. This pair uses no textures or samplers. The retail draw path is still unfinished.
+An [offscreen draw test](scarlett/tests/native-ps/) translated the title's native `VS_Passthrough` and `PS_LUT3DIdentity` shaders and linked them through their texture coordinates. On RADV and RTX 3070, all 3,556 drawn pixels matched the expected identity lookup table and all 540 border pixels stayed unchanged. A second original pair sampled an asymmetric texture using a linear-clamp sampler. All 196 sampled pixels matched a CPU bilinear calculation, and the 60 border pixels stayed unchanged. These draws used test-supplied bindings; the retail draw path is still unfinished.
 
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
 

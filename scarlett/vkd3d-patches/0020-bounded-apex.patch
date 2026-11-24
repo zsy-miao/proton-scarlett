@@ -1,0 +1,33 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+index 0216186..2814dc9 100644
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -5,2 +5,3 @@ EXPORTS
+     ScarlettBoundedBVH4V1
++    ScarlettBoundedApexV1
+     ScarlettBoundedProceduralsV1
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+index c3f475a..74a0689 100644
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1326,2 +1326,3 @@ void WINAPI DLLEXPORT ScarlettBoundedTreeletsV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBVH4V1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedApexV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedProceduralsV1(void) {}
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+index acd727b..a86a5dc 100644
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1389,3 +1389,4 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+     refit = dxbc->size == 0x84e4 && hash == UINT64_C(0x4783c9d87ad5a263);
+-    if ((refit || (dxbc->size == 0x7160 && hash == UINT64_C(0xe4263ede88ccc3fa))) && stage == DXIL_SPV_STAGE_COMPUTE)
++    if ((refit || (dxbc->size == 0x7160 && hash == UINT64_C(0xe4263ede88ccc3fa)) ||
++            (dxbc->size == 0x1ce0 && hash == UINT64_C(0xf4962a52aa139f8c))) && stage == DXIL_SPV_STAGE_COMPUTE)
+     {
+@@ -1405,3 +1406,5 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
+             (dxbc->size == 0x21b4 && hash == UINT64_C(0xc976d9beb0bfa696));
+-    triangles = (dxbc->size == 0xa304 && hash == UINT64_C(0xf6a7f578dce5fe3a)) ||
++    /* BuildKDOP uses the same bounded scalar/triple reads and float atomic window. */
++    triangles = (dxbc->size == 0x1d5c && hash == UINT64_C(0x7d94e33063c4aed8)) ||
++            (dxbc->size == 0xa304 && hash == UINT64_C(0xf6a7f578dce5fe3a)) ||
+             (dxbc->size == 0xb1e4 && hash == UINT64_C(0x5befade5ff8f0f8c));
