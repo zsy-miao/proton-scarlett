@@ -23,7 +23,7 @@ if [[ -f "$runtime/xaudio2_9.dll" ]]; then
     install -m644 "$runtime/xaudio2_9.dll" "$stage/files/lib/wine/x86_64-windows/xaudio2_9.dll"
 fi
 mkdir "$stage/scarlett"
-install -m644 "$runtime"/{d3d12_xs,xmem,chad,xapu,AcpHal,xg_xs,XCRDAPI}.dll "$stage/scarlett/"
+install -m644 "$runtime"/{d3d12_xs,xmem,chad,xapu,AcpHal,xg_xs,XCRDAPI,GameInput}.dll "$stage/scarlett/"
 sed -e 's/##INTERNAL_TOOL_NAME##/scarlett-proton/g' -e 's/##BUILD_NAME##/scarlett-proton/g' \
     "$src/compatibilitytool.vdf.template" >"$stage/compatibilitytool.vdf"
 mv -Tn -- "$stage" "$dest"

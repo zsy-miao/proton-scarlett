@@ -9,7 +9,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 Retail build `1.0.2.1` executes startup code, configures the graphics address table, and passes both initial address-space reservations. Its next `XMemVirtualAlloc` request for 1,172 MiB of graphics memory fails, triggering a breakpoint at `+0x1e1d3a7`. A [synthetic GPU copy test](scarlett/native/xmem/README.md) successfully shares a buffer of that size with the RTX 3070. The retail path still needs address translation and safe handling of frees while GPU work is in flight. No native retail frame has been presented.
 
-Input has a separate dependency: Proton 11.0-2e's builtin `GameInputCreate` (ordinal 1) returns `E_NOTIMPL`. The title requires a successful result and an input object.
+Proton 11.0-2e's builtin `GameInputCreate` (ordinal 1) returns `E_NOTIMPL`. Our [GameInput provider](scarlett/native/gameinput/README.md) passed an isolated synthetic test: a 400 ms Space press produced neutral → A → neutral on its virtual gamepad. Retail input has not yet been exercised.
 
 The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 
