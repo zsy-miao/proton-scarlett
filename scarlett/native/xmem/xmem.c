@@ -1,10 +1,96 @@
 #include <windows.h>
+#include <stdint.h>
 
 #if !defined(__x86_64__) || !defined(_WIN64)
 #error This DLL implements only the Windows x64 ABI.
 #endif
 
 #define XMEM_CPU 0x00000001ULL
+
+typedef struct {
+    PVOID (WINAPI *alloc)(SIZE_T, ULONGLONG);
+    VOID (WINAPI *free)(PVOID, ULONGLONG);
+} AllocationHooks;
+
+static AllocationHooks hooks;
+static BOOL invalid_hooks;
+
+BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, LPVOID reserved)
+{
+    (void)dll;
+    (void)reserved;
+    if (reason == DLL_PROCESS_ATTACH) {
+        const AllocationHooks *exported = (const void *)
+            GetProcAddress(GetModuleHandleW(NULL), "__XMemAllocationHooks__");
+        if (exported) {
+            hooks = *exported;
+            invalid_hooks = !hooks.alloc || !hooks.free;
+        }
+    }
+    return TRUE;
+}
+
+typedef struct {
+    PVOID base;
+    ULONGLONG attributes;
+} Block;
+
+__declspec(dllexport) PVOID WINAPI XMemAllocDefault(SIZE_T size, ULONGLONG attributes)
+{
+    /* XALLOC_ATTRIBUTES: ObjectType[13:0], AllocatorId[23:16], Alignment[28:24]. */
+    unsigned exponent = (unsigned)((attributes >> 24) & 31);
+    if ((attributes & ~0x1fff3fffULL) || exponent > 17 || exponent == 1 || exponent == 3) {
+        SetLastError(ERROR_NOT_SUPPORTED);
+        return NULL;
+    }
+    SIZE_T align = (SIZE_T)1 << (exponent < 4 ? 4 : exponent);
+    SIZE_T extra = sizeof(Block) + align - 1;
+    if (size > SIZE_MAX - extra) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
+    PVOID base = HeapAlloc(GetProcessHeap(), 0, size + extra);
+    if (!base) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
+    Block *user = (Block *)(((UINT_PTR)base + extra) & ~(align - 1));
+    user[-1] = (Block){base, attributes};
+    return user;
+}
+
+__declspec(dllexport) VOID WINAPI XMemFreeDefault(PVOID address, ULONGLONG attributes)
+{
+    if (!address)
+        return;
+    Block *block = (Block *)address - 1;
+    if (block->attributes != attributes) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return;
+    }
+    HeapFree(GetProcessHeap(), 0, block->base);
+}
+
+__declspec(dllexport) PVOID WINAPI XMemAlloc(SIZE_T size, ULONGLONG attributes)
+{
+    if (invalid_hooks) {
+        SetLastError(ERROR_INVALID_DATA);
+        return NULL;
+    }
+    return hooks.alloc ? hooks.alloc(size, attributes) : XMemAllocDefault(size, attributes);
+}
+
+__declspec(dllexport) VOID WINAPI XMemFree(PVOID address, ULONGLONG attributes)
+{
+    if (invalid_hooks) {
+        SetLastError(ERROR_INVALID_DATA);
+        return;
+    }
+    if (hooks.free)
+        hooks.free(address, attributes);
+    else
+        XMemFreeDefault(address, attributes);
+}
 
 __declspec(dllexport) BOOL WINAPI XMemIsToolsMemAvailable(void)
 {
