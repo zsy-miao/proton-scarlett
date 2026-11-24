@@ -63,6 +63,14 @@ class LaunchTest(unittest.TestCase):
             self.dispatch("GAME_SCARLETT_MASTER.EXE")
         self.assertEqual(conflicting.read_bytes(), b"keep me")
 
+    def test_runtime_system32(self):
+        runtime = self.provider.with_name("xgameruntime.dll")
+        runtime.touch()
+        self.dispatch("game_scarlett_master.exe")
+        slot = self.base / "scarlett-title/pfx/drive_c/windows/system32/xgameruntime.dll"
+        self.assertTrue(slot.samefile(runtime))
+        self.assertFalse((self.base / "pfx/drive_c/windows/system32/xgameruntime.dll").exists())
+
     def test_desktop(self):
         args, path, overrides, calls = self.dispatch("regular.exe")
         self.assertEqual(args[-2:], ["regular.exe", "argument with spaces"])
