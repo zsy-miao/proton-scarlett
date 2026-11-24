@@ -1,6 +1,6 @@
 # The 64 KiB graphics control page
 
-The retail run stops at `+0x24786d1`, before these uses execute. Static call sites in build `1.0.2.1` identify three consumers of the page requested at `+0x24786b9`:
+The RTX 3070 retail run stops at `+0x24786d1`, before these uses execute. Static call sites in build `1.0.2.1` identify three consumers of the page requested at `+0x24786b9`:
 
 | Consumer | What the title does |
 | --- | --- |
@@ -28,6 +28,14 @@ select one directory containing `mcfgthread/gthr.h` under
 `/nix/store/*-mcfgthread-x86_64-w64-mingw32-2.5.1-dev/include` and pass
 that directory with `-isystem`. This experiment covers
 one monotonic counter on one queue; the retail command list has not used it.
+
+A native CUDA probe on the RTX 3070 (595.112.07) also held a 64-bit stream
+wait on a 64 KiB write-combined host allocation. Raising the CPU counter above
+`0x100000003` released the wait; the CPU saw the subsequent GPU marker
+`0x53ca1234`. Exporting that allocation with `cuMemGetHandleForAddressRange`
+and `CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD` returned `CUDA_ERROR_NOT_SUPPORTED`.
+This tests the wait and write behavior; it does not supply a shared control
+page that Wine and vkd3d can import.
 
 A [combined wait and marker test](https://github.com/rcx2135/proton-scarlett/tree/3991f08a/scarlett/tests/control-translation)
 also exercises exact-size release followed by immediate address reuse. A CPU
