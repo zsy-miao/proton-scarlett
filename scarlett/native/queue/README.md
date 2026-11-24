@@ -1006,3 +1006,18 @@ A separate fixture on each GPU checked the same order against the primary
 writer and descriptor generation. The valid pair executed once, advancing
 WSI 0→1→2 with a visible red/blue to green/magenta change. Reversed,
 duplicate and stale pairs were rejected before execution.
+
+The AMD diagnostic reproduced the successor's `+240` after the recorded
+release. Bank 2 contained 2,048 eight-byte entries. The caller selected
+the high index (0), not the low index (1). Comparing the section handles
+confirmed that the destination at offset `0x419aa30` and the producer's
+head timestamp at `0x419aa38` belonged to the same write-back allocation.
+The release and successor timestamp had not executed when recording stopped.
+
+In a split-producer fixture on both GPUs, the head timestamp completed
+while the counter still blocked the tail and the batch-end fence remained
+pending. Opening the counter allowed the tail pixels and successor release
+to complete, then one batch-end fence signaled. Both captures changed from
+red/blue to green/magenta and the display count advanced 0→1→2. This
+fixture's successor contained only the release; it did not test the AMD
+retail timestamp that follows it.
