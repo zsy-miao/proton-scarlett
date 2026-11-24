@@ -17,6 +17,7 @@ typedef HRESULT (WINAPI *Queue)(IUnknown *, const void *, REFIID, void **);
 typedef HRESULT (WINAPI *Fence)(IUnknown *, UINT64, D3D12_FENCE_FLAGS, REFIID, void **);
 typedef HRESULT (WINAPI *Signal)(IUnknown *, IUnknown *, UINT64);
 typedef const volatile UINT64 *(WINAPI *FenceAddress)(IUnknown *);
+typedef UINT64 (WINAPI *FenceCompleted)(IUnknown *);
 typedef HRESULT (WINAPI *Frequency)(IUnknown *, UINT64 *);
 typedef HRESULT (WINAPI *Allocator)(IUnknown *, D3D12_COMMAND_LIST_TYPE, REFIID, void **);
 typedef HRESULT (WINAPI *List)(IUnknown *, const void *, IUnknown *, IUnknown *, REFIID, void **);
@@ -340,8 +341,10 @@ int main(void)
     CHECK(xs_queue_wait(q, gate, n) == S_OK);
     CHECK(METHOD(q,0x80,Signal)(q, ready, n) == S_OK);
     CHECK(WaitForSingleObject(done, 100) == WAIT_TIMEOUT);
+    CHECK(METHOD(complete,0x40,FenceCompleted)(complete)==0);
     CHECK(xs_cpu_signal(gate, n) == S_OK);
     CHECK(WaitForSingleObject(done, 5000) == WAIT_OBJECT_0);
+    CHECK(METHOD(complete,0x40,FenceCompleted)(complete)==n);
     CloseHandle(done);
     CHECK(!IUnknown_Release(gate) && !IUnknown_Release(ready) && !IUnknown_Release(complete));
 #endif

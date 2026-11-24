@@ -84,10 +84,14 @@ struct qtable {
 };
 struct ftable {
     IUnknownVtbl prefix;
-    void *other[9];
+    void *other[5];
+    UINT64 (WINAPI *completed)(IUnknown *);
+    void *after_completed[3];
     const volatile UINT64 *(WINAPI *address)(IUnknown *);
 };
 _Static_assert(offsetof(struct ftable, address) == 0x60, "x64 monitored fence address");
+_Static_assert(offsetof(struct ftable, completed) == 0x40 &&
+        offsetof(ID3D12FenceVtbl, GetCompletedValue) == 0x40, "x64 fence completed-value ABI");
 
 struct monitored_fence {
     struct adapter a;
@@ -339,11 +343,19 @@ static ID3D12Fence *as_fence(IUnknown *iface)
             CONTAINING_RECORD(iface, struct adapter, iface)->host.fence : NULL;
 }
 
+/* Caller owns a live wrapper (or a sampler drained before host release). */
+static UINT64 WINAPI fence_completed(IUnknown *iface)
+{
+    struct monitored_fence *f=CONTAINING_RECORD(iface,struct monitored_fence,a.iface);
+    UINT64 value = ID3D12Fence_GetCompletedValue(f->a.host.fence);
+    if (FAILED(ID3D12Device_GetDeviceRemovedReason(f->device))) value = UINT64_MAX;
+    return value;
+}
+
 /* Called with the sampling lock. Never substitute a submitted value or apply a high-water mark. */
 static void sample_completed(struct monitored_fence *f)
 {
-    UINT64 value = ID3D12Fence_GetCompletedValue(f->a.host.fence);
-    if (FAILED(ID3D12Device_GetDeviceRemovedReason(f->device))) value = UINT64_MAX;
+    UINT64 value=fence_completed(&f->a.iface);
     if (f->value != value) InterlockedExchange64((volatile LONG64 *)&f->value, (LONG64)value);
 }
 
@@ -409,9 +421,9 @@ static const struct qtable qt = {
 #endif
 };
 static const struct ftable ft = {
-    .prefix = {query, addref, release}, .address = fence_address,
+    .prefix = {query, addref, release}, .completed=fence_completed, .address = fence_address,
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
-    .other = { [0 ... 8] = (void *)xs_stop },
+    .other = { [0 ... 4] = (void *)xs_stop }, .after_completed = { [0 ... 2] = (void *)xs_stop },
 #endif
 };
 
