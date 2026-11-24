@@ -1,5 +1,5 @@
 /* Included by the staged address-SRV writer, under the device's descriptor registry. */
-static struct descriptor_record *r8_slot(struct xbox_device *d,SIZE_T slot,BOOL *visible,
+static struct descriptor_record *address_view_slot(struct xbox_device *d,SIZE_T slot,BOOL *visible,
         D3D12_CPU_DESCRIPTOR_HANDLE *cpu)
 {
     struct descriptor_record *r=NULL;
@@ -13,62 +13,67 @@ static struct descriptor_record *r8_slot(struct xbox_device *d,SIZE_T slot,BOOL 
     }
     return r;
 }
-static BOOL valid_r8_record(const struct descriptor_record *r,SIZE_T slot)
+static BOOL valid_address_record(const struct descriptor_record *r,SIZE_T slot,UINT kind)
 {
     UINT64 tag[2];
-    return r && r->kind==R8_VIEW && r->resource && copy_in(tag,(void *)slot,sizeof tag) &&
-        tag[0]==r->serial && tag[1]==(0x5853444553430000ull|R8_VIEW);
+    return r && r->kind==kind && r->resource && copy_in(tag,(void *)slot,sizeof tag) &&
+        tag[0]==r->serial && tag[1]==(0x5853444553430000ull|kind);
 }
 
-/* A copy takes a new serial and owns its own reference. Clearing the underlying
- * desktop slot prevents a previous writer's view from surviving this overwrite. */
-static HRESULT store_r8(struct xbox_device *d,SIZE_T dest,ID3D12Resource *buffer,UINT offset,
+/* A copy takes a new serial and owns its own reference to the original import. */
+static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID3D12Resource *buffer,UINT offset,
         BOOL require_visible,struct descriptor_record *old)
 {
     BOOL visible=FALSE;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu={0};
-    struct descriptor_record *r=r8_slot(d,dest,&visible,&cpu);
+    struct descriptor_record *r=address_view_slot(d,dest,&visible,&cpu);
     if (!r || (require_visible && !visible)) return E_INVALIDARG;
-    UINT64 tag[]={++d->descriptor_serial,0x5853444553430000ull|R8_VIEW};
+    UINT64 tag[]={++d->descriptor_serial,0x5853444553430000ull|kind};
     if (!store_slot_tag(dest,tag)) return E_POINTER;
-    /* Resolve only through xs_refresh_r8. The bank slot contains a typed null. */
+    /* Only R8 needs refresh; its bank slot must never expose a stale texture. */
     D3D12_SHADER_RESOURCE_VIEW_DESC null_view={.Format=DXGI_FORMAT_R8_UNORM,.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D,
         .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Texture2D.MipLevels=1};
-    ID3D12Device_CreateShaderResourceView(d->host,NULL,&null_view,cpu);
+    if (kind==RAW38_VIEW) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC raw={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
+            .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Buffer={offset/4,38,0,D3D12_BUFFER_SRV_FLAG_RAW}};
+        ID3D12Device_CreateShaderResourceView(d->host,buffer,&raw,cpu);
+    } else ID3D12Device_CreateShaderResourceView(d->host,NULL,&null_view,cpu);
     ID3D12Resource_AddRef(buffer);
     *old=*r;
-    *r=(struct descriptor_record){.serial=tag[0],.kind=R8_VIEW,.offset=offset,.resource=buffer};
+    *r=(struct descriptor_record){.serial=tag[0],.kind=kind,.offset=offset,.resource=buffer};
     return S_OK;
 }
-static HRESULT write_r8_view(IUnknown *device,const DWORD *w,SIZE_T dest)
+static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,SIZE_T dest)
 {
-    static const DWORD prefix[]={61,4,0x1688,0,0,1,0,0,0,0},tail[]={0,0,0,3};
-    if (memcmp(w,prefix,sizeof prefix) || memcmp(w+12,tail,sizeof tail)) return E_NOTIMPL;
+    static const DWORD texture[]={61,4,0x1688,0,0,1,0,0,0,0},raw[]={39,1,0x1688,0,0,0,38,0,1,0};
+    BOOL r8=kind==R8_VIEW;
+    if (memcmp(w,r8?texture:raw,sizeof raw) || w[12] || w[13] || w[14] || w[15]!=(r8?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
-    if (!va || va%R8_ALIGNMENT) return E_INVALIDARG;
+    UINT alignment=r8 ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
+    if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;
-    HRESULT hr=retain_wc_buffer(device,(void *)va,R8_BYTES,&buffer,&offset);
+    HRESULT hr=retain_wc_buffer(device,(void *)va,r8?R8_BYTES:160,&buffer,&offset);
     if (FAILED(hr)) return hr;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct descriptor_record old={0};
     AcquireSRWLockExclusive(&d->descriptor_lock);
-    hr=offset%R8_ALIGNMENT ? E_INVALIDARG : store_r8(d,dest,buffer,offset,FALSE,&old);
+    hr=offset%alignment ? E_INVALIDARG : store_address_view(d,kind,dest,buffer,offset,FALSE,&old);
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     drop_record(old);
     ID3D12Resource_Release(buffer);
     return hr;
 }
-HRESULT xs_copy_r8_view(IUnknown *device,SIZE_T dest,SIZE_T src)
+HRESULT xs_copy_wc_view(IUnknown *device,SIZE_T dest,SIZE_T src)
 {
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct descriptor_record old={0};
     BOOL visible=TRUE;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     AcquireSRWLockExclusive(&d->descriptor_lock);
-    struct descriptor_record *r=r8_slot(d,src,&visible,&cpu);
-    HRESULT hr=!visible && valid_r8_record(r,src) ?
-        store_r8(d,dest,r->resource,r->offset,TRUE,&old) : E_INVALIDARG;
+    struct descriptor_record *r=address_view_slot(d,src,&visible,&cpu);
+    HRESULT hr=!visible && r && (r->kind==R8_VIEW || r->kind==RAW38_VIEW) && valid_address_record(r,src,r->kind) ?
+        store_address_view(d,r->kind,dest,r->resource,r->offset,TRUE,&old) : E_INVALIDARG;
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     drop_record(old);
     return hr;
@@ -119,7 +124,7 @@ HRESULT xs_refresh_r8(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandList *l,
     AcquireSRWLockShared(&d->descriptor_lock);
     if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         struct descriptor_record *r=&h->records[(slot-h->start)/h->stride];
-        if (valid_r8_record(r,slot)) { u->source=r->resource; ID3D12Resource_AddRef(u->source); offset=r->offset; }
+        if (valid_address_record(r,slot,R8_VIEW)) { u->source=r->resource; ID3D12Resource_AddRef(u->source); offset=r->offset; }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
     if (!u->source) { hr=E_INVALIDARG; goto fail; }

@@ -1,8 +1,8 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
-enum { R8_VIEW=0x230 };
+enum { R8_VIEW=0x230, RAW38_VIEW=0x231 };
 struct descriptor_record {
     UINT64 serial;
-    UINT kind, offset; /* R8_VIEW: byte offset in the retained WC buffer */
+    UINT kind, offset; /* Address views: byte offset in the retained WC buffer */
     ID3D12Resource *resource;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *placed; /* exactly first=0, 174 MiB / 4 RAW dwords */

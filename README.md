@@ -9,7 +9,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 **NVIDIA (RTX 3070):** Retail build `1.0.2.1` passes the CPU-only control page, maps all five ranges of the 185 MiB descriptor arena, and creates both [3840×2160 primary color textures](scarlett/native/color-allocation.md) in the original 64 MiB allocation. It passes the 6,236 MiB write-back pool allocation and creates the clear graphics pipeline.
 
-**Current stop on both GPUs:** After creating the R8 texture view and the [4,159-entry DirectStorage file queue](scarlett/native/xcrdapi/README.md), retail [maps 6,720 consecutive pages](scarlett/native/xmem/README.md#scatter-mapping-into-the-24-gib-cpu-arena) from the original write-back pool (420 MiB). The next graphics call requests a 38-element raw view of a 160-byte buffer. Device `+0x230` rejects it (title return `+0x4ecc821`).
+**Current stop on both GPUs:** After creating the R8 texture view and the [4,159-entry DirectStorage file queue](scarlett/native/xcrdapi/README.md), retail [maps 6,720 consecutive pages](scarlett/native/xmem/README.md#scatter-mapping-into-the-24-gib-cpu-arena) from the original write-back pool (420 MiB). It creates a [38-element raw view](scarlett/native/frame-descriptor-init.md#raw-wc-address-view-after-scatter) of a 160-byte buffer. The next allocation query requests a 1×1 `R8G8B8A8_UNORM` texture with 4 KiB alignment and unknown layout (device `+0xc8`, title return `+0x344145`).
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 

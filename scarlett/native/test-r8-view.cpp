@@ -12,7 +12,7 @@ extern "C" __declspec(dllimport) HRESULT WINAPI XGCreateTextureComputer(const vo
 extern "C" __declspec(dllimport) HRESULT WINAPI XGSuggestSwizzleMode(const void *,uintptr_t,DWORD *);
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_write_address_srv(IUnknown *,const void *,const void *,SIZE_T);
-extern "C" HRESULT xs_copy_r8_view(IUnknown *,SIZE_T,SIZE_T);
+extern "C" HRESULT xs_copy_wc_view(IUnknown *,SIZE_T,SIZE_T);
 extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
 extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
 extern "C" HRESULT xs_descriptor_range(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *,D3D12_GPU_DESCRIPTOR_HANDLE *);
@@ -62,11 +62,11 @@ int main(){
     CK(*(UINT64*)from==serial);
     address(b+offset);CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from+1)));
     SLOT(guest.Get(),0x230,Writer)(guest.Get(),desc,w,from);
-    CK(FAILED(xs_copy_r8_view(guest.Get(),to+1,from)));
+    CK(FAILED(xs_copy_wc_view(guest.Get(),to+1,from)));
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
     CK(*(UINT64*)from!=*(UINT64*)to);
     DWORD nullview[10]={42,4,0x1688};HR(xs_write_view(guest.Get(),0x90,nullptr,nullview,from));
-    CK(FAILED(xs_copy_r8_view(guest.Get(),to,from))); src.Reset();
+    CK(FAILED(xs_copy_wc_view(guest.Get(),to,from))); src.Reset();
     ID3D12DescriptorHeap *raw; D3D12_GPU_DESCRIPTOR_HANDLE gh; D3D12_CPU_DESCRIPTOR_HANDLE ch;
     CK(xs_resolve_view(dst.Get(),to,0x90,&raw,&gh)==E_NOTIMPL && !raw && !gh.ptr);
     CK(xs_descriptor_range(dst.Get(),to-32,2,&raw,&ch,&gh)==E_NOTIMPL && !raw && !gh.ptr && !ch.ptr);

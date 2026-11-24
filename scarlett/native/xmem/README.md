@@ -357,6 +357,5 @@ An existing ordinary page mapping makes an arena ineligible for scatter.
 same hardware harness as `test-tile-pages.cpp`. It checks a nonzero offset
 in the second section, same-handle identity, all 196,608 alias bytes and
 both guard pages, inaccessible input arrays, released IDs, busy-free,
-whole-span unmap and VA reuse. Retail proceeds to the unsupported address
-SRV at device `+230`, return `+4ecc821`: a 160-byte buffer with a 38-element
-raw R32_TYPELESS view. No retail sampling of this buffer was measured.
+whole-span unmap and VA reuse. Retail proceeds to the [38-element raw
+R32_TYPELESS view](../frame-descriptor-init.md#raw-wc-address-view-after-scatter).

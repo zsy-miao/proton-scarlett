@@ -216,3 +216,18 @@ the null buffer SRV, inline CBV, and null UAV after a write. The fixture also
 tests all ten startup SRV/UAV shapes, wrong-kind/misaligned/overrun/foreign
 inputs, free-list overwrite, and exact-VA heap recreation. It uses a host
 compute command list to isolate descriptor correctness. No retail execution.
+
+## Raw WC address view after scatter
+
+Device `+230` accepts a 160-byte buffer with the observed raw SRV (`R32_TYPELESS`,
+default component mapping, first element zero, 38 elements, raw flag). Validate
+the entire resource span in the retained WC pool, then expose exactly 152 bytes
+at `FirstElement = sectionOffset / 4`. The final eight resource bytes are padding.
+The CPU-to-visible `+c0` copy takes its own reference to the same import.
+
+Build `test-raw38.hlsl` with `dxc -T cs_6_0 -E main -Fo raw38.dxil`.
+Link `test-raw38.cpp` with the staged device, VM and queue objects and `-ld3d12`;
+place the DXIL next to the fixture executable. The fixture gates the GPU until
+the original bytes have changed, the title VA has been reused, and another WC
+import has replaced the device cache. It checks all 38 DWORDs, 26 out-of-range
+loads (including both padding DWORDs), and the shader-reported 152-byte size.

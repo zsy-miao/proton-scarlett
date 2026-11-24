@@ -522,7 +522,7 @@ static void WINAPI sampler_copy(IUnknown *iface,UINT count,SIZE_T dest,SIZE_T sr
 {
 #ifdef SCARLETT_STAGED_PLACED
     if (count==1 && type==D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
-        if (FAILED(xs_copy_r8_view(iface,dest,src))) xs_stop();
+        if (FAILED(xs_copy_wc_view(iface,dest,src))) xs_stop();
         return;
     }
 #endif
