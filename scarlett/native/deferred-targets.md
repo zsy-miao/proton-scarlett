@@ -344,3 +344,15 @@ runs, the initial RADV check assumed raw clear colors would be present;
 explicit texel writes verified the backing on both adapters. Both final
 ordinary runs presented only token 1 (count 0 → 1) and stopped at
 `+5707b8c` on the 4K depth/stencil placement path.
+
+### 4K depth/stencil placement (0042)
+
+Retail placed the texture in the original WC pool at `+0x17480000` on
+RADV and `+0x17fe0000` on RTX, then wrote a depth SRV and a writable DSV.
+The 4K target clears depth and stencil to zero; the 1440p target still
+requires stencil 7. Both depth fixtures passed on both adapters after VA reuse.
+
+Four retail launches: two diagnostic and two ordinary. Both ordinary
+runs stopped at sampler write `+1e8` (return `+12b981e`). RTX presented
+token 1; RADV completed its producer fence with no logged presentation.
+Neither presented a second token.

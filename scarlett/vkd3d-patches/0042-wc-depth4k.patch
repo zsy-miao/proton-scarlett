@@ -1,0 +1,38 @@
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettDepth4kImageV1 @47
+     ScarlettTiledUint160V1 @46
+     ScarlettTiledFloat160V1 @45
+     ScarlettTiledRG160V1 @44
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -384,7 +384,7 @@
+     D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,1,1,1,1,depth?DXGI_FORMAT_R32G8X24_TYPELESS:DXGI_FORMAT_R8G8B8A8_UNORM,{4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth?D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL:D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+     D3D12_CLEAR_VALUE cv={.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.Color={1,1,1,1}};D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
+     const bool a8=single==DXGI_FORMAT_A8_UNORM,bgra=single==DXGI_FORMAT_B8G8R8A8_UNORM,full=single==DXGI_FORMAT_R16G16B16A16_FLOAT,u8=single==DXGI_FORMAT_R8_UINT;
+-    const bool ds1440=depth && single==DXGI_FORMAT_R32G8X24_TYPELESS;
++    const bool ds1440=!small && depth && single==DXGI_FORMAT_R32G8X24_TYPELESS;
+     const SIZE_T span=small?small->span:ds1440?0x1300000:u8?0x40000:full?0x1ce0000:bgra?0x1010000:a8?0x880000:0x400000;
+     if(!out)return E_POINTER;
+     *out=NULL;
+@@ -442,6 +442,16 @@
+             scarlett_wc_image(iface,section,size,off,out,DXGI_FORMAT_R32G8X24_TYPELESS,true,NULL);
+ }
+ 
++HRESULT WINAPI ScarlettDepth4kImageV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    const struct small_rt ds={DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,native?0x28f0000:0x3fc0000,VK_FORMAT_D32_SFLOAT_S8_UINT,
++            native?0x17480000:0x17fe0000,{0x3fc0000,0x28e0008},0x10000};
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (!iface || !!native==!!section || size!=0x89700000u) return E_INVALIDARG;
++    return native ? native_pool_image(iface,native,off,TRUE,ds.fmt,&ds,out) : scarlett_wc_image(iface,section,size,off,out,ds.fmt,false,&ds);
++}
++
+ HRESULT WINAPI ScarlettSmallRTV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,DXGI_FORMAT format,UINT w,UINT h,ID3D12Resource **out)
+ {
+     unsigned int i;

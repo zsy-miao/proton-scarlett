@@ -240,7 +240,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
 #endif
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !(c->small_rt && kind==UAV) && !c->tiled_r32 && !c->tiled_r11 && !c->small_tile_format && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+            if (&c->iface==object && !(c->depth4k && (stencil || (kind==DSV && dsv.Flags))) && !(c->small_rt && kind==UAV) && !c->tiled_r32 && !c->tiled_r11 && !c->small_tile_format && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
                 c->depth==(kind==DSV || stencil || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(ds2d?DXGI_FORMAT_R32G8X24_TYPELESS:(single_color || (c->small_rt && !words[3]))?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }

@@ -143,3 +143,11 @@ R8_UINT sizing-only siblings and rejection of the 720p alias.
 on RTX/RADV. The placed wrapper has no display slice. Test with
 `wc-float1440.sh GPU TOOL small`; the fixture identifies all 4096 distinct
 upload words in the original WC backing after title VA reuse.
+
+`0042` qualifies the 3840×2160 flags-2 D32/S8 WC target. Both adapters
+placed it in state 6 with typed clear 0/0, then wrote a plane-zero SRV
+and a writable DSV. `wc-float1440.sh GPU TOOL depth1440` tests both
+sizes, including the 1440p stencil-7 contract. For 4K the guest stencil
+SRV and read-only DSVs are denied; host-only fixture descriptors check
+the underlying image independently. Next retail stop: sampler `+1e8`,
+return `+12b981e`.

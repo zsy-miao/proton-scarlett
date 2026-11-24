@@ -12,9 +12,9 @@ extern "C" HRESULT xs_resolve_depth_dsv(IUnknown*,SIZE_T,D3D12_CPU_DESCRIPTOR_HA
 #define CK(v) do{if(!(v)){fprintf(stderr,"FAIL %d %s\n",__LINE__,#v);return 1;}}while(0)
 #define HR(e) do{HRESULT hr=(e);if(FAILED(hr)){fprintf(stderr,"FAIL %d %s = %lx\n",__LINE__,#e,hr);return 1;}}while(0)
 #include "xmem/marked_section.h"
-int main(){
+template<bool fourK> static int check(){
 
-    constexpr UINT pool=0x89700000,guard=65536,width=2560,height=1440;
+    constexpr UINT pool=0x89700000,guard=65536,width=fourK?3840:2560,height=fourK?2160:1440;
     auto xm=LoadLibraryW(L"xmem.dll");CK(xm);
     auto alloc=(void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");
     auto take=(HRESULT(WINAPI*)(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*))(void*)GetProcAddress(xm,"ScarlettAcquireNativePoolV1");
@@ -25,17 +25,26 @@ int main(){
     ComPtr<IUnknown> dev;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)dev.GetAddressOf()));
     ComPtr<ID3D12Device>d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     UINT actual=0;ComPtr<ID3D12Resource> backing;HRESULT pin=take(d.Get(),base,1,nullptr,backing.GetAddressOf(),&actual);
-    const bool native=pin==S_OK;const UINT off=native?0x14140000:0x141d0000,span=native?0x1300000:0x1e00000;
+    const bool native=pin==S_OK;const UINT off=fourK?(native?0x17480000:0x17fe0000):(native?0x14140000:0x141d0000);
+    const UINT span=fourK?(native?0x28f0000:0x3fc0000):(native?0x1300000:0x1e00000);
     BYTE *alias=nullptr;if(native){CK(actual==0 && backing->GetDesc().Width==pool);}
     else {CK(pin==S_FALSE);scarlett_section_info held={},mapped={};HR(scarlett_query_section(0x53430005,base+off,span,&held));CK(held.offset==off && held.view_size==pool);
         HR(scarlett_query_section_handle(0x53430004,nullptr,pool,&mapped,held.section));CloseHandle(held.section);alias=(BYTE*)mapped.base;}
     memset(base+off-guard,0xa7,span+2*guard);MemoryBarrier();
-    DWORD wire[]={3,0,0,0,width,0,height,0x10001,19,1,0,0,0x4800002};D3D12_CLEAR_VALUE cv={};cv.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT;cv.DepthStencil.Stencil=7;
+    DWORD wire[]={3,0,0,0,width,0,height,0x10001,19,1,0,0,fourK?2u:0x4800002u};D3D12_CLEAR_VALUE cv={};cv.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT;cv.DepthStencil.Stencil=fourK?0:7;
     using Place=HRESULT(WINAPI*)(IUnknown*,UINT64,const void*,UINT,const void*,REFIID,void**);
     auto place=(Place)((*(void***)dev.Get())[0x428/8]);void *guest=nullptr;
     auto create=[&](UINT pos,UINT state=6){return place(dev.Get(),(UINT_PTR)base+pos,wire,state,&cv,IID_ID3D12Resource,&guest);};
     CK(FAILED(create(off,3))&&!guest);for(UINT j=0;j<13;j++)if(j!=1){wire[j]^=1;CK(FAILED(create(off))&&!guest);wire[j]^=1;}
-    CK(FAILED(create(off+guard))&&!guest);cv.DepthStencil.Stencil=0;CK(FAILED(create(off))&&!guest);cv.DepthStencil.Stencil=7;
+    CK(FAILED(create(off+guard))&&!guest);cv.DepthStencil.Stencil=fourK?7:0;CK(FAILED(create(off))&&!guest);cv.DepthStencil.Stencil=fourK?0:7;
+    if(fourK){
+        BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page && VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
+        BYTE *clear9=page+4096-9;memcpy(clear9,&cv,9);
+        CK(FAILED(place(dev.Get(),(SIZE_T)(base+off),wire,6,clear9+1,IID_ID3D12Resource,&guest)) && !guest);
+        CK(FAILED(place(dev.Get(),(SIZE_T)(base+off),wire,6,clear9,IID_ID3D12Heap,&guest)) && !guest);
+        HR(place(dev.Get(),(SIZE_T)(base+off),wire,6,clear9,IID_ID3D12Resource,&guest));((IUnknown*)guest)->Release();guest=nullptr;
+        CK(VirtualFree(page,0,MEM_RELEASE));
+    }
     const DWORD ms[]={3,0,0,0,1,0,1,0x10001,28,4,0,0,1};D3D12_CLEAR_VALUE white={DXGI_FORMAT_R8G8B8A8_UNORM,{1,1,1,1}};ComPtr<IUnknown> msaa;
     auto overlap=[&](){return place(dev.Get(),(UINT_PTR)base+(off&~0x3fffffu),ms,6,&white,IID_ID3D12Resource,(void**)msaa.GetAddressOf());};
     HR(overlap());CK(create(off)==DXGI_ERROR_INVALID_CALL && !guest);msaa.Reset();
@@ -58,22 +67,28 @@ int main(){
     ID3D12DescriptorHeap *bank;D3D12_GPU_DESCRIPTOR_HANDLE gpu;HR(xs_resolve_view(srvHeap.Get(),ss,0x90,&bank,&gpu));
     ComPtr<ID3D12Resource> image;D3D12_CPU_DESCRIPTOR_HANDLE h;HR(xs_resolve_depth_dsv(dsvHeap.Get(),rt,&h,image.GetAddressOf()));
     sw[0]=DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;sw[6]=0;CK(FAILED(xs_write_view(dev.Get(),0x90,obj.Get(),sw,ss)));
-    sw[6]=1;((Writer)vt[0x90/8])(dev.Get(),obj.Get(),sw,ss+32);
-    ID3D12DescriptorHeap *sbank;D3D12_GPU_DESCRIPTOR_HANDLE sg;HR(xs_resolve_view(srvHeap.Get(),ss+32,0x90,&sbank,&sg));
-    CK(sbank==bank && sg.ptr==gpu.ptr+d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
     D3D12_CPU_DESCRIPTOR_HANDLE ro[4]={};
-    for(UINT flags:{3u,1u,2u}){
-        rw[2]=flags;SIZE_T slot=rt+32*flags;
-        ((Writer)vt[0xa8/8])(dev.Get(),obj.Get(),rw,slot);
-        ComPtr<ID3D12Resource> resolved;HR(xs_resolve_depth_dsv(dsvHeap.Get(),slot,&ro[flags],&resolved));
-        CK(resolved.Get()==image.Get() && ro[flags].ptr!=h.ptr);
-        UINT64 tag[2];memcpy(tag,(void*)slot,16);rw[2]|=4;
-        CK(FAILED(xs_write_view(dev.Get(),0xa8,obj.Get(),rw,slot)));rw[2]=flags;
-        CK(FAILED(xs_write_view(dev.Get(),0xa8,dev.Get(),rw,slot)) && !memcmp((void*)slot,tag,16));
+    if(fourK){
+        sw[6]=1;CK(FAILED(xs_write_view(dev.Get(),0x90,obj.Get(),sw,ss+32)));
+        for(UINT flag:{1u,2u,3u}){rw[2]=flag;CK(FAILED(xs_write_view(dev.Get(),0xa8,obj.Get(),rw,rt)));}
+        CK(!memcmp(stamp,(void*)rt,16));
+    }else{
+        sw[6]=1;((Writer)vt[0x90/8])(dev.Get(),obj.Get(),sw,ss+32);
+        ID3D12DescriptorHeap *sbank;D3D12_GPU_DESCRIPTOR_HANDLE sg;HR(xs_resolve_view(srvHeap.Get(),ss+32,0x90,&sbank,&sg));
+        CK(sbank==bank && sg.ptr==gpu.ptr+d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
+        for(UINT flags:{3u,1u,2u}){
+            rw[2]=flags;SIZE_T slot=rt+32*flags;
+            ((Writer)vt[0xa8/8])(dev.Get(),obj.Get(),rw,slot);
+            ComPtr<ID3D12Resource> resolved;HR(xs_resolve_depth_dsv(dsvHeap.Get(),slot,&ro[flags],&resolved));
+            CK(resolved.Get()==image.Get() && ro[flags].ptr!=h.ptr);
+            UINT64 tag[2];memcpy(tag,(void*)slot,16);rw[2]|=4;
+            CK(FAILED(xs_write_view(dev.Get(),0xa8,obj.Get(),rw,slot)));rw[2]=flags;
+            CK(FAILED(xs_write_view(dev.Get(),0xa8,dev.Get(),rw,slot)) && !memcmp((void*)slot,tag,16));
+        }
+        // Recycle a native slot and verify the serial changes without touching its neighbor.
+        UINT64 before=*(UINT64*)(rt+96);rw[2]=0;((Writer)vt[0xa8/8])(dev.Get(),obj.Get(),rw,rt+96);
+        rw[2]=3;((Writer)vt[0xa8/8])(dev.Get(),obj.Get(),rw,rt+96);CK(before!=*(UINT64*)(rt+96) && !memcmp(stamp,(void*)rt,16));
     }
-    // Recycle a native slot and verify the serial changes without touching its neighbor.
-    UINT64 before=*(UINT64*)(rt+96);rw[2]=0;((Writer)vt[0xa8/8])(dev.Get(),obj.Get(),rw,rt+96);
-    rw[2]=3;((Writer)vt[0xa8/8])(dev.Get(),obj.Get(),rw,rt+96);CK(before!=*(UINT64*)(rt+96) && !memcmp(stamp,(void*)rt,16));
     obj.Reset();CK(create(off)==DXGI_ERROR_INVALID_CALL && !guest);CK(overlap()==DXGI_ERROR_INVALID_CALL && !msaa);
     auto rd=image->GetDesc();CK(rd.Format==DXGI_FORMAT_R32G8X24_TYPELESS && rd.Width==width && rd.Height==height && rd.Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[2];UINT64 bytes;d->GetCopyableFootprints(&rd,0,2,0,fp,nullptr,nullptr,&bytes);
@@ -87,17 +102,32 @@ int main(){
     D3D12_RECT zrect={width-2,0,width,height},srect=zrect;srect.left++;
     l->ClearDepthStencilView(h,D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.25f,0x31,0,nullptr);
     auto plane=[&](UINT i,D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after){D3D12_RESOURCE_BARRIER b={};b.Transition={image.Get(),i,before,after};l->ResourceBarrier(1,&b);};
+    if(fourK){
+        l->ClearDepthStencilView(h,D3D12_CLEAR_FLAG_DEPTH,.75f,0,1,&zrect);
+        l->ClearDepthStencilView(h,D3D12_CLEAR_FLAG_STENCIL,0,0xa5,1,&srect);
+    }else{
     plane(1,D3D12_RESOURCE_STATE_DEPTH_WRITE,D3D12_RESOURCE_STATE_DEPTH_READ);
     l->ClearDepthStencilView(ro[2],D3D12_CLEAR_FLAG_DEPTH,.75f,0,1,&zrect);
     plane(1,D3D12_RESOURCE_STATE_DEPTH_READ,D3D12_RESOURCE_STATE_DEPTH_WRITE);
     plane(0,D3D12_RESOURCE_STATE_DEPTH_WRITE,D3D12_RESOURCE_STATE_DEPTH_READ);
     l->ClearDepthStencilView(ro[1],D3D12_CLEAR_FLAG_STENCIL,0,0xa5,1,&srect);
     plane(0,D3D12_RESOURCE_STATE_DEPTH_READ,D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    }
     BYTE dxil[8192];auto file=fopen("depth1024.dxil","rb");CK(file);auto len=fread(dxil,1,sizeof dxil,file);CK(len && feof(file));fclose(file);
     ComPtr<ID3D12RootSignature> root;HR(d->CreateRootSignature(0,dxil,len,IID_PPV_ARGS(&root)));
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd={};pd.pRootSignature=root.Get();pd.CS={dxil,len};ComPtr<ID3D12PipelineState> pso;HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&pso)));
     hp.Type=D3D12_HEAP_TYPE_DEFAULT;buf.Width=256;buf.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;ComPtr<ID3D12Resource> result;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&result)));
+    ComPtr<ID3D12DescriptorHeap> testDsv;
+    if(fourK){
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv={};sv.Format=DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;sv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
+        sv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;sv.Texture2D.MipLevels=sv.Texture2D.PlaneSlice=1;
+        auto cpu=bank->GetCPUDescriptorHandleForHeapStart();cpu.ptr+=gpu.ptr-bank->GetGPUDescriptorHandleForHeapStart().ptr+d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        d->CreateShaderResourceView(image.Get(),&sv,cpu);
+        D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_DSV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&testDsv)));
+        D3D12_DEPTH_STENCIL_VIEW_DESC dv={};dv.Format=cv.Format;dv.ViewDimension=D3D12_DSV_DIMENSION_TEXTURE2D;dv.Flags=D3D12_DSV_FLAG_READ_ONLY_DEPTH|D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+        ro[3]=testDsv->GetCPUDescriptorHandleForHeapStart();d->CreateDepthStencilView(image.Get(),&dv,ro[3]);
+    }
     // Bind the all-read-only DSV and sample both original planes in the same draw.
     const auto psRead=D3D12_RESOURCE_STATE_DEPTH_READ|D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     plane(D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_DEPTH_WRITE,psRead);
@@ -137,9 +167,11 @@ int main(){
         auto pixel=(DWORD*)(p+shaderOff+64)+2*i;CK(pixel[0]==v[0] && pixel[1]==v[1]);
         CK(v[0]==(i<2?0x3e800000u:0x3f400000u) && v[1]==(i==3?0xa5u:0x31u) && v[2]==(i>=2) && v[3]==(i==3?0xcafeu:0x1234u));}
     const BYTE *raw=native?p+bytes:alias+off-guard;UINT changed=0,zwords=0,stencils=0;
-    for(UINT i=0;i<span+2*guard;i++){CK(reuse[i]==0x39);if(i<guard || i>=guard+(native?0x12fc008:span))CK(raw[i]==0xa7);
+    for(UINT i=0;i<span+2*guard;i++){CK(reuse[i]==0x39);if(i<guard || i>=guard+(native?(fourK?0x28e0008:0x12fc008):span))CK(raw[i]==0xa7);
         else {changed+=raw[i]!=0xa7;stencils+=raw[i]==0x31;if(!(i%4))zwords+=*(const DWORD*)(raw+i)==0x3e800000;}}
     printf("raw depth words=%u stencil bytes=%u changed=%u\n",zwords,stencils,changed);CK(zwords>=width && stencils>=width);
-    printf("PASS depth1440 %s: three read-only DSVs, simultaneous pixel SRV/DSV, both plane readbacks after VA reuse; original span, guards, partial overlap both directions\n",native?"native":"section");
+    printf("PASS depth %ux%u %s: simultaneous pixel SRV/DSV, both plane readbacks after VA reuse; original span, guards, partial overlap both directions\n",width,height,native?"native":"section");
     rb->Unmap(0,nullptr);CloseHandle(e);CK(VirtualFree(base,0,MEM_RELEASE));if(alias)CK(VirtualFree(alias,0,MEM_RELEASE));return 0;
 }
+
+int main(){return check<false>() || check<true>();}
