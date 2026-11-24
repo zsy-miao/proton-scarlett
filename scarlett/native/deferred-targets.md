@@ -278,3 +278,34 @@ that DWORD while checking all active fields and the source object.
 `wc-float1440.sh GPU TOOL small` checks guarded original backing after
 VA reuse, exact sizing, duplicate placement and incompatible descriptors,
 all RTV pixels and two shader SRV loads across each clear boundary.
+
+### 160×90 tiled float views (0039)
+
+Both formats requested one mip, layout `0x102`, flags `0x300004`, 256-byte
+natural alignment. The separate XG reference coordinate and linear-to-tiled
+copy queries agreed at every visible texel, without touching padding:
+
+| Format | Tile | Total bytes | Padding texels | Offset RTX / RADV |
+|---|---|---:|---:|---|
+| R32G32_FLOAT | 8×4 | 0x1cc00 | 320 | 0x15fd0000 / 0x15440000 |
+| R32_FLOAT | 8×8 | 0xf000 | 960 | 0xe6c0800 / 0xe6c0800 |
+
+R32_FLOAT first tried input alignment 4096 on both sizing slots, then
+retried with zero; the RG query used only zero. Both were placed with
+zero requested alignment, state 3, resource IID and null clear. Both used
+the original marked WC section on RTX and same-device native heap on RADV.
+The title wrote one 2D SRV and one null-counter UAV per object. These
+records own the original range; ordinary shader resolution remains denied.
+No sampled frame or retail shader consumer of either view was observed.
+Next: `+c8`, one-mip 160×90 R32_UINT, alignment 4096, layout `0x102`,
+flags `0x300004`, return `+344145`.
+
+This batch took 11 retail launches: nine diagnostic runs and two ordinary
+runs on the same staged build, one per adapter. RTX presented token 1
+(count 0 → 1); RADV reached the producer fence and logged no completed
+present. Neither ordinary run presented a second token.
+
+`rtx-r32-tile.sh TOOL rtx-small|radv-small` checks both formats in a single
+fixture, including distinct address fingerprints, handle generation,
+descriptor copying, negative fields, allocation collisions, GPU read/write
+of both original spans after VA reuse, padding and both 64 KiB guards.

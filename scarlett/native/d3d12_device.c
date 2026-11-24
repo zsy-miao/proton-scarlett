@@ -273,6 +273,14 @@ static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
          (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048))));
 }
 #include "queue/rtx3070.h"
+static UINT small_tile_bytes(const D3D12_RESOURCE_DESC *r)
+{
+    if (r->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || r->Width!=160 || r->Height!=90 || r->DepthOrArraySize!=1 ||
+        r->MipLevels!=1 || r->SampleDesc.Count!=1 || r->SampleDesc.Quality || (UINT)r->Layout!=0x102 || (UINT)r->Flags!=0x300004) return 0;
+    if (r->Format==DXGI_FORMAT_R32G32_FLOAT && !r->Alignment) return 0x1cc00;
+    if (r->Format==DXGI_FORMAT_R32_FLOAT && (!r->Alignment || r->Alignment==4096)) return 0xf000;
+    return 0;
+}
 static BOOL tiled_r32_desc(const D3D12_RESOURCE_DESC *rd)
 {
     return rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==1280 && rd->Height==720 &&
@@ -330,6 +338,12 @@ static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
 static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
         D3D12_RESOURCE_ALLOCATION_INFO *out,D3D12_RESOURCE_ALLOCATION_INFO1 *detail,const struct page_group *group)
 {
+    UINT bytes=small_tile_bytes(rd);
+    if (bytes) {
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){bytes,256};
+        if(detail)*detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=256,.SizeInBytes=bytes};
+        return S_OK;
+    }
     if (tiled_r32_desc(rd)) {
         /* 160 x 90 complete 256-byte guest tiles. */
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){0x384000,256};
@@ -479,7 +493,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     const struct page_group *group=deferred_pages(&rd);
-    if (group || (rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) ||
+    if (small_tile_bytes(&rd) || group || (rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) ||
         rd.Format==DXGI_FORMAT_B5G5R5A1_UNORM || rd.Format==DXGI_FORMAT_R32G8X24_TYPELESS ||
         rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
         rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL,group);
@@ -721,8 +735,8 @@ static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const vo
         rd.DepthOrArraySize==1 && rd.MipLevels==1 && !rd.Format && rd.SampleDesc.Count==1 && !rd.SampleDesc.Quality &&
         rd.Layout==D3D12_TEXTURE_LAYOUT_ROW_MAJOR && rd.Flags==D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
         return create_row_buffer(d,address,state,clear,iid,out);
-    if (read && rd.MipLevels==5 && tiled_r11_chain(&rd)) return create_tiled_buffer(d,TRUE,address,state,clear,iid,out);
-    if (read && tiled_r32_desc(&rd)) return create_tiled_buffer(d,FALSE,address,state,clear,iid,out);
+    if (read && ((rd.MipLevels==5 && tiled_r11_chain(&rd)) || tiled_r32_desc(&rd) || (small_tile_bytes(&rd) && !rd.Alignment)))
+        return create_tiled_buffer(d,rd.Format,address,state,clear,iid,out);
     if (read && (msaa_desc(&rd) || single_desc(&rd)))
         return create_target(d,address,&rd,state,clear,iid,out);
     return placed_create(d,address,desc,state,clear,iid,out);

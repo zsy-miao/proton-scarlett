@@ -1,0 +1,33 @@
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,8 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettTiledFloat160V1 @45
++    ScarlettTiledRG160V1 @44
+     ScarlettSmallRTV1 @43
+     ScarlettRowBufferV1 @42
+     ScarlettDepth1440ImageV1 @41
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -527,3 +527,19 @@
+     if (off!=0xe650000) return E_INVALIDARG;
+     return scarlett_wc_buffer(iface,native,section,size,off,0x70800,out);
+ }
++
++HRESULT WINAPI ScarlettTiledRG160V1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (off!=(native?0x15440000:0x15fd0000)) return E_INVALIDARG;
++    return scarlett_wc_buffer(iface,native,section,size,off,0x1cc00,out);
++}
++
++HRESULT WINAPI ScarlettTiledFloat160V1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (off!=0xe6c0800) return E_INVALIDARG;
++    return scarlett_wc_buffer(iface,native,section,size,off,0xf000,out);
++}

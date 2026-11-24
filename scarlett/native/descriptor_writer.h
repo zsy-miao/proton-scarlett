@@ -141,10 +141,11 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         HRESULT hr=write_tile_record(d,object,kind==SRV?TILE_R11_SRV:TILE_R11_UAV,0,dest,mip,levels);
         if(hr!=S_FALSE)return hr;
     }
-    if (object && words[0]==DXGI_FORMAT_R32_UINT && words[1]==4 && (kind==SRV || kind==UAV)) {
-        const DWORD sw[]={42,4,0x1688,0,0,1,0,0},uw[]={42,4,0,0};
+    if (object && (words[0]==DXGI_FORMAT_R32_UINT || words[0]==DXGI_FORMAT_R32G32_FLOAT || words[0]==DXGI_FORMAT_R32_FLOAT) && words[1]==4 && (kind==SRV || kind==UAV)) {
+        UINT base=words[0]==DXGI_FORMAT_R32_FLOAT?TILE_F_SRV:words[0]==DXGI_FORMAT_R32G32_FLOAT?TILE_RG_SRV:TILE_UINT_SRV;
+        const DWORD sw[]={words[0],4,0x1688,0,0,1,0,0},uw[]={words[0],4,0,0};
         if (kind==SRV ? memcmp(words,sw,sizeof sw) : memcmp(words,uw,sizeof uw)) return E_NOTIMPL;
-        return write_tile_record(d,object,kind==SRV?TILE_UINT_SRV:TILE_UINT_UAV,0,dest,0,0);
+        return write_tile_record(d,object,base+(kind==UAV),0,dest,0,0);
     }
     IUnknown *old_placed=NULL;
     if (object && (kind==SRV || kind==UAV)) {
@@ -239,7 +240,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
 #endif
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !(c->small_rt && kind==UAV) && !c->tiled_r32 && !c->tiled_r11 && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+            if (&c->iface==object && !(c->small_rt && kind==UAV) && !c->tiled_r32 && !c->tiled_r11 && !c->small_tile_format && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
                 c->depth==(kind==DSV || stencil || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(ds2d?DXGI_FORMAT_R32G8X24_TYPELESS:single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }

@@ -1,7 +1,7 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
 enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, SRGB_ROW_VIEW=0x236, STRUCT_VIEW=0x237, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
-enum { TILE_UINT_SRV=0x400, TILE_UINT_UAV, TILE_RGB_SRV, TILE_R11_SRV, TILE_R11_UAV };
-static BOOL tile_view(UINT kind) { return kind>=TILE_UINT_SRV && kind<=TILE_R11_UAV; }
+enum { TILE_UINT_SRV=0x400, TILE_UINT_UAV, TILE_RGB_SRV, TILE_R11_SRV, TILE_R11_UAV, TILE_RG_SRV, TILE_RG_UAV,TILE_F_SRV,TILE_F_UAV };
+static BOOL tile_view(UINT kind) { return kind>=TILE_UINT_SRV && kind<=TILE_F_UAV; }
 static UINT array_view_layers(UINT kind)
 {
     UINT layers=kind-ARRAY_VIEW_BASE;

@@ -18,3 +18,14 @@ ID3D12Resource *test_row_backing(IUnknown *object)
     struct row_buffer *r=CONTAINING_RECORD(object,struct row_buffer,iface);
     ID3D12Resource_AddRef(r->host);return r->host;
 }
+/* Inspect the retained descriptor, not a new allocation at the public address. */
+ID3D12Resource *test_small_tile_backing(IUnknown *heap,SIZE_T slot,DXGI_FORMAT fmt)
+{
+    struct desc_heap *h=CONTAINING_RECORD(heap,struct desc_heap,iface);
+    UINT kind=fmt==DXGI_FORMAT_R32G32_FLOAT?TILE_RG_SRV:TILE_F_SRV;
+    D3D12_CPU_DESCRIPTOR_HANDLE unused;
+    if(!h->visible || !h->records || FAILED(descriptor_slot(heap,slot,&unused,NULL)))return NULL;
+    struct descriptor_record *r=&h->records[(slot-h->start)/h->stride];
+    if(!valid_address_record(r,slot,kind))return NULL;
+    ID3D12Resource_AddRef(r->resource);return r->resource;
+}

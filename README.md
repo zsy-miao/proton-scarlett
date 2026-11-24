@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | The same experimental build presented the game's first startup image on AMD and an NVIDIA RTX 3070. Neither run displayed a second frame. |
-| What's blocking it? | Both GPUs now create six more startup render targets. The next stop is a size request for a tiled 160×90 texture. |
+| What's blocking it? | Both GPUs now place two tiled 160×90 floating-point textures. Startup stops at the size request for the next 160×90 texture, which stores unsigned integers. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

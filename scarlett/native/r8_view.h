@@ -51,11 +51,11 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     D3D12_SHADER_RESOURCE_VIEW_DESC null_view=address_srv_desc(kind,elements,stride);
     if (tile_view(kind)) {
         /* Inert host slot even on reuse; only a separately lowered table may expose the buffer. */
-        if (kind==TILE_UINT_UAV || kind==TILE_R11_UAV) {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC u={.Format=kind==TILE_R11_UAV?DXGI_FORMAT_R11G11B10_FLOAT:DXGI_FORMAT_R32_UINT,.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D};
+        if (kind==TILE_UINT_UAV || kind==TILE_R11_UAV || kind==TILE_RG_UAV || kind==TILE_F_UAV) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC u={.Format=kind==TILE_F_UAV?DXGI_FORMAT_R32_FLOAT:kind==TILE_RG_UAV?DXGI_FORMAT_R32G32_FLOAT:kind==TILE_R11_UAV?DXGI_FORMAT_R11G11B10_FLOAT:DXGI_FORMAT_R32_UINT,.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D};
             ID3D12Device_CreateUnorderedAccessView(d->host,NULL,NULL,&u,cpu);
         } else {
-            null_view.Format=kind==TILE_R11_SRV?DXGI_FORMAT_R11G11B10_FLOAT:kind==TILE_RGB_SRV?DXGI_FORMAT_R9G9B9E5_SHAREDEXP:DXGI_FORMAT_R32_UINT;
+            null_view.Format=kind==TILE_F_SRV?DXGI_FORMAT_R32_FLOAT:kind==TILE_RG_SRV?DXGI_FORMAT_R32G32_FLOAT:kind==TILE_R11_SRV?DXGI_FORMAT_R11G11B10_FLOAT:kind==TILE_RGB_SRV?DXGI_FORMAT_R9G9B9E5_SHAREDEXP:DXGI_FORMAT_R32_UINT;
             ID3D12Device_CreateShaderResourceView(d->host,NULL,&null_view,cpu);
         }
     } else if (kind==RAW38_VIEW) {
@@ -76,7 +76,8 @@ static HRESULT write_tile_record(struct xbox_device *d,IUnknown *id,UINT kind,UI
     AcquireSRWLockExclusive(&d->descriptor_lock);
     for (struct color_resource *c=d->colors;c;c=c->next) {
         if (id==&c->iface && c->single_format==DXGI_FORMAT_R11G11B10_FLOAT && kind==TILE_R11_SRV) {hr=S_FALSE;goto done;}
-        if ((kind==TILE_R11_SRV || kind==TILE_R11_UAV) ? !c->tiled_r11 : !c->tiled_r32) continue;
+        if (kind==TILE_F_SRV || kind==TILE_F_UAV ? c->small_tile_format!=DXGI_FORMAT_R32_FLOAT :
+            kind==TILE_RG_SRV || kind==TILE_RG_UAV ? c->small_tile_format!=DXGI_FORMAT_R32G32_FLOAT : (kind==TILE_R11_SRV || kind==TILE_R11_UAV) ? !c->tiled_r11 : !c->tiled_r32) continue;
         if ((id ? &c->iface!=id : c->tile_va!=va) || !tile_mapping(c)) continue;
         if (buffer) goto done;
         buffer=c->host;

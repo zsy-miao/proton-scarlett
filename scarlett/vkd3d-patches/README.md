@@ -128,3 +128,7 @@ as a tiled R32 predecessor. Run `wc-float1440.sh GPU TOOL row` on each GPU.
 pool offsets after the read-only depth views. Run `wc-float1440.sh GPU
 TOOL small` on both adapters; Vulkan byte spans may be smaller than the
 reserved guest span.
+
+`0039` reuses the WC buffer reservation for two measured 160×90 tiled
+float textures. It adds no shader lowering. Test with `rtx-r32-tile.sh
+TOOL rtx-small` and `radv-small` sequentially.
