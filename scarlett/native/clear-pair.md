@@ -62,12 +62,12 @@ TMPDIR="$PWD" SCARLETT_TEST_DISPLAY=sway SCARLETT_TEST_GPU=radv \
   "$n/../test-launch-nixos.sh" game /path/to/scratch-tool
 ```
 
-**Clear #4 source timing control (cross-compiled only).** The clear-fallback
+**Clear #4 source timing control (passed on RADV and RTX).** The clear-fallback
 writer produces the same 100-byte record twice in one continuously mapped
 `8404` generation. The fixture snapshots the first record for the left half
 and records a bounded GPU copy from `ImportedReadSpan` for the right half.
 After submission, while the Direct queue is fence-blocked, the writer changes
-the color in place. After release the readback must be `20 60 9f df` on the
+the color in place. After release the readback was `20 60 9f df` on the
 left and `df 9f 60 20` on the right, with both bound DSV planes unchanged
 at every pixel. These are two explicit fixture policies, not evidence of when
 the retail clear consumes its source.

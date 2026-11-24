@@ -578,10 +578,11 @@ not establish a draw, composite, or token-2 render submission.
 | Barriers | 2 diagnostic, 2 staged ordinary, 1 installed RADV | 4 passed; 1 RADV setup failure corrected by allocating the WC pool earlier | Both staged GPUs: bind at `+33317`. Installed `1a5178f2`: barriers at `+32113`. |
 | Attachment bind | 1 RADV diagnostic, 2 staged ordinary | All 6 passed | Both GPUs: **list** `+230`, return `+33396`, setting depth bounds. |
 
-RADV measured `(0.0,1.0)` on the clear recorder. The independent host
-control on both GPUs counted `32/0` samples on the left/right halves with
-narrow bounds and `32/32` with full bounds. The guest setter is still
-guarded. In every staged ordinary run and the installed comparison, the
+RADV measured `(0.0,1.0)` on the clear recorder. The independent
+[host control](../test-depth-bounds.cpp) on both GPUs counted `32/0`
+samples on the left/right halves with narrow bounds and `32/32` with
+full bounds. At this stage the guest setter was still guarded.
+In every staged ordinary run and the installed comparison, the
 game issued tokens 1 and 2; only token 1 presented (WSI count 0→1).
 
 ### Clear raster state and vertex source
