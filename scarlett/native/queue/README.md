@@ -1034,3 +1034,19 @@ callback. Publication associated the producer's acquire and the successor's
 release with the same chunk, generation 1. Its hold count was zero at both
 observations. Submitting the pair still requires keeping the recorded work
 and everything it references alive through the batch fence.
+
+### Guarded submission retail test
+
+Both GPUs passed the gated two-list fixture: while GPU reads were pending,
+the game's recycler fence stayed at 2 even after its queue accepted signal
+3. It reached 3 only after the original batch completed. CPU and foreign
+queue attempts to signal the protected fence were rejected.
+
+Both ordinary runs used provider `535335f6` and backend `c77099d1`.
+On AMD both lists closed, and the queue worker matched the original
+vertex-data chunk and its fence. The render thread stopped at list `+238`
+(marker, return `+4ed46aa`) before a submission result or batch completion
+was logged. On RTX the producer closed; the successor stopped at list
+`+240` (timestamp, return `+2482b37`) before reaching the queue check.
+Both issued tokens 1 and 2. Only token 1 presented (display count 0→1);
+neither capture showed recognizable title content.
