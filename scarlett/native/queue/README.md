@@ -352,6 +352,8 @@ became visible while the counter wait still held the tail. Resetting and
 releasing the submitted list and reusing the pool address did not redirect
 either write. The recorder compares section identities before reusing the
 first query heap and destination buffer; query index 1 belongs to the tail.
+Run [`tail-timestamp.sh`](../../tests/tail-timestamp.sh) with `radv` or
+`nvidia` and the staged tool directory to reproduce the replay and VA-reuse test.
 On each adapter a staged retail run reached queue `+0x118`, flags `3`
 (return `+0x24821e3`). Another thread requested device `+0x1e8`
 (return `+0x12b981e`). The batch did not execute.

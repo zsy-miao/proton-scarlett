@@ -1,5 +1,10 @@
 /* Included by test-allocation-info.cpp: reuse its actual factory, heaps and two hooked slices. */
 #include "xmem/display_backing.h"
+#ifdef TEST_TAIL_TIMESTAMP
+#include "xmem/marked_section.h"
+extern "C" HRESULT test_stamp_try(IUnknown *,UINT64,UINT64);
+extern "C" void test_copy_ticks(IUnknown *,ID3D12Resource *,UINT64);
+#endif
 extern "C" HRESULT test_primary_try(IUnknown *,UINT,const D3D12_BARRIER_GROUP *);
 #ifdef TEST_PRIMARY_CLEAR
 extern "C" HRESULT test_clear_try(IUnknown *,SIZE_T,const FLOAT *,UINT,const RECT *);
@@ -28,6 +33,38 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     HR(addAllocator(dev,0,IID_ID3D12CommandAllocator,(void**)a.GetAddressOf()));
     HR(addAllocator(dev,0,IID_ID3D12CommandAllocator,(void**)b.GetAddressOf()));
     UINT ld[]={0,6,1,0}; HR(SLOT(dev,0x248,List)(dev,ld,a.Get(),nullptr,xs_pool_list_id,(void**)list.GetAddressOf()));
+#ifdef TEST_TAIL_TIMESTAMP
+    constexpr UINT span=0x49400000,window=0x4190000,post=0x29a5ee15;
+    constexpr UINT64 empty=0xadadadadadadadadull;
+    UINT shape[]={1,128,1,1};ComPtr<IUnknown> sampler;
+    using Heap=HRESULT(WINAPI*)(IUnknown *,const void *,REFIID,void **);
+    HR(SLOT(dev,0x70,Heap)(dev,shape,IID_ID3D12DescriptorHeap,(void**)sampler.GetAddressOf()));
+    IUnknown *pair[]={heap.Get(),sampler.Get()};HR(xs_bind_pool_heaps(list.Get(),2,pair));
+    auto reserve=(void *(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");CK(reserve);
+    auto pool=(BYTE*)reserve(nullptr,span,0x20003000,0x183,0x22004);CK(pool);
+    auto head=pool+window+0x6218;scarlett_section_info id;
+#ifdef TEST_WB_TAIL
+    auto ctrl=(volatile UINT*)reserve(nullptr,65536,0x20401000,0x283,0x42404);CK(ctrl);
+    scarlett_section_info copy;
+    HR(scarlett_query_section(0x5343000c,head,8,&id));
+    HR(scarlett_query_section_handle(0x5343000b,nullptr,span,&copy,id.section));
+    auto original=(BYTE*)copy.base+window;
+#else
+    volatile UINT *ctrl=nullptr;
+    auto make=(HRESULT(WINAPI*)(ID3D12Device*,SIZE_T,void**))(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");
+    CK(make);HR(make(d,65536,(void**)&ctrl));HR(scarlett_acquire_section(head,8,&id));
+    auto original=(BYTE*)MapViewOfFile(id.section,FILE_MAP_READ|FILE_MAP_WRITE,0,window,65536);CK(original);
+#endif
+    CK(CloseHandle(id.section));memset(original,0xad,65536);
+    auto ticks=(volatile UINT64*)(original+0x6210);
+    InterlockedExchange64((volatile LONG64*)ctrl,0);ctrl[2]=ctrl[3]=~0u;
+    using Mark=void(WINAPI*)(IUnknown*,const volatile void*,UINT,UINT64,UINT);
+    using Stamp=void(WINAPI*)(IUnknown*,const void*,UINT64,UINT64,UINT);
+    SLOT(list.Get(),0x238,Mark)(list.Get(),ctrl+2,0,0,0);
+    SLOT(list.Get(),0x240,Stamp)(list.Get(),head,0,0,1);
+    SLOT(list.Get(),0x238,Mark)(list.Get(),ctrl+3,post,0,0);
+    SLOT(list.Get(),0x250,Mark)(list.Get(),ctrl,7,1,1);
+#endif
 #ifdef TEST_PRIMARY_CLEAR
     auto l=test_clear_recorder(list.Get()); // fixture records the producer; no escaped host recorder in the title
     FLOAT clear[4]={};
@@ -87,6 +124,10 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     D3D12_RESOURCE_DESC bd={};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=2*imageBytes;
     bd.Height=bd.DepthOrArraySize=bd.MipLevels=bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
+#ifdef TEST_TAIL_TIMESTAMP
+    const UINT64 tickOffset=bd.Width;bd.Width+=16;
+    CK(test_stamp_try(list.Get(),(UINT_PTR)head-8,0)==E_NOTIMPL); // clear alone is insufficient
+#endif
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read)));
     auto copyList=l;
 #ifdef TEST_PRIMARY_RELEASE
@@ -96,6 +137,12 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     CK(test_primary_try(list.Get(),1,&group)==E_INVALIDARG);
     t.pResource=(ID3D12Resource*)surface;SLOT(list.Get(),0x490,Barrier)(list.Get(),1,&group);
     CK(test_primary_try(list.Get(),1,&group)==E_NOTIMPL && !xs_list_host(list.Get()));
+#ifdef TEST_TAIL_TIMESTAMP
+    CK(FAILED(test_stamp_try(list.Get(),(UINT_PTR)head,0)) && FAILED(test_stamp_try(list.Get(),(UINT_PTR)head-8,1)));
+    SLOT(list.Get(),0x240,Stamp)(list.Get(),head-8,0,0,1);
+    CK(FAILED(test_stamp_try(list.Get(),(UINT_PTR)head-8,0)));
+    test_copy_ticks(list.Get(),read.Get(),tickOffset);
+#endif
     ComPtr<ID3D12CommandQueue> reader;D3D12_COMMAND_QUEUE_DESC qd={};
     HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&reader)));
     ComPtr<ID3D12CommandAllocator> allocator;HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&allocator)));
@@ -131,8 +178,34 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     HR(acquire->Close());
     ComPtr<ID3D12Fence> published,consumed;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&published)));
     HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&consumed)));
-    HR(reader->Wait(published.Get(),1));ID3D12CommandList *reads[]={acquire.Get()};reader->ExecuteCommandLists(1,reads);HR(reader->Signal(consumed.Get(),1));
     ComPtr<ID3D12Resource> readOwner=texture;
+#endif
+#ifdef TEST_TAIL_TIMESTAMP
+    // Replay requires restoring the primary layout, but not resetting the guest list.
+    auto queue=test_host_queue(q.Get());
+    ComPtr<ID3D12GraphicsCommandList7> restore;HR(d->CreateCommandList(1,qd.Type,allocator.Get(),nullptr,IID_PPV_ARGS(&restore)));
+    t={D3D12_BARRIER_SYNC_NONE,D3D12_BARRIER_SYNC_COMPUTE_SHADING,D3D12_BARRIER_ACCESS_NO_ACCESS,D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
+        D3D12_BARRIER_LAYOUT_COMMON,D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,texture.Get(),{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
+    group.pTextureBarriers=&t;restore->Barrier(1,&group);HR(restore->Close());
+    IUnknown *first[]={list.Get()};SLOT(q.Get(),0x118,Submit)(q.Get(),1,first,0,0);
+    ID3D12CommandList *back[]={restore.Get()};queue->ExecuteCommandLists(1,back);
+    ComPtr<ID3D12Fence> firstDone;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&firstDone)));HR(queue->Signal(firstDone.Get(),1));
+    auto headOnly=[&] {
+        ULONGLONG until=GetTickCount64()+5000;
+        while(ctrl[3]!=post && GetTickCount64()<until) Sleep(1);
+        return ctrl[2]==0 && ctrl[3]==post && ticks[1]!=empty && ticks[0]==empty;
+    };
+    CK(headOnly() && !firstDone->GetCompletedValue());InterlockedExchange64((volatile LONG64*)ctrl,1);
+    HANDLE firstEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(firstEvent);HR(firstDone->SetEventOnCompletion(1,firstEvent));
+    CK(WaitForSingleObject(firstEvent,10000)==WAIT_OBJECT_0);CloseHandle(firstEvent);
+    UINT64 firstTail=ticks[0];CK(ticks[1]<firstTail && firstTail!=empty);
+    ticks[0]=ticks[1]=empty;ctrl[2]=ctrl[3]=~0u;InterlockedExchange64((volatile LONG64*)ctrl,0);
+    const BYTE before0=arena[0],beforeLast=arena[3839*4];
+#else
+    const BYTE before0=0xa5,beforeLast=0xa5;
+#endif
+#ifdef TEST_PRIMARY_RELEASE
+    HR(reader->Wait(published.Get(),1));ID3D12CommandList *reads[]={acquire.Get()};reader->ExecuteCommandLists(1,reads);HR(reader->Signal(consumed.Get(),1));
 #endif
     HR(xs_queue_wait(q.Get(),gate.Get(),1));IUnknown *batch[]={list.Get()};SLOT(q.Get(),0x118,Submit)(q.Get(),1,batch,0,0);
     HR(SLOT(q.Get(),0x80,Signal)(q.Get(),done.Get(),1));HANDLE retired=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(retired);
@@ -142,7 +215,17 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
 #ifdef TEST_PRIMARY_RELEASE
     HR(test_host_queue(q.Get())->Signal(published.Get(),1));CK(published->GetCompletedValue()==0 && consumed->GetCompletedValue()==0);
 #endif
-    CK(arena[0]==0xa5 && arena[3839*4]==0xa5);HR(xs_cpu_signal(gate.Get(),1));
+#ifdef TEST_TAIL_TIMESTAMP
+    CK(VirtualFree(pool,0,MEM_RELEASE));
+    auto reuse=pool+window;CK(VirtualAlloc(reuse,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==reuse);
+    memset(reuse,0x49,65536);CK(ticks[0]==empty && ticks[1]==empty);
+    UINT64 low,mid,high,cpu;HR(queue->GetClockCalibration(&low,&cpu));
+#endif
+    CK(arena[0]==before0 && arena[3839*4]==beforeLast);HR(xs_cpu_signal(gate.Get(),1));
+#ifdef TEST_TAIL_TIMESTAMP
+    CK(headOnly() && WaitForSingleObject(retired,100)==WAIT_TIMEOUT && ticks[0]==empty);
+    HR(queue->GetClockCalibration(&mid,&cpu));InterlockedExchange64((volatile LONG64*)ctrl,1);
+#endif
 #ifdef TEST_PRIMARY_RELEASE
     HANDLE ready=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(ready);HR(consumed->SetEventOnCompletion(1,ready));
     CK(WaitForSingleObject(ready,10000)==WAIT_OBJECT_0 && consumed->GetCompletedValue()==1 && published->GetCompletedValue()==1);
@@ -151,6 +234,19 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     CK(WaitForSingleObject(retired,10000)==WAIT_OBJECT_0 && WaitForSingleObject(witness.gone,10000)==WAIT_OBJECT_0);
 #ifdef TEST_PRIMARY_CLEAR
     UINT *gpuPixels;HR(read->Map(0,nullptr,(void**)&gpuPixels));
+#ifdef TEST_TAIL_TIMESTAMP
+    HR(queue->GetClockCalibration(&high,&cpu));auto gpuTicks=(UINT64*)((BYTE*)gpuPixels+tickOffset);
+    CK(firstTail<ticks[1] && low<=ticks[1] && ticks[1]<=mid && mid<=ticks[0] && ticks[0]<=high);
+    CK(gpuTicks[0]==ticks[0] && gpuTicks[1]==ticks[1]);
+    for(UINT k=0;k<65536;k++){CK(reuse[k]==0x49);if(k<0x6210 || k>=0x6220)CK(original[k]==0xad);}
+#ifdef TEST_WB_TAIL
+    CK(VirtualFree(copy.base,0,MEM_RELEASE));
+#else
+    CK(UnmapViewOfFile(original));
+#endif
+    CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree((void*)ctrl,65536,MEM_RELEASE));
+    puts("PASS +240 pair: gated replay, original GPU timestamps and exact-VA replacement guards");
+#endif
     for(UINT i=0;i<width*height;i++) {
         UINT expected=0;
 #ifdef TEST_PRIMARY_RELEASE

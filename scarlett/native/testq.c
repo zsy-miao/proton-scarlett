@@ -17,4 +17,17 @@ void test_post_snapshot(IUnknown *i,ID3D12Resource *rb,UINT dst,UINT stamp_offse
 HRESULT test_primary_try(IUnknown *i,UINT n,const D3D12_BARRIER_GROUP *g){return record_primary_barrier(sl(i),n,g);}
 
 ID3D12GraphicsCommandList7 *test_clear_recorder(IUnknown *i){return sl(i)->host;}
+#ifdef TEST_TAIL_TIMESTAMP
+HRESULT test_stamp_try(IUnknown *i,UINT64 addr,UINT64 y){return pool_timestamp(sl(i),addr,0,y,1);}
+void test_copy_ticks(IUnknown *i,ID3D12Resource *read,UINT64 offset)
+{
+    struct startup_list *s=sl(i);
+    ID3D12Resource *src=s->stamp->dst;
+    D3D12_RESOURCE_BARRIER b={.Transition={src,0,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
+    ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,offset,src,0x6210,16);
+    b.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_DEST;
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
+}
+#endif
 HRESULT test_clear_try(IUnknown *i,SIZE_T slot,const FLOAT *c,UINT n,const RECT *r){return record_primary_clear(sl(i),slot,c,n,r);}
