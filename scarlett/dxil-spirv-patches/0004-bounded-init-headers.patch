@@ -1,0 +1,11 @@
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6361,7 +6361,6 @@
+ 	const bool boxes = impl.xbox_centroid_descriptor_plus_one != 0;
+ 	if (boxes && ((opnum != 356 && opnum != 362) || impl.xbox_centroid_descriptor_plus_one > impl.root_descriptor_count ||
+ 	    impl.root_constant_num_words < 12 || impl.xbox_range_word > impl.root_constant_num_words - 12)) return false;
+-	if (!boxes && opnum == 362) return false;
+ 	const unsigned word = impl.xbox_range_word + (atomic ? 3u : boxes && !read ? 4u : 0u);
+ 	const unsigned desc = atomic ? impl.xbox_atomic_descriptor : impl.xbox_range_descriptor;
+ 	const unsigned n = atomic ? 1 : opnum - (read ? 356 : 360) + 1;

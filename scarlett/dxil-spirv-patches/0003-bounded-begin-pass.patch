@@ -1,0 +1,170 @@
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6324,6 +6324,7 @@
+ 	if (fn->getName() == "xbox.global_load_dwordx3_with_cache") return 358;
+ 	if (fn->getName() == "xbox.global_load_dwordx4_with_cache") return 359;
+ 	if (fn->getName() == "xbox.global_store_dword_with_cache") return 360;
++	if (fn->getName() == "xbox.global_store_dwordx3_with_cache") return 362;
+ 	if (fn->getName() == "xbox.global_store_dwordx4_with_cache") return 363;
+ 	return 0;
+ }
+@@ -6357,14 +6358,18 @@
+ 		else binary(opnum == 9, binary(opnum == 9, a, b, false), c, true);
+ 		return true;
+ 	}
+-	const unsigned word = impl.xbox_range_word + (atomic ? 3u : 0u);
++	const bool boxes = impl.xbox_centroid_descriptor_plus_one != 0;
++	if (boxes && ((opnum != 356 && opnum != 362) || impl.xbox_centroid_descriptor_plus_one > impl.root_descriptor_count ||
++	    impl.root_constant_num_words < 12 || impl.xbox_range_word > impl.root_constant_num_words - 12)) return false;
++	if (!boxes && opnum == 362) return false;
++	const unsigned word = impl.xbox_range_word + (atomic ? 3u : boxes && !read ? 4u : 0u);
+ 	const unsigned desc = atomic ? impl.xbox_atomic_descriptor : impl.xbox_range_descriptor;
+ 	const unsigned n = atomic ? 1 : opnum - (read ? 356 : 360) + 1;
+ 	auto integer = [](const llvm::Type *t, unsigned w) { return t->isIntegerTy() && t->getIntegerBitWidth() == w; };
+ 	if (!impl.options.physical_storage_buffer || impl.execution_model != spv::ExecutionModelGLCompute ||
+ 	    !impl.root_constant_id || desc >= impl.root_descriptor_count ||
+ 	    impl.root_constant_num_words < 3 || word > impl.root_constant_num_words - 3 ||
+-	    (!atomic && read != impl.xbox_read_only) || call.getNumOperands() != (atomic ? 3u : read ? 4u : 5u) ||
++	    (!boxes && !atomic && read != impl.xbox_read_only) || call.getNumOperands() != (atomic ? 3u : read ? 4u : 5u) ||
+ 	    (!read && call.getType()->getTypeID() != (atomic ? f32 : llvm::Type::TypeID::VoidTyID)))
+ 		return false;
+ 	auto *opcode = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+@@ -6401,22 +6406,37 @@
+ 			indices.push_back(b.makeUintConstant(word + (impl.root_constant_arrayed ? 0 : impl.root_descriptor_count)));
+ 			return b.createLoad(b.createAccessChain(storage, impl.root_constant_id, indices));
+ 		};
+-		auto guest = b.createUnaryOp(spv::OpBitcast, u64, b.createCompositeConstruct(b.makeVectorType(u32,2),
+-		                       {load(word), load(word + 1)}));
+-		auto bytes = b.createUnaryOp(spv::OpUConvert, u64, load(word + 2));
+-		auto addr = fn->getParamId(0), delta = b.createBinOp(spv::OpISub, u64, addr, guest);
+-		auto width = b.makeUint64Constant(n * 4);
+-		auto ok = b.createBinOp(spv::OpUGreaterThanEqual, bit, addr, guest);
+-		auto require = [&](spv::Id x) { ok = b.createBinOp(spv::OpLogicalAnd, bit, ok, x); };
+-		require(b.createBinOp(spv::OpUGreaterThanEqual, bit, bytes, width));
+-		require(b.createBinOp(spv::OpULessThanEqual, bit, delta, b.createBinOp(spv::OpISub, u64, bytes, width)));
+-		require(b.createBinOp(spv::OpIEqual, bit, b.createBinOp(spv::OpBitwiseAnd, u64, delta, b.makeUint64Constant(3)), b.makeUint64Constant(0)));
++		auto addr = fn->getParamId(0), width = b.makeUint64Constant(n * 4);
++		auto host_base = [&](unsigned d) {
++			return b.createUnaryOp(spv::OpBitcast, u64, b.createLoad(b.createAccessChain(storage, impl.root_constant_id,
++			                       {b.makeUintConstant(d)})));
++		};
++		auto resolve = [&](unsigned w, unsigned d, spv::Id &ok, spv::Id &physical) {
++			auto guest = b.createUnaryOp(spv::OpBitcast, u64, b.createCompositeConstruct(b.makeVectorType(u32,2),
++			                       {load(w), load(w + 1)}));
++			auto bytes = b.createUnaryOp(spv::OpUConvert, u64, load(w + 2));
++			auto delta = b.createBinOp(spv::OpISub, u64, addr, guest);
++			ok = b.createBinOp(spv::OpUGreaterThanEqual, bit, addr, guest);
++			auto require = [&](spv::Id x) { ok = b.createBinOp(spv::OpLogicalAnd, bit, ok, x); };
++			require(b.createBinOp(spv::OpUGreaterThanEqual, bit, bytes, width));
++			require(b.createBinOp(spv::OpULessThanEqual, bit, delta, b.createBinOp(spv::OpISub, u64, bytes, width)));
++			require(b.createBinOp(spv::OpIEqual, bit, b.createBinOp(spv::OpBitwiseAnd, u64, delta, b.makeUint64Constant(3)), b.makeUint64Constant(0)));
++			if (boxes) delta = b.createBinOp(spv::OpIAdd, u64, delta, b.createUnaryOp(spv::OpUConvert, u64, load(w + 3)));
++			physical = b.createBinOp(spv::OpIAdd, u64, host_base(d), delta);
++		};
++		spv::Id ok, physical;
++		resolve(word, desc, ok, physical);
++		if (boxes && !read)
++		{
++			spv::Id centroid_ok, centroid;
++			resolve(word + 4, impl.xbox_centroid_descriptor_plus_one - 1, centroid_ok, centroid);
++			physical = b.createOp(spv::OpSelect, u64, {centroid_ok, centroid, physical});
++			ok = b.createBinOp(spv::OpLogicalOr, bit, ok, centroid_ok);
++		}
+ 		spv::Builder::If guard(ok, 0, b);
+-		auto host = b.createUnaryOp(spv::OpBitcast, u64, b.createLoad(b.createAccessChain(storage, impl.root_constant_id,
+-		                             {b.makeUintConstant(desc)})));
+ 		auto type = n == 1 ? u32 : b.makeVectorType(u32, n);
+ 		auto ptr = b.createUnaryOp(spv::OpConvertUToPtr, b.makePointer(spv::StorageClassPhysicalStorageBuffer, type),
+-		                           b.createBinOp(spv::OpIAdd, u64, host, delta));
++		                           physical);
+ 		spv::Id data;
+ 		if (read)
+ 		{
+@@ -9394,6 +9414,7 @@
+ 	}
+ 
+ 	case Option::BoundedXboxRange:
++		xbox_centroid_descriptor_plus_one = static_cast<const OptionBoundedXboxRange &>(cap).centroid_descriptor_plus_one;
+ 		xbox_atomic_descriptor = static_cast<const OptionBoundedXboxRange &>(cap).atomic_descriptor;
+ 		xbox_read_only = static_cast<const OptionBoundedXboxRange &>(cap).read_only;
+ 		xbox_range_word = static_cast<const OptionBoundedXboxRange &>(cap).range_word;
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -358,6 +358,7 @@
+ {
+ 	OptionBoundedXboxRange() : OptionBase(Option::BoundedXboxRange) {}
+ 	unsigned range_word, range_descriptor, atomic_descriptor;
++	unsigned centroid_descriptor_plus_one;
+ 	bool read_only;
+ };
+ 
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -936,7 +936,7 @@
+ /* Useful to check if the implementation recognizes a particular capability for ABI compatibility. */
+ dxil_spv_bool dxil_spv_converter_supports_option(dxil_spv_option cap)
+ {
+-	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES)
++	if (cap == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES || cap == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS)
+ 		cap = DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE;
+ 	return Converter::recognizes_option(static_cast<Option>(cap)) ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+ }
+@@ -1013,11 +1013,14 @@
+ 
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE:
+ 	case DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES:
++	case DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS:
+ 	{
+ 		auto *in = reinterpret_cast<const dxil_spv_option_bounded_xbox_range *>(option);
+ 		OptionBoundedXboxRange helper;
+ 		helper.range_word = in->range_word;
+ 		helper.range_descriptor = in->range_descriptor;
++		helper.centroid_descriptor_plus_one = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS ?
++		    reinterpret_cast<const dxil_spv_option_bounded_xbox_begin_pass *>(option)->centroid_descriptor + 1 : 0;
+ 		helper.atomic_descriptor = option->type == DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES ?
+ 		    reinterpret_cast<const dxil_spv_option_bounded_xbox_load_instances *>(option)->atomic_descriptor : ~0u;
+ 		helper.read_only = in->read_only == DXIL_SPV_TRUE;
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -486,6 +486,7 @@
+ 	DXIL_SPV_OPTION_COMPUTE_SHADER_DERIVATIVES_QUAD = 51,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_RANGE = 52,
+ 	DXIL_SPV_OPTION_BOUNDED_XBOX_LOAD_INSTANCES = 53,
++	DXIL_SPV_OPTION_BOUNDED_XBOX_BEGIN_PASS = 54,
+ 	DXIL_SPV_OPTION_INT_MAX = 0x7fffffff
+ } dxil_spv_option;
+ 
+@@ -524,6 +525,12 @@
+ 	unsigned atomic_descriptor;
+ } dxil_spv_option_bounded_xbox_load_instances;
+ 
++typedef struct dxil_spv_option_bounded_xbox_begin_pass
++{
++	dxil_spv_option_bounded_xbox_range range;
++	unsigned centroid_descriptor;
++} dxil_spv_option_bounded_xbox_begin_pass;
++
+ typedef struct dxil_spv_option_shader_demote_to_helper
+ {
+ 	dxil_spv_option_base base;
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -471,6 +471,7 @@
+ 	unsigned root_constant_num_words = 0;
+ 	unsigned xbox_range_word = ~0u, xbox_range_descriptor = ~0u;
+ 	unsigned xbox_atomic_descriptor = ~0u;
++	unsigned xbox_centroid_descriptor_plus_one = 0;
+ 	spv::Id xbox_helpers[6] = {};
+ 	bool xbox_read_only = false;
+ 	bool root_constant_arrayed = false;
+--- a/opcodes/dxil/dxil_resources.cpp
++++ b/opcodes/dxil/dxil_resources.cpp
+@@ -2347,7 +2347,7 @@
+ 	// CBufferLoad vs CBufferLoadLegacy
+ 	bool scalar_load = !type_is_composite_return_value(instruction->getType());
+ 	bool xbox_i64 = !scalar_load && constant_int && storage == spv::StorageClassPushConstant &&
+-	                impl.xbox_atomic_descriptor < impl.root_descriptor_count &&
++	                (impl.xbox_atomic_descriptor < impl.root_descriptor_count || impl.xbox_centroid_descriptor_plus_one) &&
+ 	                get_composite_element_type(instruction->getType())->isIntegerTy() &&
+ 	                get_composite_element_type(instruction->getType())->getIntegerBitWidth() == 64;
+ 	unsigned member_index = UINT32_MAX;

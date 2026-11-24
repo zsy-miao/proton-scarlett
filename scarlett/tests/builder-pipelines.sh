@@ -28,8 +28,10 @@ reset 0xb76e0 0xfe8
 index 0xb3fd0 0x1004
 copy-update 0xb4fe0 0x126c
 copycounters 0xb2ee0 0x10e8
+beginpass 0xb86d0 0x1118
+headers 0xb6250 0x1488
 SLICES
-for fixture in pipeline partitions instances load-instances reset copy-update copycounters; do
+for fixture in pipeline partitions instances load-instances reset copy-update copycounters beginpass headers; do
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
         "$s/test-bvh-$fixture.cpp" "$w/d3d12_device.o" "$w/queue.o" -ld3d12 \
         -o "$w/game/game_scarlett_master.exe"

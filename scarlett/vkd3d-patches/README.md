@@ -1,5 +1,7 @@
 # Write-combined graphics pool
 
+For [BeginPass](../native/bvh-beginpass.md) and [InitHeaders](../native/bvh-init-headers.md), apply the incremental vkd3d patches `0008` and `0009` after `0007`, and nested dxil-spirv patches `0003` and `0004` after `0002`, in numeric order. Build the core and adapter together.
+
 For [LoadInstances](../native/bvh-load-instances.md), additionally apply
 `0007-vkd3d-bounded-load-instances.patch` after `0006` and nested
 `../dxil-spirv-patches/0002-bounded-load-instances.patch` after `0001`.

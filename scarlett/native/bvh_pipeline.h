@@ -5,7 +5,7 @@
 #include "bvh_offline_dxil.h"
 #include "bvh_partitions_dxil.h"
 
-enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX, BVH_COPY_UPDATE, BVH_COPY_COUNTERS, BVH_LOAD_INSTANCES };
+enum bvh_kind { BVH_INIT, BVH_OFFLINE, BVH_PARTITIONS, BVH_RESET_COUNTERS, BVH_INSTANCES, BVH_RESET_INDEX, BVH_COPY_UPDATE, BVH_COPY_COUNTERS, BVH_LOAD_INSTANCES, BVH_BEGIN_PASS, BVH_HEADERS };
 static const struct bvh_candidate {
     SIZE_T bytes;
     BYTE digest[32];
@@ -13,6 +13,10 @@ static const struct bvh_candidate {
     UINT constants;
     D3D12_SHADER_BYTECODE cs;
 } bvh_candidates[]={
+    [BVH_HEADERS]={0x1488,{0x7b,0xdd,0x8b,0x5b,0xf4,0x76,0xe7,0xf2,0x09,0x51,0xa9,0x2c,0x55,0x6d,0x6f,0x39,
+        0x4d,0x4e,0xf9,0xbd,0x4c,0xa3,0x39,0x69,0x69,0x29,0x8d,0x3e,0xe1,0xd8,0xdd,0x7d},L"XDXR InitHeaders",1,{0}},
+    [BVH_BEGIN_PASS]={0x1118,{0x9b,0xa6,0x1b,0x8f,0x5b,0x27,0x54,0x1f,0x62,0xe4,0x92,0x2d,0x1c,0x97,0xa2,0x0c,
+        0xef,0x3c,0x5d,0x26,0xf4,0xef,0xb2,0x96,0x30,0x8e,0x32,0x70,0x07,0xa6,0xb4,0x39},L"XDXR BeginPass",5,{NULL,0}},
     [BVH_INIT]={0x1410,{0xad,0xa7,0x13,0x02,0x58,0x9d,0xae,0x66,0x27,0xfb,0x5d,0xa6,0xd0,0xe7,0xc1,0x34,
         0x00,0x10,0x7c,0x6a,0xe5,0x6b,0xb1,0x5e,0x1d,0xca,0x58,0x48,0x79,0x23,0x23,0xad},
         L"XDXR InitPartitionedHeaders",8,{bvh_init_dxil,sizeof bvh_init_dxil}},
@@ -120,6 +124,22 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,.DescriptorTable={kind==BVH_COPY_COUNTERS ? 2u : 1u,ranges}},
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,candidate->constants}}};
     D3D12_ROOT_SIGNATURE_DESC rs={2,rp,0,NULL,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    if (kind==BVH_HEADERS) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedInitHeadersV1")) return E_NOTIMPL;
+        rp[0]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV};
+        rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,3}};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
+        rs.NumParameters=4;
+    }
+    if (kind==BVH_BEGIN_PASS) {
+        HMODULE core=GetModuleHandleW(L"d3d12core.dll");
+        if (!core || !GetProcAddress(core,"ScarlettBoundedBeginPassV1")) return E_NOTIMPL;
+        rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0x5358,12}};
+        rp[3]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={0,0x5358}};
+        rp[4]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={1,0x5358}};
+        rs.NumParameters=5;
+    }
     if (kind==BVH_COPY_UPDATE) {
         rp[2]=(D3D12_ROOT_PARAMETER){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV};
         rs.NumParameters=3;
@@ -167,12 +187,14 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     return S_OK;
 }
 
-struct xs_bvh_hold { IUnknown *pipeline; ID3D12Resource *dst,*upload; ID3D12DescriptorHeap *heap; };
+struct xs_bvh_hold { IUnknown *pipeline; ID3D12Resource *dst,*upload,*extra; ID3D12DescriptorHeap *heap; };
 void xs_drop_bvh_hold(struct xs_bvh_hold *h)
 {
     if (!h) return;
     if (h->upload) ID3D12Resource_Release(h->upload);
-    ID3D12DescriptorHeap_Release(h->heap); ID3D12Resource_Release(h->dst); IUnknown_Release(h->pipeline);
+    if (h->extra) ID3D12Resource_Release(h->extra);
+    if (h->heap) ID3D12DescriptorHeap_Release(h->heap);
+    ID3D12Resource_Release(h->dst); IUnknown_Release(h->pipeline);
     HeapFree(GetProcessHeap(),0,h);
 }
 static HRESULT bvh_view_offset(ID3D12Device *device,const struct xs_bvh_range *range,UINT64 addr,UINT size,BOOL uav,UINT64 *offset)
@@ -193,19 +215,28 @@ static HRESULT bvh_view_offset(ID3D12Device *device,const struct xs_bvh_range *r
     *offset=range->resource_offset+delta;
     return *offset%D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT ? E_INVALIDARG : S_OK;
 }
-static HRESULT bvh_record_buffers(IUnknown *pipeline,enum bvh_kind kind,ID3D12GraphicsCommandList *list,
-        const struct xs_bvh_range *range,UINT64 addr,UINT size,const struct xs_bvh_range *src,struct xs_bvh_hold **out)
+static HRESULT bvh_list_device(IUnknown *pipeline,enum bvh_kind kind,ID3D12GraphicsCommandList *list,ID3D12Device **out)
 {
-    if (!pipeline || pipeline->lpVtbl!=&bp_methods.unknown || !list || !range || !range->resource) return E_INVALIDARG;
+    if (!pipeline || pipeline->lpVtbl!=&bp_methods.unknown || !list) return E_INVALIDARG;
     if (CONTAINING_RECORD(pipeline,struct bvh_pipeline,iface)->kind!=kind) return E_INVALIDARG;
     if (ID3D12GraphicsCommandList_GetType(list)!=D3D12_COMMAND_LIST_TYPE_COMPUTE) return E_INVALIDARG;
-    ID3D12Resource *dst=range->resource;
     ID3D12Device *device=CONTAINING_RECORD(pipeline,struct bvh_pipeline,iface)->owner->host;
     ID3D12Device *other=NULL;
     HRESULT hr=ID3D12GraphicsCommandList_GetDevice(list,&IID_ID3D12Device,(void **)&other);
     if (FAILED(hr)) return hr;
     BOOL match=other==device; ID3D12Device_Release(other);
     if (!match) return E_INVALIDARG;
+    *out=device;
+    return S_OK;
+}
+static HRESULT bvh_record_buffers(IUnknown *pipeline,enum bvh_kind kind,ID3D12GraphicsCommandList *list,
+        const struct xs_bvh_range *range,UINT64 addr,UINT size,const struct xs_bvh_range *src,struct xs_bvh_hold **out)
+{
+    if (!range || !range->resource) return E_INVALIDARG;
+    ID3D12Device *device=NULL;
+    HRESULT hr=bvh_list_device(pipeline,kind,list,&device);
+    if (FAILED(hr)) return hr;
+    ID3D12Resource *dst=range->resource;
     UINT64 first,src_first=0;
     hr=bvh_view_offset(device,range,addr,size,TRUE,&first);
     if (FAILED(hr)) return hr;
@@ -301,3 +332,6 @@ HRESULT xs_record_bvh_reset(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
     }
     return hr;
 }
+
+#include "bvh_beginpass_record.h"
+#include "bvh_headers_record.h"

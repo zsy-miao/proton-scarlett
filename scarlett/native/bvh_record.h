@@ -34,6 +34,14 @@ HRESULT xs_record_bvh_instances(IUnknown *pipeline,ID3D12GraphicsCommandList *li
 /* source is the coherent CPU snapshot of the exact t0 BVH prefix, header included. */
 HRESULT xs_record_bvh_copy_update(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
     const struct xs_bvh_range *dst,const void *source,SIZE_T bytes,UINT reset_bounds,struct xs_bvh_hold **out);
+/* Original 20 bytes of b0; both resolved buffers are disjoint and in UAV state. */
+HRESULT xs_record_bvh_beginpass(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
+    const struct xs_bvh_range *tlas,const struct xs_bvh_range *centroid,const void *b0,SIZE_T bytes,struct xs_bvh_hold **out);
+/* Both guest VAs may use dst. If extra is supplied, it is a disjoint mapping
+ * for extra boxes. Caller guarantees UAV state and physically nonaliased storage. */
+HRESULT xs_record_bvh_headers(IUnknown *pipeline,ID3D12GraphicsCommandList *list,
+    const struct xs_bvh_range *dst,const struct xs_bvh_range *extra,const void *commands,
+    SIZE_T command_bytes,UINT num_commands,struct xs_bvh_hold **out);
 void xs_drop_bvh_hold(struct xs_bvh_hold *hold);
 #ifdef __cplusplus
 }

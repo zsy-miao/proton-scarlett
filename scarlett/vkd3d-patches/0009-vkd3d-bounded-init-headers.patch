@@ -1,0 +1,33 @@
+diff --git a/libs/d3d12core/d3d12core.def b/libs/d3d12core/d3d12core.def
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -4,6 +4,7 @@
+     ScarlettBoundedInstanceReadsV1
+     ScarlettBoundedLoadInstancesV1
+     ScarlettBoundedBeginPassV1
++    ScarlettBoundedInitHeadersV1
+     ScarlettPrimaryImageInfoV1
+     ScarlettPrimaryImageV1
+     ScarlettControlHeapV1
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -1314,4 +1314,5 @@
+ void WINAPI DLLEXPORT ScarlettBoundedInstanceReadsV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedLoadInstancesV1(void) {}
+ void WINAPI DLLEXPORT ScarlettBoundedBeginPassV1(void) {}
++void WINAPI DLLEXPORT ScarlettBoundedInitHeadersV1(void) {}
+ DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+diff --git a/libs/vkd3d-shader/dxil.c b/libs/vkd3d-shader/dxil.c
+--- a/libs/vkd3d-shader/dxil.c
++++ b/libs/vkd3d-shader/dxil.c
+@@ -1369,7 +1369,8 @@
+     instances = dxbc->size == 0x752c && hash == UINT64_C(0x942b4594697cfcb6);
+     read_only = instances || hash == UINT64_C(0xc1e76d5512cb4a65) || hash == UINT64_C(0xe3b64c009ba3851e) ||
+             (dxbc->size == 0x493c && hash == UINT64_C(0xc367e4ee1d4bdfe0));
+-    if ((boxes || read_only || hash == UINT64_C(0x5ec439b66277e3af)) && stage == DXIL_SPV_STAGE_COMPUTE)
++    if ((boxes || read_only || hash == UINT64_C(0x5ec439b66277e3af) ||
++            (dxbc->size == 0x1488 && hash == UINT64_C(0xddcdabacd472f524))) && stage == DXIL_SPV_STAGE_COMPUTE)
+     {
+         const dxil_spv_d3d_binding range = {.stage = stage, .kind = DXIL_SPV_RESOURCE_KIND_RAW_BUFFER,
+                 .register_space = 0x5358, .register_index = 0, .range_size = 1, .alignment = 16};
