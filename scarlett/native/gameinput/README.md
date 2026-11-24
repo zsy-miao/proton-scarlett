@@ -3,6 +3,7 @@
 Original provider for one virtual gamepad. Holding Space while a window of the
 calling process has foreground focus sets `GameInputGamepadA`. WASD controls
 the left stick and arrow keys control the right stick, with positive Y for up.
+Backspace maps to B and Return maps to Menu.
 Releasing a key returns its axis to neutral; opposite keys cancel. A reading is an
 immutable sample; it stays valid until its final `Release`.
 

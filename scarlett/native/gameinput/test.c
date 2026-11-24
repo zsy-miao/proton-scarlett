@@ -106,6 +106,24 @@ int main(void)
         keys[0].ki.dwFlags = keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
     }
     puts("PASS virtual sticks: forward + look left, then neutral");
+    assert(info->gamepadInfo->bButtonLabel==GameInputLabelXboxB &&
+           info->gamepadInfo->menuButtonLabel==GameInputLabelXboxMenu);
+    const WORD codes[]={VK_BACK,VK_RETURN,VK_BACK,VK_RETURN};
+    const unsigned expected[]={GameInputGamepadB,GameInputGamepadB|GameInputGamepadMenu,GameInputGamepadMenu,0};
+    for (unsigned i=0;i<ARRAYSIZE(codes);i++) {
+        INPUT key={.type=INPUT_KEYBOARD,.ki={.wVk=codes[i],.dwFlags=i>=2?KEYEVENTF_KEYUP:0}};
+        assert(SendInput(1,&key,sizeof(key))==1);
+        DWORD limit=GetTickCount();
+        for (;;) {
+            IGameInputReading *r=poll_pad(g);
+            unsigned b=state(r);
+            IGameInputReading_Release(r);
+            if (b==expected[i]) break;
+            assert(GetTickCount()-limit<2000);
+            Sleep(10);
+        }
+    }
+    puts("PASS B and Menu: individually held, simultaneous press, independent release to neutral");
     IGameInputDevice_Release(device);
     IGameInput_Release(g);
     return 0;

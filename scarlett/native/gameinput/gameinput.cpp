@@ -49,6 +49,8 @@ static uint64_t now()
 static const GameInputGamepadInfo pad_info = [] {
     GameInputGamepadInfo p{};
     p.aButtonLabel = GameInputLabelXboxA;
+    p.bButtonLabel = GameInputLabelXboxB;
+    p.menuButtonLabel = GameInputLabelXboxMenu;
     return p;
 }();
 static const GameInputDeviceInfo info = [] {
@@ -134,6 +136,8 @@ static HRESULT current(IGameInput *, GameInputKind kind, IGameInputDevice *dev, 
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
     if (pid == GetCurrentProcessId()) {
         if (pressed(VK_SPACE)) r->state.buttons = GameInputGamepadA;
+        if (pressed(VK_BACK)) r->state.buttons |= GameInputGamepadB;
+        if (pressed(VK_RETURN)) r->state.buttons |= GameInputGamepadMenu;
         r->state.leftThumbstickX = pressed('D') - pressed('A');
         r->state.leftThumbstickY = pressed('W') - pressed('S');
         r->state.rightThumbstickX = pressed(VK_RIGHT) - pressed(VK_LEFT);

@@ -6,6 +6,7 @@ int wmain(int argc, wchar_t **argv)
 {
     static const struct { const wchar_t *name; WORD vk; } keys[] = {
         {L"space", VK_SPACE}, {L"w",'W'}, {L"a",'A'}, {L"s",'S'}, {L"d",'D'},
+        {L"BackSpace",VK_BACK}, {L"Return",VK_RETURN},
         {L"Up",VK_UP}, {L"Down",VK_DOWN}, {L"Left",VK_LEFT}, {L"Right",VK_RIGHT}
     };
     if (argc != 4) return 1;
