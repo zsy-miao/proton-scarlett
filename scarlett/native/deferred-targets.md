@@ -183,3 +183,22 @@ Fenced GPU commands execute after replacing the guest VA; both adapters
 retain the original storage, preserve both 64 KiB guards and reject
 partial MSAA color overlap in both orders. RADV also preserves the unused
 allocation tail beyond the Vulkan requirement.
+
+### Deferred tiled R32_FLOAT after depth1440
+
+After the depth SRV and DSV, two distinct `0x88` owners requested `+c8`
+(return `+344188`), layout `0x102`, flags `0x300004`, one layer/sample,
+zero requested alignment. The independent XG texture computer returned
+256-byte alignment for both. Every coordinate address and copied word
+matched a complete 8×8 tile (byte offset within the tile is four times
+`(x&3)|((y&3)<<2)|((x&4)<<2)|((y&4)<<3)`); there were no padding words.
+
+| Extent | Mips | Mip byte offsets in API order | Bytes | Owner elements × stride |
+|---|---:|---|---:|---|
+| 2560×1440 | 1 | `0` | `0xe10000` | `0x384000 × 4` |
+| 1280×720 | 2 | `0xe1000`, `0` | `0x465000` | `0x119400 × 4` |
+
+Factories returned to `+1edbc4a` and `+1edbd15`. On both adapters both
+resource pointers at owner `+0x20` were null at the next `+c8`: 2560×1440
+R32G8X24_TYPELESS, one mip, flags `2`, alignment/layout zero, from
+`+1edbe1c`. No detail query, placement or view was observed on that thread.

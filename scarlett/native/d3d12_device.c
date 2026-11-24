@@ -438,6 +438,15 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){0xa400,256};
         return S_OK;
     }
+    if (rd.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd.Alignment && rd.DepthOrArraySize==1 &&
+        rd.Format==DXGI_FORMAT_R32_FLOAT && rd.SampleDesc.Count==1 && !rd.SampleDesc.Quality &&
+        (UINT)rd.Layout==0x102 && (UINT)rd.Flags==0x300004 &&
+        ((rd.Width==2560 && rd.Height==1440 && rd.MipLevels==1) ||
+         (rd.Width==1280 && rd.Height==720 && rd.MipLevels==2))) {
+        /* Complete 256-byte tiles at every measured mip; these deferred owners request only +c8. */
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){rd.MipLevels==1?0xe10000:0x465000,256};
+        return S_OK;
+    }
     if (tiled_r11_chain(&rd)) {
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){r11_end[rd.MipLevels],R11_ALIGNMENT};
         return S_OK;

@@ -21,6 +21,22 @@ int main(){
     ComPtr<ID3D12Device> d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page && VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
     DWORD *wire=(DWORD*)(page+4096)-13;
+    for(UINT m=1;m<=2;m++){
+        DWORD v[]={3,0,0,0,2560u/m,0,1440u/m,(m<<16)|1u,41,1,0,0x102,0x300004};memcpy(wire,v,sizeof v);
+        struct {UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO info;UINT64 post;} g={13,{},17};
+        CK(query(&g.info,guest.Get(),1,1,wire)==&g.info && g.pre==13 && g.post==17 &&
+            g.info.SizeInBytes==(m==1?0xe10000:0x465000) && g.info.Alignment==256);
+        D3D12_RESOURCE_ALLOCATION_INFO1 detail={};
+        CK(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.info,&detail)==E_NOTIMPL);
+        auto deny=[&](UINT node,UINT n,const void *p){D3D12_RESOURCE_ALLOCATION_INFO z={1,2};
+            return FAILED(xs_color_allocation_info(guest.Get(),node,n,p,&z)) && !z.Alignment && !z.SizeInBytes;};
+        CK(deny(0,1,wire) && deny(1,2,wire) && deny(1,1,(BYTE*)wire+1));
+        for(UINT j=0;j<13;j++)if(j!=1){wire[j]^=1;CK(deny(1,1,wire));wire[j]^=1;}
+        using Place=HRESULT(WINAPI*)(IUnknown*,UINT64,const void*,UINT,const void*,REFIID,void**);
+        auto place=(Place)((*(void***)guest.Get())[0x428/8]);void *obj=(void*)1;
+        CK(place(guest.Get(),65536,wire,3,nullptr,IID_ID3D12Resource,&obj)==E_NOTIMPL && !obj);
+    }
+    puts("PASS tiled R32_FLOAT: guarded one- and two-level sizing only");
     const UINT requests[]={4096,0};
     for(UINT request : requests){
         const DWORD v[]={3,0,request,0,160,0,90,0x50001,54,1,0,0x102,0x300004}; memcpy(wire,v,sizeof v);
