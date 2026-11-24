@@ -198,3 +198,18 @@ frame-origin token issued by its own guest device. Submission still rejects
 this token: its submit-side effect is unverified. Token-zero submission and
 GPU retirement alone do not advance the presentation count or complete the
 issued frame.
+
+### Control counter at list `+0x250`
+
+The RTX trace recorded `(cell, 7, snapshot, 1)`. The CPU increments a
+64-bit source counter (`+0x302810`) and publishes it to the control page
+(`+0x44b6c3`). The operand passed to the list is a snapshot of the source.
+At recording time the source, snapshot and original control cell were all
+`1`; the preceding marker at offset 12 still held `0`, although the list
+had recorded `0x29a5ee15` for it. The list had not executed.
+
+A separate call site (`+0x248ff7c`) uses operation 7 with flag 0. Neither
+site establishes how the native consumer behaves when the cell is below
+or above the snapshot, or what changing the flag does. The provider still
+stops here: testing equality while recording would discard the dependency
+on the cell's value when the list executes or is replayed.
