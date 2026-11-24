@@ -1,11 +1,12 @@
-# XCRDAPI.dll — Windows x64 read-only file subset
+# XCRDAPI.dll — Windows x64 file and console staging subsets
 
 The sole named export is `HRESULT WINAPI DStorageGetFactory(REFIID, void **)`.
-It returns a process-local singleton for the Windows `IDStorageFactory` or
-`IUnknown` IID. Unknown factory/file interfaces return `E_NOINTERFACE` and
+It returns a process-local singleton with distinct interfaces for the Windows
+`IDStorageFactory` and the title's console factory. On the Windows path,
+unknown factory/file interfaces return `E_NOINTERFACE` and
 clear the output pointer. The implementation is original C using Win32.
 
-| Operation | Behavior |
+| Windows operation | Behavior |
 | --- | --- |
 | `OpenFile` | Opens an existing Unicode path read-only, shared for reads. Returns a refcounted Windows `IDStorageFile` or `IUnknown`; Win32 open errors become HRESULTs. |
 | `GetFileInformation` | Retrieves `BY_HANDLE_FILE_INFORMATION` from the open handle. After `Close`, returns `HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE)`. |
@@ -13,11 +14,13 @@ clear the output pointer. The implementation is original C using Win32.
 | `CreateQueue`, `CreateStatusArray`, `SetStagingBufferSize` | `E_NOTIMPL` for valid requests. No data transfers, GPU work, or decompression. |
 | `SetDebugFlags` | Void method; no debug layer. |
 
-The [GDK export](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/functions/dstoragegetfactory)
-has the same signature, but that alone does not establish binary compatibility
-with `IDStorageFactoryX`, `X1`, `X2`, or `IDStorageFileX`. Those IIDs are not
-implemented. In particular, the Windows file interface exposes `GetFileInformation`;
-the console file interface exposes `GetHandle`.
+The [console ABI evidence](ABI.md) identifies the title's factory IID and
+its first operation, `SetStagingBufferSize(32 MiB)`. The console interface
+commits a private 32 MiB buffer with `VirtualAlloc`, reuses it on repeated
+requests, and releases it on size zero or DLL unload; other sizes return
+`E_NOTIMPL`. `GetStats` reports current/peak staging bytes; queue, storage,
+and decompression counters are zero. Console file, status and queue creation
+return `E_NOTIMPL` and clear the output. No requests are submitted.
 
 ## Build and verify
 
@@ -33,6 +36,8 @@ Run `./test.sh` for an independent ABI check. It builds a C++ caller against
 NuGet package](https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.2.3);
 the script verifies the package SHA-256 and extracts only headers. The caller
 imports the new DLL by name and dispatches through the published vtables.
-Only the synthetic fixture runs, in a newly created private Wine prefix
+The separate console caller tests the observed GUIDs and raw vtable offsets,
+checking the 32 MiB commit and release independently with `VirtualQuery`.
+Only synthetic callers run, in a newly created private Wine prefix
 removed on exit. No SDK runtime DLL is installed or loaded. The resulting
 `build/XCRDAPI.dll` remains available after the test.

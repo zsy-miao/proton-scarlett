@@ -20,3 +20,6 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$tmp" \
     "-DFACTORY_GUID=L\"{$(guid IDStorageFactory)}\"" "-DFILE_GUID=L\"{$(guid IDStorageFile)}\"" \
     test.cpp -L"$tmp" -lxcrdapi -lole32 -luuid -static -o "$tmp/test.exe"
 wine "$tmp/test.exe"
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror test_console.cpp \
+    -L"$tmp" -lxcrdapi -lole32 -luuid -static -o "$tmp/test_console.exe"
+wine "$tmp/test_console.exe"
