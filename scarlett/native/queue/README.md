@@ -136,3 +136,21 @@ filtering and `ff00ff00` with point filtering. Resetting and rebinding the
 list while the submitted work was gated kept the original heaps alive until
 its fence completed. Both retail runs passed the bind and stopped at
 `+0x238`, title return `+0x4ed46aa`.
+
+## Pooled-list prefix marker
+
+On both adapters retail records a zero at `+0x238`, targeting offset 8 in
+the 64 KiB control page. On AMD this records a `WriteBufferImmediate` to the
+original GPU-visible section. On RTX, Wine `0015` retains a CPU-only alias
+of the original page. On submission, a queue fence orders the CPU write
+after earlier work and before this list executes. Resetting a discarded
+recording makes no write. Neither path assumes a general mid-list stage.
+
+Build `queue/test-prefix-marker.c` like `test-allocator-registration.c`
+for RTX. Build `test-allocation-info.cpp` with `-DTEST_RADV_MARKER` for AMD.
+Both tests reuse the original CPU address while the queue is gated. Only
+the intended original words change. On AMD a later GPU copy on the same
+list reads the new marker and both neighboring words.
+
+Retail advances to list slot `+0x240`, return `+0x2482b37`, before closing
+or submitting this list. Execution and retirement are fixture results.

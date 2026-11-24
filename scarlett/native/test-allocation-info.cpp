@@ -1,5 +1,8 @@
 #include <d3d12.h>
 #include <cstdio>
+#ifdef TEST_RADV_MARKER
+#include "xmem/gpu_buffer.hpp"
+#endif
 #include <cstdlib>
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
@@ -201,12 +204,9 @@ int main()
     HR(alloc(dev.Get(),0,IID_ID3D12CommandAllocator,(void**)alloc0.GetAddressOf()));
     HR(alloc(dev.Get(),0,IID_ID3D12CommandAllocator,(void**)alloc1.GetAddressOf()));
     HR(SLOT(dev.Get(),0x248,List)(dev.Get(),ld,alloc0.Get(),nullptr,xs_pool_list_id,(void**)pooled.GetAddressOf()));
-    l=xs_list_host(pooled.Get());
-    b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
-    l->ResourceBarrier(1,&b);
     DWORD nullUav[10]={42,1};
     SLOT(dev.Get(),0x98,UAV)(dev.Get(),nullptr,nullptr,nullUav,slot);
-    rt.Reset(); views.Reset(); cpuHeap.Reset();
+
     *(UINT64 *)sampleSlot^=1;
     CK(FAILED(xs_resolve_view(heap.Get(),sampleSlot,0x90,&bank,&gpu)) && !bank && !gpu.ptr);
     *(UINT64 *)sampleSlot^=1;
@@ -275,6 +275,31 @@ int main()
     CK(reject(heap.Get(),heap.Get()) && reject(heap.Get(),(IUnknown*)1) && FAILED(xs_bind_pool_heaps(pooled.Get(),1,pair)));
     cpuSam.Reset();SLOT(pooled.Get(),0x100,Bind)(pooled.Get(),2,pair);
     CK(reject(heap.Get(),foreignSam.Get()));
+#ifdef TEST_RADV_MARKER
+    auto reserve=(void *(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc"); CK(reserve);
+    auto *ctrl=(UINT*)reserve(nullptr,65536,0x20401000,0x283,0x42404); CK(ctrl);
+    ComPtr<ID3D12Device3> raw; HR(d.As(&raw)); ImportedBuffer proof; SIZE_T off=0;
+    HR(proof.acquire(raw.Get(),ctrl+2,4,&off)); CK(off==8);
+    for(UINT j=0;j<16384;j++)ctrl[j]=0x76100000+j;
+    MemoryBarrier();auto original=(volatile UINT*)proof.cpu();CK(original[2]==0x76100002);
+    using Marker=void(WINAPI*)(IUnknown*,void*,UINT,UINT64,UINT);
+    scarlett_section_info lease; HRESULT alias=scarlett_query_section(0x53430120,ctrl+2,4,&lease);
+    CK(FAILED(alias));
+    printf("AMD guest prefix: original=%p offset=%zu originalWord=%08x cpuAliasHr=%08lx\n",ctrl,off,(UINT)original[2],(DWORD)alias);fflush(stdout);
+    SLOT(pooled.Get(),0x238,Marker)(pooled.Get(),ctrl+2,0,0,0);
+    CK(original[2]==0x76100002); // A synchronous CPU store is not a recorded command.
+#endif
+
+    l=xs_list_host(pooled.Get());
+    b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+    l->ResourceBarrier(1,&b);
+    rt.Reset(); views.Reset(); cpuHeap.Reset();
+#ifdef TEST_RADV_MARKER
+    // The GPU suffix must see the prefix value, including through an independent import.
+    D3D12_RESOURCE_BARRIER aliasBarrier={};aliasBarrier.Type=D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+    aliasBarrier.Aliasing.pResourceAfter=proof.resource();l->ResourceBarrier(1,&aliasBarrier);
+    l->CopyBufferRegion(rb.Get(),48,proof.resource(),4,12);
+#endif
     l->SetComputeRootSignature(root.Get()); l->SetPipelineState(ps.Get());
     l->SetComputeRootDescriptorTable(2,samGPU);
     l->SetComputeRootDescriptorTable(0,gpu); l->SetComputeRootUnorderedAccessView(1,samples->GetGPUVirtualAddress());
@@ -293,8 +318,20 @@ int main()
     SLOT(pooled.Get(),0x100,Bind)(pooled.Get(),2,pair);HR(SLOT(pooled.Get(),0x48,Close)(pooled.Get()));
     pooled.Reset();l.Reset();heap.Reset();visibleSam.Reset();
     MEMORY_BASIC_INFORMATION m;CK(VirtualQuery(arena,&m,sizeof m) && m.State==MEM_COMMIT);
+#ifdef TEST_RADV_MARKER
+    CK(original[2]==0x76100002 && VirtualFree(ctrl,65536,MEM_RELEASE));
+    CK(VirtualAlloc(ctrl,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==ctrl);
+    for(UINT j=0;j<16384;j++)ctrl[j]=0x89500000+j;
+    MemoryBarrier();CK(original[2]==0x76100002);
+#endif
     HR(xs_cpu_signal(gate.Get(),1)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
-    HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff && pixel[6]==0xff008080);
+    HR(rb->Map(0,nullptr,(void **)&pixel));
+#ifdef TEST_RADV_MARKER
+    for(UINT j=0;j<16384;j++)CK(original[j]==(j==2?0:0x76100000+j) && ctrl[j]==0x89500000+j);
+    CK(VirtualFree(ctrl,0,MEM_RELEASE));puts("PASS AMD public +238: prefilled original marker cleared only after gate, neighboring words and exact VA replacement intact after guest list reset/release");
+    CK(pixel[12]==0x76100001 && pixel[13]==0 && pixel[14]==0x76100003);puts("PASS suffix GPU copy saw guarded marker zero in recording order");
+#endif
+    CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff && pixel[6]==0xff008080);
     CK(pixel[7]==0xff00ff00 && pixel[8]==0xff0000ff && pixel[9]==0xff00ff00); rb->Unmap(0,nullptr);
     l.Reset(); a.Reset(); heap.Reset();
     ULONGLONG limit=GetTickCount64()+5000;

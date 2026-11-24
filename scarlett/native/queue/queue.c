@@ -12,6 +12,7 @@
 struct adapter {
     IUnknown iface;
     LONG refs;
+    SRWLOCK submit_lock;
     union {
         ID3D12CommandQueue *queue;
         ID3D12Fence *fence;
@@ -325,7 +326,12 @@ static HRESULT WINAPI queue_signal(IUnknown *queue, IUnknown *fence, UINT64 valu
 {
     ID3D12CommandQueue *q = as_queue(queue);
     ID3D12Fence *f = as_fence(fence);
-    return q && f ? ID3D12CommandQueue_Signal(q, f, value) : E_INVALIDARG;
+    if (!q || !f) return E_INVALIDARG;
+    SRWLOCK *lock=&CONTAINING_RECORD(queue,struct adapter,iface)->submit_lock;
+    AcquireSRWLockExclusive(lock);
+    HRESULT hr=ID3D12CommandQueue_Signal(q,f,value);
+    ReleaseSRWLockExclusive(lock);
+    return hr;
 }
 
 static HRESULT WINAPI frequency(IUnknown *queue, UINT64 *out)
@@ -364,7 +370,12 @@ HRESULT xs_queue_wait(IUnknown *queue, IUnknown *fence, UINT64 value)
 {
     ID3D12CommandQueue *q = as_queue(queue);
     ID3D12Fence *f = as_fence(fence);
-    return q && f ? ID3D12CommandQueue_Wait(q, f, value) : E_INVALIDARG;
+    if (!q || !f) return E_INVALIDARG;
+    SRWLOCK *lock=&CONTAINING_RECORD(queue,struct adapter,iface)->submit_lock;
+    AcquireSRWLockExclusive(lock);
+    HRESULT hr=ID3D12CommandQueue_Wait(q,f,value);
+    ReleaseSRWLockExclusive(lock);
+    return hr;
 }
 
 HRESULT xs_cpu_signal(IUnknown *fence, UINT64 value)

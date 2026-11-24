@@ -1,0 +1,46 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6698,4 +6698,5 @@
+                                         void *buffer, SIZE_T len, SIZE_T *res_len )
+ {
++    static UINT64 cpu_serial; /* virtual_mutex */
+     struct scarlett_section_info info = {0};
+     sigset_t sigset;
+@@ -6713,4 +6714,24 @@
+     }
+     info.size = ((struct scarlett_section_info *)buffer)->size;
++#ifdef __linux__
++    if (op == 0x53430120) /* Capture a CPU-only marker alias, never an importable handle. */
++    {
++        struct file_view *v = find_view( addr, sizeof(DWORD) );
++        SIZE_T off;
++        if (!v || !v->scarlett_cpu_id || !v->scarlett_section || v->size != 65536 || info.size != sizeof(DWORD) ||
++            cpu_serial == ~(UINT64)0) goto done;
++        off = (uintptr_t)addr - (uintptr_t)v->base;
++        if (off < 8 || off >= 8 + 54 * sizeof(DWORD) || off % sizeof(DWORD)) goto done;
++        info.view_size = v->size;
++        status = map_scarlett_dma( NULL, info.view_size, v->scarlett_section, 0, &info.view_size,
++                                   FALSE, FALSE, FALSE, TRUE, &info.base );
++        if (!status)
++        {
++            find_view( info.base, 0 )->scarlett_cpu_id = ++cpu_serial;
++            info.offset = off;
++        }
++    }
++    else
++#endif
+     if (op == MemoryWineScarlettCpuControlIdV1)
+     {
+@@ -6756,5 +6777,4 @@
+         BOOL code_store = op == MemoryWineScarlettMapCodePagesV1;
+         BOOL cpu = op == MemoryWineScarlettMapCpuControlV1;
+-        static UINT64 cpu_serial; /* virtual_mutex */
+         BOOL replace = code_store || read_view || op == MemoryWineScarlettMapPagesV1 || op == MemoryWineScarlettMapWbPagesV1;
+         info.view_size = replace ? in->view_size : info.size;
+@@ -6936,4 +6956,5 @@
+         case MemoryWineScarlettMapCodePagesV1:
+         case MemoryWineScarlettMapCpuControlV1:
++        case 0x53430120:
+         case MemoryWineScarlettCpuControlIdV1:
+         case MemoryWineScarlettMapWbReadPagesV1:
