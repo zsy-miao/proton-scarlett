@@ -8,11 +8,40 @@ one 32-bit layout on success, including when the output aliases `desc.Layout`.
 For other requests it returns `E_NOTIMPL` without modifying the output.
 Null required pointers return `E_POINTER`. These failure codes are local policy.
 
-`XGCreateTextureComputer` clears the object output and returns `E_NOTIMPL` for
-all descriptors (`E_POINTER` for null arguments). A valid swizzle suggestion
-is not enough to implement subresource copies or produce a resource layout.
-**Do not treat this DLL as a working texture computer:** two title paths use
-the object without checking the result and can dereference null.
+`XGCreateTextureComputer` accepts **explicit** layout `0x105` (4KB_S),
+alignment 4096, 256×128 Texture2D R8_UNORM, one layer/mip/sample,
+quality 0 and flags `0x300000`. It reads only the 52-byte active prefix
+and clears the output on failure. Its non-COM vtable implements AddRef,
+Release and CopyIntoSubresource (`+40`). Unsupported methods stop.
+The copy requires plane/subresource 0, row pitch 256, slice pitch 32768,
+a bounded span in the marked 1172 MiB WB source pool and a 4096-aligned
+bounded span in the marked 2199 MiB WC destination pool. It acquires
+handles, creates private aliases by handle, writes the original backing in
+16-byte 4KB_S segments, orders the writes and drops both aliases before
+return. There is no title-VA cache or shadow image.
+
+**R8 selection boundary.** The title chooses between an explicit mode and
+a suggestion at `4eccb28`: for a mode byte other than `ff`, it stores
+`0x100|mode`; for `ff`, it calls XGSuggestSwizzleMode with `Option=0` and
+the same layout field as output. A separate scratch experiment returned
+`0x105` for that request and let `+c8` check size/alignment for explicit
+R8. The copy succeeded and a second recommendation rebuilt the descriptor
+for `+230`. Its resource had layout `105`, alignment 0, same R8 shape and
+flags; view words were `3d 4 1688 0 0 1 0 0 0 0 94602000 d 0 0 0 3`.
+That is the original texture backing at `0xd94602000`. The buffer-only
+SRV writer stopped at title return `4ecc821`.
+
+This confirms that this caller passes the provider's result on, and that
+the choice must be deterministic on repeated requests. It does not
+establish that the API permits *any* legal swizzle or that the final GPU
+consumer interprets the bytes correctly. Microsoft's DirectXTex
+`Auxiliary/DirectXTexXboxTile.cpp` shows an explicit mode or a call to
+**XGComputeOptimalSwizzleMode**, a different entry point. To
+enable a project recommendation, establish the contract for `Option=0`
+and validate the address-SRV consumer against the original bytes; or
+qualify the specific result using the matching version's suggestion and
+copy. The R8 suggestion and auto-layout creation
+remain unsupported. The experimental query/selection was not included.
 
 ## Evidence for the suggestion
 
@@ -69,3 +98,10 @@ WINEPREFIX="$PWD/build/prefix" WINEDLLOVERRIDES=xg_xs=n wine build/test.exe
 
 Expected: both names exported; `xg_xs synthetic import tests passed`. No
 ordinal API, console SDK or external console compatibility layer is required.
+
+For the R8 copy test, link `test-r8-copy.c` against the same import
+library, name the executable `game_scarlett_master.exe`, and run with
+`test-launch-nixos.sh` on AMD using the scratch XMem and XG DLLs.
+Two coordinate passes distinguish every destination byte; neighboring
+guards, wrong pools, short ranges, misalignment, pitches and descriptor
+mutations are negative controls.

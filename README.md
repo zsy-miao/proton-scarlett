@@ -23,6 +23,8 @@ Retail allocates, maps and registers its [6,236 MiB write-back page pool](scarle
 
 Retail creates its [first graphics pipeline](scarlett/native/clear-pair.md) through device `+0x2b0`. Its clear shader pair reads positions and colors from the `t0, space3` buffer. On both RADV and RTX, three offscreen draws matched all 384 expected pixels, including untouched background pixels. AMD retail then creates a point-filtered wrap sampler and copies it into visible slot 1. Both [allocation queries for a 256×128 `R8_UNORM` texture](scarlett/native/r8-allocation.md) return 32 KiB at 4 KiB alignment. The title next calls `XGCreateTextureComputer` and dereferences its null result at `+0x16f71ea`. **No retail draw submission, builder dispatch or presented frame has been observed.**
 
+The [texture computer](scarlett/native/xg/README.md) can copy a 256×128 R8 texture when the caller specifies `4KB_S`. On AMD, two coordinate patterns verified every byte in the original destination allocation and preserved its guards. Retail asks for an automatic layout, which is still unresolved.
+
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
 In the [private reset fixture](scarlett/native/test-bvh-reset.cpp), the original builder DLL wrote 20 DWORDs starting with no root or PSO bound, then 13 on reuse. On RADV and RTX 3070, all 192 output words matched after the fence, including the guards. The [fixture mapping](scarlett/native/bvh-root.md#resetcounters-verified-ahead-of-retail) is specific to this writer.
