@@ -35,7 +35,7 @@ class Record(NamedTuple):
     resources: tuple = ()
 
 
-def dxbc(data, kind):
+def dxbc(data, kind, *, inspect_raw_vs=False):
     size, count = fields(data, 24, "2I")
     need(data[:4] == b"DXBC" and len(data) == size and 0 < count <= 32, "DXBC header")
     parts = {}
@@ -49,7 +49,10 @@ def dxbc(data, kind):
     need(kind in (0, 1), "expected PS or VS")
     psv = parts[b"PSV0"]
     resources, = fields(psv, 56, "I")
-    need(fields(psv, 0, "I") == (52,) and (resources==0 or (not kind and resources==2)), "PSV resources")
+    raw_vs = inspect_raw_vs and kind == 1 and resources == 1 and fields(psv, 60, "7I") == (
+        24, 4, 3, 0, 0, 11, 0)  # one ByteAddressBuffer t0 space3
+    need(fields(psv, 0, "I") == (52,) and (resources==0 or (not kind and resources==2) or raw_vs),
+         "PSV resources")
 
     x = parts[b"DXIL"]
     stage, words, magic, version, bc, n = fields(x, 0, "II4sIII")
@@ -83,6 +86,8 @@ def dxbc(data, kind):
     table, = fields(f, desc+48, "Q")
     need(fields(f, desc+60, "I") == (resources,), "native/PSV resource counts")
     mapping = tuple(fields(f, 16+table+20*i, "5I") for i in range(resources))
+    if raw_vs:
+        need(mapping == ((0x100,0,0,1,0x804),), "native raw VS resource row")
     return Record(span(f, 16+off, n), parts[b"ISG1"], parts[b"OSG1"], psv, mapping)
 
 

@@ -104,3 +104,41 @@ The fixture submits that stream shape to the bootstrap wrapper's *host*
 `ID3D12Device2::CreatePipelineState`. Root, fixed state, descriptor tables and
 draw are test-supplied. This does not qualify a live retail root, identify a
 particular retail draw, or implement the guest vtable slot.
+
+## First observed retail stream at +2479a8d (AMD)
+
+`python3 test_retail_clear.py /path/to/game_scarlett_master.exe [capture-dir]`
+checks the two exact embedded spans used by this call. With a local capture
+(`stream.bin`, `vs.bin`, `ps.bin`) it also checks both stages byte-for-byte and
+all stream bytes except the three process-specific pointers. No title bytes
+are needed in the source tree. This is a **negative qualification oracle**.
+
+The 688-byte stream requested the pipeline-state IID. A lookup under the
+calling device's live root registry lock found a non-null host signature for
+the supplied guest root: one root SRV `t0,space3`, visibility ALL, flags NONE.
+Only VS/PS are present. Input layout empty, triangle topology type, one
+R8G8B8A8_UNORM RTV, no DSV, sample count 1 quality 0, mask `ffffffff`.
+No blend/logic operations, RT0 write mask RGBA; solid, no cull, front CCW,
+no depth clip; depth/stencil disabled, no depth writes or bounds test.
+
+VS_Clear_f05fef9c_Wrapped / PS_Clear_f05fef9c_Wrapped both contain NOBC
+instead of host bitcode. The VS PSV row `(4,3,0,0,11,0)` is one raw SRV
+at `t0,space3`; native resource row `(0x100,0,0,1,0x804)`. At native
+offsets `38`/`80` (hex) scalar buffer loads read header words at 0/12.
+The respective low nibbles must equal 3/4 to take the position/color fetch.
+The vector byte address is `((word >> 7) & 0x1fffffc) +
+VertexID * ((word >> 3) & 60)` (32-bit arithmetic). Buffer loads at `78`/`c8`
+fetch 3/4 dwords. The nonmatching paths retain zero components. VS exports
+position with W=1 and all of PARAM0. PS takes a **constant** interpolation
+mode float4 TEXCOORD0: `s_mov_b32 m0,s10`, four `v_interp_mov_f32 ... p0`,
+two RTZ half packs, compressed MRT0. PS has no resource bindings.
+
+The current reader rejects VS resources; inspecting this specific mapping
+does not enable lowering. Even with it parsed, `native_pair.link` rejects
+the varying masks (VS `000f`, PS `0f0f`, not `0c03`/`0303`), and the HLSL
+translator rejects both instruction streams beginning at offset `1c`.
+The sampled-copy and constant-PS profiles do not cover this fetch, linkage
+or flat interpolation. A faithful positive oracle needs a real root buffer
+with distinguishable per-vertex data, both header branches, flat-color
+selection and RGBA8 readback; the earlier space3 root draw alone proves
+none of these shader semantics.
