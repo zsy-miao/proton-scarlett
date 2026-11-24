@@ -31,7 +31,7 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     UINT64 tag[]={++d->descriptor_serial,0x5853444553430000ull|kind};
     if (!store_slot_tag(dest,tag)) return E_POINTER;
     /* A texture requires refresh; its bank slot must never expose a stale texture. */
-    D3D12_SHADER_RESOURCE_VIEW_DESC null_view={.Format=kind==RGBA1_VIEW?DXGI_FORMAT_R8G8B8A8_UNORM:DXGI_FORMAT_R8_UNORM,.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D,
+    D3D12_SHADER_RESOURCE_VIEW_DESC null_view={.Format=refresh_format(kind),.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D,
         .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Texture2D.MipLevels=1};
     if (kind==RAW38_VIEW) {
         D3D12_SHADER_RESOURCE_VIEW_DESC raw={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
@@ -47,14 +47,14 @@ static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,S
 {
     static const DWORD texture[]={61,4,0x1688,0,0,1,0,0,0,0},raw[]={39,1,0x1688,0,0,0,38,0,1,0};
     BOOL tex=refresh_required(kind);
-    if (w[0]!=(kind==RGBA1_VIEW?28u:tex?texture[0]:raw[0]) || memcmp(w+1,(tex?texture:raw)+1,9*sizeof(DWORD)) ||
+    if (w[0]!=(tex?(DWORD)refresh_format(kind):raw[0]) || memcmp(w+1,(tex?texture:raw)+1,9*sizeof(DWORD)) ||
             w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
     UINT alignment=tex ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
     if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;
-    HRESULT hr=retain_wc_buffer(device,(void *)va,kind==RGBA1_VIEW?R8_ALIGNMENT:tex?R8_BYTES:160,&buffer,&offset);
+    HRESULT hr=retain_wc_buffer(device,(void *)va,kind==R8_VIEW?R8_BYTES:tex?R8_ALIGNMENT:160,&buffer,&offset);
     if (FAILED(hr)) return hr;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct descriptor_record old={0};
@@ -120,26 +120,27 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     if (!same) return E_INVALIDARG;
     struct xs_texture_use *u=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *u);
     if (!u) return E_OUTOFMEMORY;
-    UINT offset=0; BOOL rgba1=FALSE;
+    UINT offset=0; DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     AcquireSRWLockShared(&d->descriptor_lock);
     if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         struct descriptor_record *r=&h->records[(slot-h->start)/h->stride];
         if (refresh_required(r->kind) && valid_address_record(r,slot,r->kind)) {
-            u->source=r->resource; ID3D12Resource_AddRef(u->source); offset=r->offset; rgba1=r->kind==RGBA1_VIEW;
+            u->source=r->resource; ID3D12Resource_AddRef(u->source); offset=r->offset; format=refresh_format(r->kind);
         }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
+    BOOL texel32=texel32_format(format);
     if (!u->source) { hr=E_INVALIDARG; goto fail; }
     D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=R8_BYTES,.Height=1,.MipLevels=1,
         .DepthOrArraySize=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
-    if (!rgba1) {
+    if (!texel32) {
         hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->rows);
         if (FAILED(hr)) goto fail;
     }
-    rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=rgba1?1:256; rd.Height=rgba1?1:128;
-    rd.Format=rgba1?DXGI_FORMAT_R8G8B8A8_UNORM:DXGI_FORMAT_R8_UNORM; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
+    rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
     if (FAILED(hr)) goto fail;
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
@@ -151,15 +152,15 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     /* Each 16-byte row segment is contiguous in both layouts. All reads execute
      * on the consuming queue, including writes ordered after list submission. */
     r8_transition(l,u->source,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
-    if (!rgba1) {
+    if (!texel32) {
         for (UINT y=0;y<128;y++) for (UINT x=0;x<256;x+=16) {
             UINT tiled=((y/64)*4+x/64)*4096+(y%32)*16+(x&16)*32+(y&32)*32+(x&32)*64;
             ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,y*256+x,u->source,(UINT64)offset+tiled,16);
         }
         r8_transition(l,u->rows,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
     }
-    D3D12_TEXTURE_COPY_LOCATION from={.pResource=rgba1?u->source:u->rows,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-        .PlacedFootprint={rgba1?offset:0,{rd.Format,(UINT)rd.Width,rd.Height,1,256}}};
+    D3D12_TEXTURE_COPY_LOCATION from={.pResource=texel32?u->source:u->rows,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .PlacedFootprint={texel32?offset:0,{rd.Format,(UINT)rd.Width,rd.Height,1,256}}};
     D3D12_TEXTURE_COPY_LOCATION to={.pResource=u->texture,.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
     ID3D12GraphicsCommandList_CopyTextureRegion(l,&to,0,0,0,&from,NULL);
     r8_transition(l,u->source,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);

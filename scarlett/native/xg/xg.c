@@ -15,7 +15,7 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
 {
     if (!d || !out) return E_POINTER;
     /* Project recommendation for the runtime-created texture copied by copy_texture. */
-    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && (is_r8(d) || is_rgba1(d))) {
+    if (!option && !d->Alignment && d->Layout==D3D12_TEXTURE_LAYOUT_UNKNOWN && (is_r8(d) || is_texel32(d))) {
         *out=(D3D12_TEXTURE_LAYOUT)R8_LAYOUT;
         return S_OK;
     }
@@ -39,7 +39,7 @@ __declspec(dllexport) HRESULT WINAPI XGSuggestSwizzleMode(
     }
 }
 
-struct computer { const void *vt; LONG refs; BOOL rgba1; };
+struct computer { const void *vt; LONG refs; BOOL texel32; };
 static ULONG WINAPI add_ref(struct computer *c) { return InterlockedIncrement(&c->refs); }
 static ULONG WINAPI release(struct computer *c)
 {
@@ -80,12 +80,12 @@ static HRESULT texture_alias(const void *at,SIZE_T bytes,BOOL wc,void **mapping,
 static HRESULT WINAPI copy_texture(struct computer *c,void *dst,UINT plane,UINT sub,const void *src,UINT row,UINT slice)
 {
     if (!dst || !src) return E_POINTER;
-    if (plane || sub || row!=(c->rgba1?4u:256u) || slice!=(c->rgba1?4u:R8_BYTES)) return E_INVALIDARG;
+    if (plane || sub || row!=(c->texel32?4u:256u) || slice!=(c->texel32?4u:R8_BYTES)) return E_INVALIDARG;
     BYTE *in=NULL,*out=NULL; void *wb=NULL,*wc=NULL;
     BOOL system=FALSE;
     HRESULT hr;
     DWORD texel;
-    if (c->rgba1) {
+    if (c->texel32) {
         /* This runtime producer passes a DWORD on the calling thread's stack. */
         ULONG_PTR lo,hi,p=(ULONG_PTR)src; SIZE_T got;
         GetCurrentThreadStackLimits(&lo,&hi);
@@ -95,10 +95,10 @@ static HRESULT WINAPI copy_texture(struct computer *c,void *dst,UINT plane,UINT 
         hr=texture_alias(src,R8_BYTES,FALSE,&wb,&in,&system);
         if (FAILED(hr)) return hr;
     }
-    hr=texture_alias(dst,c->rgba1?R8_ALIGNMENT:R8_BYTES,TRUE,&wc,&out,NULL);
+    hr=texture_alias(dst,c->texel32?R8_ALIGNMENT:R8_BYTES,TRUE,&wc,&out,NULL);
     if (SUCCEEDED(hr)) {
         /* A one-texel 4KB_S texture starts at the tile origin. Preserve all padding. */
-        if (c->rgba1) memcpy(out,&texel,sizeof texel);
+        if (c->texel32) memcpy(out,&texel,sizeof texel);
         else for (UINT i=0;i<R8_BYTES;i+=16) {
             UINT x=((i>>12)&3)*64+((i>>5)&16)+((i>>6)&32);
             UINT y=(i>>14)*64+((i>>5)&32)+((i>>4)&31);
@@ -127,11 +127,11 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     D3D12_RESOURCE_DESC desc={0};
     SIZE_T n=offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof desc.Flags,got;
     if (!d || !ReadProcessMemory(GetCurrentProcess(),d,&desc,n,&got) || got!=n) return E_POINTER;
-    BOOL rgba1=is_rgba1(&desc);
-    if ((!rgba1 && !is_r8(&desc)) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
+    BOOL texel32=is_texel32(&desc);
+    if ((!texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
-    *c=(struct computer){&methods,1,rgba1};
+    *c=(struct computer){&methods,1,texel32};
     *out=c;
     return S_OK;
 }

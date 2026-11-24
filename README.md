@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | During startup, the game asks for a one-pixel image in a format the project doesn't support yet. Both GPUs stop there. |
+| What's blocking it? | Both GPUs now handle the flat images the game creates during startup. The next request is for a tiny 3D texture, and startup stops there. |
 | Do the controls work? | A [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -19,7 +19,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 **NVIDIA (RTX 3070):** Retail build `1.0.2.1` passes the CPU-only control page, maps all five ranges of the 185 MiB descriptor arena, and creates both [3840×2160 primary color textures](scarlett/native/color-allocation.md) in the original 64 MiB allocation. It passes the 6,236 MiB write-back pool allocation and creates the clear graphics pipeline.
 
-**Current stop on both GPUs:** Retail creates three 1×1 `R8G8B8A8_UNORM` texture views in consecutive 4 KiB tiles. The next allocation query asks for the unsigned-integer variant, `R8G8B8A8_UINT`, at device `+0xc8` (title return `+0x344145`).
+**Current stop on both GPUs:** Retail creates 1×1 texture views in three formats: `R8G8B8A8_UNORM`, `R8G8B8A8_UINT`, and `R32_FLOAT`. The next allocation query asks for a **3D** 1×1×1 `R8G8B8A8_UNORM` texture with explicit layout `0x105`, at device `+0xc8` (title return `+0x344145`).
 
 Before those textures, retail creates the R8 texture view and the [4,159-entry DirectStorage file queue](scarlett/native/xcrdapi/README.md), [maps 6,720 consecutive pages](scarlett/native/xmem/README.md#scatter-mapping-into-the-24-gib-cpu-arena) from the original write-back pool (420 MiB), and creates a [38-element raw view](scarlett/native/frame-descriptor-init.md#raw-wc-address-view-after-scatter) of a 160-byte buffer.
 

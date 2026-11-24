@@ -265,12 +265,12 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     if (primary_desc(&rd)) return primary_info(host,out);
-    BOOL rgba1=is_rgba1(&rd);
-    if (rgba1 && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
-    if ((!rgba1 && !is_r8(&rd)) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
+    BOOL texel32=is_texel32(&rd);
+    if (texel32 && rd.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
+    if ((!texel32 && !is_r8(&rd)) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
     if ((UINT)rd.Layout==R8_LAYOUT && rd.Alignment==R8_ALIGNMENT) {
         /* Runtime R8 occupies eight tiles; the single RGBA8 texel occupies one. */
-        *out=(D3D12_RESOURCE_ALLOCATION_INFO){rgba1?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){texel32?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
         return S_OK;
     }
     if (rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;
@@ -278,7 +278,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     host->lpVtbl->GetResourceAllocationInfo(host,out,node,1,&rd);
     /* +34414d compares Alignment only. Never let a failed probe masquerade as small. */
     if (out->Alignment!=(rd.Alignment ? rd.Alignment : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) ||
-        out->SizeInBytes!=(rgba1 ? R8_ALIGNMENT : rd.Alignment ? R8_BYTES : 65536)) {
+        out->SizeInBytes!=(texel32 ? R8_ALIGNMENT : rd.Alignment ? R8_BYTES : 65536)) {
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){UINT64_MAX,D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT};
         return S_FALSE;
     }

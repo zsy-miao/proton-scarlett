@@ -27,11 +27,20 @@ using Writer=void(WINAPI*)(IUnknown *,const void *,const void *,SIZE_T);
 using DescriptorCopy=void(WINAPI*)(IUnknown *,UINT,SIZE_T,SIZE_T,UINT);
 using Alloc=void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD);
 using Copy=HRESULT(WINAPI*)(void*,void*,UINT,UINT,const void*,UINT,UINT);
-#ifdef TEST_RGBA1
-static constexpr bool rgba1=true;
+#if defined(TEST_RGBA1_UINT)
+static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UINT;
+#elif defined(TEST_R32_FLOAT)
+static constexpr DWORD format=DXGI_FORMAT_R32_FLOAT;
+#elif defined(TEST_RGBA1)
+static constexpr DWORD format=DXGI_FORMAT_R8G8B8A8_UNORM;
 #else
-static constexpr bool rgba1=false;
+static constexpr DWORD format=DXGI_FORMAT_R8_UNORM;
 #endif
+static constexpr bool rgba1=format!=DXGI_FORMAT_R8_UNORM;
+static constexpr bool integer=format==DXGI_FORMAT_R8G8B8A8_UINT, scalar=format==DXGI_FORMAT_R32_FLOAT;
+static DWORD pattern(unsigned pass) {
+    return scalar ? (pass?0xc0300000u:0x3fb00000u) : (pass?0x7de30b94u:0xc641a807u);
+}
 static constexpr UINT N=rgba1?4:32768, Bytes=4*N, tile=rgba1?4096:32768;
 static constexpr SIZE_T span=0x89700000u, offset=8192;
 int main(){
@@ -40,7 +49,7 @@ int main(){
     BYTE *b=(BYTE*)alloc(nullptr,span,0x20003000,0x283,0x2404);CK(s&&b);
     DWORD desc[]={3,0,0,0,256,0,128,0x10001,61,1,0,0,0x300000};
     if (rgba1) {
-        desc[4]=desc[6]=1; desc[8]=28;
+        desc[4]=desc[6]=1; desc[8]=format;
         CK(XGSuggestSwizzleMode(desc,1,&desc[11])==E_NOTIMPL && !desc[11]);
         for (UINT j:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
             desc[j]^=1; DWORD before=desc[11]; CK(XGSuggestSwizzleMode(desc,0,&desc[11])==E_NOTIMPL && desc[11]==before); desc[j]^=1;
@@ -73,11 +82,15 @@ int main(){
             desc[j]^=1;
         }
     }
-    desc[2]=0; DWORD w[16]={rgba1?28u:61u,4,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};
+    desc[2]=0; DWORD w[16]={format,4,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};
     auto address=[&](BYTE *p){memcpy(w+10,&p,sizeof p);};
     address(b+span-tile); HR(xs_write_address_srv(guest.Get(),desc,w,from));
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
     UINT64 serial=*(UINT64*)from;
+    if (rgba1) {
+        w[0]=integer?28:30; // supported formats still cannot reinterpret each other's views
+        CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)) && *(UINT64*)from==serial); w[0]=format;
+    }
     for (UINT j:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u}) {
         desc[j]^=1; CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from))); desc[j]^=1;
     }
@@ -107,7 +120,7 @@ int main(){
     D3D12_ROOT_SIGNATURE_DESC rs={2,p,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
     ComPtr<ID3DBlob> blob;HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
     ComPtr<ID3D12RootSignature> root;HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
-    FILE *f=fopen(rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
+    FILE *f=fopen(integer?"rgba1-uint.dxil":scalar?"r32-float.dxil":rgba1?"rgba1.dxil":"sample.dxil","rb");CK(f);BYTE dxil[8192];size_t n=fread(dxil,1,sizeof dxil,f);CK(n && feof(f));fclose(f);
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd={};pd.pRootSignature=root.Get();pd.CS={dxil,n};
     ComPtr<ID3D12PipelineState> ps;HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&ps)));
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
@@ -142,7 +155,7 @@ int main(){
         HR(done->SetEventOnCompletion(pass+1,ev));CK(WaitForSingleObject(ev,50)==WAIT_TIMEOUT);
         // Change the original only after submission so a recording-time snapshot fails.
         if (rgba1) {
-            DWORD color=pass?0x7de30b94:0xc641a807;
+            DWORD color=pattern(pass);
             CK(FAILED(copy(c,b+offset+1,0,0,&color,4,4)) && FAILED(copy(c,b+offset,0,0,&color,3,4)) &&
                 FAILED(copy(c,b+offset,0,0,&color,4,5)) && FAILED(copy(c,b+offset,1,0,&color,4,4)) &&
                 FAILED(copy(c,b+offset,0,1,&color,4,4)) && FAILED(copy(c,b+offset,0,0,s,4,4)));
@@ -165,11 +178,18 @@ int main(){
             CK(VirtualAlloc(b,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==b);memset(b,0xad,65536);MemoryBarrier();
         }
         HR(gate->Signal(pass+1));CK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
-        float *map;HR(read->Map(0,nullptr,(void**)&map));for(unsigned i=0;i<N;i++){
-            float value=map[pass*N+i];unsigned want=rgba1 ? ((pass?0x7de30b94u:0xc641a807u)>>(i*8))&255 : pass?i>>8:i&255;
-            if(!std::isfinite(value)||fabs(value-want/255.f)>1e-7){fprintf(stderr,"pass %u index %u got %g expected %u/255\n",pass,i,value,want);ExitProcess(1);}
+        DWORD *map;HR(read->Map(0,nullptr,(void**)&map));for(unsigned i=0;i<N;i++){
+            DWORD bits=map[pass*N+i]; unsigned want=rgba1 ? (pattern(pass)>>(i*8))&255 : pass?i>>8:i&255;
+            if (integer) CK(bits==want);
+            else if (scalar) {
+                const DWORD expected[]={pattern(pass),pass?0xc0b00000u:0x40300000u,0,0x3f800000u};
+                CK(bits==expected[i]); // Load().r, r*2, missing green=0 and alpha=1
+            } else {
+                float value; memcpy(&value,&bits,4);
+                if(!std::isfinite(value)||fabs(value-want/255.f)>1e-7){fprintf(stderr,"pass %u index %u got %g expected %u/255\n",pass,i,value,want);ExitProcess(1);}
+            }
         }read->Unmap(0,nullptr);xs_drop_texture_use(hold);
-        if (rgba1) printf("PASS RGBA1 pass %u: all four UNORM channels from original WC tile\n",pass);
+        if (rgba1) printf("PASS format %lu pass %u: all four shader results for original WC word %#010lx\n",format,pass,pattern(pass));
         else printf("PASS pass %u: all 32768 %c coordinates as R8_UNORM; checked gate held before CPU producer\n",pass,pass?'Y':'X');
     }
     for(UINT i=0;i<65536;i++)CK(b[i]==0xad);

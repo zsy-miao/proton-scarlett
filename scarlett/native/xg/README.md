@@ -187,3 +187,22 @@ as `rgba1.dxil`. The native 1×1 texture is refreshed directly from the retained
 buffer on the consuming command list. Two nonuniform RGBA patterns check each
 channel, all 4092 padding bytes, neighboring guards, descriptor overwrite,
 heap release and exact VA reuse.
+
+The same one-tile, four-byte producer also accepts the observed 2D
+`R8G8B8A8_UINT` and `R32_FLOAT` descriptors. Copied records preserve the
+format, and the native image and footprint use that format at refresh. A
+resource/view format mismatch is rejected before modifying the slot.
+On both GPUs retail copied `0xff000000` for the UINT view and `0x00000000`
+and `0x3f800000` for the two float views. The next `+c8` query, returning
+to `+344145`, was for a **3D** 1×1×1 `R8G8B8A8_UNORM` texture,
+alignment 4096, explicit layout `0x105`, flags `0x300000`.
+
+For typed consumption use the same fixture build with `-DTEST_RGBA1_UINT`
+or `-DTEST_R32_FLOAT`. Compile `../test-texel32-load.hlsl` with the matching
+DXC define, `-T cs_6_0 -E main`, producing `rgba1-uint.dxil` or
+`r32-float.dxil` alongside the executable. The integer test checks four
+separate byte values without normalization. The float test checks both a
+positive and a negative input, exact multiplication by two and missing
+component defaults. Both release the descriptor heap and reuse the title VA
+before opening the queue gate. These loads are fixture evidence, not a retail
+shader invocation.

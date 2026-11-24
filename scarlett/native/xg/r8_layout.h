@@ -14,7 +14,11 @@ static inline BOOL is_r8(const D3D12_RESOURCE_DESC *d)
 {
     return runtime_texture(d) && d->Width==256 && d->Height==128 && d->Format==DXGI_FORMAT_R8_UNORM;
 }
-static inline BOOL is_rgba1(const D3D12_RESOURCE_DESC *d)
+static inline BOOL texel32_format(DXGI_FORMAT format)
 {
-    return runtime_texture(d) && d->Width==1 && d->Height==1 && d->Format==DXGI_FORMAT_R8G8B8A8_UNORM;
+    return format==DXGI_FORMAT_R8G8B8A8_UNORM || format==DXGI_FORMAT_R8G8B8A8_UINT || format==DXGI_FORMAT_R32_FLOAT;
+}
+static inline BOOL is_texel32(const D3D12_RESOURCE_DESC *d)
+{
+    return runtime_texture(d) && d->Width==1 && d->Height==1 && texel32_format(d->Format);
 }
