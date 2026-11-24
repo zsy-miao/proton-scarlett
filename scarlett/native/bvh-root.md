@@ -99,13 +99,28 @@ with the pinned desktop backend. The factory submits the unmodified shader
 after checking its digest and root identity. It writes four identical DWORDs
 per counter using `u0` and `b0`. The private recorder bounds the destination
 to `16 * count` bytes. In [`test-bvh-reset.cpp`](test-bvh-reset.cpp) the pinned
-DLL's utility function at `+0x20760` writes a 13-DWORD recording into a private
-list: a `u0` address, three `b0` writes and a `(2,1,1)` dispatch. The fixture
-preselects the root and PSO, supplies private parameter tags, and resolves the
-recorded address to one known buffer. It rejects mutations of the address,
-tags, count and dimensions, as well as truncated and overlong recordings.
-After the fence all 33 counters and both guards matched on RADV and RTX 3070.
-The retail list's PSO and root binding paths are still unverified.
+DLL's utility function at `+0x20760` starts with both cached identities null.
+It calls list slot `+0x108` once with the actual factory root, copies 32 bytes
+from public PSO `+0x10` to list `+0x544`, and emits the first seven DWORDs
+before the 13-DWORD reset body (`u0`, three constant writes, dispatch).
+Reusing those identities on the same cursor appends only the body.
+
+The list, root callback, parameter tags, and PSO payload contents are fixture
+conventions. The payload uses a non-recycled serial and shader digest bytes;
+neither it nor the emitted prefix contains host pointers. The private mapping
+compares the root, PSO, full cached payload and cold prefix against one live
+factory pair. A warm body has no independent PSO identity; it is interpreted
+only after the cold record in this list. The sole guest address maps to a
+known bounded UAV. The existing private recorder issues desktop D3D12 calls
+and retains each dispatch's objects through the fence. This does not establish
+console packet semantics, retail list behavior, or writer fallback slots.
+
+RADV and RTX 3070 both preserved all 192 seeded words in a snapshot taken
+after rejecting a retired same-shader PSO's prefix, altered bindings, corrupted
+words, and short/overlong records. In the final fenced snapshot the cold
+dispatch filled 33 counters, the warm dispatch replaced the first counter,
+and the guards on both sides stayed unchanged. `ResetToIndexBuffer` below
+still uses the direct private recorder rather than the DLL writer.
 
 The tenth utility constructor call (DLL `+206f4`) selects `ResetToIndexBuffer`
 at `+b4bd0` (`0x1004` bytes). It takes the same three constants as `ResetCounters`

@@ -17,7 +17,7 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 The [primitive-loader test](scarlett/tests/load-primitives.sh) passed 26 cases on each of RADV and RTX 3070. After GPU completion it checked loaded geometry, reloaded bounds, failed reservations, and unchanged bytes outside the output.
 
-In a separate [command-recording test](scarlett/native/test-bvh-reset.cpp), the original builder DLL wrote a counter-reset command into a test list. Using preselected bindings, the recorder ran it on RADV and RTX 3070. All 192 words matched after GPU completion, including the untouched guards.
+In the [private reset fixture](scarlett/native/test-bvh-reset.cpp), the original builder DLL wrote 20 DWORDs starting with no root or PSO bound, then 13 on reuse. On RADV and RTX 3070, all 192 output words matched after the fence, including the guards. The [fixture mapping](scarlett/native/bvh-root.md#resetcounters-verified-ahead-of-retail) is specific to this writer.
 
 GPU tests on RADV and RTX 3070 checked 46 radix cases per adapter, including histogram counts, scans that restart at each workgroup, and scatter writes that preserve the original key/index pairs.
 

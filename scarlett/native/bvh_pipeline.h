@@ -109,11 +109,31 @@ static const struct bvh_candidate {
 struct bvh_pipeline {
     IUnknown iface;
     LONG refs;
+    /* +20760 copies this entire window. No native object belongs here. */
+    BYTE inline_payload[32] __attribute__((aligned(8)));
     struct xbox_device *owner;
     ID3D12RootSignature *root; /* private translation layout */
     ID3D12PipelineState *host;
     enum bvh_kind kind;
 };
+_Static_assert(offsetof(struct bvh_pipeline,inline_payload)==0x10 &&
+        offsetof(struct bvh_pipeline,owner)==0x30,"builder public PSO copy window");
+
+/* Private reset-fixture key, not a hardware packet. Never recycle a serial. */
+static BOOL bp_reset_key(BYTE payload[32])
+{
+    static LONG last;
+    LONG n=InterlockedCompareExchange(&last,0,0);
+    for (;;) {
+        if (n==INT32_MAX) return FALSE;
+        LONG seen=InterlockedCompareExchange(&last,n+1,n);
+        if (seen==n) break;
+        n=seen;
+    }
+    memcpy(payload,bvh_candidates[BVH_RESET_COUNTERS].digest,32);
+    ++n; memcpy(payload,&n,sizeof n);
+    return TRUE;
+}
 static ULONG WINAPI bp_addref(IUnknown *i)
 {
     return InterlockedIncrement(&CONTAINING_RECORD(i,struct bvh_pipeline,iface)->refs);
@@ -329,6 +349,9 @@ static HRESULT WINAPI bootstrap_bvh_pipeline(IUnknown *device,const void *desc,U
     }
     struct bvh_pipeline *p=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *p);
     if (!p) { if (shared) ID3D12RootSignature_Release(shared); return E_OUTOFMEMORY; }
+    if (kind==BVH_RESET_COUNTERS && !bp_reset_key(p->inline_payload)) {
+        HeapFree(GetProcessHeap(),0,p); return E_OUTOFMEMORY;
+    }
     HRESULT hr=S_OK;
     p->root=shared;
     if (!shared) {
