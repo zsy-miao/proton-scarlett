@@ -7,12 +7,15 @@ The title uses `scarlett-title/pfx` under its Steam compatibility-data directory
 ```bash
 export SCARLETT_GAMEINPUT_HEADER="/path/to/Windows Kits/10/Include/10.0.26100/um/GameInput.h"
 ./scarlett/build-runtime.sh "$PWD/scarlett/runtime"  # choose a new directory
+# For retail graphics commits, stage the patched ntdll.so here before installing (link below).
 steam="$HOME/.local/share/Steam"
 ./scarlett/install.sh "$steam/steamapps/common/Proton 11.0" "$PWD/scarlett/runtime" \
     "$steam/compatibilitytools.d/scarlett-proton"
 ```
 
 Requires x86-64 MinGW GCC/G++, the [Windows SDK v0 input header](native/gameinput/README.md), and the matching Proton 11.0-2e depot. Move any previous installation aside before installing. For a full SDK build, stage the DLLs in `scarlett/runtime/`, initialize Valve's submodules and use the [upstream build instructions](../README.md). In Steam, select **scarlett-proton** in the shortcut's compatibility properties.
+
+The first committed retail graphics pool requires the fork's [x64 Wine memory patch and build steps](wine-patches/README.md). Installing the PE DLLs alone leaves this call unsupported.
 
 ## What the first graphics test covers
 

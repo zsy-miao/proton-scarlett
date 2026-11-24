@@ -22,6 +22,23 @@ to the built PE DLLs before running `scarlett/install.sh`. This replaces only
 the fork's x86-64 Unix ntdll. For a full Proton build, apply the patch in
 the pinned `wine/` submodule before building the distribution.
 
+For example, with GCC, autoconf, flex, bison, Perl and Python on the build host:
+
+```sh
+repo=$PWD
+(cd "$wine" && perl tools/make_requests && perl tools/make_specfiles &&
+  python3 dlls/winevulkan/make_vulkan -x vk.xml -X video.xml && autoconf && autoheader)
+wine=$(realpath "$wine")
+build=$(mktemp -d)
+(cd "$build" && bash "$wine/configure" --enable-win64 --without-x --without-freetype --disable-tests &&
+  make -j8 dlls/ntdll/ntdll.so)
+install -m755 "$build/dlls/ntdll/ntdll.so" "$repo/scarlett/runtime/ntdll.so"
+```
+
+These configure flags are for **this one Unix library**; use the matching Valve
+depot for the rest of Wine. Run the GPU test after installing to verify the
+actual tool and host rather than assuming a successful build was sufficient.
+
 ## Calling convention
 
 Use the existing `ntdll!NtQueryVirtualMemory` syscall with the **current
@@ -102,6 +119,7 @@ private views stay attached to their original section.
    follows the retirement fence.
 
 The patched x64 Unix ntdll built at the pin and passed test 4 on the RTX 3070.
+The installed tool passed tests 1–3 with `test-section.c` (256 acquire/free races).
 Build `scarlett/native/xmem/test_gpu.cpp` as in the [XMem instructions](../native/xmem/README.md)
 with `-DTEST_MARKED_SECTION`, and pass the patched tool directory as the second
 argument to `test-launch-nixos.sh`. The passing fixture prints
