@@ -7,6 +7,10 @@ extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void 
 extern "C" ID3D12RootSignature *xs_bvh_root_host(IUnknown *,IUnknown *);
 #define CK(x) do {if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 #define HR(x) CK(SUCCEEDED(x))
+#ifdef TEST_B27_PLACED
+#define TEST_BLIT_COLOUR
+#include "test-b27-placed.hpp"
+#endif
 #ifdef TEST_POOL_ROOT
 extern "C" HRESULT xs_allocator(ID3D12Device*,D3D12_COMMAND_LIST_TYPE,IUnknown**);
 extern "C" HRESULT xs_device_list(ID3D12Device*,D3D12_COMMAND_LIST_TYPE,IUnknown*,BOOL,IUnknown*,IUnknown**);
@@ -104,8 +108,16 @@ int main() {
     };
     ComPtr<ID3D12Resource> src,rt,rb;HR(resource(D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ,&src));
     HR(resource(D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_RENDER_TARGET,&rt));HR(resource(D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST,&rb));
-    const UINT vals[]={19,37,0xfedcba98,0x7abc1234};void* m;HR(src->Map(0,nullptr,&m));
-#ifdef TEST_BLIT_COLOUR
+    const UINT vals[]={
+#ifdef TEST_B27_PLACED
+        0xb2700020,0xb2700024,0xb2700028,0xb270002c
+#else
+        19,37,0xfedcba98,0x7abc1234
+#endif
+    };void* m;HR(src->Map(0,nullptr,&m));
+#ifdef TEST_B27_PLACED
+    memset(m,0xcc,256); // independent destination seed; never contains the shader sentinel
+#elif defined(TEST_BLIT_COLOUR)
     memset(m,0xcc,256);memcpy((BYTE*)m+32,vals,sizeof vals);
 #else
     memcpy(m,vals,sizeof vals);
@@ -141,11 +153,18 @@ int main() {
     CK(!xs_bvh_root_host(foreign.Get(),root.Get()) && (void*)host!=(void*)root.Get());HR(root.As(&identity));CK(identity.Get()==root.Get());identity.Reset();
     ComPtr<ID3D12DescriptorHeap> table;hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};
     HR(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&table)));D3D12_CONSTANT_BUFFER_VIEW_DESC cb={src->GetGPUVirtualAddress(),256};
+#ifdef TEST_B27_PLACED
+    B27Copy copy;CK(!copy.prepare(d.Get(),src.Get()));
+    cb.BufferLocation=copy.cb->GetGPUVirtualAddress();CK(cb.BufferLocation && !(cb.BufferLocation%cb.SizeInBytes));
+#endif
     d->CreateConstantBufferView(&cb,table->GetCPUDescriptorHandleForHeapStart());auto bank=table.Get();l->SetDescriptorHeaps(1,&bank);l->SetGraphicsRootDescriptorTable(0,table->GetGPUDescriptorHandleForHeapStart());
 #else
     l->SetGraphicsRootShaderResourceView(0,src->GetGPUVirtualAddress());
 #endif
     l->DrawInstanced(3,1,0,0);
+#ifdef TEST_B27_PLACED
+    copy.read_after_draw(l.Get());
+#endif
     D3D12_RESOURCE_BARRIER b={};b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
     D3D12_TEXTURE_COPY_LOCATION to={},from={};from.pResource=rt.Get();to.pResource=rb.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     to.PlacedFootprint.Footprint={DXGI_FORMAT_R32_UINT,4,1,1,256};l->CopyTextureRegion(&to,0,0,0,&from,nullptr);
@@ -158,12 +177,22 @@ int main() {
     IUnknown *old=root.Get();root.Reset();CK(!xs_bvh_root_host(dev.Get(),old) && test_list_root_checked(list.Get(),old)==E_INVALIDARG);list.Reset();
 #else
     HR(l->Close());
+#ifdef TEST_B27_PLACED
+    HR(q->Wait(copy.gate.Get(),1));
+    ID3D12CommandList*ls[]={copy.head.Get(),l.Get()};q->ExecuteCommandLists(2,ls);
+#else
     ID3D12CommandList*ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
+#endif
 #endif
     ComPtr<ID3D12Fence>fence;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
     HANDLE evt=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(evt);HR(q->Signal(fence.Get(),1));HR(fence->SetEventOnCompletion(1,evt));
 #ifdef TEST_POOL_ROOT
     CK(WaitForSingleObject(evt,50)==WAIT_TIMEOUT);HR(gate->Signal(1));
+#elif defined(TEST_B27_PLACED)
+    CK(fence->GetCompletedValue()==0);
+    ComPtr<ID3D12CommandAllocator> fresh;HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&fresh)));
+    HR(l->Reset(fresh.Get(),nullptr));CK(!copy.replace_while_queued(vals,l.Get()));HR(l->Close());
+    HR(copy.gate->Signal(1));
 #endif
     CK(WaitForSingleObject(evt,10000)==WAIT_OBJECT_0);CloseHandle(evt);
     HR(rb->Map(0,nullptr,&m));
@@ -174,6 +203,10 @@ int main() {
     CK(!memcmp(m,vals,sizeof vals));rb->Unmap(0,nullptr);
 #ifdef TEST_BLIT_COLOUR
     auto stale=root.Get();CK(!root.Reset() && !xs_bvh_root_host(dev.Get(),stale));
+#ifdef TEST_B27_PLACED
+    HR(d->GetDeviceRemovedReason());CK(!copy.retire());
+    puts("PASS b27 split: live 96 bytes, four +32 pixels, all 160 canary bytes, replacement rejected");
+#endif
     puts("PASS canonical IA b27 space1 table: four exact CBV pixels after fence; shape, flags, HRESULT, identity, owner and release controls");return 0;
 #else
     puts("PASS node/size/space negatives; t0 space3 fenced draw returned four exact R32_UINT pixels");return 0;
