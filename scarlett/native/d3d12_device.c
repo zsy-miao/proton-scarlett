@@ -344,14 +344,28 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     return S_OK;
 }
 
-static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
+#include "xg/r11_mips.h"
+static BOOL tiled_r11_chain(const D3D12_RESOURCE_DESC *r)
 {
-    if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
+    return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment &&
+        ((r->Width==2560 && r->Height==1440 && r->MipLevels==6) ||
+         (r->Width==1280 && r->Height==720 && r->MipLevels==5)) &&
+        r->DepthOrArraySize==1 && r->Format==DXGI_FORMAT_R11G11B10_FLOAT &&
+        r->SampleDesc.Count==1 && !r->SampleDesc.Quality && (UINT)r->Layout==0x102 && (UINT)r->Flags==0x300004;
+}
+static HRESULT validate_texture_desc(const D3D12_RESOURCE_DESC *out)
+{
     if (is_srgb_row(out) || msaa_desc(out) || is_layered_texel(out)) return S_OK;
     if (is_volume1(out) && (UINT)out->Layout==R8_LAYOUT && out->Alignment==R8_ALIGNMENT) return S_OK;
     if (out->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || out->DepthOrArraySize!=1 ||
         out->MipLevels!=1 || out->SampleDesc.Count!=1 || out->SampleDesc.Quality) return E_NOTIMPL;
     return S_OK;
+}
+
+static HRESULT read_texture_desc(const void *wire,D3D12_RESOURCE_DESC *out)
+{
+    if (!copy_in(out,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof out->Flags)) return E_POINTER;
+    return validate_texture_desc(out);
 }
 
 static BOOL primary_desc(const D3D12_RESOURCE_DESC *rd)
@@ -384,7 +398,12 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (!out) return E_POINTER;
     *out=(D3D12_RESOURCE_ALLOCATION_INFO){0};
     if (!iface || node!=1 || count!=1) return E_INVALIDARG;
-    HRESULT hr=read_texture_desc(wire,&rd);
+    if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
+    if (tiled_r11_chain(&rd)) {
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){r11_end[rd.MipLevels],R11_ALIGNMENT};
+        return S_OK;
+    }
+    HRESULT hr=validate_texture_desc(&rd);
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     if ((rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) ||
@@ -439,7 +458,13 @@ HRESULT xs_msaa_allocation_info1(IUnknown *iface,UINT node,UINT count,const void
     D3D12_RESOURCE_DESC rd={0};
     if (!out || !detail) return E_POINTER;
     if (!iface || count!=1 || node!=1) return E_INVALIDARG;
-    HRESULT hr=read_texture_desc(wire,&rd);
+    if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
+    if (rd.MipLevels==5 && tiled_r11_chain(&rd)) {
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){r11_end[rd.MipLevels],R11_ALIGNMENT};
+        *detail=(D3D12_RESOURCE_ALLOCATION_INFO1){.Offset=0,.Alignment=out->Alignment,.SizeInBytes=out->SizeInBytes};
+        return S_OK;
+    }
+    HRESULT hr=validate_texture_desc(&rd);
     if (FAILED(hr)) return hr;
     return target_info(CONTAINING_RECORD(iface,struct xbox_device,iface)->host,&rd,out,detail);
 }

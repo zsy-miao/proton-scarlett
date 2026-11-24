@@ -3,6 +3,7 @@
 #include <wrl/client.h>
 #include <cstdio>
 #include <cstdlib>
+#include "xg/r11_mips.h"
 #include <cstring>
 using Microsoft::WRL::ComPtr;
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
@@ -20,6 +21,34 @@ int main(){
     ComPtr<ID3D12Device> d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page && VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
     DWORD *wire=(DWORD*)(page+4096)-13;
+    for(UINT levels=5;levels<=6;levels++){
+      UINT top=6-levels,w=2560u>>top,h=1440u>>top,bytes=levels==5?0x4b1400:0x12c1400;
+      const DWORD v[]={3,0,0,0,w,0,h,(levels<<16)|1u,26,1,0,0x102,0x300004};memcpy(wire,v,sizeof v);
+      D3D12_RESOURCE_ALLOCATION_INFO z={};D3D12_RESOURCE_ALLOCATION_INFO1 detail={};
+      CK(query(&z,guest.Get(),1,1,wire)==&z && z.SizeInBytes==bytes && z.Alignment==256);
+      if(levels==5){
+          using Query1=D3D12_RESOURCE_ALLOCATION_INFO*(WINAPI*)(D3D12_RESOURCE_ALLOCATION_INFO*,IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO1*);
+          auto query1=(Query1)((*(void***)guest.Get())[0x360/8]);
+          detail.Offset=~0ull;z={};CK(query1(&z,guest.Get(),1,1,wire,&detail)==&z && z.SizeInBytes==bytes && z.Alignment==256 &&
+              !detail.Offset && detail.Alignment==z.Alignment && detail.SizeInBytes==z.SizeInBytes);
+      }else CK(FAILED(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&z,&detail)));
+      for(UINT i=0;i<13;i++)if(i!=1){wire[i]^=1;CK(FAILED(xs_color_allocation_info(guest.Get(),1,1,wire,&z)));CK(FAILED(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&z,&detail)));wire[i]^=1;}
+      CK(FAILED(xs_color_allocation_info(guest.Get(),1,1,(BYTE*)wire+1,&z)));
+      wire[4]=640;wire[6]=360;wire[7]=0x40001;CK(FAILED(xs_color_allocation_info(guest.Get(),1,1,wire,&z)));
+      // Fingerprints of every byte address from the independent texture-computer coordinate query.
+      const UINT64 golden[]={0xff29bbd9171a2325ull,0xcfdba89f01b06325ull,0x35707ab1449e5325ull,
+                             0xb503d8c674f75725ull,0x2afadd7bc24a6e25ull,0x24bb1786cdeacda5ull};
+      auto seen=(BYTE*)calloc(bytes/4,1);CK(seen);UINT count=0;
+      for(UINT m=0;m<levels;m++){UINT64 hash=14695981039346656037ull;
+          for(UINT y=0;y<(h>>m);y++)for(UINT x=0;x<(w>>m);x++){
+              UINT b=r11_mip_byte(levels,m,x,y);CK(!(b%4) && b<bytes && !seen[b/4]++);count++;
+              hash=(hash^b)*1099511628211ull;
+          }
+          CK(hash==golden[top+m] && r11_mip_byte(levels,m,w>>m,0)==bytes && r11_mip_byte(levels,m,0,h>>m)==bytes);
+      }
+      free(seen);CK(count==(levels==5?1227600u:4914000u) && bytes-count*4==9920 && r11_mip_byte(levels,levels,0,0)==bytes);
+      printf("PASS R11 %u-mip: %u addresses, 9920 padding bytes, guarded sizing and rejected neighbors\n",levels,count);
+    }
     struct Target { UINT w,h,fmt,flags; } targets[]={
         {3840,2160,87,0xc00005}, {3840,2160,87,0x300001},
         {3840,2160,87,0x300001}, {3840,2160,19,0x800002}, {3840,2160,87,0xc00001}
