@@ -674,3 +674,25 @@ at offset 32 were zero. No retail shader read from that buffer was observed.
 On the identical ordinary stage, both AMD and RTX still stopped at the
 earlier offscreen draw (`+bff06`). In each of the three retail launches,
 the game issued tokens 1 and 2 and presented only token 1 (WSI count 0→1).
+
+### Colour pipeline creation
+
+The slot-42 request is asynchronous. Its worker missed the native cache
+and device `+2b0` returned `E_NOTIMPL`. The factory now recognizes the
+measured stream, both shaders, the input declaration and the owned b27
+root. The host shaders preserve smooth vertex colour and multiply by the
+float4 at CBV offset 32 before rounding toward zero to half precision.
+Both adapters produced RGBA bytes `1e 4b 7d be` in the rounding control
+and `11 35 89 dd` in the packed-colour control.
+
+The post-fix RADV diagnostic observed the worker publish a live pipeline
+and set the ready bit. The recording thread had already stopped at the
+root bind (`+327cb`). The latest ordinary RADV run issued tokens 1 and 2
+and stopped at the offscreen draw (`+bff06`); RTX issued token 1 and hit
+the intermittent depth-target breakpoint (`+5707b8c`). Each presented
+only token 1 (WSI count 0→1).
+
+This batch comprised two ordinary runs, two RADV diagnostics and six
+passing fixtures. Two of the fixtures independently measured 4×4 sample
+coverage: 6 for the original triangle, 16 for the completed rectangle,
+and 32 when drawn twice. No retail rectangle draw has been observed.

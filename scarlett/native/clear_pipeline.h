@@ -29,6 +29,32 @@ static ULONG WINAPI clear_release(IUnknown *i)
 static const struct bp_methods clear_methods={{bp_query,bp_addref,clear_release},
     {xs_stop,xs_stop,xs_stop},clear_name,xs_stop,xs_stop};
 
+#include "blit_colour_dxil.h"
+static ID3D12RootSignature *retain_graphics_kind(IUnknown *,IUnknown *,enum bvh_root_kind);
+/* Factory only. No colour PSO goes into the #4 list registry. Rectangle draws require assembly. */
+static HRESULT blit_colour_pipeline(IUnknown *dev,UINT_PTR *q,IUnknown *root,const void *vs,const void *ps)
+{
+    static const BYTE fixed[]={0x98,0x64,0x8d,0xd6,0xe6,0x16,0x32,0x4d,0x39,0x91,0x4a,0xe6,0x83,0xef,0xcc,0x6a,0x18,0xc1,0x10,0x65,0x83,0xc4,0xe3,0xde,0xcf,0x2f,0xb6,0x1f,0xae,0x53,0x90,0x83},vhash[]={0x67,0x2f,0x38,0x9b,0x67,0xf2,0x17,0xe8,0xcf,0x80,0x54,0x42,0xd2,0xc7,0x7f,0xab,0x41,0x5b,0x0b,0x01,0xf6,0x92,0x41,0xd1,0x83,0x86,0x63,0x9a,0x31,0x3e,0x12,0x98},phash[]={0xda,0x48,0x29,0xb1,0x4a,0xfd,0xf3,0xd0,0xf6,0xdc,0x8d,0x44,0xc8,0xfd,0xbf,0x3c,0xfb,0x8b,0x84,0xbc,0xd7,0xb8,0xda,0xcd,0xf4,0x03,0xc0,0xd4,0x56,0xa8,0x11,0xea};
+    static const D3D12_INPUT_ELEMENT_DESC ia[]={
+        {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+        {"COLOR",0,DXGI_FORMAT_R8G8B8A8_UNORM,0,12,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+        {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,16,D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0}};
+    const void *layout=(void*)q[0x268/8];q[0x268/8]=0;
+    if(!shader_digest_matches((BYTE*)q,0x2b0,fixed))return E_NOTIMPL;
+    D3D12_INPUT_ELEMENT_DESC in[3];BYTE v[1100],p[1180];
+    if(!copy_in(in,layout,sizeof in)||!copy_in(v,vs,sizeof v)||!copy_in(p,ps,sizeof p))return E_POINTER;
+    for(UINT k=0;k<3;k++){
+        char name[9];SIZE_T len=strlen(ia[k].SemanticName)+1;
+        if(!copy_in(name,in[k].SemanticName,len))return E_POINTER;
+        if(memcmp(name,ia[k].SemanticName,len)||in[k].SemanticIndex!=0||in[k].Format!=ia[k].Format||in[k].InputSlot ||
+            in[k].AlignedByteOffset!=ia[k].AlignedByteOffset||in[k].InputSlotClass!=ia[k].InputSlotClass||in[k].InstanceDataStepRate)return E_NOTIMPL;
+    }
+    if(!shader_digest_matches(v,sizeof v,vhash)||!shader_digest_matches(p,sizeof p,phash))return E_NOTIMPL;
+    ID3D12RootSignature *host=retain_graphics_kind(dev,root,ROOT_BLIT_COLOUR);if(!host)return E_INVALIDARG;
+    q[1]=(UINT_PTR)host;q[3]=(UINT_PTR)colour_vs;q[4]=sizeof colour_vs;q[6]=(UINT_PTR)colour_ps;q[7]=sizeof colour_ps;
+    q[0x268/8]=(UINT_PTR)ia;q[0x278/8]=(UINT)q[0x278/8]|((UINT64)D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE<<32);
+    return S_OK;
+}
 static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE_STREAM_DESC *desc,
         REFIID iid,void **out)
 {
@@ -60,21 +86,27 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     BOOL srgb=rtv==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     /* Prewarm #4 changes only DSVFormat; the linear shader and disabled depth/stencil state are identical. */
     UINT_PTR dsv_word=q[0x2a8/8];
-    if (rtv==DXGI_FORMAT_R8G8B8A8_UNORM && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
-        q[0x2a8/8]=(UINT)dsv_word;
-    if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM<<32);
-    if (!shader_digest_matches((BYTE *)q,sizeof q,fixed_digest)) return E_NOTIMPL;
-    q[0x2a8/8]=dsv_word;
-    if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)rtv<<32);
-    if (!copy_in(vs,v,sizeof vs) || !copy_in(ps,s,sizeof ps)) return E_POINTER;
-    if (!shader_digest_matches(vs,sizeof vs,vs_digest) || !shader_digest_matches(ps,sizeof ps,ps_digest))
-        return E_NOTIMPL;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
-    ID3D12RootSignature *host=xs_retain_graphics_root(device,guest_root);
-    if (!host) return E_INVALIDARG;
-    q[1]=(UINT_PTR)host;
-    q[3]=(UINT_PTR)clear_vs_dxil; q[4]=sizeof clear_vs_dxil;
-    q[6]=(UINT_PTR)(srgb?clear_srgb_dxil:clear_ps_dxil); q[7]=srgb?sizeof clear_srgb_dxil:sizeof clear_ps_dxil;
+    BOOL colour=q[4]==1100 && q[7]==1180;ID3D12RootSignature *host;
+    if(colour){
+        HRESULT hr=blit_colour_pipeline(device,q,guest_root,v,s);if(FAILED(hr))return hr;
+        host=(ID3D12RootSignature*)q[1];
+    }else{
+        if (rtv==DXGI_FORMAT_R8G8B8A8_UNORM && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+            q[0x2a8/8]=(UINT)dsv_word;
+        if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM<<32);
+        if (!shader_digest_matches((BYTE *)q,sizeof q,fixed_digest)) return E_NOTIMPL;
+        q[0x2a8/8]=dsv_word;
+        if (srgb) q[0x280/8]=(UINT)q[0x280/8]|((UINT64)rtv<<32);
+        if (!copy_in(vs,v,sizeof vs) || !copy_in(ps,s,sizeof ps)) return E_POINTER;
+        if (!shader_digest_matches(vs,sizeof vs,vs_digest) || !shader_digest_matches(ps,sizeof ps,ps_digest))
+            return E_NOTIMPL;
+        host=xs_retain_graphics_root(device,guest_root);
+        if (!host) return E_INVALIDARG;
+        q[1]=(UINT_PTR)host;
+        q[3]=(UINT_PTR)clear_vs_dxil; q[4]=sizeof clear_vs_dxil;
+        q[6]=(UINT_PTR)(srgb?clear_srgb_dxil:clear_ps_dxil); q[7]=srgb?sizeof clear_srgb_dxil:sizeof clear_ps_dxil;
+    }
     sd.pPipelineStateSubobjectStream=q;
     ID3D12Device2 *d2=NULL;
     ID3D12PipelineState *pso=NULL;
@@ -95,13 +127,13 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     p->iface.lpVtbl=&clear_methods.unknown; p->refs=1;
     p->owner=d; IUnknown_AddRef(device);
     p->root=host; p->host=pso;
-    if ((UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT){
+    if (!colour && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT){
         wrap->root=guest_root;
         AcquireSRWLockExclusive(&d->descriptor_lock);
         wrap->next=d->clear4;d->clear4=wrap;
         ReleaseSRWLockExclusive(&d->descriptor_lock);
     }else IUnknown_Release(guest_root);
     *out=&p->iface;
-    OutputDebugStringA("scarlett: created qualified clear-pair graphics PSO\n");
+    OutputDebugStringA(colour?"scarlett: created qualified colour PSO\n":"scarlett: created qualified clear-pair graphics PSO\n");
     return S_OK;
 }

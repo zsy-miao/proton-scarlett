@@ -1168,13 +1168,13 @@ void xs_finish_flip(IUnknown *pin)
 }
 #endif
 /* Registry membership, not a dereference or QueryInterface on the guest argument. */
-ID3D12RootSignature *xs_retain_graphics_root(IUnknown *device,IUnknown *identity)
+static ID3D12RootSignature *retain_graphics_kind(IUnknown *device,IUnknown *identity,enum bvh_root_kind kind)
 {
     if (!device || device->lpVtbl!=&bootstrap_vtbl.unknown) return NULL;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     ID3D12RootSignature *host=NULL;
     AcquireSRWLockShared(&d->descriptor_lock);
-    for(struct bvh_root *r=d->bvh_roots;r;r=r->next)if(&r->iface==identity && r->kind==ROOT_SRV_SPACE3){
+    for(struct bvh_root *r=d->bvh_roots;r;r=r->next)if(&r->iface==identity && r->kind==kind){
         /* root_release unlinks after its final decrement. Do not resurrect it. */
         LONG refs=InterlockedCompareExchange(&r->refs,0,0);
         while(refs>0 && refs<LONG_MAX){
@@ -1184,6 +1184,10 @@ ID3D12RootSignature *xs_retain_graphics_root(IUnknown *device,IUnknown *identity
         break;
     }
     ReleaseSRWLockShared(&d->descriptor_lock);return host;
+}
+ID3D12RootSignature *xs_retain_graphics_root(IUnknown *device,IUnknown *identity)
+{
+    return retain_graphics_kind(device,identity,ROOT_SRV_SPACE3);
 }
 /* Only registered #4 wrappers on this exact guest and host device qualify. */
 ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown **root)
