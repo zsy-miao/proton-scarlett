@@ -1,0 +1,59 @@
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2466,6 +2466,7 @@
+     MemoryWineScarlettAcquireWcV1 = 0x53430005,
+     MemoryWineScarlettMapPagesV1 = 0x53430006,
+     MemoryWineScarlettUnmapPagesV1 = 0x53430007,
++    MemoryWineScarlettReleaseControl64V1 = 0x53430009,
+ #endif
+ } MEMORY_INFORMATION_CLASS;
+ 
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -278,6 +278,7 @@
+ #define VPROT_FREE_PLACEHOLDER 0x0800
+ #define VPROT_NATIVE           0x1000
+ #define VPROT_SCARLETT_DMA     0x2000
++#define VPROT_SCARLETT_CONTROL 0x4000
+ 
+ /* Conversion from VPROT_* to Win32 flags */
+ static const BYTE VIRTUAL_Win32Flags[16] =
+@@ -6819,6 +6820,24 @@
+             return get_memory_image_info( process, addr, buffer, len, res_len );
+ 
+ #ifdef __x86_64__
++        case MemoryWineScarlettReleaseControl64V1:
++        {
++            struct file_view *v;
++            sigset_t sigset;
++            if (is_wow64() || process != NtCurrentProcess() || buffer || len || res_len)
++                return STATUS_INVALID_PARAMETER;
++            server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++            status = STATUS_INVALID_PARAMETER;
++            if ((v = find_view( addr, 0 )) && addr == v->base && v->size == 0x10000 &&
++                v->scarlett_section && (v->protect & VPROT_SCARLETT_CONTROL) && !(v->protect & VPROT_PLACEHOLDER))
++            {
++                /* The recursive VM mutex covers identity check and destruction. */
++                if (v->protect & VPROT_SCARLETT_DMA) { delete_view( v ); status = STATUS_SUCCESS; }
++                else status = NtUnmapViewOfSection( process, (void *)addr );
++            }
++            server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++            return status;
++        }
+         case MemoryWineScarlettCreateV1:
+         case MemoryWineScarlettCreateSpanV1:
+         case MemoryWineScarlettAcquireV1:
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -561,6 +561,11 @@
+ {
+     if (type == MEM_RELEASE && size)
+     {
++#ifdef __x86_64__
++        if (process == GetCurrentProcess() && size == 0x10000 &&
++            !NtQueryVirtualMemory( process, addr, MemoryWineScarlettReleaseControl64V1, NULL, 0, NULL ))
++            return TRUE;
++#endif
+         WARN( "Trying to release memory with specified size.\n" );
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return FALSE;
