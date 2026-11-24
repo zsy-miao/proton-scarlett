@@ -4,7 +4,7 @@ struct bvh_root {
     LONG refs;
     struct xbox_device *owner;
     ID3D12RootSignature *host;
-    enum { ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC, ROOT_RADIX, ROOT_PREFIX } kind;
+    enum { ROOT_UTILITY, ROOT_MORTON, ROOT_BITONIC, ROOT_RADIX, ROOT_PREFIX, ROOT_REARRANGE } kind;
     struct bvh_root *next;
 };
 static ULONG WINAPI root_addref(IUnknown *i)
@@ -40,7 +40,7 @@ static HRESULT WINAPI root_name(IUnknown *i,const WCHAR *name)
 {
     /* The supplied helper passes exactly this literal immediately after success. */
     struct bvh_root *r=CONTAINING_RECORD(i,struct bvh_root,iface);
-    const WCHAR *expected=r->kind==ROOT_RADIX?L"XDXR RadixSortCountAndAlloc":
+    const WCHAR *expected=r->kind==ROOT_REARRANGE?L"XDXR RearrangeElementsPass":r->kind==ROOT_RADIX?L"XDXR RadixSortCountAndAlloc":
             r->kind==ROOT_PREFIX?L"XDXR RadixSortPrefixSum":r->kind==ROOT_MORTON?L"XDXR MortonCodesCalculator":
             r->kind==ROOT_BITONIC?L"XDXR BitonicSort":L"XDXR UtilityShaders";
     WCHAR copy[ARRAYSIZE(L"XDXR RadixSortCountAndAlloc")];
@@ -72,10 +72,10 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
     *out=NULL;
     if (!iid || !blob || !n) return E_INVALIDARG;
     if (!IsEqualIID(iid,&IID_ID3D12RootSignature)) return E_NOINTERFACE;
-    BYTE wire[236];
-    if (node!=1 || (n!=140 && n!=164 && n!=212 && n!=236)) return E_NOTIMPL;
+    BYTE wire[260];
+    if (node!=1 || (n!=140 && n!=164 && n!=212 && n!=236 && n!=260)) return E_NOTIMPL;
     if (!copy_in(wire,blob,n)) return E_POINTER;
-    D3D12_ROOT_PARAMETER1 p[7]={
+    D3D12_ROOT_PARAMETER1 p[8]={
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV},
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV},
         {.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,16}},
@@ -83,12 +83,13 @@ static HRESULT WINAPI bootstrap_root(IUnknown *device,UINT node,const void *blob
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc={.Version=D3D_ROOT_SIGNATURE_VERSION_1_1,
         .Desc_1_1={3,p,0,NULL,(D3D12_ROOT_SIGNATURE_FLAGS)0x03000000}};
     int kind=ROOT_UTILITY;
-    if (n==236) {
-        kind=ROOT_RADIX;
-        desc.Desc_1_1.NumParameters=7;
-        for (UINT i=0;i<6;i++)
+    if (n==236 || n==260) {
+        UINT uavs=n==236?6:7;
+        kind=n==236?ROOT_RADIX:ROOT_REARRANGE;
+        desc.Desc_1_1.NumParameters=uavs+1;
+        for (UINT i=0;i<uavs;i++)
             p[i]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV,.Descriptor={i,0,0}};
-        p[6]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,3}};
+        p[uavs]=(D3D12_ROOT_PARAMETER1){.ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,.Constants={0,0,n==236?3u:4u}};
     } else if (n==212) {
         kind=ROOT_MORTON;
         desc.Desc_1_1.NumParameters=6;
