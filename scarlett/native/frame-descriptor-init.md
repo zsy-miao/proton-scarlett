@@ -138,6 +138,24 @@ SCARLETT_TEST_GPU=radv TMPDIR="$w" "$src/../test-launch-nixos.sh" "$w/game" "$to
 
 ### Descriptor writers (RVA evidence, native x64)
 
+**Later CPU-only type-0 heap.** The vector at `61ecfb0` is `{0,0xc38,0,1}`.
+`1c74513`–`1c74542` pass it straight to device `+0x70` with the same heap
+IID; negative HRESULT branches to `int3` at `1c745ed`. This caller supplies
+no placement or temporary interceptor. `1c74559` calls heap `+0x48`;
+`1c7456b` queries type-0 stride. The three loops ending at `1c745ac`,
+`1c745c6`, `1c745e0` assign 408, 1840 and 880 consecutive CPU handles,
+exactly 3128 slots. There is no GPU-start query on this path.
+
+Use the existing type-0 XMem pair with `0x800004` and `0x18700` bytes
+(32-byte title stride). This preserves any installed interceptors. Without
+an override, the title's initial `0x80` table heads at `6843770/6843f80`
+point to `61889b0/61889d0`; the callbacks `4deb540/4e38fa0` jump through
+the `XMemAllocDefault/XMemFreeDefault` imports. The host heap has flags zero.
+`test-descriptor.cpp` forwards this request through real XMem defaults,
+writes the final four slots via the device writers, copies those host CPU
+descriptors to a visible test heap, and checks fenced readback
+`{0xac125bee,0,0,0}`. It also checks GPU handle rejection and final owner release.
+
 | Slot | Evidence and accepted input |
 |---|---|
 | Device `+0x90` SRV | `164efb`: `(This, resource, desc, titleCPUHandle)`. Five calls `247905a`–`24790b5` use a null resource and a 40-byte input: DWORDs at `+0,+4,+8` are format `42` (`R32_UINT`), dimension `2,4,9,8,1`, mapping `0x1688`. Remaining bytes are zero. These are 1D, 2D, cube, 3D and buffer null views. |

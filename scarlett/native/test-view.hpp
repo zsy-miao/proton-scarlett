@@ -6,7 +6,7 @@ void xs_unbind_view_buffer(xs_buffer_binding *);
 HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
 HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
 }
-static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T start,UINT stride)
+static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T start,UINT stride,bool cpu_only=false)
 {
     using CB = void (WINAPI *)(IUnknown *,const void *,SIZE_T);
     using SR = void (WINAPI *)(IUnknown *,IUnknown *,const void *,SIZE_T);
@@ -21,8 +21,10 @@ static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T st
     SLOT(d,0x88,CB)(d,zero,cb);
     CK(((UINT64*)cb)[0]==0x10000000000000ull && ((UINT64*)cb)[1]==0x2403c00000000ull);
     words[2]=0x1688;
-    srv(d,nullptr,words,cb);
-    ((UINT64*)cb)[0]=0x10000000000000ull; ((UINT64*)cb)[1]=0x2403c00000000ull;
+    if (!cpu_only) {
+        srv(d,nullptr,words,cb);
+        ((UINT64*)cb)[0]=0x10000000000000ull; ((UINT64*)cb)[1]=0x2403c00000000ull;
+    }
     D3D12_HEAP_PROPERTIES hp={}; hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC buf={}; buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER; buf.Width=256;
     buf.Height=buf.DepthOrArraySize=buf.MipLevels=buf.SampleDesc.Count=1; buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -43,11 +45,24 @@ static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T st
     CK(FAILED(xs_write_view(d,0x90,heap,record,raw)));
     ID3D12DescriptorHeap *desktop;
     D3D12_GPU_DESCRIPTOR_HANDLE handles[4];
-    HR(xs_resolve_view(heap,raw,0x90,&desktop,&handles[0]));
     ID3D12DescriptorHeap *bank;
-    HR(xs_resolve_view(heap,null_srv,0x90,&bank,&handles[1])); CK(bank==desktop);
-    HR(xs_resolve_view(heap,cb,0x88,&bank,&handles[2])); CK(bank==desktop);
-    HR(xs_resolve_view(heap,null_uav,0x98,&bank,&handles[3])); CK(bank==desktop);
+    if (cpu_only) {
+        D3D12_CPU_DESCRIPTOR_HANDLE src;
+        HR(xs_descriptor_range(heap,raw,4,&bank,&src,nullptr));
+        auto desc=bank->GetDesc();
+        CK(desc.Type==D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && !desc.Flags && desc.NumDescriptors==0xc38);
+        desc.NumDescriptors=4; desc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        HR(host->CreateDescriptorHeap(&desc,IID_PPV_ARGS(&desktop)));
+        host->CopyDescriptorsSimple(4,desktop->GetCPUDescriptorHandleForHeapStart(),src,desc.Type);
+        CK(xs_resolve_view(heap,raw,0x90,&bank,&handles[0])==E_INVALIDARG && !bank && !handles[0].ptr);
+        for (UINT i=0;i<4;i++)
+            handles[i].ptr=desktop->GetGPUDescriptorHandleForHeapStart().ptr+i*host->GetDescriptorHandleIncrementSize(desc.Type);
+    } else {
+        HR(xs_resolve_view(heap,raw,0x90,&desktop,&handles[0]));
+        HR(xs_resolve_view(heap,null_srv,0x90,&bank,&handles[1])); CK(bank==desktop);
+        HR(xs_resolve_view(heap,cb,0x88,&bank,&handles[2])); CK(bank==desktop);
+        HR(xs_resolve_view(heap,null_uav,0x98,&bank,&handles[3])); CK(bank==desktop);
+    }
     auto shader=CreateFileA("test-view.dxil",GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
     CK(shader!=INVALID_HANDLE_VALUE);
     BYTE code[8192]; DWORD n; CK(ReadFile(shader,code,sizeof code,&n,nullptr) && n && n<sizeof code); CloseHandle(shader);
@@ -82,6 +97,7 @@ static void test_writers(IUnknown *d,ID3D12Device *host,IUnknown *heap,SIZE_T st
     HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(e); HR(f->SetEventOnCompletion(1,e)); CK(WaitForSingleObject(e,5000)==WAIT_OBJECT_0);
     HR(readback->Map(0,nullptr,(void**)&mapped));
     CK(mapped[0]==0xac125bee && !mapped[1] && !mapped[2] && !mapped[3]); readback->Unmap(0,nullptr);
+    if (cpu_only) desktop->Release();
     *(DWORD*)raw=0xffffffff; CK(FAILED(xs_resolve_view(heap,raw,0x90,&desktop,&handles[0])) && !desktop && !handles[0].ptr);
     CK(FAILED(xs_resolve_view(heap,cb,0x90,&desktop,&handles[0])));
     CK(FAILED(xs_resolve_view(heap,raw,0x88,&desktop,&handles[0])));

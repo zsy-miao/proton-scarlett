@@ -15,12 +15,23 @@ static BYTE *arena;
 static SIZE_T extent;
 static bool alloc_hook,free_hook;
 static unsigned taken,returned;
+static void *(WINAPI *default_alloc)(SIZE_T,UINT64);
+static void (WINAPI *default_free)(void *,UINT64);
+static BYTE *cpu_backing;
 static void *WINAPI take(SIZE_T n,UINT64 attr) {
+    if (n==0xc38*32) {
+        CK(!alloc_hook && !cpu_backing && attr==0x800004);
+        return cpu_backing=(BYTE *)default_alloc(n,attr);
+    }
     CK(alloc_hook && n==extent && attr==0x800004);
     ++taken;
     return arena;
 }
 static void WINAPI give(void *p,UINT64 attr) {
+    if (cpu_backing && p==cpu_backing) {
+        CK(!free_hook && attr==0x800004);
+        default_free(p,attr); cpu_backing=nullptr; return;
+    }
     CK(free_hook && p==arena && attr==0x800004);
     ++returned;
 }
@@ -115,7 +126,10 @@ static void test_dma_slot(IUnknown *d,ID3D12Device *host)
 
 int main()
 {
-    CK(LoadLibraryW(L"xmem.dll"));
+    auto xm=LoadLibraryW(L"xmem.dll"); CK(xm);
+    default_alloc=(decltype(default_alloc))(void *)GetProcAddress(xm,"XMemAllocDefault");
+    default_free=(decltype(default_free))(void *)GetProcAddress(xm,"XMemFreeDefault");
+    CK(default_alloc && default_free);
     DWORD p[20]={}; p[0]=0x20004;p[2]=0x100000;p[10]=1;p[15]=0x20;
     const IID id={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     IUnknown *d; ID3D12Device *host;
@@ -173,6 +187,22 @@ int main()
     CK(FAILED(xs_resolve_view(fresh,stale,0x90,&desktop,&g)) && !desktop && !g.ptr);
     HR(xs_write_view(d,0x90,nullptr,nulls,stale)); HR(xs_resolve_view(fresh,stale,0x90,&desktop,&g));
     free_hook=true; CK(!fresh->Release()); free_hook=false; CK(returned==2);
-    CK(VirtualFree(arena,0,MEM_RELEASE)); test_dma_slot(d,host); d->Release(); host->Release();
+    CK(VirtualFree(arena,0,MEM_RELEASE)); test_dma_slot(d,host);
+    UINT cpu_desc[]={0,0xc37,0,1};
+    CK(create(d,cpu_desc,IID_ID3D12DescriptorHeap,&out)==E_NOTIMPL && !out);
+    cpu_desc[1]=0xc38;
+    HR(create(d,cpu_desc,IID_ID3D12DescriptorHeap,(void **)&fresh));
+    SIZE_T cpu=SLOT(fresh,0x48,Start)(fresh);
+    UINT stride=increment(d,0);
+    CK(cpu && cpu==(SIZE_T)cpu_backing && stride==32 && !SLOT(fresh,0x50,Start)(fresh));
+    SIZE_T end=cpu+cpu_desc[1]*stride;
+    D3D12_CPU_DESCRIPTOR_HANDLE c;
+    CK(xs_descriptor_range(fresh,end-stride,2,&desktop,&c,nullptr)==E_INVALIDARG && !desktop && !c.ptr);
+    CK(xs_descriptor_range(fresh,cpu,1,&desktop,&c,&g)==E_INVALIDARG && !desktop && !c.ptr && !g.ptr);
+    test_writers(d,host,fresh,end-5*stride,stride,true);
+    CK(d->Release()==1 && cpu_backing); // heap still owns device
+    CK(!fresh->Release() && !cpu_backing);
+    host->Release();
+    puts("PASS CPU-only 0xc38: default-backed XMem, no GPU handle, copied final four descriptors and fenced RAW/null readback");
     puts("PASS descriptor heaps: actual 0x130000 placed slots, two fenced host-bank dispatches, crossing rejected, exact XMem base/free and final-slot RTV readback");
 }

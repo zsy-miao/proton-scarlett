@@ -107,7 +107,7 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
     if (!IsEqualIID(iid,&IID_ID3D12DescriptorHeap)) return E_NOINTERFACE;
     if (!ReadProcessMemory(GetCurrentProcess(),input,&d,sizeof(d),&copied) || copied != sizeof(d)) return E_POINTER;
     if (!d.NumDescriptors) return E_INVALIDARG;
-    if (d.NodeMask != 1 || !((d.Type == 0 && d.Flags == 1) ||
+    if (d.NodeMask != 1 || !((d.Type == 0 && (d.Flags == 1 || (!d.Flags && d.NumDescriptors == 0xc38))) ||
         (d.Type == 1 && d.NumDescriptors == 128 && (UINT)d.Flags <= 1) ||
         (d.Type == 2 && d.NumDescriptors == 4096 && !d.Flags) ||
         (d.Type == 3 && d.NumDescriptors == 2048 && !d.Flags))) return E_NOTIMPL;
