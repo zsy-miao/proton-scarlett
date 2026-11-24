@@ -238,6 +238,24 @@ that later GPU work may proceed when this list is submitted or replayed.
 
 ### Experimental whole-queue wait
 
+The opt-in staged build (`-DSCARLETT_EXPERIMENTAL_DIRECT_WAIT` on `queue.c`)
+implements only the `+0x250` shape below; default builds keep the slot guarded.
+The native control page is mapped from the original retained buffer on RADV;
+on RTX the post-marker callback uses the original CPU-only alias. Each
+submission samples its own unsigned 64-bit threshold after the head retires.
+A low sample rearms the same one-shot callback, without blocking a pool thread
+or holding a queue lock. A timeout alone never releases the tail.
+
+The submission owns an extra gate fence reference through tail retirement:
+releasing the last reference on observer cancellation can let vkd3d run a
+pending suffix. The RTX fixture injects a failed device reason on a timer
+wake and checks that the observer alias is released without running the tail.
+A healthy unsatisfied queue cannot cancel its already-submitted work and
+reclaim the retirement resources. Test `test-prefix-marker.c` with the same
+define (add `TEST_FAILED_WAIT_REASON` for the fault fixture); for RADV use
+`testq.c` and `test-allocation-info.cpp` with `TEST_RADV_MARKER`,
+`TEST_POST_SNAPSHOT` and the experimental define.
+
 Two scratch builds support the observed pooled Direct list, comparison `7`,
 flag `1` and control-page offset zero. Both record the wait without reading
 the counter to decide whether to skip it. The test implementation holds

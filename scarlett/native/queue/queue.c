@@ -13,6 +13,9 @@ struct adapter {
     IUnknown iface;
     LONG refs;
     SRWLOCK submit_lock;
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+    BOOL external_submissions;
+#endif
     union {
         ID3D12CommandQueue *queue;
         ID3D12Fence *fence;

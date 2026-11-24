@@ -314,6 +314,41 @@ int main()
     test_post_snapshot(pooled.Get(),rb.Get(),96,local);
 #endif
     CK(original[2]==0x76100002); // A synchronous CPU store is not a recorded command.
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+    constexpr UINT64 target=0x800000010000000bull;
+    auto counter=(volatile UINT64*)original;
+    *counter=target;MemoryBarrier();
+    using Wait64=void(WINAPI*)(IUnknown*,void*,UINT,UINT64,UINT);
+    SLOT(pooled.Get(),0x250,Wait64)(pooled.Get(),ctrl,7,target,1);
+    {
+        ComPtr<IUnknown> replay,rq,finished;
+        HR(SLOT(dev.Get(),0x248,List)(dev.Get(),ld,alloc1.Get(),nullptr,xs_pool_list_id,(void**)replay.GetAddressOf()));
+        HR(xs_bind_pool_heaps(replay.Get(),2,pair));
+        SLOT(replay.Get(),0x238,Marker)(replay.Get(),ctrl+2,0,0,0);
+        SLOT(replay.Get(),0x240,Stamp)(replay.Get(),wbPool+offset,0,0,1);
+        SLOT(replay.Get(),0x238,Marker)(replay.Get(),ctrl+3,published,0,0);
+        SLOT(replay.Get(),0x250,Wait64)(replay.Get(),ctrl,7,target,1);
+        HR(SLOT(replay.Get(),0x48,Close)(replay.Get()));
+        HR(xs_direct_queue(d.Get(),rq.GetAddressOf()));HR(xs_shared_fence(d.Get(),finished.GetAddressOf()));
+        using Submit=void(WINAPI*)(IUnknown*,UINT,IUnknown*const*,UINT64,UINT);
+        using Signal=HRESULT(WINAPI*)(IUnknown*,IUnknown*,UINT64);
+        IUnknown *batch[]={replay.Get()};
+        HANDLE retired=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(retired);
+        for (unsigned pass=1;pass<=2;pass++) {
+            *counter=pass==1?target:target-(1ull<<32); MemoryBarrier();
+            SLOT(rq.Get(),0x118,Submit)(rq.Get(),1,batch,0,0);
+            HR(SLOT(rq.Get(),0x80,Signal)(rq.Get(),finished.Get(),pass));
+            HR(xs_fence_event(finished.Get(),pass,retired));
+            if (pass==2) {
+                CK(WaitForSingleObject(retired,100)==WAIT_TIMEOUT && *ticks!=0xcecececececececeull &&
+                   original[3]==published); *counter=target; MemoryBarrier();
+            }
+            CK(WaitForSingleObject(retired,10000)==WAIT_OBJECT_0);
+            ctrl[2]=0x76100002;ctrl[3]=0x76100003;*ticks=0xcecececececececeull;MemoryBarrier();
+        }
+        CloseHandle(retired);puts("PASS RADV replay: same closed list rechecked original counter and waited for equality");
+    }
+#endif
 #endif
 
     l=xs_list_host(pooled.Get());
@@ -348,6 +383,10 @@ int main()
     CK(original[2]==0x76100002 && VirtualFree(ctrl,65536,MEM_RELEASE));
     CK(VirtualAlloc(ctrl,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==ctrl);
     for(UINT j=0;j<16384;j++)ctrl[j]=0x89500000+j;
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+    *(volatile UINT64*)ctrl=target;
+    *counter=target-0x100000000ull;
+#endif
     MemoryBarrier();CK(original[2]==0x76100002);
 #endif
 #ifdef TEST_RADV_MARKER
@@ -355,7 +394,19 @@ int main()
     CK(VirtualAlloc(reuse,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==reuse);memset(reuse,0x49,65536);MemoryBarrier();
     CK(original[3]==0x76100003 && *ticks==0xcecececececececeull);UINT64 t0,t1,cpuTicks,hz;auto hq=test_host_queue(gq.Get());HR(hq->GetTimestampFrequency(&hz));HR(hq->GetClockCalibration(&t0,&cpuTicks));
 #endif
-    HR(xs_cpu_signal(gate.Get(),1)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
+    HR(xs_cpu_signal(gate.Get(),1));
+#if defined(TEST_RADV_MARKER) && defined(SCARLETT_EXPERIMENTAL_DIRECT_WAIT)
+    ULONGLONG deadline=GetTickCount64()+5000;
+    while(original[3]!=published && GetTickCount64()<deadline) Sleep(1);
+    CK(original[3]==published && original[2]==0 && *ticks!=0xcecececececececeull);
+    CK(WaitForSingleObject(sampled,100)==WAIT_TIMEOUT);HR(rb->Map(0,nullptr,(void**)&pixel));
+#ifdef TEST_POST_SNAPSHOT
+    CK(pixel[23]==0x76100003 && pixel[27]==published);
+#endif
+    CK(!pixel[4] && !pixel[12]);rb->Unmap(0,nullptr);
+    *counter=target+1;MemoryBarrier();
+#endif
+    CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
     HR(rb->Map(0,nullptr,(void **)&pixel));
 #ifdef TEST_RADV_MARKER
     HR(hq->GetClockCalibration(&t1,&cpuTicks)); CK(*ticks>=t0 && *ticks<=t1 && *ticks!=0xcecececececececeull);
@@ -367,9 +418,15 @@ int main()
     printf("PASS GPU boundaries timestamp=%llu prefix=0 beforePost=%08lx afterPost=%08lx\n",before,pixel[23],pixel[27]);
 #endif
     CK(VirtualFree(copy.base,0,MEM_RELEASE)&&VirtualFree(reuse,0,MEM_RELEASE));
-    for(UINT j=0;j<16384;j++)CK(original[j]==(j==2?0:j==3?published:0x76100000+j) && ctrl[j]==0x89500000+j);
+    UINT start=0,high=0x76100001;
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+    CK(*counter==target+1 && *(volatile UINT64*)ctrl==target);
+    start=2;high=target>>32;
+    puts("PASS pooled +250: original below by 2^32 held following GPU copy, shader and fence; overshoot released after reset and VA reuse");
+#endif
+    for(UINT j=start;j<16384;j++)CK(original[j]==(j==2?0:j==3?published:0x76100000+j) && ctrl[j]==0x89500000+j);
     CK(VirtualFree(ctrl,0,MEM_RELEASE));puts("PASS native post: original control +8 cleared, +12 published, all other DWORDs and both reused mappings intact after gated reset/release");
-    CK(pixel[12]==0x76100001 && pixel[13]==0 && pixel[14]==published);puts("PASS suffix GPU copy saw guarded marker zero in recording order");
+    CK(pixel[12]==high && pixel[13]==0 && pixel[14]==published);puts("PASS suffix GPU copy saw guarded marker zero in recording order");
 #endif
     CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff && pixel[6]==0xff008080);
     CK(pixel[7]==0xff00ff00 && pixel[8]==0xff0000ff && pixel[9]==0xff00ff00); rb->Unmap(0,nullptr);

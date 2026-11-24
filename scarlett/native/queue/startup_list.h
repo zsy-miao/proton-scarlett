@@ -13,7 +13,7 @@ struct startup_list {
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
     ID3D12CommandAllocator *tail_allocator;
     struct system_timestamp *stamp;
-    BOOL closed,host_exposed;
+    BOOL closed,host_exposed,post_boundary;
     IUnknown iface; /* Last: pooled callers' inline packet fields are not host bookkeeping. */
 };
 _Static_assert(offsetof(struct startup_list,iface)+sizeof(IUnknown)==sizeof(struct startup_list),"interface at end");
@@ -34,6 +34,7 @@ static void drop_heaps(IUnknown *pair[2])
 static void drop_split(struct startup_list *s)
 {
     drop_marker(s->post); s->post=NULL;
+    s->post_boundary=FALSE;
     if (s->head) { ID3D12GraphicsCommandList7_Release(s->head);s->head=NULL; }
     if (s->tail_allocator) { ID3D12CommandAllocator_Release(s->tail_allocator);s->tail_allocator=NULL; }
 }
@@ -69,6 +70,7 @@ static void sl_barrier(struct startup_list *s, BOOL valid)
     if (s->closed) xs_stop();
     if (!valid) s->error = E_NOTIMPL; /* Report at Close, before anything can be submitted. */
     if (FAILED(s->error)) return;
+    s->post_boundary=FALSE;
     D3D12_GLOBAL_BARRIER barrier = {D3D12_BARRIER_SYNC_ALL, D3D12_BARRIER_SYNC_ALL,
             D3D12_BARRIER_ACCESS_COMMON, D3D12_BARRIER_ACCESS_COMMON};
     D3D12_BARRIER_GROUP group = {.Type=D3D12_BARRIER_TYPE_GLOBAL, .NumBarriers=1, .pGlobalBarriers=&barrier};
@@ -153,6 +155,7 @@ static HRESULT bind_initial_heaps(struct startup_list *s,UINT count,IUnknown *co
     if (FAILED(hr)) return hr;
     if (!s->heaps[0]) for (unsigned i=0;i<2;i++) { IUnknown_AddRef(pair[i]); s->heaps[i]=pair[i]; }
     ID3D12GraphicsCommandList7_SetDescriptorHeaps(s->host,2,banks);
+    s->post_boundary=FALSE;
     return S_OK;
 }
 static void WINAPI sl_bind(IUnknown *i,UINT count,IUnknown *const *input)
@@ -232,27 +235,16 @@ static HRESULT record_native_post(struct startup_list *s,UINT64 addr,UINT value,
     ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
     ID3D12GraphicsCommandList7_WriteBufferImmediate(s->host,1,&op,NULL);
     ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
-    m->native_post=TRUE;
+    m->native_post=value;
     return S_OK;
 }
-/* Only the initial heap state can be replayed at this boundary. Never split an
- * escaped recorder: a client could retain that pointer or set untracked state. */
-static HRESULT split_after_timestamp(struct startup_list *s,UINT64 addr,UINT value,UINT64 control,UINT flags)
+/* Only the initial heap state can be replayed at this boundary. */
+static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *post)
 {
-    if (!s->marker || !s->marker->alias || s->marker->value || !s->stamp || s->closed ||
-        s->host_exposed || s->post || control || flags) return E_NOTIMPL;
-    struct scarlett_section_info id;
-    HRESULT hr=scarlett_query_section(0x53430015,(void *)addr,4,&id);
-    if (FAILED(hr)) return hr;
-    if (id.offset!=s->marker->generation || id.view_size!=65536 || addr!=(UINT_PTR)id.base+12 ||
-        s->marker->word!=(LONG *)((BYTE *)s->marker->alias+8)) return E_INVALIDARG;
-    struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);
-    if (!post) return E_OUTOFMEMORY;
     post->refs=1;post->parent=s->marker;InterlockedIncrement(&post->parent->refs);
-    post->word=s->marker->word+1;post->value=value;
     ID3D12GraphicsCommandList7 *tail=NULL;
     ID3D12CommandAllocator *a=NULL;
-    hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void **)&a);
+    HRESULT hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void **)&a);
     if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,NULL,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
@@ -268,7 +260,22 @@ static HRESULT split_after_timestamp(struct startup_list *s,UINT64 addr,UINT val
         drop_marker(post);return hr;
     }
     s->post=post;s->head=s->host;s->host=tail;s->tail_allocator=a;
+    s->post_boundary=!post->counter;
     return S_OK;
+}
+static HRESULT split_after_timestamp(struct startup_list *s,UINT64 addr,UINT value,UINT64 control,UINT flags)
+{
+    if (!s->marker || !s->marker->alias || s->marker->value || !s->stamp || s->closed ||
+        s->host_exposed || s->post || control || flags) return E_NOTIMPL;
+    struct scarlett_section_info id;
+    HRESULT hr=scarlett_query_section(0x53430015,(void *)addr,4,&id);
+    if (FAILED(hr)) return hr;
+    if (id.offset!=s->marker->generation || id.view_size!=65536 || addr!=(UINT_PTR)id.base+12 ||
+        s->marker->word!=(LONG *)((BYTE *)s->marker->alias+8)) return E_INVALIDARG;
+    struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);
+    if (!post) return E_OUTOFMEMORY;
+    post->word=s->marker->word+1;post->value=value;
+    return split_native_list(s,post);
 }
 static void WINAPI sl_marker(IUnknown *i,UINT64 addr,UINT value,UINT64 control,UINT flags)
 {
@@ -289,6 +296,73 @@ static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT f
 {
     if (FAILED(pool_timestamp(sl(i),addr,x,y,flags))) xs_stop();
 }
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+/* Page provenance alone doesn't identify the device that owns this list. */
+static BOOL wait_device_matches(ID3D12Device *device)
+{
+    HRESULT (WINAPI *create)(REFIID,void **)=(void *)GetProcAddress(GetModuleHandleW(L"dxgi.dll"),"CreateDXGIFactory1");
+    IDXGIFactory4 *factory;
+    IDXGIAdapter1 *adapter;
+    DXGI_ADAPTER_DESC1 desc;
+    LUID luid;
+    if (!create || FAILED(create(&IID_IDXGIFactory4,(void **)&factory))) return FALSE;
+    device->lpVtbl->GetAdapterLuid(device,&luid);
+    HRESULT hr=IDXGIFactory4_EnumAdapterByLuid(factory,luid,&IID_IDXGIAdapter1,(void **)&adapter);
+    IDXGIFactory4_Release(factory);
+    if (FAILED(hr)) return FALSE;
+    hr=IDXGIAdapter1_GetDesc1(adapter,&desc);
+    IDXGIAdapter1_Release(adapter);
+    return SUCCEEDED(hr) && desc.VendorId==0x10de && desc.DeviceId==0x2484;
+}
+/* shortcut: only an untouched tail of the RTX marker/timestamp/post split.
+ * Any new pooled recorder must invalidate post_boundary before appending work. */
+static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UINT64 ref,UINT flags)
+{
+    struct prefix_marker *m=s->marker,*p=s->post;
+    if (!s->reservation || !s->pool_owner || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
+        s->closed || FAILED(s->error) || s->host_exposed || !m || m->value || !s->stamp ||
+        op!=7 || flags!=1) return E_NOTIMPL;
+    if (!addr || (addr&7)) return E_INVALIDARG;
+    struct scarlett_section_info id;
+    if (m->buffer) {
+        if (!s->stamp->retained || !m->control_section || m->native_post!=0x29a5ee15 || p || s->head)
+            return E_NOTIMPL;
+        HRESULT hr=scarlett_query_section(0x5343000a,(void *)addr,8,&id);
+        if (FAILED(hr)) return hr;
+        BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+        BOOL match=id.base==(void *)addr && id.view_size==65536 && !id.offset && id.section &&
+            same && same(id.section,m->control_section);
+        if (id.section) CloseHandle(id.section);
+        if (!match) return E_INVALIDARG;
+        p=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *p);
+        if (!p) return E_OUTOFMEMORY;
+        D3D12_RANGE read={0,8},none={0,0};
+        void *mapped=NULL;
+        hr=ID3D12Resource_Map(m->buffer,0,&read,&mapped);
+        if (SUCCEEDED(hr) && (!mapped || ((UINT_PTR)mapped&7))) {
+            ID3D12Resource_Unmap(m->buffer,0,&none);
+            hr=E_FAIL;
+        }
+        if (FAILED(hr)) { HeapFree(GetProcessHeap(),0,p);return hr; }
+        p->counter=mapped;p->threshold=ref;
+        return split_native_list(s,p); /* native post and all prior work stay in the head */
+    }
+    if (!s->post_boundary || !s->head || !m->alias || !s->stamp->mapping ||
+        !p || p->parent!=m || p->value!=0x29a5ee15) return E_NOTIMPL;
+    if (FAILED(scarlett_query_section(0x53430015,(void *)addr,8,&id)) ||
+        id.base!=(void *)addr || id.view_size!=65536 || id.offset!=m->generation) return E_INVALIDARG;
+    if (!wait_device_matches(s->device)) return E_NOTIMPL;
+    p->threshold=ref; p->counter=m->alias; s->post_boundary=FALSE;
+    return S_OK;
+}
+static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT flags)
+{
+    if (SUCCEEDED(record_counter_wait(sl(i),addr,op,ref,flags))) return;
+    xs_stop();
+}
+#else
+#define sl_wait64 xs_stop
+#endif
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
@@ -299,12 +373,15 @@ static const struct {
     xs_stop_fn gap108[38];
     __typeof__(&sl_marker) marker;
     __typeof__(&sl_timestamp) timestamp;
-    xs_stop_fn gap248[66];
+    xs_stop_fn gap248;
+    __typeof__(&sl_wait64) wait64;
+    xs_stop_fn gap258[64];
     __typeof__(&sl_reset) reset;
     xs_stop_fn through490[7];
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, {[0 ... 65]=xs_stop}, sl_reset, {[0 ... 6]=xs_stop}
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 63]=xs_stop}, sl_reset, {[0 ... 6]=xs_stop}
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),wait64)==0x250,"pooled wait ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),through490[6])==0x490, "pooled list guard");
 _Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
@@ -368,7 +445,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
-struct heap_retirement { ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence; HANDLE event; };
+struct heap_retirement { ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event; };
 static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_WAIT wait,TP_WAIT_RESULT result)
 {
     struct heap_retirement *r=ctx;
@@ -376,6 +453,7 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
     CloseThreadpoolWait(wait);
     if (r->head_alloc) IUnknown_Release(r->head_alloc);
     if (r->tail_alloc) ID3D12CommandAllocator_Release(r->tail_alloc);
+    if (r->gate) ID3D12Fence_Release(r->gate);
     drop_timestamp(r->stamp); drop_marker(r->native); drop_heaps(r->pair); ID3D12Fence_Release(r->fence); CloseHandle(r->event); HeapFree(GetProcessHeap(),0,r);
 }
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
@@ -409,11 +487,15 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     }
     SRWLOCK *lock=&CONTAINING_RECORD(iface,struct adapter,iface)->submit_lock;
     AcquireSRWLockExclusive(lock);
-    if (s->marker && s->marker->alias) enqueue_marker(q,s->device,s->marker);
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+    if (s->post && s->post->counter && CONTAINING_RECORD(iface,struct adapter,iface)->external_submissions)
+        xs_stop(); /* cannot atomically submit the split around an untracked producer */
+#endif
+    if (s->marker && s->marker->alias) enqueue_marker(q,s->device,s->marker,NULL);
     if (s->post) {
         ID3D12CommandList *head=(ID3D12CommandList *)s->head;
         ID3D12CommandQueue_ExecuteCommandLists(q,1,&head);
-        enqueue_marker(q,s->device,s->post);
+        enqueue_marker(q,s->device,s->post,s->post->counter?&r->gate:NULL);
     }
     ID3D12CommandQueue_ExecuteCommandLists(q, 1, &host);
     if (r) {

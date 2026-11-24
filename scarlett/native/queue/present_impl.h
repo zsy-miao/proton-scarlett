@@ -15,7 +15,19 @@ _Static_assert(sizeof(struct xs_plane)==0x48 && offsetof(struct xs_plane,resourc
         offsetof(struct xs_plane,color)==0x28 && offsetof(struct xs_plane,flags)==0x40 &&
         sizeof(struct xs_present_params)==0x20 && offsetof(struct xs_present_params,flags)==0x18,"present ABI");
 
-ID3D12CommandQueue *xs_display_queue(IUnknown *queue) { return as_queue(queue); }
+ID3D12CommandQueue *xs_display_queue(IUnknown *queue)
+{
+    ID3D12CommandQueue *q=as_queue(queue);
+#ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
+    if (q) {
+        struct adapter *a=CONTAINING_RECORD(queue,struct adapter,iface);
+        AcquireSRWLockExclusive(&a->submit_lock);
+        a->external_submissions=TRUE;
+        ReleaseSRWLockExclusive(&a->submit_lock);
+    }
+#endif
+    return q;
+}
 
 HRESULT xs_console_direct_queue(ID3D12Device *host, IUnknown *owner, IUnknown **out)
 {
@@ -52,6 +64,8 @@ static HRESULT display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window
             .SampleDesc={1,0},.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT,.BufferCount=2,
             .SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD};
         IDXGISwapChain1 *chain;
+        /* DXGI can enqueue outside our submit lock, just like a borrowed host queue. */
+        xs_display_queue(queue);
         hr=IDXGIFactory2_CreateSwapChainForHwnd(factory,(IUnknown *)q,window,&sd,NULL,NULL,&chain);
         if (SUCCEEDED(hr)) {
             hr=IDXGISwapChain1_QueryInterface(chain,&IID_IDXGISwapChain3,(void **)&a->display.chain);
