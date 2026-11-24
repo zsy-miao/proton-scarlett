@@ -28,17 +28,17 @@ struct desc_heap {
     ID3D12DescriptorHeap *host, *tail;
     SIZE_T start;
     UINT count, stride, host_stride;
-    BOOL visible,rtv,sampler;
+    BOOL visible,rtv,dsv,sampler;
     struct xbox_device *owner;
     struct desc_heap *next;
-    struct descriptor_record *records; /* type 0 and RTV */
+    struct descriptor_record *records; /* resource, RTV and DSV heaps */
     HMODULE xmem;
     void (WINAPI *xfree)(void *,UINT64);
     UINT64 sampler_serial[];
 };
 static struct desc_heap **heap_list(struct xbox_device *owner,struct desc_heap *h)
 {
-    return h->sampler ? &owner->sampler_heaps : h->rtv ? &owner->rtv_heaps : &owner->heaps;
+    return h->sampler ? &owner->sampler_heaps : h->rtv ? &owner->rtv_heaps : h->dsv ? &owner->dsv_heaps : &owner->heaps;
 }
 enum { DESC_ATTR = (0x80 << 16) | 4 };
 enum { DESC_BANK = D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1, DESC_STARTUP_COUNT = 0x130000 };
@@ -148,7 +148,8 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
     h->visible = d.Flags == 1;
     SIZE_T size = (SIZE_T)h->stride * h->count;
     h->rtv = d.Type==D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    if (!d.Type || h->rtv) {
+    h->dsv = d.Type==D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    if (!d.Type || h->rtv || h->dsv) {
         if (!(h->records = HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(*h->records)*h->count))) {
             desc_release(&h->iface); return E_OUTOFMEMORY;
         }
@@ -219,7 +220,7 @@ HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorH
     HRESULT hr=descriptor_range(i,slot,count,bank,cpu,gpu);
     if (FAILED(hr)) return hr;
     struct desc_heap *h=CONTAINING_RECORD(i,struct desc_heap,iface);
-    if (!h->records || h->rtv) return S_OK;
+    if (!h->records || h->rtv || h->dsv) return S_OK;
     AcquireSRWLockShared(&h->owner->descriptor_lock);
     SIZE_T first=(slot-h->start)/h->stride;
     for (UINT n=0;n<count;n++) if (refresh_required(h->records[first+n].kind)) {

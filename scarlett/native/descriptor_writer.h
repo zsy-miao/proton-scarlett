@@ -53,7 +53,7 @@ void xs_unbind_view_buffer(struct xs_buffer_binding *b)
     HeapFree(GetProcessHeap(),0,b);
 }
 
-enum { CBV=0x88, SRV=0x90, UAV=0x98, RTV=0xa0 };
+enum { CBV=0x88, SRV=0x90, UAV=0x98, RTV=0xa0, DSV=0xa8 };
 static const UINT64 inline_null_cbv[2]={0x10000000000000ull,0x2403c00000000ull};
 static BOOL copy_in(void *out,const void *in,SIZE_T size)
 {
@@ -122,10 +122,11 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     D3D12_SHADER_RESOURCE_VIEW_DESC srv={0};
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav={0};
     D3D12_RENDER_TARGET_VIEW_DESC rtv={0};
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv={0};
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv={0};
     DWORD words[10]={0};
-    SIZE_T size=kind==RTV || kind==CBV || (object && kind==UAV)?16:(object && kind==SRV)?32:40;
-    if (kind!=CBV && kind!=SRV && kind!=UAV && kind!=RTV) return E_INVALIDARG;
+    SIZE_T size=kind==DSV?24:kind==RTV || kind==CBV || (object && kind==UAV)?16:(object && kind==SRV)?32:40;
+    if (kind!=CBV && kind!=SRV && kind!=UAV && kind!=RTV && kind!=DSV) return E_INVALIDARG;
     if (!copy_in(words,input,size)) return E_POINTER;
     BOOL ms_srv=object && kind==SRV && words[1]==D3D12_SRV_DIMENSION_TEXTURE2DMS;
     if (object && (kind==UAV || kind==SRV) && !ms_srv && words[1]!=D3D12_SRV_DIMENSION_TEXTURE2D &&
@@ -141,6 +142,10 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
         srv.Shader4ComponentMapping=words[2]; srv.Buffer.NumElements=words[6];
+    } else if (kind==DSV) {
+        if (!object || words[0]!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || words[1]!=D3D12_DSV_DIMENSION_TEXTURE2DMS ||
+            memcmp(words+2,(DWORD[4]){0},16)) return E_NOTIMPL;
+        dsv.Format=words[0]; dsv.ViewDimension=words[1];
     } else if (kind==RTV) {
         if (!object || words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM || words[2] || words[3]) return E_NOTIMPL;
         if (words[1]==D3D12_RTV_DIMENSION_TEXTURE2DMS) {
@@ -195,10 +200,10 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     HRESULT hr=E_INVALIDARG;
     ID3D12Resource *resource=wc,*old=NULL;
     AcquireSRWLockExclusive(&d->descriptor_lock);
-    if (object && (kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
+    if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && c->msaa==(ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
-                c->depth==(srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)) {
+            if (&c->iface==object && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+                c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)) {
                 resource=c->host; break;
             }
         if (!resource) goto done;
@@ -213,7 +218,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     }
     struct desc_heap *h=NULL;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-    for (struct desc_heap *p=kind==RTV?d->rtv_heaps:d->heaps;p;p=p->next) {
+    for (struct desc_heap *p=kind==DSV?d->dsv_heaps:kind==RTV?d->rtv_heaps:d->heaps;p;p=p->next) {
         if (FAILED(descriptor_slot(&p->iface,dest,&cpu,NULL))) continue;
         if (h) goto done;
         h=p;
@@ -225,7 +230,8 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     if (!store_slot_tag(dest,kind==CBV?inline_null_cbv:tag)) {
         hr=E_POINTER; goto done;
     }
-    if (kind==RTV) ID3D12Device_CreateRenderTargetView(d->host,resource,&rtv,cpu);
+    if (kind==DSV) ID3D12Device_CreateDepthStencilView(d->host,resource,&dsv,cpu);
+    else if (kind==RTV) ID3D12Device_CreateRenderTargetView(d->host,resource,&rtv,cpu);
     else if (kind==SRV) ID3D12Device_CreateShaderResourceView(d->host,resource,&srv,cpu);
     else if (kind==UAV) ID3D12Device_CreateUnorderedAccessView(d->host,resource,NULL,&uav,cpu);
     else ID3D12Device_CreateConstantBufferView(d->host,&cbv,cpu);
@@ -308,9 +314,14 @@ static void WINAPI write_rtv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T des
     if (FAILED(xs_write_view(d,RTV,r,desc,dest))) xs_stop();
 }
 
+static void WINAPI write_dsv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T dest)
+{
+    if (FAILED(xs_write_view(d,DSV,r,desc,dest))) xs_stop();
+}
+
 /* Caller keeps heap and returned texture live through retirement, and
  * synchronizes descriptor rewrites as with xs_resolve_view. */
-HRESULT xs_resolve_color_rtv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *handle,ID3D12Resource **out)
+static HRESULT resolve_attachment(IUnknown *heap,SIZE_T slot,UINT kind,D3D12_CPU_DESCRIPTOR_HANDLE *handle,ID3D12Resource **out)
 {
     if (!out) return E_POINTER;
     *out=NULL;
@@ -318,15 +329,15 @@ HRESULT xs_resolve_color_rtv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HAN
     handle->ptr=0;
     if (!heap || heap->lpVtbl!=&desc_vtbl.unknown) return E_INVALIDARG;
     struct desc_heap *h=CONTAINING_RECORD(heap,struct desc_heap,iface);
-    if (!h->rtv || !h->records) return E_INVALIDARG;
+    if (!(kind==DSV?h->dsv:h->rtv) || !h->records) return E_INVALIDARG;
     struct xbox_device *d=h->owner;
     AcquireSRWLockShared(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
         UINT64 tag[2];
-        if (r->resource && r->kind==RTV && copy_in(tag,(void *)slot,sizeof tag) &&
-            tag[0]==r->serial && tag[1]==(0x5853444553430000ull|RTV)) {
+        if (r->resource && r->kind==kind && copy_in(tag,(void *)slot,sizeof tag) &&
+            tag[0]==r->serial && tag[1]==(0x5853444553430000ull|kind)) {
             *handle=cpu;
             *out=r->resource;
             ID3D12Resource_AddRef(*out);
@@ -334,6 +345,14 @@ HRESULT xs_resolve_color_rtv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HAN
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
     return *out ? S_OK : E_INVALIDARG;
+}
+HRESULT xs_resolve_color_rtv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *handle,ID3D12Resource **out)
+{
+    return resolve_attachment(heap,slot,RTV,handle,out);
+}
+HRESULT xs_resolve_depth_dsv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *handle,ID3D12Resource **out)
+{
+    return resolve_attachment(heap,slot,DSV,handle,out);
 }
 static void WINAPI write_srv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T dest)
 {

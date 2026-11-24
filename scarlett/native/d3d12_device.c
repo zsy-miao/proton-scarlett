@@ -46,7 +46,7 @@ struct xbox_device {
     SRWLOCK descriptor_lock;
     struct desc_heap *heaps;
     struct page_pool *page_pools;
-    struct desc_heap *rtv_heaps;
+    struct desc_heap *rtv_heaps,*dsv_heaps;
     struct desc_heap *sampler_heaps;
     struct xs_buffer_binding *buffers;
     struct bvh_root *bvh_roots; /* live identities under descriptor_lock */
@@ -650,7 +650,8 @@ struct bootstrap_vtbl {
     __typeof__(&write_srv) srv;
     __typeof__(&write_uav) uav;
     __typeof__(&write_rtv) rtv;
-    xs_stop_fn gapa8[3];
+    __typeof__(&write_dsv) dsv;
+    xs_stop_fn gapb0[2];
     __typeof__(&sampler_copy) copy_simple;
     __typeof__(&bootstrap_allocation_info) allocation_info;
     __typeof__(&bootstrap_heap) heap;
@@ -711,7 +712,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, allocation_info1) == 0x360 &&
                offsetof(struct bootstrap_vtbl, root) == 0x80 &&
                offsetof(struct bootstrap_vtbl, bvh_pipeline) == 0x1f0 &&
-               offsetof(struct bootstrap_vtbl, rtv) == 0xa0 &&
+               offsetof(struct bootstrap_vtbl, rtv) == 0xa0 && offsetof(struct bootstrap_vtbl, dsv) == 0xa8 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
                offsetof(struct bootstrap_vtbl, query_heap) == 0x138 &&
@@ -803,7 +804,7 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
     .descriptors = descriptor_heap, .stride = descriptor_stride, .root = builder_root_call,
-    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .gapa8 = { [0 ... 2] = xs_stop },
+    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .rtv = write_rtv, .dsv = write_dsv, .gapb0 = {xs_stop,xs_stop},
     .copy_simple = sampler_copy,
     .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .readback = bootstrap_readback, .gape0 = { [0 ... 7] = xs_stop }, .fence = bootstrap_fence,

@@ -42,3 +42,21 @@ that placement. After wrapper release, title VA reuse and the fence, the slot
 still excludes duplicate placement until overwritten. Retail's next failure
 is `+a0` on the **color** wrapper, RTV prefix `1c 6 0 0` (hex), return
 `+cc29ea`. Retail did not execute the fixture's draws or sample reads.
+
+## Guest DSV (`+a8`) after integrated color RTV
+
+At return `+14a69e8`, retail wrote six DWORDs `14 5 0 0 0 0` (hex):
+D32_FLOAT_S8X24_UINT, Texture2DMS, writable depth and stencil. The resource
+was the same wrapper as the depth SRV. The destination was the first slot
+of its device's type-3 CPU heap (2048 entries, flags 0, node 1, stride 32).
+The checked attachment resolver validates the slot tag and pins the image.
+
+The RTX depth fixture uses the guest DSV for the clear and all draws on the
+original WC image. Against clear (5/16, 0x66), LESS passes samples 0 and 1;
+2 and 3 keep the clear values. A subsequent stencil-NEVER draw changes none.
+Four sample-masked positive writes are read via the depth SRV and the native
+stencil control, then checked against the original section and its guards.
+The DSV heap still excludes duplicate placement after fence and SRV overwrite;
+releasing it permits recreation. Unchanged RTX retail passed `+a8`; its next
+failure was `+c8`, return `+344145`: 1×1 RGBA8 Texture2D, 6 layers, 1 mip,
+single sample, alignment 4096, layout 0, flags `0x300000`.
