@@ -28,6 +28,11 @@ if [[ -f "$runtime/win32u.so" || -f "$runtime/d3d12core.dll" ]]; then
     install -m755 "$runtime/win32u.so" "$stage/files/lib/wine/x86_64-unix/win32u.so"
     install -m644 "$runtime/d3d12core.dll" "$stage/files/lib/wine/vkd3d-proton/x86_64-windows/d3d12core.dll"
 fi
+if [[ -f "$runtime/kernelbase.dll" ]]; then
+    [[ -f "$runtime/ntdll.so" && -f "$runtime/win32u.so" && -f "$runtime/d3d12core.dll" ]] ||
+        { echo "The 64 KiB graphics control page requires the matching Wine and vkd3d-proton libraries." >&2; exit 1; }
+    install -m755 "$runtime/kernelbase.dll" "$stage/files/lib/wine/x86_64-windows/kernelbase.dll"
+fi
 if [[ -f "$runtime/xaudio2_9.dll" ]]; then
     install -m644 "$runtime/xaudio2_9.dll" "$stage/files/lib/wine/x86_64-windows/xaudio2_9.dll"
 fi
