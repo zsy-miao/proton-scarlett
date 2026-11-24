@@ -44,7 +44,7 @@ struct startup_list {
     struct system_timestamp *stamp;
     BOOL closed,host_exposed,post_boundary,stencil_zero;
     SRWLOCK borrow_lock; /* Serialize a native borrow against recording deferred guest state. */
-    BOOL depth_zero_pending;
+    BOOL depth_zero_pending,pending_470;
     struct list_face local; /* Non-pooled lists need no inline ABI. */
 };
 const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
@@ -171,6 +171,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     if(s->bound){IUnknown_Release(s->bound);s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;}
     if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
     s->stencil_zero=FALSE;
+    s->pending_470=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -473,6 +474,7 @@ static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER
 /* shortcut: first full transparent-black clear after this recording's primary transition. */
 static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
 {
+    if (s->pending_470) return E_ACCESSDENIED;
     if (!s->primary || s->closed || FAILED(s->error) || s->host_exposed || s->primary_cleared || count || rects) return E_NOTIMPL;
     UINT bits[4]; SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),color,bits,sizeof bits,&n) || n!=sizeof bits) return E_POINTER;
@@ -624,6 +626,7 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
     if (FAILED(unbind_index(sl(i),view))) xs_stop();
 }
 /* Only these slots have been traced on the pool's returned pointer. */
+static void WINAPI pool_470(IUnknown *,UINT64);
 static const struct {
     IUnknownVtbl prefix;
     xs_stop_fn gap18[6];
@@ -647,11 +650,12 @@ static const struct {
     __typeof__(&pool_sync418) sync418;
     xs_stop_fn gap420[7];
     __typeof__(&sl_reset) reset;
-    xs_stop_fn gap460[6];
+    xs_stop_fn gap460[2]; __typeof__(&pool_470) state470; xs_stop_fn gap478[3];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 2]=xs_stop},pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 2]=xs_stop},pool_stencil,pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {xs_stop,xs_stop}, pool_470, {[0 ... 2]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),state470)==0x470,"pooled opaque state ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),stencil)==0xc0,"stencil reference ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),pipeline)==0xc8,"pooled PSO ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),root)==0x110,"pooled graphics root ABI");
@@ -665,6 +669,28 @@ _Static_assert(offsetof(__typeof__(pool_vtbl),clear)==0x1a0,"pooled clear ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),barrier)==0x490, "pooled barrier ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
+
+/* shortcut: retain only #4's measured qword on its logical recording. No host
+ * lowering or submit until a consumer establishes the meaning of this state. */
+static HRESULT record_470(IUnknown *i,UINT64 value)
+{
+    if (!i || i->lpVtbl!=&pool_vtbl.prefix || value!=UINT64_MAX) return E_NOTIMPL;
+    struct startup_list *s=sl(i);
+    HRESULT hr=E_NOTIMPL;
+    AcquireSRWLockExclusive(&s->borrow_lock);
+    /* record_clear4 already pins bound for this exact pool owner and host device. */
+    if (open_direct_state(s) && s->bound && s->required_root && s->graphics_identity==s->required_root) {
+        s->pending_470=TRUE;
+        recorded_direct_state(s);
+        hr=S_OK;
+    }
+    ReleaseSRWLockExclusive(&s->borrow_lock);
+    return hr;
+}
+static void WINAPI pool_470(IUnknown *i,UINT64 value)
+{
+    if (FAILED(record_470(i,value))) xs_stop();
+}
 
 /* Checked counterpart of the void guest slot. */
 HRESULT xs_bind_pool_heaps(IUnknown *i,UINT count,IUnknown *const *heaps)
@@ -740,7 +766,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
     struct startup_list *s=sl(i);
     ID3D12GraphicsCommandList7 *host=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
-    if (!s->primary_released && !s->depth_zero_pending && !s->bound
+    if (!s->primary_released && !s->depth_zero_pending && !s->pending_470 && !s->bound
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
         && escape_native()
 #endif
@@ -827,25 +853,27 @@ static void forget_release(struct adapter *a)
 #endif
 #include "tagged_batch.h"
 #endif
-static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
+static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
 {
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
-    if (token) {
-        if (checked_tagged_submit(iface,count,lists,token,flags)!=S_OK) xs_stop();
-        return;
-    }
+    if (token) return checked_tagged_submit(iface,count,lists,token,flags);
 #endif
     ID3D12CommandQueue *q = as_queue(iface);
-    if (!q || count!=1 || !lists || !lists[0] ||
-        (lists[0]->lpVtbl!=&sl_vtbl.prefix && lists[0]->lpVtbl!=&pool_vtbl.prefix) || token || flags) xs_stop();
-    struct startup_list *s = sl(lists[0]);
+    if (!q || count!=1 || token || flags) return E_NOTIMPL;
+    IUnknown *list; SIZE_T n; const void *vt;
+    if (!ReadProcessMemory(GetCurrentProcess(),lists,&list,sizeof list,&n) || n!=sizeof list ||
+        !ReadProcessMemory(GetCurrentProcess(),list,&vt,sizeof vt,&n) || n!=sizeof vt ||
+        (vt!=&sl_vtbl.prefix && vt!=&pool_vtbl.prefix)) return E_INVALIDARG;
+    struct startup_list *s = sl(list);
+    if (!s->closed || FAILED(s->error)) return E_INVALIDARG;
+    if (s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;
     q->lpVtbl->GetDesc(q, &desc);
     ID3D12Device *device;
     if (FAILED(ID3D12CommandQueue_GetDevice(q, &IID_ID3D12Device, (void **)&device))) xs_stop();
     BOOL match = device == s->device;
     ID3D12Device_Release(device);
-    if (!match || !s->closed || FAILED(s->error) || desc.Type != s->type) xs_stop();
+    if (!match || desc.Type != s->type) return E_INVALIDARG;
     struct heap_retirement *r=NULL;
     PTP_WAIT wait=NULL;
     if (s->heaps[0] || s->stamp || s->primary || s->graphics_root || s->bound) {
@@ -868,4 +896,9 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     execute_recording(q,s,r);
     if (r) SetThreadpoolWait(wait,r->event,NULL);
     ReleaseSRWLockExclusive(lock);
+    return S_OK;
+}
+static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
+{
+    if (checked_startup_submit(iface,count,lists,token,flags)!=S_OK) xs_stop();
 }

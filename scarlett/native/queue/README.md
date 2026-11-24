@@ -530,3 +530,16 @@ row, at `0xd611fbd00`, was 256-byte aligned but not 512-byte aligned,
 and the direct copy-footprint path rejected it. RTX ordinary first
 stopped at the A8 view writer (`+4ecc821` from `+501f703`). Both ordinary
 runs issued tokens 1 and 2 and presented only token 1.
+
+The Direct list now retains `+470(~0ULL)` only when the recorder owns
+the selected clear pipeline and has its exact graphics root bound.
+The setting survives a list split. While it is pending, ordinary and
+tagged submissions are refused before host execution. Both adapters
+passed the reset, mixed-list rejection and retirement fixtures.
+
+Three retail launches: one RTX diagnostic and two ordinary runs on the
+same binaries. Both adapters first stopped at `+b8`, return `+32a0c`;
+the diagnostic captured blend factor `(1,1,1,1)`. The 2560×1440 depth
+target was created successfully in this diagnostic. That does not
+explain the earlier intermittent null. Both ordinary runs issued
+tokens 1 and 2 and presented only token 1 (WSI count 0→1).

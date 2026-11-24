@@ -41,9 +41,11 @@ static HRESULT checked_tagged_submit(IUnknown *iface,UINT count,IUnknown *const 
         vt!=(flags?&pool_vtbl.prefix:&sl_vtbl.prefix)) return E_INVALIDARG;
     struct adapter *queue=CONTAINING_RECORD(iface,struct adapter,iface);
     struct startup_list *s=sl(list);
+    if (!s->closed || s->error!=S_OK) return E_INVALIDARG;
+    if (s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;q->lpVtbl->GetDesc(q,&desc);
     IUnknown *owner=flags?s->pool_owner:s->sync_owner;
-    if (!owner || owner!=queue->display.owner || !s->closed || s->error!=S_OK || s->host_exposed ||
+    if (!owner || owner!=queue->display.owner || s->host_exposed ||
         desc.Type!=D3D12_COMMAND_LIST_TYPE_DIRECT || s->type!=desc.Type ||
         !allocator_matches(xs_allocator_host(s->allocator,s->type),s->device)) return E_INVALIDARG;
     if (flags ? !tagged_pool_ready(s) :
