@@ -15,6 +15,13 @@ For the optional transfer to the primary, `+125d52 → +31a7f0(0)` resolves the 
 
 ### Binding contract (all space1)
 
+At technique-96 selection in the AMD diagnostic the group and the preceding
+colour-table bind named the same live b27-only root. The build checks both
+translated stages against that exact root and against the fixture layout:
+DXC rejects the former (missing VS `b0`, PS `s14`) and accepts the latter.
+The group's pending request had no published PSO at the sample. This
+doesn't identify the shader stream eventually supplied to the worker.
+
 | Stage | Register | Consumer |
 |---|---|---|
 | VS | `t7` | Structured SRV, stride 64, first **view-relative** element. Four float4 rows at bytes 0,16,32,48. Only XYZ used: start with translation, accumulate X, Y, Z by FMA. Row W is ignored even when nonzero. |
