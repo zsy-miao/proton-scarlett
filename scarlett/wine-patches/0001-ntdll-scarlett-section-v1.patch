@@ -1,0 +1,224 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d5b93415c2a6514c5edf3cfec585247651b1953c..d729177f2ee7e6c3a7e23d113e869012eae10c65 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -253,8 +253,11 @@ struct file_view
+     void         *base;          /* base address */
+     size_t        size;          /* size in bytes */
+     unsigned int  protect;       /* protection for all pages at allocation time and SEC_* flags */
++    HANDLE        scarlett_section; /* owned only by opt-in public views */
+ };
+ 
++#define SCARLETT_ALIGN_MASK ((2u << 20) - 1)
++
+ /* per-page protection flags */
+ #define VPROT_READ       0x01
+ #define VPROT_WRITE      0x02
+@@ -1880,6 +1883,7 @@ static void unregister_view( struct file_view *view )
+  */
+ static void delete_view( struct file_view *view ) /* [in] View */
+ {
++    if (view->scarlett_section) NtClose( view->scarlett_section );
+     if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
+     set_page_vprot( view->base, view->size, 0 );
+     if (view->protect & VPROT_ARM64EC) clear_arm64ec_range( view->base, view->size );
+@@ -1937,6 +1941,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
+     view->base    = base;
+     view->size    = size;
+     view->protect = vprot;
++    view->scarlett_section = NULL;
+     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
+     set_page_vprot( base, size, vprot );
+ 
+@@ -2095,6 +2100,7 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
+     NTSTATUS status;
+ 
+     if ((status = get_vprot_flags( protect, &vprot, view->protect & SEC_IMAGE ))) return status;
++    if (view->scarlett_section && (vprot & VPROT_WRITECOPY)) return STATUS_INVALID_PAGE_PROTECTION;
+     if (is_view_valloc( view ))
+     {
+         if (vprot & VPROT_WRITECOPY) return STATUS_INVALID_PAGE_PROTECTION;
+@@ -2741,6 +2747,7 @@ static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size
+         new_view->base    = base + size;
+         new_view->size    = (char *)view->base + view->size - (char *)new_view->base;
+         new_view->protect = view->protect;
++        new_view->scarlett_section = NULL;
+ 
+         unregister_view( view );
+         view->size = base - (char *)view->base;
+@@ -3707,7 +3714,7 @@ done:
+ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_PTR limit_low,
+                                          ULONG_PTR limit_high, SIZE_T commit_size,
+                                          const LARGE_INTEGER *offset_ptr, SIZE_T *size_ptr,
+-                                         ULONG alloc_type, ULONG protect, USHORT machine )
++                                         ULONG alloc_type, ULONG protect, USHORT machine, BOOL scarlett )
+ {
+     unsigned int res;
+     mem_size_t full_size;
+@@ -3801,7 +3808,8 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+ 
+-    res = map_view( &view, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
++    res = map_view( &view, base, size, alloc_type, vprot, limit_low, limit_high,
++                    scarlett ? SCARLETT_ALIGN_MASK : 0 );
+     if (res) goto done;
+ 
+     TRACE( "handle=%p size=%lx offset=%s\n", handle, size, wine_dbgstr_longlong(offset.QuadPart) );
+@@ -3826,6 +3834,7 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
+ 
+     if (NT_SUCCESS(res))
+     {
++        if (scarlett) view->scarlett_section = handle; /* take ownership before unlocking */
+         *addr_ptr = view->base;
+         *size_ptr = size;
+         VIRTUAL_DEBUG_DUMP_VIEW( view );
+@@ -5756,7 +5765,8 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+     sigset_t sigset;
+     unsigned int status = STATUS_SUCCESS;
+     LPVOID addr = *addr_ptr;
+-    SIZE_T size = *size_ptr;
++    const SIZE_T requested_size = *size_ptr;
++    SIZE_T size = requested_size;
+ 
+     TRACE("%p %p %08lx %x\n", process, addr, size, type );
+ 
+@@ -5800,6 +5810,12 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+         status = STATUS_INVALID_PARAMETER;
+     }
+     else if (!(view = find_view( base, 0 ))) status = STATUS_MEMORY_NOT_ALLOCATED;
++    else if (view->scarlett_section && type == MEM_RELEASE && addr == view->base && !requested_size)
++    {
++        size = view->size;
++        /* Recursive virtual_mutex: keep lookup and ordinary section unmap atomic. */
++        status = NtUnmapViewOfSection( NtCurrentProcess(), addr );
++    }
+     else if (!is_view_valloc( view )) status = STATUS_INVALID_PARAMETER;
+     else if (!size && base != view->base) status = STATUS_FREE_VM_NOT_AT_BASE;
+     else if ((char *)view->base + view->size - base < size && !(type & MEM_COALESCE_PLACEHOLDERS))
+@@ -6559,6 +6575,81 @@ static unsigned int get_memory_image_info( HANDLE process, LPCVOID addr, MEMORY_
+ }
+ 
+ 
++#ifdef __x86_64__
++/* Private native x64 ABI. The caller supplies size; all other fields are outputs. */
++struct scarlett_section_info
++{
++    SIZE_T size;
++    void *base;
++    SIZE_T view_size, offset;
++    HANDLE section;
++};
++
++static NTSTATUS query_scarlett_section( HANDLE process, const void *addr, MEMORY_INFORMATION_CLASS op,
++                                        void *buffer, SIZE_T len, SIZE_T *res_len )
++{
++    struct scarlett_section_info info = {0};
++    sigset_t sigset;
++    NTSTATUS status = STATUS_INVALID_PARAMETER;
++
++    if (is_wow64()) return STATUS_NOT_SUPPORTED;
++    if (process != NtCurrentProcess()) return STATUS_INVALID_HANDLE;
++    if (len != sizeof(info)) return STATUS_INFO_LENGTH_MISMATCH;
++    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++    if (!virtual_check_buffer_for_write( buffer, len ) ||
++        (res_len && !virtual_check_buffer_for_write( res_len, sizeof(*res_len) )))
++    {
++        status = STATUS_ACCESS_VIOLATION;
++        goto done;
++    }
++    info.size = ((struct scarlett_section_info *)buffer)->size;
++    if (info.size && op == MemoryWineScarlettCreateV1)
++    {
++        LARGE_INTEGER size;
++        HANDLE section;
++
++        size.QuadPart = info.size;
++        if (size.QuadPart > 0 && !(((UINT_PTR)addr | info.size) & SCARLETT_ALIGN_MASK) &&
++            info.size <= (UINT_PTR)user_space_limit && (UINT_PTR)addr <= (UINT_PTR)user_space_limit - info.size)
++        {
++            status = NtCreateSection( &section, SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE,
++                                      NULL, &size, PAGE_READWRITE, SEC_COMMIT, NULL );
++            if (!status)
++            {
++                info.base = (void *)addr;
++                info.view_size = info.size;
++                status = virtual_map_section( section, &info.base, 0, 0, 0, NULL, &info.view_size,
++                                              0, PAGE_READWRITE, 0, TRUE );
++                if (status) NtClose( section );
++            }
++        }
++    }
++    else if (info.size && op == MemoryWineScarlettAcquireV1)
++    {
++        struct file_view *view;
++
++        status = STATUS_NOT_MAPPED_VIEW;
++        if ((view = find_view( addr, 0 )) && view->scarlett_section)
++        {
++            info.offset = (UINT_PTR)addr - (UINT_PTR)view->base;
++            if (info.size <= view->size - info.offset)
++            {
++                status = NtDuplicateObject( process, view->scarlett_section, process, &info.section,
++                                            0, 0, DUPLICATE_SAME_ACCESS );
++                info.base = view->base;
++                info.view_size = view->size;
++            }
++        }
++    }
++    if (status) memset( &info, 0, sizeof(info) );
++    memcpy( buffer, &info, sizeof(info) );
++    if (res_len) *res_len = status ? 0 : sizeof(info);
++done:
++    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++    return status;
++}
++#endif
++
+ /***********************************************************************
+  *             NtQueryVirtualMemory   (NTDLL.@)
+  *             ZwQueryVirtualMemory   (NTDLL.@)
+@@ -6589,6 +6680,12 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+         case MemoryImageInformation:
+             return get_memory_image_info( process, addr, buffer, len, res_len );
+ 
++#ifdef __x86_64__
++        case MemoryWineScarlettCreateV1:
++        case MemoryWineScarlettAcquireV1:
++            return query_scarlett_section( process, addr, info_class, buffer, len, res_len );
++#endif
++
+         case MemoryWineUnixFuncs:
+         case MemoryWineUnixWow64Funcs:
+             if (len != sizeof(unixlib_handle_t)) return STATUS_INFO_LENGTH_MISMATCH;
+@@ -6761,7 +6858,7 @@ NTSTATUS WINAPI NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *addr_p
+     }
+ 
+     return virtual_map_section( handle, addr_ptr, 0, get_zero_bits_limit( zero_bits ), commit_size,
+-                                offset_ptr, size_ptr, alloc_type, protect, 0 );
++                                offset_ptr, size_ptr, alloc_type, protect, 0, FALSE );
+ }
+ 
+ /***********************************************************************
+@@ -6837,7 +6934,7 @@ NTSTATUS WINAPI NtMapViewOfSectionEx( HANDLE handle, HANDLE process, PVOID *addr
+     }
+ 
+     return virtual_map_section( handle, addr_ptr, limit_low, limit_high, 0,
+-                                offset_ptr, size_ptr, alloc_type, protect, machine );
++                                offset_ptr, size_ptr, alloc_type, protect, machine, FALSE );
+ }
+ 
+ 
+diff --git a/include/winternl.h b/include/winternl.h
+index a7ba1c12974989ce143a98d99cce6c84c0b270e5..c0bf159ac049f6b38f37b98f33b993bc9f25e383 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2459,6 +2459,8 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+ #ifdef __WINESRC__
+     MemoryWineUnixFuncs = 1000,
+     MemoryWineUnixWow64Funcs,
++    MemoryWineScarlettCreateV1 = 0x53430001,
++    MemoryWineScarlettAcquireV1 = 0x53430002,
+ #endif
+ } MEMORY_INFORMATION_CLASS;
+ 

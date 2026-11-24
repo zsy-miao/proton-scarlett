@@ -19,6 +19,9 @@ stage=$(mktemp -d "$(dirname "$dest")/.scarlett.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 cp -a --reflink=auto "$base/." "$stage/"
 install -m755 "$src/proton" "$stage/proton"
+if [[ -f "$runtime/ntdll.so" ]]; then
+    install -m755 "$runtime/ntdll.so" "$stage/files/lib/wine/x86_64-unix/ntdll.so"
+fi
 if [[ -f "$runtime/xaudio2_9.dll" ]]; then
     install -m644 "$runtime/xaudio2_9.dll" "$stage/files/lib/wine/x86_64-windows/xaudio2_9.dll"
 fi

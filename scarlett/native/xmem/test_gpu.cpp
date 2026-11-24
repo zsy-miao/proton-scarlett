@@ -47,6 +47,22 @@ int main()
     CHECK(query(title).State == MEM_FREE);
     CHECK(MapViewOfFileEx(section, FILE_MAP_ALL_ACCESS, 0, 0, size, title) == title);
     expect_mapped_release_failure(title);
+    // Opt in explicitly; keep the stock-Wine baseline runnable.
+#ifdef TEST_MARKED_SECTION
+    CHECK(UnmapViewOfFile(title));
+    CHECK(CloseHandle(section));
+    struct SectionInfo { SIZE_T size; void *base; SIZE_T view_size, offset; HANDLE section; };
+    static_assert(sizeof(SectionInfo) == 40);
+    using Query = LONG (WINAPI *)(HANDLE, const void *, ULONG, void *, SIZE_T, SIZE_T *);
+    auto nt_query = (Query)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryVirtualMemory");
+    SectionInfo info = {size, nullptr, 0, 0, nullptr};
+    CHECK(nt_query && !nt_query(GetCurrentProcess(), title, 0x53430001, &info, sizeof info, nullptr));
+    CHECK(info.base == title && info.view_size == size);
+    info.size = 4;
+    CHECK(!nt_query(GetCurrentProcess(), title + size / 4 - 1, 0x53430002, &info, sizeof info, nullptr));
+    CHECK(info.offset == size - 4 && info.view_size == size && info.section);
+    section = info.section;
+#endif
     auto original = query(title);
     ID3D12Device3 *device;
     HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)));
@@ -101,8 +117,12 @@ int main()
     queue->ExecuteCommandLists(1, batch);
     HR(queue->Signal(retire, 2));
 
-    // Only explicit unmap works today. Reuse the exact VA with identical metadata.
+    // Let the queued GPU write retire after the public VA has been reused.
+#ifdef TEST_MARKED_SECTION
+    CHECK(VirtualFree(title, 0, MEM_RELEASE));
+#else
     CHECK(UnmapViewOfFile(title));
+#endif
     HANDLE fresh = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, nullptr);
     CHECK(fresh && MapViewOfFileEx(fresh, FILE_MAP_ALL_ACCESS, 0, 0, size, title) == title);
     CHECK(CloseHandle(fresh));
@@ -123,7 +143,12 @@ int main()
     CHECK(CloseHandle(event));
     list->Release(); alloc->Release(); gate->Release(); retire->Release(); queue->Release();
     scratch->Release(); device->Release();
+#ifdef TEST_MARKED_SECTION
+    puts("PASS: ordinary VirtualFree released marked title view; "
+         "GPU retired on old backing after exact public VA reuse");
+#else
     puts("PASS: VirtualFree rejected both section views (87); private replacement released; "
          "GPU retired on old backing after exact public VA reuse");
+#endif
     return 0;
 }
