@@ -131,6 +131,7 @@ int main()
     CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest+1)));
     CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest+4096*32)));
     CK(FAILED(xs_write_view(dev.Get(),0xa0,(IUnknown *)1,rw,dest)));
+    rw[1]=6; CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest))); rw[1]=4;
     rw[2]=1; CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest))); rw[2]=0;
     rw[3]=1; CK(FAILED(xs_write_view(dev.Get(),0xa0,surface,rw,dest))); rw[3]=0;
     *(UINT64 *)(dest+16)=0xa0cafe;

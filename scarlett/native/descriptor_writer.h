@@ -142,10 +142,14 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
         srv.Shader4ComponentMapping=words[2]; srv.Buffer.NumElements=words[6];
     } else if (kind==RTV) {
-        if (!object || words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM || words[1]!=D3D12_RTV_DIMENSION_TEXTURE2D ||
-            words[2] || words[3]) return E_NOTIMPL;
+        if (!object || words[0]!=DXGI_FORMAT_R8G8B8A8_UNORM || words[2] || words[3]) return E_NOTIMPL;
+        if (words[1]==D3D12_RTV_DIMENSION_TEXTURE2DMS) {
+            /* +cc2985 zeros 24 bytes; the MS form has no active union fields. */
+            if (!copy_in(words+4,(const BYTE *)input+16,8)) return E_POINTER;
+            if (words[4] || words[5]) return E_NOTIMPL;
+        } else if (words[1]!=D3D12_RTV_DIMENSION_TEXTURE2D) return E_NOTIMPL;
         rtv.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
-        rtv.ViewDimension=D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtv.ViewDimension=words[1];
     } else if (!object && kind!=CBV) {
         if (words[0]!=42 || words[2]!=(kind==SRV?0x1688u:0u) ||
             memcmp(words+3,(DWORD[7]){0},28)) return E_NOTIMPL;
@@ -193,8 +197,10 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     AcquireSRWLockExclusive(&d->descriptor_lock);
     if (object && (kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && c->msaa==ms_srv &&
-                c->depth==(srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)) { resource=c->host; break; }
+            if (&c->iface==object && c->msaa==(ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+                c->depth==(srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)) {
+                resource=c->host; break;
+            }
         if (!resource) goto done;
     } else if (object) {
         for (struct xs_buffer_binding *b=d->buffers;b;b=b->next) if (b->identity==object) {

@@ -48,16 +48,24 @@ Unchanged retail reached a further, GPU-specific boundary:
 * RADV: the caller tolerates the color placement failure and reaches `+c8`
   for 4× format 19 (R32G8X24_TYPELESS), flags 2, return `344188`.
 For the subsequent depth queries and placement see [msaa-depth.md](msaa-depth.md).
-No retail draw or resolve was observed. On RTX the fixture binds the visible
-slot written through `+90` for all four Texture2DMS loads. It releases the
-wrapper and direct texture references, checks the exact slice is still busy,
-then overwrites the slot after the fence and checks that placement succeeds
-again. Malformed records, a mismatched 2D view, an unregistered resource,
-a misaligned slot, a truncated prefix and a modified slot tag are refused.
+At `cc2985..cc2990` retail zeros 24 descriptor bytes. For the non-array MS
+case it sets format 28 and dimension 6, then calls device `+a0` at `cc29e4`.
+RTX traced the six DWORDs `{28,6,0,0,0,0}`, destination index 2 of the
+4096-entry type-2 heap (guest stride 32), on the placed color wrapper.
+This does not change the 16-byte single-sample primary RTV path.
+
+No retail draw or resolve was observed. The RTX fixture clears and draws
+through the host RTV resolved from that guest slot, and samples through
+the `+90` SRV. After the fence, removing the SRV alone does not free the
+slice; releasing the RTV heap does. A separate recreation checks SRV-only
+retention. Both guards and the reused VA remain unchanged. The fixtures
+reject truncated and malformed descriptors, primary/MS and depth/color
+mismatches, foreign identities/heaps, wrong heap type, misalignment and
+stale tags.
 
 ## Reproduce
 
-Apply Wine `0012` after `0011`, vkd3d `0026` after `0025` and build the
+Apply Wine `0012` after `0011`, vkd3d through `0027` (depth negative control) and build the
 matched x64 win32u.so, d3d12core.dll and staged d3d12_xs.dll. Use a scratch
 tool. In `scarlett/native`, compile `test-msaa-color.hlsl` three times with
 DXC `-WX -E STAGE -T STAGE_6_0 -Fo STAGE.dxil` for `vs`, `ps`, `cs`.

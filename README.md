@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | On RTX, the game sets up its depth buffer but stops when it asks to draw into a color image. On AMD, it can't create that color image in the memory it reserved. |
+| What's blocking it? | On RTX, the game sets up its color image for drawing, then stops while setting up its depth buffer for drawing. On AMD, it can't create the color image in the memory it reserved. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -19,7 +19,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 **NVIDIA (RTX 3070):** Retail build `1.0.2.1` passes the CPU-only control page, maps all five ranges of the 185 MiB descriptor arena, and creates both [3840×2160 primary color textures](scarlett/native/color-allocation.md) in the original 64 MiB allocation. It passes the 6,236 MiB write-back pool allocation and creates the clear graphics pipeline.
 
-Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md) and [depth/stencil buffer](scarlett/native/msaa-depth.md): 4 MiB for each. RTX retail places both in its original pool and creates both shader views. The [depth test](scarlett/native/rtx-depth.md) read all four samples through the new view. RTX retail next requests a color render-target view (device `+0xa0`, title return `+0xcc29ea`). RADV rejects both placements. A [controlled comparison](scarlett/native/msaa-radv-placement.md) traced its `+0xcc2936` breakpoint to the missing color target.
+Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md) and [depth/stencil buffer](scarlett/native/msaa-depth.md): 4 MiB for each. RTX retail places both in its original pool, creates both shader views and creates the color render-target view. A GPU test drew through that view: exactly 16 bytes changed in the original color allocation. The [depth test](scarlett/native/rtx-depth.md) read all four depth samples. RTX retail now stops at device `+0xa8` (title return `+0x14a69e8`). RADV rejects both placements. A [controlled comparison](scarlett/native/msaa-radv-placement.md) traced its `+0xcc2936` breakpoint to the missing color target.
 
 A [native AMD test](scarlett/tests/radv-native-msaa/README.md) drew and read all four samples by placing the image and buffer in one directly mapped allocation. Both 64 KiB guards survived reuse of the original CPU address. The retail path still uses exported memory; integrating the direct mapping with Wine's address and allocation lifetimes is the remaining AMD work for this target.
 
