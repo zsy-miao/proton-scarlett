@@ -20,7 +20,14 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$tmp" \
     "-DFACTORY_GUID=L\"{$(guid IDStorageFactory)}\"" "-DFILE_GUID=L\"{$(guid IDStorageFile)}\"" \
     test.cpp -L"$tmp" -lxcrdapi -lole32 -luuid -static -o "$tmp/test.exe"
 wine "$tmp/test.exe"
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror test_console.cpp \
+atg=https://raw.githubusercontent.com/microsoft/Xbox-GDK-Samples/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/System/SimpleDirectStorageCombo/DirectStorageWin32
+for header in dstorage_win32.h dstorageerr_win32.h; do curl -fsSL "$atg/$header" -o "$tmp/$header"; done
+(cd "$tmp" && sha256sum -c <<'HASHES'
+6408ecd093e4a794ba0cc9ba8e7d8c464ed5f2c4dbcbe7131108f7c57fe9092d  dstorage_win32.h
+62fe4494a96e6a1c3ded3d25eff0788939c10b014a6265f1c8c7a0ea61b4e300  dstorageerr_win32.h
+HASHES
+)
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -isystem "$tmp" test_console.cpp \
     -L"$tmp" -lxcrdapi -lole32 -luuid -static -o "$tmp/test_console.exe"
 wine "$tmp/test_console.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror test_status.c -luuid -o "$tmp/test_status.exe"

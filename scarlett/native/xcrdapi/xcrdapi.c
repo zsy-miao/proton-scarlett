@@ -6,6 +6,7 @@
 
 static const IID factory_iid = {0x6924ea0c,0xc3cd,0x4826,{0xb1,0x0a,0xf6,0x4f,0x4e,0xd9,0x27,0xc1}};
 static const IID file_iid = {0x5de95e7b,0x955a,0x4868,{0xa7,0x3c,0x24,0x3b,0x29,0xf4,0xb8,0xda}};
+static const IID console_file_iid = {0x43704f9f,0x27c6,0x4a9f,{0x88,0x15,0xd1,0x65,0x27,0x89,0x4d,0xf4}};
 static const IID console_factory_iid = {0x62959d11,0xd45f,0x4884,{0xa0,0xa3,0xf7,0x86,0x2e,0xa2,0x43,0xae}};
 static const IID status_iid = {0xcd66d752,0x2786,0x44f7,{0x90,0x70,0xe2,0xa6,0xfd,0xad,0x3f,0x1b}};
 
@@ -30,10 +31,22 @@ typedef struct {
     void (STDMETHODCALLTYPE *close)(File *);
     HRESULT (STDMETHODCALLTYPE *information)(File *, BY_HANDLE_FILE_INFORMATION *);
 } FileVtable;
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *query)(File *, REFIID, void **);
+    ULONG (STDMETHODCALLTYPE *add_ref)(File *);
+    ULONG (STDMETHODCALLTYPE *release)(File *);
+    void (STDMETHODCALLTYPE *close)(File *);
+    HANDLE (STDMETHODCALLTYPE *get_handle)(File *);
+} ConsoleFileVtable;
+_Static_assert(offsetof(ConsoleFileVtable, close) == 0x18 && offsetof(ConsoleFileVtable, get_handle) == 0x20,
+               "console file vtable");
+static const ConsoleFileVtable console_file_vt;
 struct Factory { const void *vt; };
-struct File { const FileVtable *vt; LONG refs; SRWLOCK lock; HANDLE handle; };
+struct File { const void *vt; LONG refs; SRWLOCK lock; HANDLE handle; };
 static Factory singleton, console;
 static LONG factory_refs = 1; /* permanent factory reference */
+static SRWLOCK staging_lock = SRWLOCK_INIT;
+static UINT32 live_files, open_files, peak_files, total_files;
 
 static HRESULT check_interface(REFIID requested, REFIID supported, void **out)
 {
@@ -63,7 +76,7 @@ static HRESULT STDMETHODCALLTYPE factory_query(Factory *f, REFIID iid, void **ou
 static ULONG STDMETHODCALLTYPE file_add_ref(File *f) { return InterlockedIncrement(&f->refs); }
 static HRESULT STDMETHODCALLTYPE file_query(File *f, REFIID iid, void **out)
 {
-    HRESULT hr = check_interface(iid, &file_iid, out);
+    HRESULT hr = check_interface(iid, f->vt == &console_file_vt ? &console_file_iid : &file_iid, out);
     if (FAILED(hr)) return hr;
     file_add_ref(f);
     *out = f;
@@ -75,6 +88,11 @@ static void STDMETHODCALLTYPE file_close(File *f)
     if (f->handle != INVALID_HANDLE_VALUE) {
         CloseHandle(f->handle);
         f->handle = INVALID_HANDLE_VALUE;
+        if (f->vt == &console_file_vt) {
+            AcquireSRWLockExclusive(&staging_lock);
+            --open_files;
+            ReleaseSRWLockExclusive(&staging_lock);
+        }
     }
     ReleaseSRWLockExclusive(&f->lock);
 }
@@ -83,6 +101,11 @@ static ULONG STDMETHODCALLTYPE file_release(File *f)
     ULONG remaining = InterlockedDecrement(&f->refs);
     if (!remaining) {
         file_close(f);
+        if (f->vt == &console_file_vt) {
+            AcquireSRWLockExclusive(&staging_lock);
+            --live_files;
+            ReleaseSRWLockExclusive(&staging_lock);
+        }
         HeapFree(GetProcessHeap(), 0, f);
     }
     return remaining;
@@ -98,11 +121,23 @@ static HRESULT STDMETHODCALLTYPE file_information(File *f, BY_HANDLE_FILE_INFORM
     return hr;
 }
 static const FileVtable file_vt = {file_query, file_add_ref, file_release, file_close, file_information};
+static HANDLE STDMETHODCALLTYPE file_get_handle(File *f)
+{
+    AcquireSRWLockShared(&f->lock);
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (f->handle != INVALID_HANDLE_VALUE)
+        h = ReOpenFile(f->handle, GENERIC_READ, FILE_SHARE_READ, 0);
+    DWORD error = f->handle == INVALID_HANDLE_VALUE ? ERROR_INVALID_HANDLE : GetLastError();
+    ReleaseSRWLockShared(&f->lock);
+    if (h == INVALID_HANDLE_VALUE) SetLastError(error);
+    return h;
+}
+static const ConsoleFileVtable console_file_vt = {file_query, file_add_ref, file_release, file_close, file_get_handle};
 
 static HRESULT STDMETHODCALLTYPE open_file(Factory *factory, PCWSTR path, REFIID iid, void **out)
 {
-    (void)factory;
-    HRESULT hr = check_interface(iid, &file_iid, out);
+    bool is_console = factory == &console;
+    HRESULT hr = check_interface(iid, is_console ? &console_file_iid : &file_iid, out);
     if (FAILED(hr)) return hr;
     if (!path) return E_POINTER;
     HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -112,10 +147,17 @@ static HRESULT STDMETHODCALLTYPE open_file(Factory *factory, PCWSTR path, REFIID
         CloseHandle(h);
         return E_OUTOFMEMORY;
     }
-    f->vt = &file_vt;
+    f->vt = is_console ? (const void *)&console_file_vt : (const void *)&file_vt;
     f->refs = 1;
     InitializeSRWLock(&f->lock);
     f->handle = h;
+    if (is_console) {
+        AcquireSRWLockExclusive(&staging_lock);
+        ++live_files;
+        ++total_files;
+        if (++open_files > peak_files) peak_files = open_files;
+        ReleaseSRWLockExclusive(&staging_lock);
+    }
     *out = f;
     return S_OK;
 }
@@ -215,7 +257,6 @@ static Factory singleton = {&factory_vt};
 
 /* IDStorageFactoryX2 subset. Consumer offsets and unresolved slots: see ABI.md. */
 enum { STAGING_BYTES = 32 * 1024 * 1024 };
-static SRWLOCK staging_lock = SRWLOCK_INIT;
 static void *staging;
 static UINT32 peak_staging;
 
@@ -225,7 +266,8 @@ static HRESULT STDMETHODCALLTYPE console_staging(Factory *f, UINT32 size)
     (void)f;
     if (size != 0 && size != STAGING_BYTES) return E_NOTIMPL;
     AcquireSRWLockExclusive(&staging_lock);
-    if (size && !staging) {
+    if (live_files) hr = HRESULT_FROM_WIN32(ERROR_BUSY);
+    else if (size && !staging) {
         staging = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (!staging) hr = HRESULT_FROM_WIN32(GetLastError());
         else peak_staging = size;
@@ -242,7 +284,7 @@ typedef struct { UINT32 counts[7]; UINT64 bytes[2]; } PriorityStats;
 typedef struct {
     PriorityStats priority[4];
     UINT8 virtual_disk_counts[2];
-    UINT32 counters[12], current_bytes, peak_bytes, error_count;
+    UINT32 counters[9], current_files, max_files, cumulative_files, current_bytes, peak_bytes, error_count;
 } ConsoleStats;
 _Static_assert(offsetof(ConsoleStats, current_bytes) == 244 && sizeof(ConsoleStats) == 256, "stats layout");
 static void STDMETHODCALLTYPE console_stats(Factory *f, ConsoleStats *stats)
@@ -251,18 +293,14 @@ static void STDMETHODCALLTYPE console_stats(Factory *f, ConsoleStats *stats)
     if (!stats) return;
     ZeroMemory(stats, sizeof(*stats));
     AcquireSRWLockShared(&staging_lock);
+    stats->current_files = open_files;
+    stats->max_files = peak_files;
+    stats->cumulative_files = total_files;
     stats->current_bytes = staging ? STAGING_BYTES : 0;
     stats->peak_bytes = peak_staging;
     ReleaseSRWLockShared(&staging_lock);
 }
 
-static HRESULT STDMETHODCALLTYPE console_open(Factory *f, PCWSTR path, REFIID iid, void **out)
-{
-    (void)f;
-    if (!out) return E_POINTER;
-    *out = NULL;
-    return iid && path ? E_NOTIMPL : E_POINTER;
-}
 /* Both unresolved scalar slots take this + one integer on Windows x64.
  * An HRESULT caller gets E_NOTIMPL; a void caller discards RAX. */
 static HRESULT STDMETHODCALLTYPE unsupported_scalar(Factory *f, UINT64 arg)
@@ -285,7 +323,7 @@ typedef struct {
 _Static_assert(offsetof(ConsoleVtable, set_staging_size) == 0x40 &&
                offsetof(ConsoleVtable, create_queue1) == 0x50, "console x64 vtable");
 static const ConsoleVtable console_vt = {factory_query, factory_add_ref, factory_release,
-    create_queue, console_open, console_create_status, {unsupported_scalar, unsupported_scalar},
+    create_queue, open_file, console_create_status, {unsupported_scalar, unsupported_scalar},
     console_staging, console_stats, create_queue};
 static Factory console = {&console_vt};
 

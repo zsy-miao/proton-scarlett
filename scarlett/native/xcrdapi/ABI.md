@@ -42,11 +42,43 @@ layout. This is not evidence that the title invokes `GetStats`. The two base
 scalar methods between `+28` and `+40` are not distinguished by these sites.
 Both use the same fail-closed machine-level stub; neither mutates state.
 
-The file returned by `+20` is stored in a wrapper at `f43623`. That routine
-opens a *separate* Win32 handle by path at `f4363f` and reads from it. This
-does not establish the order of the console file object's `Close` and
-`GetHandle` methods. The DLL therefore declines console `OpenFile` rather
-than returning the Windows file vtable. Queue creation remains unavailable.
+## Console file and queue source
+
+Microsoft's public [ATG sample interface declaration, lines 223–233](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/System/SimpleDirectStorageCombo/DirectStorageWin32/dstorage_win32.h#L223-L233)
+binds **exactly** the file IID above to an `IUnknown`-derived interface with
+`void Close()` first (`+18`) and `HANDLE GetHandle()` second (`+20`). The
+sample calls the type `IDStorageFileWin32`; its IID, not its name, identifies
+the interface. This is different from the Windows DirectStorage `IDStorageFile`.
+The [GDK GetHandle contract](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragefilex/methods/idstoragefilex_gethandle)
+specifies read-only access, shared reads, and caller `CloseHandle`. The DLL
+reopens its owned file handle under a lock so each caller owns its handle and
+the file object can close independently. Only the declarations are used
+for testing; the DLL uses no ATG implementation.
+
+The retail caller does **not** prove the two file-specific slots by itself:
+it stores the returned COM pointer in the first word of a wrapper at `f43623`,
+then independently calls Win32 `CreateFileW` at `f4363f` and `ReadFile` at
+`f4368a` on the path. The Win32 handle winds up at wrapper `+30` (`f436be`),
+not in the wrapper's COM pointer field.
+
+At `28c9713` the caller enters the request builder. Its file branch at
+`28c99ab` dereferences the wrapper once; it stores the resulting **COM file
+pointer** at request `+20` and the 64-bit offset at `+28`. The memory branch
+at `28c99a0` instead adds the offset to a base address and sets option bit
+`0x400000`. The builder puts the source byte count at request `+30` and
+passes the stack request to **queue** slot `+18` at `28c9a0b`. This is not
+a call to file slot `+18`; the queue receives neither a Win32 handle nor a
+path. See the public [request source union](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/System/SimpleDirectStorageCombo/DirectStorageWin32/dstorage_win32.h#L271-L306).
+
+`CreateQueue1` still returns `E_NOTIMPL`. That sample declares a **different
+queue IID** (`a3f6649a-8c2c-4b3a-8b6e-10186a04b9bc`), so it does not
+verify the full vtable for the title's `3c02cb0c-...` queue or its extensions.
+The observed base calls and source union alone are insufficient: a queue needs
+an independently established slot/signature map for that IID and supported
+request options, plus actual submission, file lifetime, and status/error
+handling. In particular, [EnqueueRequest](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragequeuex/methods/idstoragequeuex_enqueuerequest)
+lets the caller reuse the request structure immediately; retaining a pointer
+to this stack request would be incorrect.
 
 ## Console status array
 

@@ -1,8 +1,10 @@
 /* Raw x64 virtual calls use only the byte offsets recorded in ABI.md. */
 #include <windows.h>
 #include <unknwn.h>
+#include <dstorage_win32.h>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 extern "C" HRESULT WINAPI DStorageGetFactory(REFIID, void **);
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
@@ -48,7 +50,46 @@ int main()
     CHECK(!stats[61] && stats[62] == bytes && stats[64] == 0xdecafbad);
     using Open = HRESULT (WINAPI *)(void *, PCWSTR, REFIID, void **);
     out = f;
-    CHECK(slot<Open>(f, 0x20)(f, L"C:\\fixture", file, &out) == E_NOTIMPL && !out);
+    const wchar_t path[] = L"C:\\xcrdapi-console-\u2603.bin";
+    auto open = slot<Open>(f, 0x20);
+    CHECK(open(f, path, file, &out) == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) && !out);
+    HANDLE writer = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
+    CHECK(writer != INVALID_HANDLE_VALUE);
+    const char data[] = "console file payload";
+    DWORD n;
+    CHECK(WriteFile(writer, data, sizeof(data), &n, nullptr) && n == sizeof(data));
+    CHECK(open(f, path, file, &out) == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) && !out);
+    CHECK(CloseHandle(writer));
+    CHECK(open(f, path, factory, &out) == E_NOINTERFACE && !out);
+    CHECK(open(f, path, file, &out) == S_OK && out);
+    auto *object = static_cast<IDStorageFileWin32 *>(out); // published declaration, matching IID
+    CHECK(object->QueryInterface(file, &out) == S_OK && out == object);
+    CHECK(static_cast<IUnknown *>(out)->Release() == 1);
+    CHECK(object->QueryInterface(IID_IUnknown, &out) == S_OK && out == object);
+    CHECK(static_cast<IUnknown *>(out)->Release() == 1);
+    CHECK(object->QueryInterface(factory, &out) == E_NOINTERFACE && !out);
+    CHECK(set_size(f, bytes) == HRESULT_FROM_WIN32(ERROR_BUSY));
+    get_stats(f, stats);
+    CHECK(stats[58] == 1 && stats[59] == 1 && stats[60] == 1);
+    HANDLE h1 = object->GetHandle(), h2 = object->GetHandle();
+    CHECK(h1 != INVALID_HANDLE_VALUE && h2 != INVALID_HANDLE_VALUE && h1 != h2);
+    CHECK(!WriteFile(h1, data, sizeof(data), &n, nullptr) && GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK(CloseHandle(h1));
+    object->Close();
+    object->Close();
+    CHECK(object->GetHandle() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_HANDLE);
+    CHECK(set_size(f, 0) == HRESULT_FROM_WIN32(ERROR_BUSY));
+    CHECK(object->Release() == 0);
+    CHECK(set_size(f, 0) == S_OK);
+    char buf[sizeof(data)] = {};
+    CHECK(ReadFile(h2, buf, sizeof(buf), &n, nullptr) && n == sizeof(buf) && !std::memcmp(buf, data, n));
+    CHECK(!DeleteFileW(path) && GetLastError() == ERROR_SHARING_VIOLATION);
+    CHECK(CloseHandle(h2));
+    CHECK(open(f, path, IID_IUnknown, &out) == S_OK && out);
+    CHECK(static_cast<IUnknown *>(out)->Release() == 0);
+    CHECK(DeleteFileW(path));
+    get_stats(f, stats);
+    CHECK(stats[58] == 0 && stats[59] == 1 && stats[60] == 2);
     using Status = HRESULT (WINAPI *)(void *, UINT32, PCSTR, REFIID, void **);
     auto make_status = slot<Status>(f, 0x28);
     out = f;
@@ -79,5 +120,5 @@ int main()
     static_cast<IUnknown *>(out)->Release();
     identity->Release();
     fac->Release();
-    std::puts("PASS console factory: observed IID/slots, staging, status-array creation/poll/release, queue refusal");
+    std::puts("PASS console factory: staging, file ABI/read-only handle lifetime, status array, queue refusal");
 }

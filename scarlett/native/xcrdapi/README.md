@@ -1,4 +1,4 @@
-# XCRDAPI.dll — Windows x64 file and console staging subsets
+# XCRDAPI.dll — read-only files, console staging and status arrays
 
 The sole named export is `HRESULT WINAPI DStorageGetFactory(REFIID, void **)`.
 It returns a process-local singleton with distinct interfaces for the Windows
@@ -18,12 +18,18 @@ The [console ABI evidence](ABI.md) identifies the title's factory IID and
 its first operation, `SetStagingBufferSize(32 MiB)`. The console interface
 commits a private 32 MiB buffer with `VirtualAlloc`, reuses it on repeated
 requests, and releases it on size zero or DLL unload; other sizes return
-`E_NOTIMPL`. `GetStats` reports current/peak staging bytes; queue, storage,
+`E_NOTIMPL`. Staging changes while a console file object exists return
+`HRESULT_FROM_WIN32(ERROR_BUSY)`. `GetStats` reports current/peak staging bytes
+and current/peak/cumulative file opens; queue, storage-request,
 and decompression counters are zero. Console `CreateStatusArray` supports
 1–65,536 independent entries. Each starts as `E_PENDING`/incomplete (a local
 choice; the GDK leaves pre-enqueue state undefined). Out-of-range indices
-return `E_INVALIDARG`/false. Console file and queue creation return `E_NOTIMPL`
-and clear the output. No requests are submitted.
+return `E_INVALIDARG`/false. Console `OpenFile` opens an existing Unicode path
+read-only and shared for reads. `GetHandle` returns a caller-owned read-only
+handle that survives object `Close` or final `Release`; callers use
+`CloseHandle`. After `Close`, `GetHandle` returns `INVALID_HANDLE_VALUE` with
+`ERROR_INVALID_HANDLE`. Console queue creation returns `E_NOTIMPL` and clears
+the output; reads through returned Win32 handles work without a queue.
 
 ## Build and verify
 
@@ -41,7 +47,10 @@ the script verifies the package SHA-256 and extracts only headers. The caller
 imports the new DLL by name and dispatches through the published vtables.
 The separate console caller tests the observed GUIDs and raw vtable offsets,
 checking the 32 MiB commit and release independently with `VirtualQuery` and
-creating, polling and releasing a status object. `test_status.c` drives the
+creating, polling and releasing a status object. It also compiles against the
+pinned public ATG file interface declaration and verifies read access, refusal
+of writes and independent handle ownership across `Close` and final `Release`.
+`test_status.c` drives the
 private writer with synthetic request results to verify pending, successful
 and failed completion, index isolation and reuse.
 Only synthetic callers run, in a newly created private Wine prefix
