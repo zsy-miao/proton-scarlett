@@ -195,6 +195,38 @@ static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, 
     return out;
 }
 
+/* 344182: console sret precedes This; the desktop C vtable takes This first. */
+HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void *wire,
+        D3D12_RESOURCE_ALLOCATION_INFO *out)
+{
+    D3D12_RESOURCE_DESC rd={0};
+    if (!out) return E_POINTER;
+    *out=(D3D12_RESOURCE_ALLOCATION_INFO){0};
+    if (!iface || node!=1 || count!=1) return E_INVALIDARG;
+    if (!copy_in(&rd,wire,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags)) return E_POINTER;
+    if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Alignment ||
+        rd.Width!=3840 || rd.Height!=2160 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 ||
+        rd.Format!=DXGI_FORMAT_R8G8B8A8_UNORM || rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality ||
+        rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN || (UINT)rd.Flags!=0x300005) return E_NOTIMPL;
+    rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
+    D3D12_RESOURCE_ALLOCATION_INFO info;
+    host->lpVtbl->GetResourceAllocationInfo(host,&info,node,count,&rd);
+    /* The caller narrows both outputs to DWORDs and divides size by four. */
+    if (!info.Alignment || info.Alignment>UINT_MAX || (info.Alignment & (info.Alignment-1)) ||
+        info.SizeInBytes<rd.Width*rd.Height*4 || info.SizeInBytes>UINT_MAX || (info.SizeInBytes%4))
+        return E_FAIL;
+    *out=info;
+    return S_OK;
+}
+
+static D3D12_RESOURCE_ALLOCATION_INFO *WINAPI bootstrap_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO *out,
+        IUnknown *iface,UINT node,UINT count,const void *wire)
+{
+    if (FAILED(xs_color_allocation_info(iface,node,count,wire,out))) xs_stop();
+    return out;
+}
+
 static HRESULT WINAPI bootstrap_extended(IUnknown *iface, const void *desc, REFIID iid, void **out)
 {
     UINT words[4];
@@ -302,7 +334,8 @@ struct bootstrap_vtbl {
     __typeof__(&write_cbv) cbv;
     __typeof__(&write_srv) srv;
     __typeof__(&write_uav) uav;
-    xs_stop_fn gapa0[6];
+    xs_stop_fn gapa0[5];
+    __typeof__(&bootstrap_allocation_info) allocation_info;
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
     __typeof__(&bootstrap_fence) fence;
@@ -341,6 +374,7 @@ _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, frame_wait) == 0x280 &&
                offsetof(struct bootstrap_vtbl, allocator) == 0x48 &&
                offsetof(struct bootstrap_vtbl, list) == 0x248 &&
+               offsetof(struct bootstrap_vtbl, allocation_info) == 0xc8 &&
                offsetof(struct bootstrap_vtbl, heap) == 0xd0 &&
                offsetof(struct bootstrap_vtbl, fence) == 0x120 &&
                offsetof(struct bootstrap_vtbl, signature) == 0x148 &&
@@ -383,7 +417,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
     .descriptors = descriptor_heap, .stride = descriptor_stride, .gap80 = xs_stop,
-    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .gapa0 = { [0 ... 5] = xs_stop }, .heap = bootstrap_heap,
+    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .gapa0 = { [0 ... 4] = xs_stop },
+    .allocation_info = bootstrap_allocation_info, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,

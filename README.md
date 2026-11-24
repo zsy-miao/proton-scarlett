@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates the [174 MiB placed buffer](scarlett/native/placed-arena.md), initializes the 1,245,184-slot descriptor heap, and writes both null views and a raw shader-resource view identified by the title's placement address. The next stop is a texture allocation query (device `+0xc8`, title RVA `+0x344182`) for one 3840×2160 RGBA8 texture. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail creates the [174 MiB placed buffer](scarlett/native/placed-arena.md), initializes the 1,245,184-slot descriptor heap, and obtains [allocation requirements](scarlett/native/color-allocation.md) for a 3840×2160 RGBA8 texture. The primary display-ring initializer then requests the texture itself with `ALLOW_DISPLAY` (device `+0x3f8`). Creation is unsupported, and the title stops at `+0xcc2834`. **No retail frame has been presented.**
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 
