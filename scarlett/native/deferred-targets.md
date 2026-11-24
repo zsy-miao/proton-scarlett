@@ -24,3 +24,34 @@ manager and ready byte on both adapters. All nine owners in the two groups
 still had null resource fields at the last sample. On a different thread,
 the failed 720p tiled placement led to breakpoint `+1647d03`. Both installed
 runs reproduced that breakpoint and logged completion of the first clear.
+
+## RTX 2560×1440 B5G5R5A1_UNORM
+
+After both tiled R32 descriptor triples, device `+c8` (return `+344188`)
+queries one format-86 texture, one mip and sample, layout 0, flags `0x300005`.
+The size-only answer is `0x780000` bytes aligned to `0x10000`. Before the
+next query, the owner from `+164dee` had `+8 = 0x3c0000` elements, stride 2,
+and a null resource at `+0x20`. The next `+c8` asks for 2560×1440 format 26,
+six mips, layout `0x102`, flags `0x300004`. No format-86 placement or GPU
+consumer was seen in between.
+
+RTX 3070 reports format support `0xe4d3f1/0x200`: RTV and texture shader
+load, no typed UAV view/load/store. Both UAV-only and RT+UAV desktop
+creation failed with E_INVALIDARG. A committed RT control and a separate
+test-only import of a marked WC section both returned the exact packed
+pixels and decoded SRV colors. The WC test also checked overlap rejection,
+the original mapping and both guards after replacing the guest VA. Its
+`+0x12600000` is a fixture offset, not a retail location for this target.
+Only `+c8` is admitted; `+360`, placement and guest views are not enabled.
+
+RADV 26.3.0 (`1002:164e`) accepts the combined RT+UAV host descriptor:
+`0x790000` bytes, `0x10000` alignment. Support is `0x2e4d3f0/0x2c0`
+(texture, RTV, shader load, typed UAV load/store). Plain and UAV-only images
+used `0x780000`; RT and RT+UAV images used `0x790000`. A desktop fixture
+read all 3,686,400 packed RTV pixels, then checked every typed UAV load and
+coordinate-dependent store (all 65,536 packed values) and two SRV colors.
+In staged AMD retail the exact `+c8` returned `0x790000`; its owner then
+held `0x3c8000` elements, stride 2, resource null, at the next query on the
+same thread. That query also requests format 26, six mips, layout `0x102`,
+flags `0x300004` at return `+344188`. No format-86 resource or view is
+qualified by these host tests.

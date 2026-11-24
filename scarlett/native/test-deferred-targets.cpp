@@ -1,3 +1,4 @@
+#include <dxgi1_4.h>
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdio>
@@ -40,6 +41,21 @@ int main(){
         CK(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.info,&detail)==E_NOTIMPL);
         offsets[i]=end;end+=host.SizeInBytes;
         printf("RECORD %u %ux%u fmt=%u flags=%#x size=%#llx align=%#llx\n",i,t.w,t.h,t.fmt,t.flags,host.SizeInBytes,host.Alignment);
+    }
+    { DWORD v[]={3,0,0,0,2560,0,1440,0x10001,86,1,0,0,0x300005};memcpy(wire,v,sizeof v);
+      D3D12_RESOURCE_ALLOCATION_INFO z={};D3D12_RESOURCE_ALLOCATION_INFO1 detail={};
+      ComPtr<IDXGIFactory4> factory;ComPtr<IDXGIAdapter1> adapter;DXGI_ADAPTER_DESC1 id={};
+      HR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));HR(factory->EnumAdapterByLuid(d->GetAdapterLuid(),IID_PPV_ARGS(&adapter)));HR(adapter->GetDesc1(&id));
+      UINT expected=id.VendorId==0x10de && id.DeviceId==0x2484?0x780000:id.VendorId==0x1002 && id.DeviceId==0x164e?0x790000:0;
+      if (expected) {
+          struct {UINT64 before;D3D12_RESOURCE_ALLOCATION_INFO out;UINT64 after;} guarded={13,{},17};
+          CK(query(&guarded.out,guest.Get(),1,1,wire)==&guarded.out && guarded.before==13 && guarded.after==17 && guarded.out.Alignment==65536 && guarded.out.SizeInBytes==expected);
+          CK(FAILED(xs_color_allocation_info(guest.Get(),0,1,wire,&z)) && FAILED(xs_color_allocation_info(guest.Get(),1,2,wire,&z)));
+          for(UINT j=0;j<13;j++)if(j!=1){wire[j]^=1;CK(FAILED(xs_color_allocation_info(guest.Get(),1,1,wire,&z)));wire[j]^=1;}
+          CK(FAILED(xs_color_allocation_info(guest.Get(),1,1,(BYTE*)wire+1,&z)));
+          printf("PASS format 86: guarded +c8, exact %x/10000 and rejected neighbors\n",expected);
+      } else CK(FAILED(xs_color_allocation_info(guest.Get(),1,1,wire,&z)));
+      CK(FAILED(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&z,&detail)));
     }
     CK(VirtualFree(page,0,MEM_RELEASE));
     // Place adjacent desktop images, then verify that clearing each leaves its neighbors intact.

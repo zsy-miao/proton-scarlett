@@ -256,6 +256,7 @@ static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
          ((UINT)r->Flags==0x300001 && ((r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
          (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048))));
 }
+#include "queue/rtx3070.h"
 static BOOL tiled_r32_desc(const D3D12_RESOURCE_DESC *rd)
 {
     return rd->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !rd->Alignment && rd->Width==1280 && rd->Height==720 &&
@@ -288,7 +289,17 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
             if (rd->Width==groups[i].width && rd->Height==groups[i].height &&
                 (ds ? (UINT)rd->Flags==groups[i].ds_flags : groups[i].bgra_pages[0]!=0))
                 pages=ds?groups[i].ds_pages:groups[i].bgra_pages;
-    if (pages) {
+    BOOL packed=rd->Format==DXGI_FORMAT_B5G5R5A1_UNORM;
+    UINT packed_bytes=0;
+    if (packed) {
+        /* The observed owner asks for a size; RTX has no typed packed UAV. */
+        if (detail || rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout ||
+            rd->Width!=2560 || rd->Height!=1440 || rd->DepthOrArraySize!=1 || rd->MipLevels!=1 ||
+            rd->SampleDesc.Count!=1 || rd->SampleDesc.Quality || (UINT)rd->Flags!=0x300005) return E_NOTIMPL;
+        if (xs_is_rtx3070(host)) {rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;packed_bytes=0x780000;}
+        else if (xs_is_adapter(host,0x1002,0x164e)) {rd->Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;packed_bytes=0x790000;}
+        else return E_NOTIMPL;
+    } else if (pages) {
         if (detail || rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout ||
             rd->DepthOrArraySize!=1 || rd->MipLevels!=1 || rd->SampleDesc.Count!=1 || rd->SampleDesc.Quality ||
             (bgra && (UINT)rd->Flags!=0xc00005 && (UINT)rd->Flags!=0x300001 && (UINT)rd->Flags!=0xc00001)) return E_NOTIMPL;
@@ -315,7 +326,9 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     d->lpVtbl->GetResourceAllocationInfo1(d,&info,1,1,rd,&one);
     ID3D12Device4_Release(d);
     if (one.Offset || one.SizeInBytes!=info.SizeInBytes || one.Alignment!=info.Alignment) return E_NOTIMPL;
-    if (pages) {
+    if (packed) {
+        if (info.Alignment!=65536 || info.SizeInBytes!=packed_bytes) return E_NOTIMPL;
+    } else if (pages) {
         if (info.Alignment!=65536 || (info.SizeInBytes!=pages[0]*info.Alignment &&
             info.SizeInBytes!=pages[1]*info.Alignment)) return E_NOTIMPL;
     } else if (fp) {
@@ -375,7 +388,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if (FAILED(hr)) return hr;
     ID3D12Device *host=CONTAINING_RECORD(iface,struct xbox_device,iface)->host;
     if ((rd.Format==DXGI_FORMAT_R32_UINT && (UINT)rd.Layout==0x102) || msaa_desc(&rd) ||
-        rd.Format==DXGI_FORMAT_R32G8X24_TYPELESS ||
+        rd.Format==DXGI_FORMAT_B5G5R5A1_UNORM || rd.Format==DXGI_FORMAT_R32G8X24_TYPELESS ||
         rd.Format==DXGI_FORMAT_A8_UNORM || rd.Format==DXGI_FORMAT_B8G8R8A8_UNORM ||
         rd.Format==DXGI_FORMAT_R16G16B16A16_FLOAT) return target_info(host,&rd,out,NULL);
     if (primary_desc(&rd)) return primary_info(host,out);
@@ -587,7 +600,6 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,
 }
 #endif
 #ifdef SCARLETT_STAGED_PLACED
-#include "queue/rtx3070.h"
 #include "tiled_r32.h"
 #endif
 static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const void *desc, UINT state,

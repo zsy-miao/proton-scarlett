@@ -1,5 +1,7 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
 enum { R8_VIEW=0x230, RAW38_VIEW=0x231, VOLUME1_VIEW=0x232, CUBE1_VIEW=0x233, CUBE_PAIR_VIEW=0x235, SRGB_ROW_VIEW=0x236, STRUCT_VIEW=0x237, ARRAY_VIEW_BASE=0x240, TEXEL32_BASE=0x300 };
+enum { TILE_UINT_SRV=0x400, TILE_UINT_UAV, TILE_RGB_SRV };
+static BOOL tile_view(UINT kind) { return kind>=TILE_UINT_SRV && kind<=TILE_RGB_SRV; }
 static UINT array_view_layers(UINT kind)
 {
     UINT layers=kind-ARRAY_VIEW_BASE;
@@ -250,7 +252,7 @@ HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorH
     if (!h->records || h->rtv || h->dsv) return S_OK;
     AcquireSRWLockShared(&h->owner->descriptor_lock);
     SIZE_T first=(slot-h->start)/h->stride;
-    for (UINT n=0;n<count;n++) if (refresh_required(h->records[first+n].kind)) {
+    for (UINT n=0;n<count;n++) if (tile_view(h->records[first+n].kind) || refresh_required(h->records[first+n].kind)) {
         if (bank) *bank=NULL;
         if (cpu) cpu->ptr=0;
         if (gpu) gpu->ptr=0;

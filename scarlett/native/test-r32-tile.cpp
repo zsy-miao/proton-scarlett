@@ -55,9 +55,9 @@ int main(){
     ComPtr<ID3D12Resource> original,linear,read;original.Attach(test_r32_backing(object.Get()));CK(original);
     using Heap=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);using Start=SIZE_T(WINAPI*)(IUnknown*);
     ComPtr<IUnknown> views;UINT hd[]={0,128,1,1};HR(((Heap)vt[0x70/8])(dev.Get(),hd,IID_ID3D12DescriptorHeap,(void**)views.GetAddressOf()));
-    auto start=((Start)((*(void***)views.Get())[0x48/8]))(views.Get());BYTE saved[64];memcpy(saved,(void*)(start+59*32),sizeof saved);
+    auto start=((Start)((*(void***)views.Get())[0x48/8]))(views.Get());
     DWORD sw[]={42,4,0x1688,0,0,1,0,0},uw[]={42,4,0,0};
-    CK(FAILED(xs_write_view(dev.Get(),0x90,object.Get(),sw,start+59*32)) && FAILED(xs_write_view(dev.Get(),0x98,object.Get(),uw,start+60*32)) && !memcmp(saved,(void*)(start+59*32),sizeof saved));
+    HR(xs_write_view(dev.Get(),0x90,object.Get(),sw,start+59*32));HR(xs_write_view(dev.Get(),0x98,object.Get(),uw,start+60*32));
     ComPtr<ID3D12Device> d;HR(original->GetDevice(IID_PPV_ARGS(&d)));
     D3D12_RESOURCE_DESC optimal={};memcpy(&optimal,wire,sizeof wire);optimal.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;optimal.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     auto host=d->GetResourceAllocationInfo(1,1,&optimal);printf("Host optimal R32_UINT UAV bytes=%llx align=%llx; guest 384000/100\n",host.SizeInBytes,host.Alignment);
@@ -84,5 +84,5 @@ int main(){
 #ifndef TEST_RADV
     CK(VirtualFree(alias.base,0,MEM_RELEASE));
 #endif
-    puts("PASS +c8/+360, guest +428, denied SRV/UAV, original WC 0x102 explicit tiled UAV buffer read/write, 921600 words, gated exact-VA reuse and guards");
+    puts("PASS +c8/+360, guest +428, guarded SRV/UAV, original WC 0x102 explicit tiled UAV buffer read/write, 921600 words, gated exact-VA reuse and guards");
 }

@@ -9,7 +9,7 @@ for src in d3d12_device d3d12_vm queue/queue; do
         -c "$s/$src.c" -o "$w/${src##*/}.o"
 done
 x86_64-w64-mingw32-g++ -std=c++17 -Os -static -Wall -Wextra -Werror "$s/test-deferred-targets.cpp" \
-    "$w"/*.o -ld3d12 -ldxguid -o "$w/game/game_scarlett_master.exe"
+    "$w"/*.o -ld3d12 -ldxgi -ldxguid -o "$w/game/game_scarlett_master.exe"
 "$s/../test-launch-nixos.sh" "$w/game" "$@" | tee "$w/result"
 run=$(sed -n 's/^Test output (including prefix): //p' "$w/result")
 grep '^PASS deferred targets:' "$run/logs/steam-999001.log"

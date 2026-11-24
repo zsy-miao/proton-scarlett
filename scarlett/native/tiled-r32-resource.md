@@ -25,8 +25,8 @@ reached device `+230`, return `+4ecc821`: format `0x43` (R9G9B9E5_SHAREDEXP),
 flags `0x300000`, same extent, layout `0x102`, offset and section span.
 No shader used those descriptors in this capture. Returning a native buffer
 VA or texture snapshot cannot implement this aliased typed read/write path.
-The normal adapter rejects the first unsupported visible descriptor; it does
-not include the diagnostic address/description responses or metadata writes.
+The RTX staged adapter now accepts these three exact wires. Other resource
+methods and unknown descriptor shapes remain unsupported.
 
 On RADV 26.3.0 the combined 0031 allocation order put this target directly
 after the 1440p float image: WC base `0xd94600000`, VA `0xda7b80000`,
@@ -56,7 +56,8 @@ BGRA placement. A second R32 was observed at `+13990000` in the combined
 no-submit trace. `+10e00000` was a different, isolated run. The tested RTX
 fixture uses `+13600000`; the existing RADV control uses `+13580000`.
 
-`xs_r32_texel_table` takes an owner and its live tiled resource and creates
+`xs_r32_texel_table` validates three adjacent, serial-tagged records in the
+owner’s visible heap and requires one identical backing resource. It creates
 a private three-entry table: BUFFER SRV R32_UINT, BUFFER UAV R32_UINT,
 BUFFER SRV R9G9B9E5_SHAREDEXP. The table retains the exact 0032 resource
 through a private-data COM reference. A recorder must hold this table until
@@ -76,3 +77,52 @@ resolved to the same original section as the UINT views. No table bind or
 shader execution consuming either group was observed before the following
 2560×1440 format-86 allocation query (`+c8`, return `+344188`). The provider
 keeps ordinary guest binds disabled until the consuming shader ABI is known.
+
+### Retail construction and consumption guard (RTX)
+
+The wrapper keeps the section handle used for the 0032 placement. Writes
+validate the current section identity, VA and byte offset; address writes
+must find exactly one matching live wrapper. The evidenced `+50` and `+58`
+calls return the guest descriptor and VA. Neither returns the host buffer VA.
+The three descriptor kinds hold independent resource references. A checked
+one-slot copy from staging takes a new serial and reference. Overwriting or
+destroying a slot drops just that reference; the private lowered table takes
+its own reference before leaving the registry lock.
+
+The guest bank carries inert descriptors. Ordinary slot, range (including a
+range starting before the tile), and view resolution reject tiled records;
+they are not refreshable WC textures or placed raw buffers. Binding the
+startup heap pair alone does not consume any slot. Neither guest list vtable
+admits a shader table bind, draw, dispatch, bundle or indirect execute; the
+unimplemented slots stop before host recording. Only the private test shader
+uses the lowered table. Any future bindless, indirect, or raw-list recording
+path needs a consumption guard before it can admit these heaps.
+
+With the separate Present bridge enabled in scratch, the token-1 clear
+batch retired and the title called PresentX at `+24824c7`. The two alias
+triples were constructed with no submission freeze. The next failure on
+the constructing thread was `+c8`, 2560×1440 format 86, flags `0x300005`,
+return `+344188`. No consuming retail shader layout was observed by then.
+
+### RADV retained heap and packed-color fixture
+
+On the RADV 26.3.0 `1002:164e` path, 0032 returns a placed UAV buffer on the
+original native heap. Keep that heap identity in the wrapper and verify it and
+its byte offset on each new view/address request. Existing descriptor records
+and private tables own the original buffer independently of the guest mapping.
+
+RGB9E5 lacks texel-buffer support on this device (`Support1=0x2e4d3f0`,
+`BUFFER=0`). The fixture requests a three-integer-descriptor table explicitly:
+R32_UINT SRV, UAV, and another SRV of the same word. Its test shader lowers
+integer coordinates to the guest tile index and decodes each 9-bit mantissa
+with scale `2^(exponent-24)` and alpha 1. Ordinary guest table consumers
+remain blocked. `scarlett/tests/rtx-r32-tile.sh TOOL radv-typed` compares
+both reads before/after a UAV rewrite for every pixel, checks the retained
+raw bytes and guards after exact-VA reuse, and exercises the reservation
+through fence retirement. The original RTX float-returning table remains a
+separate private entry point.
+
+Unmodified RADV retail constructed two triples at offsets `+0x13580000` and
+`+0x13904000`. All six writes succeeded, each triple sharing one original
+buffer. The constructing thread next failed the `+c8` query (return `+344188`)
+for 2560×1440, format 86, layout 0, flags `0x300005`, `E_NOTIMPL`.

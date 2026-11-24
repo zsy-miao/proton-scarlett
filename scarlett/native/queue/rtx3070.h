@@ -1,6 +1,6 @@
 #pragma once
 /* Page provenance alone doesn't identify the device that owns this list. */
-static inline BOOL xs_is_rtx3070(ID3D12Device *device)
+static inline BOOL xs_is_adapter(ID3D12Device *device,UINT vendor,UINT id)
 {
     HRESULT (WINAPI *create)(REFIID,void **)=(void *)GetProcAddress(GetModuleHandleW(L"dxgi.dll"),"CreateDXGIFactory1");
     IDXGIFactory4 *factory;
@@ -14,5 +14,6 @@ static inline BOOL xs_is_rtx3070(ID3D12Device *device)
     if (FAILED(hr)) return FALSE;
     hr=IDXGIAdapter1_GetDesc1(adapter,&desc);
     IDXGIAdapter1_Release(adapter);
-    return SUCCEEDED(hr) && desc.VendorId==0x10de && desc.DeviceId==0x2484;
+    return SUCCEEDED(hr) && desc.VendorId==vendor && desc.DeviceId==id;
 }
+static inline BOOL xs_is_rtx3070(ID3D12Device *device) {return xs_is_adapter(device,0x10de,0x2484);}

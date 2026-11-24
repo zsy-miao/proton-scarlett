@@ -75,6 +75,7 @@ static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
 }
 
 #ifdef SCARLETT_STAGED_PLACED
+static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T);
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
 static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,const DWORD *w,SIZE_T dest)
 {
@@ -132,6 +133,11 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     if (object && (kind==UAV || kind==SRV) && !ms_srv && words[1]!=D3D12_SRV_DIMENSION_TEXTURE2D &&
         !copy_in(words,input,sizeof words)) return E_POINTER;
 #ifdef SCARLETT_STAGED_PLACED
+    if (object && words[0]==DXGI_FORMAT_R32_UINT && words[1]==4 && (kind==SRV || kind==UAV)) {
+        const DWORD sw[]={42,4,0x1688,0,0,1,0,0},uw[]={42,4,0,0};
+        if (kind==SRV ? memcmp(words,sw,sizeof sw) : memcmp(words,uw,sizeof uw)) return E_NOTIMPL;
+        return write_tile_record(d,object,kind==SRV?TILE_UINT_SRV:TILE_UINT_UAV,0,dest);
+    }
     IUnknown *old_placed=NULL;
     if (object && (kind==SRV || kind==UAV)) {
         HRESULT placed=placed_write(d,kind,object,words,dest);
@@ -278,7 +284,8 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
     if (SUCCEEDED(hr)) {
         UINT64 bits[2];
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
-        if (!copy_in(bits,(void *)slot,sizeof bits)) hr=E_POINTER;
+        if (tile_view(r->kind)) hr=E_NOTIMPL; /* no unlowered consumer, including inline CBV reinterpretation */
+        else if (!copy_in(bits,(void *)slot,sizeof bits)) hr=E_POINTER;
         else if (kind==SRV && refresh_required(r->kind)) hr=E_NOTIMPL;
         else if (kind==SRV && r->kind==RAW38_VIEW) {
             if (!r->resource || bits[0]!=r->serial || bits[1]!=(0x5853444553430000ull|RAW38_VIEW)) hr=E_INVALIDARG;
@@ -460,6 +467,14 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     DWORD w[16];
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
+    if (rd.Format==DXGI_FORMAT_R9G9B9E5_SHAREDEXP && (UINT)rd.Layout==0x102) {
+        UINT_PTR va; memcpy(&va,w+10,sizeof va);
+        const DWORD shape[]={67,4,0x1688,0,0,1,0,0,0,0,w[10],w[11],0,0,0,3};
+        if (!va || rd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Alignment || rd.Width!=1280 || rd.Height!=720 ||
+                rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality ||
+                (UINT)rd.Flags!=0x300000 || memcmp(shape,w,sizeof shape)) return E_NOTIMPL;
+        return write_tile_record(CONTAINING_RECORD(device,struct xbox_device,iface),NULL,TILE_RGB_SRV,va,dest);
+    }
     if (!rd.Alignment && (UINT)rd.Layout==SRGB_ROW_LAYOUT && is_srgb_row(&rd)) return write_wc_address_view(device,SRGB_ROW_VIEW,w,dest);
     if (!rd.Alignment && (UINT)rd.Layout==R8_LAYOUT) {
         if (is_layered_texel(&rd)) {

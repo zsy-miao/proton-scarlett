@@ -1,5 +1,5 @@
 /* Private 0032 ABI. Resolve the allocation by guest VA each time; callers own the returned buffer. */
-static HRESULT open_r32_buffer(struct xbox_device *d,UINT64 va,ID3D12Resource **out)
+static HRESULT open_r32_buffer(struct xbox_device *d,UINT64 va,struct color_resource *r)
 {
     const UINT span=0x384000;ID3D12Heap *heap=NULL;UINT off=0;HANDLE section=NULL;
     HRESULT (WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettTiledR32BufferV1");
@@ -12,8 +12,10 @@ static HRESULT open_r32_buffer(struct xbox_device *d,UINT64 va,ID3D12Resource **
         if(!i.section || i.view_size!=WC_POOL_BYTES || i.offset>i.view_size-span || va!=(UINT_PTR)i.base+i.offset){if(i.section)CloseHandle(i.section);return E_INVALIDARG;}
         section=i.section;off=i.offset;
     }else if(hr!=S_OK)return hr;
-    hr=place(d->host,heap,section,WC_POOL_BYTES,off,out);
-    if(heap)ID3D12Heap_Release(heap);else CloseHandle(section);
+    hr=place(d->host,heap,section,WC_POOL_BYTES,off,&r->host);
+    if(SUCCEEDED(hr)){r->tile_heap=heap;r->tile_section=section;r->tile_va=va;r->tile_offset=off;}
+    else if(heap) ID3D12Heap_Release(heap);
+    else CloseHandle(section);
     return hr;
 }
 /* Included by d3d12_device.c, only for the observed WC swizzle 0x102 resource. */
@@ -26,7 +28,7 @@ static HRESULT create_tiled_r32(struct xbox_device *d,UINT64 va,UINT state,const
     if (!va || state!=3 || clear) return E_INVALIDARG;
     struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r)return E_OUTOFMEMORY;
-    HRESULT hr=open_r32_buffer(d,va,&r->host);
+    HRESULT hr=open_r32_buffer(d,va,r);
     if (FAILED(hr)) {HeapFree(GetProcessHeap(),0,r);return hr;}
     r->iface.lpVtbl=&color_vtbl.unknown;r->refs=1;r->owner=d;r->tiled_r32=TRUE;IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);r->next=d->colors;d->colors=r;ReleaseSRWLockExclusive(&d->descriptor_lock);
@@ -35,22 +37,28 @@ static HRESULT create_tiled_r32(struct xbox_device *d,UINT64 va,UINT state,const
 
 /* Private only: the shader must lower integer mip-zero coordinates to tiled element indices.
  * Hold this table through the last consuming fence; its private-data reference owns the 0032 lease. */
-HRESULT xs_r32_texel_table(IUnknown *owner,IUnknown *identity,ID3D12DescriptorHeap **out)
+static HRESULT r32_texel_table(IUnknown *owner,IUnknown *heap,SIZE_T slot,DXGI_FORMAT packed_read,ID3D12DescriptorHeap **out)
 {
     static const GUID backing={0xc6f673d7,0x7ba3,0x4ad3,{0x99,0x3b,0xdf,0x61,0x80,0xdc,0xe3,0x2b}};
     if (!out) return E_POINTER;
     *out=NULL;
-    if (!owner || !identity) return E_INVALIDARG;
+    if (!owner || !heap) return E_INVALIDARG;
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
-    if (!xs_is_rtx3070(d->host)) return E_NOTIMPL;
+    BOOL decode=packed_read==DXGI_FORMAT_R32_UINT;
+    if (decode ? !xs_is_adapter(d->host,0x1002,0x164e) : packed_read!=DXGI_FORMAT_R9G9B9E5_SHAREDEXP || !xs_is_rtx3070(d->host)) return E_NOTIMPL;
     ID3D12Resource *buffer=NULL;
     AcquireSRWLockShared(&d->descriptor_lock);
-    for (struct color_resource *r=d->colors;r;r=r->next) if (&r->iface==identity && r->tiled_r32) {
-        buffer=r->host;ID3D12Resource_AddRef(buffer);break;
+    for (struct desc_heap *h=d->heaps;h;h=h->next) if (&h->iface==heap && h->visible) {
+        D3D12_GPU_DESCRIPTOR_HANDLE unused;
+        if (FAILED(descriptor_range(heap,slot,3,NULL,NULL,&unused))) break;
+        const struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
+        if (!valid_address_record(r,slot,TILE_UINT_SRV) || !valid_address_record(r+1,slot+h->stride,TILE_UINT_UAV) ||
+                !valid_address_record(r+2,slot+2*h->stride,TILE_RGB_SRV) || r->resource!=r[1].resource || r->resource!=r[2].resource) break;
+        buffer=r->resource; ID3D12Resource_AddRef(buffer); break;
     }
     ReleaseSRWLockShared(&d->descriptor_lock);
     if (!buffer) return E_INVALIDARG;
-    D3D12_FEATURE_DATA_FORMAT_SUPPORT rgb={.Format=DXGI_FORMAT_R9G9B9E5_SHAREDEXP},u={.Format=DXGI_FORMAT_R32_UINT};
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT rgb={.Format=packed_read},u={.Format=DXGI_FORMAT_R32_UINT};
     HRESULT hr=ID3D12Device_CheckFeatureSupport(d->host,D3D12_FEATURE_FORMAT_SUPPORT,&rgb,sizeof rgb);
     if (SUCCEEDED(hr)) hr=ID3D12Device_CheckFeatureSupport(d->host,D3D12_FEATURE_FORMAT_SUPPORT,&u,sizeof u);
     UINT loads=D3D12_FORMAT_SUPPORT1_BUFFER|D3D12_FORMAT_SUPPORT1_SHADER_LOAD;
@@ -68,8 +76,14 @@ HRESULT xs_r32_texel_table(IUnknown *owner,IUnknown *identity,ID3D12DescriptorHe
         UINT stride=ID3D12Device_GetDescriptorHandleIncrementSize(d->host,hd.Type);
         ID3D12Device_CreateShaderResourceView(d->host,buffer,&srv,cpu);cpu.ptr+=stride;
         ID3D12Device_CreateUnorderedAccessView(d->host,buffer,NULL,&uav,cpu);cpu.ptr+=stride;
-        srv.Format=DXGI_FORMAT_R9G9B9E5_SHAREDEXP;ID3D12Device_CreateShaderResourceView(d->host,buffer,&srv,cpu);
+        srv.Format=packed_read;ID3D12Device_CreateShaderResourceView(d->host,buffer,&srv,cpu);
         *out=table;
     } else if (table) ID3D12DescriptorHeap_Release(table);
     ID3D12Resource_Release(buffer);return hr;
 }
+
+HRESULT xs_r32_texel_table(IUnknown *owner,IUnknown *heap,SIZE_T slot,ID3D12DescriptorHeap **out)
+{return r32_texel_table(owner,heap,slot,DXGI_FORMAT_R9G9B9E5_SHAREDEXP,out);}
+/* Slot 2 is uint; only a shader that explicitly decodes RGB9E5 may use this table. */
+HRESULT xs_r32_packed_uint_table(IUnknown *owner,IUnknown *heap,SIZE_T slot,ID3D12DescriptorHeap **out)
+{return r32_texel_table(owner,heap,slot,DXGI_FORMAT_R32_UINT,out);}

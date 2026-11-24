@@ -49,7 +49,16 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     if (!store_slot_tag(dest,tag)) return E_POINTER;
     /* A texture requires refresh; its bank slot must never expose a stale texture. */
     D3D12_SHADER_RESOURCE_VIEW_DESC null_view=address_srv_desc(kind,elements,stride);
-    if (kind==RAW38_VIEW) {
+    if (tile_view(kind)) {
+        /* Inert host slot even on reuse; only a separately lowered table may expose the buffer. */
+        if (kind==TILE_UINT_UAV) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC u={.Format=DXGI_FORMAT_R32_UINT,.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D};
+            ID3D12Device_CreateUnorderedAccessView(d->host,NULL,NULL,&u,cpu);
+        } else {
+            null_view.Format=kind==TILE_RGB_SRV?DXGI_FORMAT_R9G9B9E5_SHAREDEXP:DXGI_FORMAT_R32_UINT;
+            ID3D12Device_CreateShaderResourceView(d->host,NULL,&null_view,cpu);
+        }
+    } else if (kind==RAW38_VIEW) {
         D3D12_SHADER_RESOURCE_VIEW_DESC raw={.Format=DXGI_FORMAT_R32_TYPELESS,.ViewDimension=D3D12_SRV_DIMENSION_BUFFER,
             .Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,.Buffer={offset/4,38,0,D3D12_BUFFER_SRV_FLAG_RAW}};
         ID3D12Device_CreateShaderResourceView(d->host,buffer,&raw,cpu);
@@ -58,6 +67,23 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
     *old=*r;
     *r=(struct descriptor_record){.serial=tag[0],.kind=kind,.offset=offset,.resource=buffer,.elements=elements,.stride=stride};
     return S_OK;
+}
+static HRESULT write_tile_record(struct xbox_device *d,IUnknown *id,UINT kind,UINT_PTR va,SIZE_T dest)
+{
+    struct descriptor_record old={0};
+    ID3D12Resource *buffer=NULL;
+    HRESULT hr=E_INVALIDARG;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    for (struct color_resource *c=d->colors;c;c=c->next) {
+        if (!c->tiled_r32 || (id ? &c->iface!=id : c->tile_va!=va) || !tile_mapping(c)) continue;
+        if (buffer) goto done;
+        buffer=c->host;
+    }
+    if (buffer) hr=store_address_view(d,kind,dest,buffer,0,0,0,FALSE,&old);
+done:
+    ReleaseSRWLockExclusive(&d->descriptor_lock);
+    drop_record(old);
+    return hr;
 }
 static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,SIZE_T dest)
 {
@@ -92,7 +118,7 @@ HRESULT xs_copy_wc_view(IUnknown *device,SIZE_T dest,SIZE_T src)
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     AcquireSRWLockExclusive(&d->descriptor_lock);
     struct descriptor_record *r=address_view_slot(d,src,&visible,&cpu);
-    HRESULT hr=!visible && r && (refresh_required(r->kind) || r->kind==RAW38_VIEW) && valid_address_record(r,src,r->kind) ?
+    HRESULT hr=!visible && r && (tile_view(r->kind) || refresh_required(r->kind) || r->kind==RAW38_VIEW) && valid_address_record(r,src,r->kind) ?
         store_address_view(d,r->kind,dest,r->resource,r->offset,r->elements,r->stride,TRUE,&old) : E_INVALIDARG;
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     drop_record(old);

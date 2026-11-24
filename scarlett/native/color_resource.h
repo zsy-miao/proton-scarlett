@@ -1,4 +1,5 @@
 #include "xmem/display_backing.h"
+#include "xmem/marked_section.h"
 
 #define XS_DISPLAY_ATTR 0x30808000ull
 struct color_lease {
@@ -44,6 +45,9 @@ struct color_resource {
     void *slice;
     void (WINAPI *xfree)(void *,UINT64);
     struct color_resource *next;
+    HANDLE tile_section;
+    ID3D12Heap *tile_heap;
+    UINT_PTR tile_va,tile_offset;
 };
 static ULONG WINAPI color_addref(IUnknown *i)
 {
@@ -64,6 +68,8 @@ static ULONG WINAPI color_release(IUnknown *i)
     if (!refs) {
         if (r->xfree) r->xfree(r->slice,XS_DISPLAY_ATTR); /* hook runs now, irrespective of host refs */
         ID3D12Resource_Release(r->host);
+        if (r->tile_heap) ID3D12Heap_Release(r->tile_heap);
+        if (r->tile_section) CloseHandle(r->tile_section);
         HeapFree(GetProcessHeap(),0,r);
         IUnknown_Release(&d->iface);
     }
@@ -78,7 +84,48 @@ static HRESULT WINAPI color_query(IUnknown *i,REFIID iid,void **out)
     color_addref(i); *out=i;
     return S_OK;
 }
+/* Validate the current VA generation against the heap or section passed to 0032. */
+#ifdef SCARLETT_STAGED_PLACED
+static HRESULT native_pool_ref(ID3D12Device*,const void*,SIZE_T,ID3D12Heap**,ID3D12Resource**,UINT*);
+#endif
+static BOOL tile_mapping(const struct color_resource *r)
+{
+#ifdef SCARLETT_STAGED_PLACED
+    if(r->tile_heap){
+        ID3D12Heap *heap=NULL;UINT off=0;
+        HRESULT hr=native_pool_ref(r->owner->host,(void*)r->tile_va,0x384000,&heap,NULL,&off);
+        BOOL same=hr==S_OK && heap==r->tile_heap && off==r->tile_offset;
+        if(heap)ID3D12Heap_Release(heap);
+        return same;
+    }
+#endif
+    struct scarlett_section_info i;
+    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+    if (!r->tile_section || !same || FAILED(scarlett_query_section(0x53430005,(void*)r->tile_va,0x384000,&i))) return FALSE;
+    BOOL ok=i.section && i.view_size==0x89700000 && i.offset==r->tile_offset &&
+            r->tile_va==(UINT_PTR)i.base+i.offset && same(i.section,r->tile_section);
+    if (i.section) CloseHandle(i.section);
+    return ok;
+}
+static void *WINAPI tile_guest_desc(IUnknown *id,void *out)
+{
+    const struct color_resource *r=CONTAINING_RECORD(id,struct color_resource,iface);
+    const DWORD wire[]={3,0,0,0,1280,0,720,0x10001,42,1,0,0x102,0x300004};
+    SIZE_T n;
+    if ((UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL)!=0x501f80e || !tile_mapping(r) ||
+            !WriteProcessMemory(GetCurrentProcess(),out,wire,sizeof wire,&n) || n!=sizeof wire) xs_stop();
+    return out;
+}
+static UINT64 WINAPI tile_guest_va(IUnknown *id)
+{
+    const struct color_resource *r=CONTAINING_RECORD(id,struct color_resource,iface);
+    if ((UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL)!=0x4ecc936 || !tile_mapping(r)) xs_stop();
+    return r->tile_va;
+}
 static const struct {
     IUnknownVtbl unknown;
-    xs_stop_fn unsupported[64];
-} color_vtbl={{color_query,color_addref,color_release},{[0 ... 63]=xs_stop}};
+    xs_stop_fn pre[7];
+    __typeof__(&tile_guest_desc) desc;
+    __typeof__(&tile_guest_va) va;
+    xs_stop_fn rest[55];
+} color_vtbl={{color_query,color_addref,color_release},{[0 ... 6]=xs_stop},tile_guest_desc,tile_guest_va,{[0 ... 54]=xs_stop}};
