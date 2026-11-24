@@ -51,8 +51,9 @@ struct startup_list {
     BOOL primary_cleared;
     BOOL primary_released; /* Guest layout 0x1f on the retained primary. */
     struct xs_attachment_pin attachments[2];
-    BOOL rt_roundtripped;
+    BOOL rt_roundtripped,offscreen_sr;
     ID3D12Resource *primary; /* +490 recording owns the imported texture, not the guest identity. */
+    UINT_PTR primary_key; /* Exclusion only: never dereference. Key reuse conservatively rejects the SR edge. */
     struct prefix_marker *marker,*post;
     ID3D12GraphicsCommandList7 *head; /* closed segment preceding post */
     ID3D12CommandAllocator *tail_allocator;
@@ -225,6 +226,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     if(s->graphics_identity){IUnknown_Release(s->graphics_identity);s->graphics_identity=NULL;s->graphics_root=NULL;}
     s->primary_cleared=FALSE;
     s->primary_released=FALSE;
+    s->primary_key=0;
     if (s->primary) { ID3D12Resource_Release(s->primary); s->primary=NULL; }
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
@@ -241,7 +243,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     s->full_bounds=s->full_rect=s->full_vp=FALSE;
     s->pending_470=FALSE;
     s->clear4_lanes=0;s->guest_topology=0;s->clear4_drew=FALSE;
-    s->rt_roundtripped=FALSE;
+    s->rt_roundtripped=s->offscreen_sr=FALSE;
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -384,7 +386,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     if (SUCCEEDED(hr) && s->guest_topology)ID3D12GraphicsCommandList7_IASetPrimitiveTopology(tail,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     if (SUCCEEDED(hr) && s->stencil_zero) ID3D12GraphicsCommandList7_OMSetStencilRef(tail,0);
     if (SUCCEEDED(hr) && s->blend_ones) ID3D12GraphicsCommandList7_OMSetBlendFactor(tail,ones_factor);
-    if (SUCCEEDED(hr))replay_om(&s->om,tail);
+    if (SUCCEEDED(hr) && !s->offscreen_sr)replay_om(&s->om,tail);
     if (SUCCEEDED(hr) && s->full_bounds) ID3D12GraphicsCommandList7_OMSetDepthBounds(tail,0.f,1.f);
     if (SUCCEEDED(hr) && s->full_rect) ID3D12GraphicsCommandList7_RSSetScissorRects(tail,1,&clear_rect);
     if (SUCCEEDED(hr) && s->full_vp) ID3D12GraphicsCommandList7_RSSetViewports(tail,1,&clear_viewport);
@@ -507,6 +509,16 @@ static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT fla
 enum { XS_RECTLIST=17 };
 static void recorded_direct_state(struct startup_list *s);
 static BOOL pending_colour_inputs(struct startup_list *s);
+/* The return half of the round trip swaps all three pairs. Flags/range are checked by the caller. */
+static BOOL rt_shader_edge(const D3D12_TEXTURE_BARRIER *b,BOOL returning)
+{
+    return b->SyncBefore==(returning?D3D12_BARRIER_SYNC_ALL_SHADING:D3D12_BARRIER_SYNC_RENDER_TARGET) &&
+        b->SyncAfter==(returning?D3D12_BARRIER_SYNC_RENDER_TARGET:D3D12_BARRIER_SYNC_ALL_SHADING) &&
+        b->AccessBefore==(returning?D3D12_BARRIER_ACCESS_SHADER_RESOURCE:D3D12_BARRIER_ACCESS_RENDER_TARGET) &&
+        b->AccessAfter==(returning?D3D12_BARRIER_ACCESS_RENDER_TARGET:D3D12_BARRIER_ACCESS_SHADER_RESOURCE) &&
+        b->LayoutBefore==(returning?D3D12_BARRIER_LAYOUT_SHADER_RESOURCE:D3D12_BARRIER_LAYOUT_RENDER_TARGET) &&
+        b->LayoutAfter==(returning?D3D12_BARRIER_LAYOUT_RENDER_TARGET:D3D12_BARRIER_LAYOUT_SHADER_RESOURCE);
+}
 static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER_GROUP *g)
 {
     if(!s->pending_470 || !s->depth_zero_pending || s->host_exposed)return E_NOTIMPL;
@@ -521,12 +533,7 @@ static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER
            !s->om.heap[0] || !s->om.heap[1] ||
            !rt->host || rt->host==s->primary)return E_NOTIMPL;
         for(UINT k=0;k<2;k++)if(b[k].pResource!=(ID3D12Resource*)rt->identity ||
-            b[k].SyncBefore!=(k?D3D12_BARRIER_SYNC_ALL_SHADING:D3D12_BARRIER_SYNC_RENDER_TARGET) ||
-            b[k].SyncAfter!=(k?D3D12_BARRIER_SYNC_RENDER_TARGET:D3D12_BARRIER_SYNC_ALL_SHADING) ||
-            b[k].AccessBefore!=(k?D3D12_BARRIER_ACCESS_SHADER_RESOURCE:D3D12_BARRIER_ACCESS_RENDER_TARGET) ||
-            b[k].AccessAfter!=(k?D3D12_BARRIER_ACCESS_RENDER_TARGET:D3D12_BARRIER_ACCESS_SHADER_RESOURCE) ||
-            b[k].LayoutBefore!=(k?D3D12_BARRIER_LAYOUT_SHADER_RESOURCE:D3D12_BARRIER_LAYOUT_RENDER_TARGET) ||
-            b[k].LayoutAfter!=(k?D3D12_BARRIER_LAYOUT_RENDER_TARGET:D3D12_BARRIER_LAYOUT_SHADER_RESOURCE) ||
+            !rt_shader_edge(&b[k],k!=0) ||
             b[k].Flags || memcmp(&b[k].Subresources,&all,sizeof all))return E_NOTIMPL;
         b[0].pResource=b[1].pResource=rt->host;
         D3D12_BARRIER_GROUP host={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=2,.pTextureBarriers=b};
@@ -564,6 +571,17 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
     if (!ReadProcessMemory(GetCurrentProcess(),g.pTextureBarriers,&b,bytes,&n) || n!=bytes) return E_POINTER;
     const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
     if (b.Flags || memcmp(&b.Subresources,&all,sizeof all)) return E_NOTIMPL;
+    if (s->previous_vb.buffer) {
+        /* The earlier pair pinned this exact guest identity under the recording owner's lock. */
+        const struct xs_attachment_pin *rt=&s->attachments[0];
+        if(!s->rt_roundtripped || s->offscreen_sr || s->host_exposed ||
+            (s->primary && (!s->primary_key || s->primary_key==(UINT_PTR)rt->identity || s->primary==rt->host)) ||
+            !s->pending_470 || s->bound || s->pipeline || !s->om.heap[0] || !rt->identity || !rt->host ||
+            b.pResource!=(ID3D12Resource*)rt->identity || !rt_shader_edge(&b,FALSE))return E_NOTIMPL;
+        b.pResource=rt->host;g.pTextureBarriers=&b;
+        ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
+        s->offscreen_sr=TRUE;recorded_direct_state(s);return S_OK;
+    }
     if (s->primary) {
 #ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
         /* shortcut: host COMMON for this cleared primary only; qualify its retail acquire before enabling. */
@@ -586,6 +604,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
             b.AccessBefore!=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS || b.AccessAfter!=D3D12_BARRIER_ACCESS_RENDER_TARGET ||
             b.LayoutBefore!=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS || b.LayoutAfter!=D3D12_BARRIER_LAYOUT_RENDER_TARGET) return E_NOTIMPL;
         if (!(s->primary=xs_retain_primary(s->pool_owner,b.pResource))) return E_INVALIDARG;
+        s->primary_key=(UINT_PTR)b.pResource;
     }
     b.pResource=s->primary;
     g.pTextureBarriers=&b;
@@ -595,7 +614,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
 static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER_GROUP *groups)
 {
     if (FAILED(record_primary_barrier(sl(i),count,groups))) xs_stop();
-    batch_step(sl(i),(sl(i)->primary_released?B_RELEASED:B_ACQUIRED));
+    if(!sl(i)->offscreen_sr)batch_step(sl(i),(sl(i)->primary_released?B_RELEASED:B_ACQUIRED));
 }
 /* shortcut: first full transparent-black clear after this recording's primary transition. */
 static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
@@ -786,7 +805,7 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
 }
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
-    if(!open_direct_state(s) || !s->pending_470 || !s->attachments[0].identity ||
+    if(!open_direct_state(s) || s->offscreen_sr || !s->pending_470 || !s->attachments[0].identity ||
         !s->attachments[1].identity || count!=1 || range)return E_NOTIMPL;
     SIZE_T slots[2],got;
     if(!ReadProcessMemory(GetCurrentProcess(),rt,slots,sizeof *slots,&got) || got!=sizeof *slots ||

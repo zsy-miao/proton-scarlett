@@ -14,6 +14,7 @@ static ID3D12GraphicsCommandList7 *barrier_host;
 static void checked_barrier(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_BARRIER_GROUP *g){
     ++barrier_total;barrier_host=l;
     if(n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE && g->NumBarriers==2){memcpy(seen,g->pTextureBarriers,sizeof seen);++calls;}
+    if(n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE && g->NumBarriers==1)seen[0]=g->pTextureBarriers[0];
     ID3D12GraphicsCommandList7_Barrier(l,n,g);
 }
 #undef ID3D12GraphicsCommandList7_Barrier
@@ -148,6 +149,19 @@ BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown 
 BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *root,IUnknown **ids,SIZE_T *slots,ID3D12GraphicsCommandList7 *isolated,ID3D12Resource **images,IUnknown **siblings,UINT64 va,IUnknown *duplicate)
 {
     IUnknown *a,*l,*q;REQUIRE(xs_allocator(hd,0,&a)==S_OK && xs_device_list(hd,0,a,TRUE,owner,&l)==S_OK);struct startup_list *s=sl(l);
+#ifdef TEST_DISTINCT_PRIMARY
+    extern IUnknown *test_primary_image(IUnknown*,ID3D12Device*);
+    IUnknown *pk=test_primary_image(owner,hd);REQUIRE(pk);
+    D3D12_TEXTURE_BARRIER acquire={.pResource=(ID3D12Resource*)pk,.Subresources.IndexOrFirstMipLevel=UINT_MAX,
+        .SyncBefore=D3D12_BARRIER_SYNC_ALL_SHADING,.SyncAfter=D3D12_BARRIER_SYNC_RENDER_TARGET,
+        .AccessBefore=D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,.AccessAfter=D3D12_BARRIER_ACCESS_RENDER_TARGET,
+        .LayoutBefore=D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,.LayoutAfter=D3D12_BARRIER_LAYOUT_RENDER_TARGET};
+    D3D12_BARRIER_GROUP ag={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&acquire};
+    pool_vtbl.barrier(l,1,&ag);ID3D12Resource *primary=s->primary;SIZE_T ps=slots[0]+32;
+    REQUIRE(primary && primary!=images[0] && s->primary_key==(UINT_PTR)pk && xs_write_view(owner,0xa0,pk,(DWORD[]){28,4,0,0},ps)==S_OK);
+    REQUIRE(record_primary_clear(s,ps,(FLOAT[4]){0},0,NULL)==S_OK);
+    UINT64 ps_serial=s->clear_serial;REQUIRE(ps_serial && s->clear_slot==ps);
+#endif
     D3D12_TEXTURE_BARRIER b[2]={0};for(UINT k=0;k<2;k++){
         b[k].pResource=(ID3D12Resource*)ids[k];b[k].Subresources.IndexOrFirstMipLevel=UINT_MAX;
         b[k].SyncBefore=D3D12_BARRIER_SYNC_ALL_SHADING;b[k].SyncAfter=k?D3D12_BARRIER_SYNC_DEPTH_STENCIL:D3D12_BARRIER_SYNC_RENDER_TARGET;
@@ -167,7 +181,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     b[1].Flags=1;REQUIRE(FAILED(record_primary_barrier(s,1,&g)));b[1].Flags=0;
     UINT64 *tag=(UINT64*)slots[1];++*tag;REQUIRE(FAILED(record_primary_barrier(s,1,&g)));--*tag;
     REQUIRE(calls==before && !s->attachments[0].identity && !s->attachments[1].identity);pool_vtbl.barrier(l,1,&g);
-    REQUIRE(calls==before+1 && FAILED(record_primary_barrier(s,1,&g)) && !s->primary);
+    REQUIRE(calls==before+1 && FAILED(record_primary_barrier(s,1,&g)));
     for(UINT k=0;k<2;k++){REQUIRE(s->attachments[k].identity==ids[k] && s->attachments[k].slot==slots[k] && s->attachments[k].serial==*(UINT64*)slots[k]);b[k].pResource=images[k];REQUIRE(!memcmp(b+k,seen+k,offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof b[k].Flags));}
     g.pTextureBarriers=seen;isolated->lpVtbl->Barrier(isolated,1,&g);
     UINT ob=om_calls;REQUIRE(record_om(s,1,slots,TRUE,slots+1)==E_NOTIMPL && record_om(s,1,slots,FALSE,NULL)==E_POINTER);
@@ -193,6 +207,10 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     D3D12_HEAP_PROPERTIES rbh={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
     D3D12_RESOURCE_DESC rbd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=2048,.Height=1,.DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
     ID3D12Resource *quad_rb;REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(hd,&rbh,0,&rbd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&quad_rb)));
+#ifdef TEST_DISTINCT_PRIMARY
+    BYTE *qp;REQUIRE(SUCCEEDED(ID3D12Resource_Map(quad_rb,0,NULL,(void**)&qp)));
+    memset(qp+512,0xcc,512);ID3D12Resource_Unmap(quad_rb,0,NULL);
+#endif
     ID3D12PipelineState *full=s->pipeline;const FLOAT guard[]={1,0,1,1};
     ID3D12GraphicsCommandList7_ClearDepthStencilView(s->host,frozen.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
     ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
@@ -251,9 +269,40 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     struct xs_clear_source rejected={0};
     REQUIRE(FAILED(xs_copy_colour_vb(owner,hd,s->host,second.BufferLocation,TRUE,pso,&rejected)) && !rejected.buffer && !rejected.placed);
     REQUIRE(vb_calls==1 && !memcmp(&s->vb,&first_vb,sizeof first_vb) && !s->previous_vb.buffer);
+    D3D12_TEXTURE_BARRIER single={.SyncBefore=0x40,.SyncAfter=0x1000,.AccessBefore=8,.AccessAfter=0x80,
+        .LayoutBefore=2,.LayoutAfter=6,.pResource=(ID3D12Resource*)ids[0],.Subresources={.IndexOrFirstMipLevel=UINT_MAX}};
+    D3D12_BARRIER_GROUP sg={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&single};
+    UINT before_single=barrier_total;
+    REQUIRE(FAILED(record_primary_barrier(s,1,&sg))); // too early, even after the round trip
     pool_vtbl.vb(l,0,1,&second);
     REQUIRE(vb_calls==2 && !memcmp(&s->previous_vb,&first_vb,sizeof first_vb) && s->vb.placed==first_vb.placed && s->vb.buffer!=first_vb.buffer);
     REQUIRE(FAILED(record_colour_vb(s,0,1,&second)) && vb_calls==2);
+    extern IUnknown *test_texture(IUnknown*,ID3D12Resource*,BOOL);
+    IUnknown *alias=test_texture(owner,images[0],FALSE);REQUIRE(alias && alias!=ids[0]);
+    single.pResource=(ID3D12Resource*)alias;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));IUnknown_Release(alias);
+    single.pResource=(ID3D12Resource*)siblings[0];REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));
+    single.pResource=(ID3D12Resource*)ids[0];
+    single.Subresources.NumPlanes=1;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.Subresources.NumPlanes=0;
+    single.Flags=1;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.Flags=0;
+    single.LayoutAfter=2;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.LayoutAfter=6;
+    single.AccessAfter=0;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.AccessAfter=0x80;
+    single.SyncAfter=0;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.SyncAfter=0x1000;
+    REQUIRE(FAILED(record_primary_barrier(s,2,&sg)) && barrier_total==before_single && !s->offscreen_sr);
+#ifdef TEST_DISTINCT_PRIMARY
+    /* Isolate each exclusion even though an ordinary immutable wrapper cannot change its host. */
+    s->primary_key=(UINT_PTR)ids[0];REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));s->primary_key=(UINT_PTR)pk;
+    s->primary=images[0];REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));s->primary=primary;
+    single.pResource=(ID3D12Resource*)pk;REQUIRE(FAILED(record_primary_barrier(s,1,&sg)));single.pResource=(ID3D12Resource*)ids[0];
+    REQUIRE(!s->offscreen_sr && barrier_total==before_single);
+    enum batch_phase phase=s->phase;
+#endif
+    pool_vtbl.barrier(l,1,&sg);
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(s->phase==phase && s->primary==primary && s->primary_key==(UINT_PTR)pk && s->primary_cleared && !s->primary_released);
+#endif
+    REQUIRE(barrier_total==before_single+1 && barrier_host==s->host && s->offscreen_sr && seen[0].pResource==images[0]);
+    D3D12_TEXTURE_BARRIER native=single;native.pResource=images[0];
+    REQUIRE(!memcmp(&seen[0],&native,offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof native.Flags));
     BYTE *sources[]={(BYTE*)v.BufferLocation,(BYTE*)second.BufferLocation};
     BYTE expected[2][4080];
     for(UINT j=0;j<2;j++){
@@ -274,11 +323,35 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 
 #endif
 #endif
-    REQUIRE(split_native_list(s,post)==S_OK && om_calls==ob+2 && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
+    UINT before_split_om=om_calls;
+    REQUIRE(split_native_list(s,post)==S_OK && om_calls==before_split_om+!s->offscreen_sr && last_rt==frozen.cpu[0].ptr && last_ds==frozen.cpu[1].ptr);
     REQUIRE(s->guest_topology==17 && topo_calls==nia+2 && ia_list==s->host && ia_list!=s->head && ia_value==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+#ifdef TEST_SECOND_VB
+    REQUIRE(s->offscreen_sr && barrier_total==before_single+1 && FAILED(record_primary_barrier(s,1,&sg)) &&
+            barrier_total==before_single+1 && FAILED(record_om(s,1,slots,FALSE,slots+1)));
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(s->primary==primary && s->primary_key==(UINT_PTR)pk && s->clear_serial==ps_serial &&
+            s->clear_slot==ps && s->primary_cleared && !s->primary_released);
+    sample_quad(s->host,primary,quad_rb,1);
+#endif
+    /* Test readback only: return the image to RT for the independent OM/DSV fixture that follows. */
+    D3D12_TEXTURE_BARRIER back=seen[0];
+    back.SyncBefore=D3D12_BARRIER_SYNC_ALL_SHADING;back.SyncAfter=D3D12_BARRIER_SYNC_COPY;
+    back.AccessBefore=D3D12_BARRIER_ACCESS_SHADER_RESOURCE;back.AccessAfter=D3D12_BARRIER_ACCESS_COPY_SOURCE;
+    back.LayoutBefore=D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;back.LayoutAfter=D3D12_BARRIER_LAYOUT_COPY_SOURCE;
+    D3D12_BARRIER_GROUP bg={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&back};
+    s->host->lpVtbl->Barrier(s->host,1,&bg);
+    copy_quad(s->host,images[0],quad_rb,3);
+    back.SyncBefore=back.SyncAfter;back.SyncAfter=D3D12_BARRIER_SYNC_RENDER_TARGET;
+    back.AccessBefore=back.AccessAfter;back.AccessAfter=D3D12_BARRIER_ACCESS_RENDER_TARGET;
+    back.LayoutBefore=back.LayoutAfter;back.LayoutAfter=D3D12_BARRIER_LAYOUT_RENDER_TARGET;
+    s->host->lpVtbl->Barrier(s->host,1,&bg);
+#else
     ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,frozen.cpu[0],guard,0,NULL);
+    sample_quad(s->host,images[0],quad_rb,3);
+#endif
     REQUIRE(!xs_list_host(l));
-    REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));sample_quad(s->host,images[0],quad_rb,3);
+    REQUIRE(FAILED(record_clear4_draw(s,3,1,0,0)));
     REQUIRE(bounds_calls==nb+2 && bounds_recorder==s->host && bounds_recorder!=s->head && last_bounds[0]==0 && last_bounds[1]==1);
     REQUIRE(rects==nr+2 && vps==nv+2 && rect_host==s->host && vp_host==s->host);
 #ifdef TEST_LATE_COLOUR
@@ -329,12 +402,20 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #endif
     const FLOAT green[4]={0,1,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(isolated,frozen.cpu[0],green,0,NULL);
     REQUIRE(sl_close(l)==S_OK && xs_direct_queue(hd,&q)==S_OK && checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED);
-    REQUIRE(execute_quad_fixture(hd,s,quad_rb));ID3D12Resource_Release(quad_rb);
+    REQUIRE(execute_quad_fixture(hd,s,quad_rb));
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(SUCCEEDED(ID3D12Resource_Map(quad_rb,0,NULL,(void**)&qp)));
+    for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++)REQUIRE(*(DWORD*)(qp+512+y*256+x*4)==0);
+    ID3D12Resource_Unmap(quad_rb,0,NULL);IUnknown_Release(pk);
+    puts("PASS distinct retained primary: alias guards, unchanged clear generation/release and black primary pixels across offscreen SR edge and split");
+#endif
+    ID3D12Resource_Release(quad_rb);
 #ifdef TEST_SECOND_VB
     BYTE *read;REQUIRE(SUCCEEDED(ID3D12Resource_Map(vb_read,0,NULL,(void**)&read)) &&
         !memcmp(read,expected,sizeof expected) && !memcmp(read+8160,expected[1]+167*24,72));
     ID3D12Resource_Unmap(vb_read,0,NULL);ID3D12Resource_Release(vb_read);
     puts("PASS changing VB: both 4080-byte buffers through fence, replacement on tail, exact firstVertex=167 window, late colour PSO refused");
+    puts("PASS composite +490: original RT to shader-resource once, exact native operand, split preserved layout and offscreen pixels");
 #endif
     REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->guest_topology==17 && !can_set_topology(s,17));
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
@@ -343,7 +424,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(!s->prior_pso && !s->prior_root && !s->graphics_identity && !s->pipeline && !s->bound);puts("PASS controlled late worker: root on current and split recorder, source not rebound under CBV table, publication alone ineffective, explicit PSO on tail, denied submit and reset");
 #endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
-    REQUIRE(!s->rt_roundtripped && !s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
+    REQUIRE(!s->offscreen_sr && !s->rt_roundtripped && !s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
     puts("PASS +a0(17): host triangle input on head/tail, rectangle rejects #4, fenced unchanged guard and reset");
     puts("PASS +230: exact host call on head and split tail, full bounds guarded before bind/after close, reset and submit guards intact");
     IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(q);return TRUE;

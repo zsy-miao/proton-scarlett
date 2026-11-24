@@ -1,13 +1,16 @@
 /* Fixture only: sample the same image after each consuming draw. Restore the
  * attachment layout, and do not touch any shader-visible bindings. */
-static void sample_quad(ID3D12GraphicsCommandList7 *l,ID3D12Resource *image,ID3D12Resource *read,UINT phase)
+static void copy_quad(ID3D12GraphicsCommandList7 *l,ID3D12Resource *image,ID3D12Resource *read,UINT phase)
 {
-    D3D12_RESOURCE_BARRIER b={.Transition={image,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}};
-    ID3D12GraphicsCommandList7_ResourceBarrier(l,1,&b);
     D3D12_TEXTURE_COPY_LOCATION src={.pResource=image},dst={.pResource=read,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             .PlacedFootprint={phase*512,{DXGI_FORMAT_R8G8B8A8_UNORM,2,2,1,256}}};
     D3D12_BOX box={10,8,0,12,10,1};
     ID3D12GraphicsCommandList7_CopyTextureRegion(l,&dst,0,0,0,&src,&box);
+}
+static void sample_quad(ID3D12GraphicsCommandList7 *l,ID3D12Resource *image,ID3D12Resource *read,UINT phase)
+{
+    D3D12_RESOURCE_BARRIER b={.Transition={image,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(l,1,&b);copy_quad(l,image,read,phase);
     b.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;b.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;
     ID3D12GraphicsCommandList7_ResourceBarrier(l,1,&b);
 }
@@ -27,7 +30,11 @@ static BOOL execute_quad_fixture(ID3D12Device *hd,struct startup_list *s,ID3D12R
     const DWORD want[][4]={{0xdf9f6020,0xffff00ff,0xffff00ff,0xdf9f6020},
                            {0xdf9f6020,0xffff00ff,0xffff00ff,0xdf9f6020},
                            {0xdf9f6020,0xdf9f6020,0xdf9f6020,0xdf9f6020},
+#ifdef TEST_SECOND_VB
+                           {0xdf9f6020,0xdf9f6020,0xdf9f6020,0xdf9f6020}};
+#else
                            {0xffff00ff,0xffff00ff,0xffff00ff,0xffff00ff}};
+#endif
     for(UINT i=0;i<ARRAYSIZE(want);i++){
 #ifdef TEST_LATE_COLOUR
         if(i==1 || i==2)continue; /* No further clear draws after the colour root transition. */

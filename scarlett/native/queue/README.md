@@ -902,3 +902,21 @@ In the same AMD trace the four colour multipliers at `b27+32` were zero,
 so the translated shader would have produced zero RGB. A separate AMD
 diagnostic observed the game skip that draw. No captured retail draw
 has yet joined a nonblack source to a visibly changed primary image.
+
+### First composite output bind
+
+On both GPUs the ordinary recorder accepted the whole-image transition
+from render target to shader resource. It kept the distinct primary
+image intact. The first process and recorder stop was list `+190`,
+return `+33317`. Both runs issued tokens 1 and 2, presented only token 1
+(display count 0→1), and showed a blank client.
+
+The AMD diagnostic saw the actual output bind: one RTV, no depth view.
+The slot had one match, serial 17, for the current registered primary
+(ring entry 1 of 2). The setter returned `E_NOTIMPL`. The worker for
+the same technique-96 request also returned `E_NOTIMPL` and published
+no pipeline.
+
+An independent output-binding fixture passed on both GPUs: after a public
+slot rewrite and command-list split, the fenced readback was cyan on the
+original primary. That establishes the fixture binding, not a retail draw.

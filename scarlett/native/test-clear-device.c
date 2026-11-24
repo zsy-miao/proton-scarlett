@@ -64,3 +64,19 @@ IUnknown *test_texture(IUnknown *owner,ID3D12Resource *image,BOOL depth)
     c->next=d->colors;d->colors=c;
     ReleaseSRWLockExclusive(&d->descriptor_lock);return &c->iface;
 }
+#ifdef TEST_DISTINCT_PRIMARY
+/* A registered stand-in with its own RTV/storage. No display allocator or flip in this fixture. */
+IUnknown *test_primary_image(IUnknown *owner,ID3D12Device *hd)
+{
+    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=16,.Height=16,
+        .DepthOrArraySize=1,.MipLevels=1,.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.SampleDesc.Count=1,
+        .Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+    D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
+    ID3D12Resource *image=NULL;
+    if(FAILED(ID3D12Device_CreateCommittedResource(hd,&hp,0,&rd,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,NULL,
+        &IID_ID3D12Resource,(void**)&image)))return NULL;
+    IUnknown *id=test_texture(owner,image,FALSE);ID3D12Resource_Release(image);
+    if(id)CONTAINING_RECORD(id,struct color_resource,iface)->slice=id;
+    return id;
+}
+#endif
