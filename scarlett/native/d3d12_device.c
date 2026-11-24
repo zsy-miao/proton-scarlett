@@ -16,6 +16,10 @@
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 struct frame_record {
     UINT64 token;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    ID3D12CommandQueue *queue;
+    ID3D12Fence *sync_end,*batch_end;
+#endif
     LONGLONG origin, target;
     IDXGISwapChain *chain;
     UINT present_id;
@@ -29,10 +33,22 @@ struct frame_clock {
     UINT period, registered, epoch, cursor;
     struct frame_record history[16];
 };
+static void drop_submissions(struct frame_record *r)
+{
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if (r->sync_end) ID3D12Fence_Release(r->sync_end);
+    if (r->batch_end) ID3D12Fence_Release(r->batch_end);
+    if (r->queue) ID3D12CommandQueue_Release(r->queue);
+#else
+    (void)r;
+#endif
+}
 static void frame_clear(struct frame_clock *f)
 {
-    for (unsigned i=0; i<ARRAYSIZE(f->history); ++i)
+    for (unsigned i=0; i<ARRAYSIZE(f->history); ++i) {
+        drop_submissions(&f->history[i]);
         if (f->history[i].chain) IDXGISwapChain_Release(f->history[i].chain);
+    }
     memset(f->history, 0, sizeof(f->history));
 }
 #endif
@@ -209,7 +225,7 @@ static HRESULT WINAPI bootstrap_list(IUnknown *iface, const void *desc, IUnknown
     if (initial_state || words[1] != (pooled ? 6u : 2u) || words[2] != 1 || words[3]) return E_NOTIMPL;
     IUnknown *list = NULL;
     HRESULT hr = xs_device_list(CONTAINING_RECORD(iface, struct xbox_device, iface)->host,
-            words[0], allocator, pooled, pooled ? iface : NULL, &list);
+            words[0], allocator, pooled, iface, &list);
     *out = list;
     return hr;
 }

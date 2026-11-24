@@ -4,6 +4,13 @@
 #include "xmem/marked_section.h"
 extern "C" HRESULT test_stamp_try(IUnknown *,UINT64,UINT64);
 extern "C" void test_copy_ticks(IUnknown *,ID3D12Resource *,UINT64);
+#ifdef TEST_TAGGED_BATCH
+extern "C" HRESULT test_tagged(IUnknown *,UINT,IUnknown *const *,UINT64,UINT);
+extern "C" HRESULT test_incomplete_batch(IUnknown *,IUnknown *,UINT64,BOOL);
+extern "C" HRESULT xs_frame_submission_query(IUnknown *,UINT64,ID3D12CommandQueue *,BOOL);
+extern "C" const IID xs_sync_list_id;
+extern "C" ID3D12CommandQueue *xs_display_queue(IUnknown *);
+#endif
 #endif
 extern "C" HRESULT test_primary_try(IUnknown *,UINT,const D3D12_BARRIER_GROUP *);
 #ifdef TEST_PRIMARY_CLEAR
@@ -42,7 +49,12 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     IUnknown *pair[]={heap.Get(),sampler.Get()};HR(xs_bind_pool_heaps(list.Get(),2,pair));
     auto reserve=(void *(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD))(void*)GetProcAddress(xm,"XMemVirtualAlloc");CK(reserve);
     auto pool=(BYTE*)reserve(nullptr,span,0x20003000,0x183,0x22004);CK(pool);
-    auto head=pool+window+0x6218;scarlett_section_info id;
+#ifdef TEST_BATCH_HEAD
+    constexpr UINT headOff=TEST_BATCH_HEAD;
+#else
+    constexpr UINT headOff=0x6218;
+#endif
+    auto head=pool+window+headOff;scarlett_section_info id;
 #ifdef TEST_WB_TAIL
     auto ctrl=(volatile UINT*)reserve(nullptr,65536,0x20401000,0x283,0x42404);CK(ctrl);
     scarlett_section_info copy;
@@ -56,11 +68,14 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     auto original=(BYTE*)MapViewOfFile(id.section,FILE_MAP_READ|FILE_MAP_WRITE,0,window,65536);CK(original);
 #endif
     CK(CloseHandle(id.section));memset(original,0xad,65536);
-    auto ticks=(volatile UINT64*)(original+0x6210);
+    auto ticks=(volatile UINT64*)(original+headOff-8);
     InterlockedExchange64((volatile LONG64*)ctrl,0);ctrl[2]=ctrl[3]=~0u;
     using Mark=void(WINAPI*)(IUnknown*,const volatile void*,UINT,UINT64,UINT);
     using Stamp=void(WINAPI*)(IUnknown*,const void*,UINT64,UINT64,UINT);
     SLOT(list.Get(),0x238,Mark)(list.Get(),ctrl+2,0,0,0);
+#ifdef TEST_TAGGED_BATCH
+    HR(xs_bind_pool_heaps(list.Get(),2,pair));
+#endif
     SLOT(list.Get(),0x240,Stamp)(list.Get(),head,0,0,1);
     SLOT(list.Get(),0x238,Mark)(list.Get(),ctrl+3,post,0,0);
     SLOT(list.Get(),0x250,Mark)(list.Get(),ctrl,7,1,1);
@@ -173,7 +188,16 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     auto pin=(decltype(&ScarlettRetainDisplayBackingV1))(void*)GetProcAddress(xm,"ScarlettRetainDisplayBackingV1");
     auto unpin=(decltype(&ScarlettReleaseDisplayBackingV1))(void*)GetProcAddress(xm,"ScarlettReleaseDisplayBackingV1");
     XsDisplayBacking backing;CK(pin && unpin); HR(pin(arena,slice,&backing));CK(backing.base==arena);
-    ComPtr<IUnknown> q,gate,done;HR(xs_direct_queue(d,q.GetAddressOf()));HR(xs_shared_fence(d,gate.GetAddressOf()));HR(xs_shared_fence(d,done.GetAddressOf()));
+    ComPtr<IUnknown> q,gate,done;
+#ifdef TEST_TAGGED_BATCH
+    using Queue=HRESULT(WINAPI*)(IUnknown*,const D3D12_COMMAND_QUEUE_DESC*,REFIID,void**);
+    auto createQueue=SLOT(dev,0x40,Queue);qd.NodeMask=1;ComPtr<IUnknown> wrongQueue;
+    HR(createQueue(dev,&qd,IID_ID3D12CommandQueue,(void**)q.GetAddressOf()));
+    HR(createQueue(dev,&qd,IID_ID3D12CommandQueue,(void**)wrongQueue.GetAddressOf()));
+#else
+    HR(xs_direct_queue(d,q.GetAddressOf()));
+#endif
+    HR(xs_shared_fence(d,gate.GetAddressOf()));HR(xs_shared_fence(d,done.GetAddressOf()));
 #ifdef TEST_PRIMARY_RELEASE
     HR(acquire->Close());
     ComPtr<ID3D12Fence> published,consumed;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&published)));
@@ -207,7 +231,47 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
 #ifdef TEST_PRIMARY_RELEASE
     HR(reader->Wait(published.Get(),1));ID3D12CommandList *reads[]={acquire.Get()};reader->ExecuteCommandLists(1,reads);HR(reader->Signal(consumed.Get(),1));
 #endif
-    HR(xs_queue_wait(q.Get(),gate.Get(),1));IUnknown *batch[]={list.Get()};SLOT(q.Get(),0x118,Submit)(q.Get(),1,batch,0,0);
+    HR(xs_queue_wait(q.Get(),gate.Get(),1));IUnknown *batch[]={list.Get()};
+#ifdef TEST_TAGGED_BATCH
+    using Interval=HRESULT(WINAPI*)(IUnknown*,IDXGIOutput*,UINT,UINT,UINT);
+    using Schedule=HRESULT(WINAPI*)(IUnknown*,UINT,UINT,const void*,UINT);
+    using FrameWait=HRESULT(WINAPI*)(IUnknown*,UINT,DWORD,const void*,UINT,UINT64*);
+    auto configure=[&](IUnknown *owner) {
+        return SLOT(owner,0x270,Interval)(owner,nullptr,16667,1,0)==S_OK &&
+            SLOT(owner,0x278,Schedule)(owner,0,0,nullptr,0)==S_OK && SLOT(owner,0x278,Schedule)(owner,2,0,nullptr,0)==S_OK;
+    };
+    CK(configure(dev));UINT64 token=0,stale=0;
+    auto frameWait=SLOT(dev,0x280,FrameWait);HR(frameWait(dev,0,1000,nullptr,0,&stale));HR(frameWait(dev,0,1000,nullptr,0,&token));
+    ComPtr<IUnknown> sa,sync;HR(addAllocator(dev,0,IID_ID3D12CommandAllocator,(void**)sa.GetAddressOf()));
+    UINT sd[]={0,2,1,0};HR(SLOT(dev,0x248,List)(dev,sd,sa.Get(),nullptr,xs_sync_list_id,(void**)sync.GetAddressOf()));
+    HR(SLOT(sync.Get(),0x48,Close)(sync.Get()));IUnknown *syncs[]={sync.Get()};
+    auto status=[&](BOOL batchEnd){return xs_frame_submission_query(dev,token,queue,batchEnd);};
+    CK(test_tagged(q.Get(),1,batch,token,3)==DXGI_ERROR_INVALID_CALL);
+    DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
+    const IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
+    ComPtr<IUnknown> foreign,fq;
+    HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)foreign.GetAddressOf()));
+    HR(createQueue(foreign.Get(),&qd,IID_ID3D12CommandQueue,(void**)fq.GetAddressOf()));
+    CK(configure(foreign.Get())); UINT64 otherToken=0;HR(frameWait(foreign.Get(),0,1000,nullptr,0,&otherToken));
+    CK(test_tagged(q.Get(),1,syncs,otherToken,0)==DXGI_ERROR_INVALID_CALL &&
+        test_tagged(fq.Get(),1,syncs,otherToken,0)==E_INVALIDARG && test_tagged(fq.Get(),1,batch,otherToken,3)==E_INVALIDARG);
+    CK(test_tagged(q.Get(),1,syncs,stale,0)==DXGI_ERROR_INVALID_CALL);
+    SLOT(q.Get(),0x118,Submit)(q.Get(),1,syncs,token,0);
+    CK(status(FALSE)==E_PENDING && status(TRUE)==S_FALSE && test_tagged(q.Get(),1,syncs,token,0)==DXGI_ERROR_INVALID_CALL);
+    CK(test_tagged(wrongQueue.Get(),1,batch,token,3)==DXGI_ERROR_INVALID_CALL &&
+        test_tagged(q.Get(),1,syncs,token,3)==E_INVALIDARG && test_tagged(q.Get(),2,batch,token,3)==E_NOTIMPL &&
+        test_tagged(q.Get(),1,batch,token,1)==E_NOTIMPL && test_tagged(q.Get(),1,batch,stale,3)==DXGI_ERROR_INVALID_CALL &&
+        test_incomplete_batch(q.Get(),list.Get(),token,TRUE)==E_INVALIDARG && test_incomplete_batch(q.Get(),list.Get(),token,FALSE)==E_INVALIDARG);
+    CK(xs_display_queue(wrongQueue.Get()) && test_tagged(wrongQueue.Get(),1,syncs,token,0)==E_ACCESSDENIED);
+    SLOT(q.Get(),0x118,Submit)(q.Get(),1,batch,token,3);
+    using AllocReset=HRESULT(WINAPI*)(IUnknown*);
+    CK(status(TRUE)==E_PENDING && test_tagged(q.Get(),1,batch,token,3)==DXGI_ERROR_INVALID_CALL &&
+        SLOT(a.Get(),0x40,AllocReset)(a.Get())==DXGI_ERROR_WAS_STILL_DRAWING &&
+        SLOT(sa.Get(),0x40,AllocReset)(sa.Get())==DXGI_ERROR_WAS_STILL_DRAWING);
+    sync.Reset();sa.Reset();
+#else
+    SLOT(q.Get(),0x118,Submit)(q.Get(),1,batch,0,0);
+#endif
     HR(SLOT(q.Get(),0x80,Signal)(q.Get(),done.Get(),1));HANDLE retired=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(retired);
     HR(xs_fence_event(done.Get(),1,retired));HR(SLOT(list.Get(),0x458,Reset)(list.Get(),b.Get(),nullptr,0));list.Reset();a.Reset();
     CK(other->Release()==0 && surface->Release()==0 && given==2);views.Reset();heap.Reset();texture.Reset();
@@ -224,6 +288,9 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     CK(arena[0]==before0 && arena[3839*4]==beforeLast);HR(xs_cpu_signal(gate.Get(),1));
 #ifdef TEST_TAIL_TIMESTAMP
     CK(headOnly() && WaitForSingleObject(retired,100)==WAIT_TIMEOUT && ticks[0]==empty);
+#ifdef TEST_TAGGED_BATCH
+    CK(status(FALSE)==S_OK && status(TRUE)==E_PENDING);
+#endif
     HR(queue->GetClockCalibration(&mid,&cpu));InterlockedExchange64((volatile LONG64*)ctrl,1);
 #endif
 #ifdef TEST_PRIMARY_RELEASE
@@ -238,7 +305,12 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     HR(queue->GetClockCalibration(&high,&cpu));auto gpuTicks=(UINT64*)((BYTE*)gpuPixels+tickOffset);
     CK(firstTail<ticks[1] && low<=ticks[1] && ticks[1]<=mid && mid<=ticks[0] && ticks[0]<=high);
     CK(gpuTicks[0]==ticks[0] && gpuTicks[1]==ticks[1]);
-    for(UINT k=0;k<65536;k++){CK(reuse[k]==0x49);if(k<0x6210 || k>=0x6220)CK(original[k]==0xad);}
+    for(UINT k=0;k<65536;k++){CK(reuse[k]==0x49);if(k<headOff-8 || k>=headOff+8)CK(original[k]==0xad);}
+#ifdef TEST_TAGGED_BATCH
+    CK(status(FALSE)==S_OK && status(TRUE)==S_OK && frameWait(dev,2,0,nullptr,0,&token)==DXGI_ERROR_WAIT_TIMEOUT);
+    CK(configure(dev) && status(FALSE)==DXGI_ERROR_INVALID_CALL && status(TRUE)==DXGI_ERROR_INVALID_CALL);
+    printf("PASS tagged singleton: sync fence retired while batch pending, separate tail completion, stale/duplicate rejection, head offset %#x\n",window+headOff);
+#endif
 #ifdef TEST_WB_TAIL
     CK(VirtualFree(copy.base,0,MEM_RELEASE));
 #else

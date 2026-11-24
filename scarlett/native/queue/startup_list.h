@@ -1,7 +1,18 @@
 /* Private to queue.c: only the recording and submission shapes used by the startup lists. */
 #include "prefix_marker.h"
 #include "system_timestamp.h"
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+enum batch_phase { B_EMPTY,B_BOUND,B_PREFIX,B_REBOUND,B_HEAD_STAMP,B_POST,B_WAIT,
+    B_ACQUIRED,B_CLEARED,B_RELEASED,B_TAIL_STAMP,B_CLOSED,B_INELIGIBLE };
+#define batch_step(s,to) ((s)->phase=(s)->phase==(to)-1?(to):B_INELIGIBLE)
+#else
+#define batch_step(s,to) ((void)0)
+#endif
 struct startup_list {
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    enum batch_phase phase;
+    IUnknown *sync_owner;
+#endif
     void *reservation;
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
@@ -53,6 +64,9 @@ static ULONG WINAPI sl_release(IUnknown *i)
         if (s->primary) ID3D12Resource_Release(s->primary);
         drop_heaps(s->heaps);
         if (s->pool_owner) IUnknown_Release(s->pool_owner);
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+        if (s->sync_owner) IUnknown_Release(s->sync_owner);
+#endif
         sl_free(s);
     }
     return refs;
@@ -99,6 +113,7 @@ static HRESULT WINAPI sl_close(IUnknown *i)
     if (s->closed) return E_FAIL;
     HRESULT hr = ID3D12GraphicsCommandList7_Close(s->host);
     s->closed = TRUE;
+    batch_step(s,B_CLOSED);
     if (FAILED(hr)) s->error = hr;
     return s->error;
 }
@@ -130,6 +145,9 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
     s->closed = FALSE;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    s->phase=B_EMPTY;
+#endif
     s->error = S_OK;
     return S_OK;
 }
@@ -162,6 +180,10 @@ static HRESULT bind_initial_heaps(struct startup_list *s,UINT count,IUnknown *co
     if (FAILED(hr)) return hr;
     if (!s->heaps[0]) for (unsigned i=0;i<2;i++) { IUnknown_AddRef(pair[i]); s->heaps[i]=pair[i]; }
     ID3D12GraphicsCommandList7_SetDescriptorHeaps(s->host,2,banks);
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if (s->phase==B_PREFIX) batch_step(s,B_REBOUND);
+    else batch_step(s,B_BOUND);
+#endif
     s->post_boundary=FALSE;
     return S_OK;
 }
@@ -290,6 +312,7 @@ static void WINAPI sl_marker(IUnknown *i,UINT64 addr,UINT value,UINT64 control,U
     HRESULT hr=!s->stamp ? prefix_write(s,addr,value,control,flags) : s->marker && s->marker->buffer ?
         record_native_post(s,addr,value,control,flags) : split_after_timestamp(s,addr,value,control,flags);
     if (FAILED(hr)) xs_stop();
+    batch_step(s,(s->stamp?B_POST:B_PREFIX));
 }
 static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
 {
@@ -309,6 +332,7 @@ static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64
 static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
 {
     if (FAILED(pool_timestamp(sl(i),addr,x,y,flags))) xs_stop();
+    batch_step(sl(i),(sl(i)->primary_released?B_TAIL_STAMP:B_HEAD_STAMP));
 }
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
 /* Page provenance alone doesn't identify the device that owns this list. */
@@ -371,7 +395,7 @@ static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UI
 }
 static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT flags)
 {
-    if (SUCCEEDED(record_counter_wait(sl(i),addr,op,ref,flags))) return;
+    if (SUCCEEDED(record_counter_wait(sl(i),addr,op,ref,flags))) {batch_step(sl(i),B_WAIT);return;}
     xs_stop();
 }
 #else
@@ -423,6 +447,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
 static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER_GROUP *groups)
 {
     if (FAILED(record_primary_barrier(sl(i),count,groups))) xs_stop();
+    batch_step(sl(i),(sl(i)->primary_released?B_RELEASED:B_ACQUIRED));
 }
 /* shortcut: first full transparent-black clear after this recording's primary transition. */
 static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
@@ -438,6 +463,7 @@ static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLO
 static void WINAPI sl_primary_clear(IUnknown *i,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
 {
     if (FAILED(record_primary_clear(sl(i),slot,color,count,rects))) xs_stop();
+    batch_step(sl(i),B_CLEARED);
 }
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
@@ -503,7 +529,10 @@ HRESULT xs_device_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnkn
     hr = ID3D12Device_CreateCommandList(device, 1, type, a, NULL, &IID_ID3D12GraphicsCommandList7, (void **)&s->host);
     if (FAILED(hr)) { sl_free(s); return hr; }
     s->iface.lpVtbl = pooled ? &pool_vtbl.prefix : &sl_vtbl.prefix;
-    if ((s->pool_owner=pool_owner)) IUnknown_AddRef(pool_owner);
+    if (pooled && (s->pool_owner=pool_owner)) IUnknown_AddRef(pool_owner);
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if (!pooled && (s->sync_owner=pool_owner)) IUnknown_AddRef(pool_owner);
+#endif
     s->refs = 1;
     s->device = device;
     s->type = type;
@@ -526,20 +555,74 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
-struct heap_retirement { ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event; };
+struct heap_retirement { ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    ID3D12GraphicsCommandList7 *tag_head,*tag_tail;
+    ID3D12Fence *prefix_gate;
+    struct prefix_marker *tag_post;
+    IUnknown *tag_queue;
+#endif
+};
 static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_WAIT wait,TP_WAIT_RESULT result)
 {
     struct heap_retirement *r=ctx;
     (void)instance;(void)result;
     CloseThreadpoolWait(wait);
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if (r->tag_tail) {
+        fprintf(stderr,"scarlett: tagged singleton %s end=%p completed=%llu\n",r->tag_head?"batch":"sync",
+                r->fence,ID3D12Fence_GetCompletedValue(r->fence));
+        struct command_allocator *a=CONTAINING_RECORD(r->head_alloc,struct command_allocator,a.iface);
+        AcquireSRWLockExclusive(&a->lock);a->submission_pins--;ReleaseSRWLockExclusive(&a->lock);
+        if (r->tag_head) ID3D12GraphicsCommandList7_Release(r->tag_head);
+        ID3D12GraphicsCommandList7_Release(r->tag_tail);
+        if (r->prefix_gate) ID3D12Fence_Release(r->prefix_gate);
+        drop_marker(r->tag_post);
+        IUnknown_Release(r->tag_queue);
+    }
+#endif
     if (r->primary) ID3D12Resource_Release(r->primary);
     if (r->head_alloc) IUnknown_Release(r->head_alloc);
     if (r->tail_alloc) ID3D12CommandAllocator_Release(r->tail_alloc);
     if (r->gate) ID3D12Fence_Release(r->gate);
     drop_timestamp(r->stamp); drop_marker(r->native); drop_heaps(r->pair); ID3D12Fence_Release(r->fence); CloseHandle(r->event); HeapFree(GetProcessHeap(),0,r);
 }
+static void retain_recording(struct heap_retirement *r,struct startup_list *s)
+{
+    if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
+    if ((r->primary=s->primary)) ID3D12Resource_AddRef(r->primary);
+    if (s->post || s->primary) {r->head_alloc=s->allocator;IUnknown_AddRef(r->head_alloc);}
+    if (s->post) {r->tail_alloc=s->tail_allocator;ID3D12CommandAllocator_AddRef(r->tail_alloc);}
+    if ((r->stamp=s->stamp)) InterlockedIncrement(&r->stamp->refs);
+    for (unsigned i=0;i<2;i++) if ((r->pair[i]=s->heaps[i])) IUnknown_AddRef(r->pair[i]);
+}
+static void execute_recording(ID3D12CommandQueue *q,struct startup_list *s,struct heap_retirement *r)
+{
+    ID3D12Fence **prefix_gate=NULL;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if (r && r->tag_tail) prefix_gate=&r->prefix_gate;
+#endif
+    if (s->marker && s->marker->alias) enqueue_marker(q,s->device,s->marker,prefix_gate);
+    if (s->post) {
+        ID3D12CommandList *head=(ID3D12CommandList *)s->head;
+        ID3D12CommandQueue_ExecuteCommandLists(q,1,&head);
+        enqueue_marker(q,s->device,s->post,s->post->counter?&r->gate:NULL);
+    }
+    ID3D12CommandList *tail=(ID3D12CommandList *)s->host;
+    ID3D12CommandQueue_ExecuteCommandLists(q,1,&tail);
+    if (r && FAILED(ID3D12CommandQueue_Signal(q,r->fence,1))) xs_stop();
+}
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+#include "tagged_batch.h"
+#endif
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
 {
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    if (token) {
+        if (checked_tagged_submit(iface,count,lists,token,flags)!=S_OK) xs_stop();
+        return;
+    }
+#endif
     ID3D12CommandQueue *q = as_queue(iface);
     if (!q || count!=1 || !lists || !lists[0] ||
         (lists[0]->lpVtbl!=&sl_vtbl.prefix && lists[0]->lpVtbl!=&pool_vtbl.prefix) || token || flags) xs_stop();
@@ -551,7 +634,6 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     BOOL match = device == s->device;
     ID3D12Device_Release(device);
     if (!match || !s->closed || FAILED(s->error) || desc.Type != s->type) xs_stop();
-    ID3D12CommandList *host = (ID3D12CommandList *)s->host;
     struct heap_retirement *r=NULL;
     PTP_WAIT wait=NULL;
     if (s->heaps[0] || s->stamp || s->primary) {
@@ -559,14 +641,7 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
         if (!r || FAILED(ID3D12Device_CreateFence(s->device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&r->fence)) ||
             !(r->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(wait=CreateThreadpoolWait(retire_heaps,r,NULL)) ||
             FAILED(ID3D12Fence_SetEventOnCompletion(r->fence,1,r->event))) xs_stop();
-        if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
-        if ((r->primary=s->primary)) ID3D12Resource_AddRef(r->primary);
-        if (s->post || s->primary) { r->head_alloc=s->allocator; IUnknown_AddRef(r->head_alloc); }
-        if (s->post) {
-            r->tail_alloc=s->tail_allocator;ID3D12CommandAllocator_AddRef(r->tail_alloc);
-        }
-        if ((r->stamp=s->stamp)) InterlockedIncrement(&r->stamp->refs);
-        for (unsigned i=0;i<2;i++) if ((r->pair[i]=s->heaps[i])) IUnknown_AddRef(r->pair[i]);
+        retain_recording(r,s);
     }
     SRWLOCK *lock=&CONTAINING_RECORD(iface,struct adapter,iface)->submit_lock;
     AcquireSRWLockExclusive(lock);
@@ -574,16 +649,7 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     if (s->post && s->post->counter && CONTAINING_RECORD(iface,struct adapter,iface)->external_submissions)
         xs_stop(); /* cannot atomically submit the split around an untracked producer */
 #endif
-    if (s->marker && s->marker->alias) enqueue_marker(q,s->device,s->marker,NULL);
-    if (s->post) {
-        ID3D12CommandList *head=(ID3D12CommandList *)s->head;
-        ID3D12CommandQueue_ExecuteCommandLists(q,1,&head);
-        enqueue_marker(q,s->device,s->post,s->post->counter?&r->gate:NULL);
-    }
-    ID3D12CommandQueue_ExecuteCommandLists(q, 1, &host);
-    if (r) {
-        if (FAILED(ID3D12CommandQueue_Signal(q,r->fence,1))) xs_stop();
-        SetThreadpoolWait(wait,r->event,NULL);
-    }
+    execute_recording(q,s,r);
+    if (r) SetThreadpoolWait(wait,r->event,NULL);
     ReleaseSRWLockExclusive(lock);
 }

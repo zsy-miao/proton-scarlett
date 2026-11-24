@@ -8,6 +8,7 @@ struct system_timestamp {
 #ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
     HANDLE section;
     UINT64 tail_addr;
+    SIZE_T tail_offset;
     BOOL tail_recorded;
 #endif
 };
@@ -52,9 +53,14 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     }
     D3D12_QUERY_HEAP_DESC qd={D3D12_QUERY_HEAP_TYPE_TIMESTAMP,1,1};
 #ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
-    if (i.offset==0x4196218) {
+    if (i.offset==0x4196218
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+            || i.offset==0x41964a8 || i.offset==0x4196698
+#endif
+    ) {
         t->section=i.section;
         t->tail_addr=addr-8;
+        t->tail_offset=i.offset-8;
         qd.Count=2;
     } else
 #endif
@@ -80,7 +86,7 @@ static HRESULT record_tail_timestamp(struct system_timestamp *t,ID3D12GraphicsCo
         scarlett_acquire_section((void *)addr,8,&i);
     if (FAILED(hr)) return hr;
     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
-    BOOL match=i.section && i.offset==0x4196210 && i.view_size==0x49400000 &&
+    BOOL match=i.section && i.offset==t->tail_offset && i.view_size==0x49400000 &&
         addr==(UINT_PTR)i.base+i.offset && same && same(t->section,i.section);
     if (i.section) CloseHandle(i.section);
     if (!match) return E_INVALIDARG;

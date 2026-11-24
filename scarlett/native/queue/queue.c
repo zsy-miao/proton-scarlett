@@ -77,6 +77,9 @@ _Static_assert(offsetof(struct qtable, present) == 0x100, "x64 PresentX");
 struct command_allocator {
     struct adapter a;
     SRWLOCK lock;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    UINT submission_pins;
+#endif
     void *entry, *context; /* Borrowed title values, not COM interfaces. */
 };
 struct atable {
@@ -232,7 +235,15 @@ HRESULT xs_signature(ID3D12Device *host, D3D12_INDIRECT_ARGUMENT_TYPE type, UINT
 
 static HRESULT WINAPI allocator_reset(IUnknown *iface)
 {
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    struct command_allocator *a=CONTAINING_RECORD(iface,struct command_allocator,a.iface);
+    AcquireSRWLockExclusive(&a->lock);
+    HRESULT hr=a->submission_pins?DXGI_ERROR_WAS_STILL_DRAWING:ID3D12CommandAllocator_Reset(a->a.host.allocator);
+    ReleaseSRWLockExclusive(&a->lock);
+    return hr;
+#else
     return ID3D12CommandAllocator_Reset(CONTAINING_RECORD(iface, struct adapter, iface)->host.allocator);
+#endif
 }
 
 static BOOL register_callback(IUnknown *iface, void *entry, void *context)

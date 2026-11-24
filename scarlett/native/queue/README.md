@@ -365,3 +365,21 @@ the tail. In retail, that fence reached `1`; the title returned to `+0x24821e3`
 and issued two signals on its own fence. This establishes GPU completion for
 the observed singleton, not the meaning of the individual bits in flags `3`
 or a presentation. Unsupported calls remained stopped during observation.
+
+`SCARLETT_EXPERIMENTAL_TAGGED_BATCH` opts a staged build into the two observed
+singleton shapes. It requires `SCARLETT_EXPERIMENTAL_DIRECT_WAIT` and
+`SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE`. A nonzero token remains guarded in
+default builds. Eligibility requires a closed, unexposed list created by the
+queue's guest device, a matching host device and an unescaped Direct queue.
+The flags-zero sync submission pins its allocator and records its own fence
+against the current frame issuance. The flags-3 path additionally requires the
+same queue, the identical heap rebind after the prefix, and the complete
+post/wait/primary-release/tail-stamp recording. It pins both recorders and
+allocators through a second fence signaled after the tail. Frame reconfiguration
+or eviction drops the association without dropping the independent retirement
+pins. Neither operation advances the frame clock or presents.
+
+Run `scarlett/tests/tail-timestamp.sh radv STAGED-TOOL tagged` (or `nvidia`).
+The optional last argument selects a paired timestamp in the original 64 KiB
+window: `0x6218`, `0x64a8`, or `0x6698`. This is an ordinary queue-order
+experiment for one recorded sequence; the console flag-bit semantics remain unknown.

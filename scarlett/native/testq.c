@@ -1,5 +1,16 @@
 #include "queue/queue.c"
 ID3D12CommandQueue *test_host_queue(IUnknown *q){return as_queue(q);}
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+HRESULT test_tagged(IUnknown *q,UINT n,IUnknown *const *lists,UINT64 token,UINT flags)
+{return checked_tagged_submit(q,n,lists,token,flags);}
+HRESULT test_incomplete_batch(IUnknown *q,IUnknown *list,UINT64 token,BOOL stamp)
+{
+    struct startup_list *s=sl(list);enum batch_phase saved=s->phase;BOOL paired=s->stamp->tail_recorded;
+    if (stamp) s->stamp->tail_recorded=FALSE; else s->phase=B_INELIGIBLE;
+    HRESULT hr=checked_tagged_submit(q,1,&list,token,3);
+    s->phase=saved;s->stamp->tail_recorded=paired;return hr;
+}
+#endif
 /* Test-only samples inside the native recording, without exposing or splitting it. */
 HRESULT test_post_try(IUnknown *i,UINT64 addr,UINT value,UINT64 c,UINT flags){return record_native_post(sl(i),addr,value,c,flags);}
 void test_post_snapshot(IUnknown *i,ID3D12Resource *rb,UINT dst,UINT stamp_offset)
@@ -25,7 +36,7 @@ void test_copy_ticks(IUnknown *i,ID3D12Resource *read,UINT64 offset)
     ID3D12Resource *src=s->stamp->dst;
     D3D12_RESOURCE_BARRIER b={.Transition={src,0,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE}};
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
-    ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,offset,src,0x6210,16);
+    ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,read,offset,src,s->stamp->tail_offset%65536,16);
     b.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_DEST;
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
 }

@@ -55,6 +55,46 @@ static struct frame_record *frame_find(struct frame_clock *f, UINT64 token)
     return NULL;
 }
 
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+/* Called with the queue and allocator locked. Reconfiguration/eviction cannot split
+ * tag validation from submission. These fences never complete a frame event. */
+HRESULT xs_frame_submit(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL batch,ID3D12Fence *end,
+        void (*submit)(void *),void *context)
+{
+    struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;
+    AcquireSRWLockExclusive(&f->lock);
+    struct frame_record *r=frame_find(f,token);
+    HRESULT hr=DXGI_ERROR_INVALID_CALL;
+    if (r && r==&f->history[(f->cursor-1)%ARRAYSIZE(f->history)] && !r->presenting && r->status==S_FALSE &&
+        (batch ? r->queue==q && r->sync_end && !r->batch_end && ID3D12Fence_GetCompletedValue(r->sync_end)!=UINT64_MAX : !r->queue)) {
+        submit(context);
+        if (batch) r->batch_end=end;
+        else {r->sync_end=end;r->queue=q;ID3D12CommandQueue_AddRef(q);}
+        ID3D12Fence_AddRef(end);
+        fprintf(stderr,"scarlett: tagged singleton queued token=%llu queue=%p sync=%p batch=%p\n",
+                token,q,r->sync_end,r->batch_end);
+        hr=S_OK;
+    }
+    ReleaseSRWLockExclusive(&f->lock);
+    return hr;
+}
+HRESULT xs_frame_submission_query(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL batch)
+{
+    struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;
+    AcquireSRWLockShared(&f->lock);
+    struct frame_record *r=frame_find(f,token);
+    HRESULT hr=r?S_FALSE:DXGI_ERROR_INVALID_CALL;
+    if (r && r->queue==q) {
+        ID3D12Fence *end=batch?r->batch_end:r->sync_end;
+        if (end) {
+            UINT64 value=ID3D12Fence_GetCompletedValue(end);
+            hr=value==UINT64_MAX?DXGI_ERROR_DEVICE_REMOVED:value==1?S_OK:E_PENDING;
+        }
+    }
+    ReleaseSRWLockShared(&f->lock);
+    return hr;
+}
+#endif
 static void frame_refresh(struct frame_record *r)
 {
     if (!r->chain) return;
@@ -153,6 +193,7 @@ static HRESULT WINAPI bootstrap_frame_wait(IUnknown *iface, UINT type, DWORD tim
                 frame_refresh(r);
                 if (r->presenting || r->chain) { hr = DXGI_ERROR_WAS_STILL_DRAWING; break; }
                 LONGLONG origin = now - (now - f->due) % f->step;
+                drop_submissions(r);
                 *r = (struct frame_record){.token=InterlockedIncrement64(&frame_serial), .origin=origin,
                         .target=origin+f->period*f->step, .status=S_FALSE};
                 f->due = origin+f->step;
