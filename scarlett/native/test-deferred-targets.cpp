@@ -1,0 +1,82 @@
+#include <d3d12.h>
+#include <wrl/client.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+using Microsoft::WRL::ComPtr;
+extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
+extern "C" HRESULT xs_color_allocation_info(IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO*);
+extern "C" HRESULT xs_msaa_allocation_info1(IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO*,D3D12_RESOURCE_ALLOCATION_INFO1*);
+#define CK(x) do { if (!(x)) { fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); exit(1); } } while(0)
+#define HR(x) CK(SUCCEEDED(x))
+
+int main(){
+    DWORD params[20]={};params[0]=0x20004;params[2]=0x100000;params[10]=1;params[15]=0x20;
+    IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
+    ComPtr<IUnknown> guest;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)guest.GetAddressOf()));
+    using Query=D3D12_RESOURCE_ALLOCATION_INFO*(WINAPI*)(D3D12_RESOURCE_ALLOCATION_INFO*,IUnknown*,UINT,UINT,const void*);
+    auto query=(Query)((*(void***)guest.Get())[0xc8/8]);
+    ComPtr<ID3D12Device> d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
+    BYTE *page=(BYTE*)VirtualAlloc(nullptr,8192,MEM_RESERVE,PAGE_NOACCESS);CK(page && VirtualAlloc(page,4096,MEM_COMMIT,PAGE_READWRITE));
+    DWORD *wire=(DWORD*)(page+4096)-13;
+    struct Target { UINT w,h,fmt,flags; } targets[]={
+        {3840,2160,87,0xc00005}, {3840,2160,87,0x300001},
+        {3840,2160,87,0x300001}, {3840,2160,19,0x800002}, {3840,2160,87,0xc00001}
+    };
+    constexpr UINT count=ARRAYSIZE(targets);
+    D3D12_RESOURCE_DESC rd[count]={}; UINT64 offsets[count],end=65536;
+    for(UINT i=0;i<count;i++){
+        auto t=targets[i]; DWORD v[]={3,0,0,0,t.w,0,t.h,0x10001,t.fmt,1,0,0,t.flags};
+        memcpy(wire,v,sizeof v); memcpy(&rd[i],v,sizeof v);rd[i].Flags=(D3D12_RESOURCE_FLAGS)(t.flags&7);
+        auto host=d->GetResourceAllocationInfo(1,1,rd+i);
+        struct { UINT64 pre;D3D12_RESOURCE_ALLOCATION_INFO info;UINT64 post; } g={13,{},17};
+        CK(host.Alignment==65536 && host.SizeInBytes && host.SizeInBytes<=(64u<<20) && !(host.SizeInBytes%65536));
+        CK(query(&g.info,guest.Get(),1,1,wire)==&g.info && g.pre==13 && g.post==17 && !memcmp(&host,&g.info,sizeof host));
+        auto deny=[&](UINT node,UINT n,const void *p){D3D12_RESOURCE_ALLOCATION_INFO z={1,2};
+            return FAILED(xs_color_allocation_info(guest.Get(),node,n,p,&z)) && !z.SizeInBytes && !z.Alignment;};
+        CK(deny(0,1,wire) && deny(1,2,wire) && deny(1,1,(BYTE*)wire+1));
+        for(UINT j=0;j<13;j++)if(j!=1){wire[j]^=1; CK(deny(1,1,wire)); wire[j]^=1;}
+        D3D12_RESOURCE_ALLOCATION_INFO1 detail={};
+        CK(xs_msaa_allocation_info1(guest.Get(),1,1,wire,&g.info,&detail)==E_NOTIMPL);
+        offsets[i]=end;end+=host.SizeInBytes;
+        printf("RECORD %u %ux%u fmt=%u flags=%#x size=%#llx align=%#llx\n",i,t.w,t.h,t.fmt,t.flags,host.SizeInBytes,host.Alignment);
+    }
+    CK(VirtualFree(page,0,MEM_RELEASE));
+    // Place adjacent desktop images, then verify that clearing each leaves its neighbors intact.
+    D3D12_HEAP_DESC hd={};hd.SizeInBytes=end;hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT;
+    hd.Properties.CreationNodeMask=hd.Properties.VisibleNodeMask=1;hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+    ComPtr<ID3D12Heap> heap;HR(d->CreateHeap(&hd,IID_PPV_ARGS(&heap)));
+    ComPtr<ID3D12CommandQueue> q;ComPtr<ID3D12CommandAllocator> a;ComPtr<ID3D12GraphicsCommandList> l;
+    D3D12_COMMAND_QUEUE_DESC qd={};HR(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q)));HR(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a)));
+    HR(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l)));
+    ComPtr<ID3D12Resource> tex[count],rb[count];ComPtr<ID3D12DescriptorHeap> views[count];
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[count][2]={};
+    for(UINT i=0;i<count;i++){
+        bool ds=targets[i].fmt==19;auto state=ds?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET;
+        HR(d->CreatePlacedResource(heap.Get(),offsets[i],rd+i,state,nullptr,IID_PPV_ARGS(&tex[i])));
+        D3D12_DESCRIPTOR_HEAP_DESC desc={ds?D3D12_DESCRIPTOR_HEAP_TYPE_DSV:D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
+        HR(d->CreateDescriptorHeap(&desc,IID_PPV_ARGS(&views[i])));auto h=views[i]->GetCPUDescriptorHandleForHeapStart();
+        if(ds){D3D12_DEPTH_STENCIL_VIEW_DESC v={};v.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT;v.ViewDimension=D3D12_DSV_DIMENSION_TEXTURE2D;
+            d->CreateDepthStencilView(tex[i].Get(),&v,h);l->ClearDepthStencilView(h,D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,(i+1)/8.f,(BYTE)(0x31+i),0,nullptr);}
+        else{float rgba[]={float(i&1),float((i>>1)&1),float((i>>2)&1),1.f};
+            d->CreateRenderTargetView(tex[i].Get(),nullptr,h);l->ClearRenderTargetView(h,rgba,0,nullptr);}
+        D3D12_RESOURCE_BARRIER b={};b.Transition={tex[i].Get(),D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,state,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&b);
+    }
+    for(UINT i=0;i<count;i++){
+        UINT planes=targets[i].fmt==19?2:1;UINT64 bytes;d->GetCopyableFootprints(rd+i,0,planes,0,fp[i],nullptr,nullptr,&bytes);
+        D3D12_RESOURCE_DESC buf={};buf.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;buf.Width=bytes;buf.Height=buf.MipLevels=buf.DepthOrArraySize=buf.SampleDesc.Count=1;buf.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        auto hp=hd.Properties;hp.Type=D3D12_HEAP_TYPE_READBACK;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb[i])));
+        for(UINT p=0;p<planes;p++){D3D12_TEXTURE_COPY_LOCATION src={},dst={};src.pResource=tex[i].Get();src.SubresourceIndex=p;
+            dst.pResource=rb[i].Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=fp[i][p];l->CopyTextureRegion(&dst,0,0,0,&src,nullptr);}
+    }
+    HR(l->Close());ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);ComPtr<ID3D12Fence> f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));
+    HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(e);HR(q->Signal(f.Get(),1));HR(f->SetEventOnCompletion(1,e));CK(WaitForSingleObject(e,15000)==WAIT_OBJECT_0);CloseHandle(e);
+    for(UINT i=0;i<count;i++){
+        BYTE *p;HR(rb[i]->Map(0,nullptr,(void**)&p));auto t=targets[i];DWORD expect=0xff000000|((i&1)?0xff0000:0)|((i&2)?0xff00:0)|((i&4)?0xff:0);
+        if(t.fmt==19){float z=(i+1)/8.f;memcpy(&expect,&z,4);}
+        for(UINT y=0;y<t.h;y++){auto row=(DWORD*)(p+fp[i][0].Offset+y*fp[i][0].Footprint.RowPitch);
+            for(UINT x=0;x<t.w;x++){CK(row[x]==expect);if(t.fmt==19)CK(p[fp[i][1].Offset+y*fp[i][1].Footprint.RowPitch+x]==0x31+i);}}
+        rb[i]->Unmap(0,nullptr);
+    }
+    puts("PASS deferred targets: five guarded queries, adjacent desktop placements and full fenced color/depth/stencil readbacks");
+}
