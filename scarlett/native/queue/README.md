@@ -154,3 +154,20 @@ list reads the new marker and both neighboring words.
 
 Retail advances to list slot `+0x240`, return `+0x2482b37`, before closing
 or submitting this list. Execution and retirement are fixture results.
+
+## Timestamp following the first marker
+
+On RTX, list `+0x240` receives an aligned eight-byte destination in the
+marked system-memory pool and control arguments `0,0,1`. The adapter retains
+a mapping of the original 64 KiB window, records a timestamp query, and
+resolves it into that window. Each submission pins the destination and query
+heap through its fence. In `test-prefix-marker.c`, pausing the marker worker
+after its store kept both the timestamp and the downstream fence pending.
+After release, the two timestamps increased within the calibrated GPU-clock
+interval; the discarded slot and the reused CPU mapping were unchanged.
+
+RTX retail recorded the timestamp before requesting a second `+0x238` on
+the same list. That marker cannot be moved before the timestamp. Another
+thread reached queue `+0x118` with token 1 and flags 0. Neither observation
+establishes retail execution. The AMD integration run still stopped at the
+timestamp call.

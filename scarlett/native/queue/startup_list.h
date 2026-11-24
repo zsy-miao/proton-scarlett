@@ -1,5 +1,6 @@
 /* Private to queue.c: only the recording and submission shapes used by the startup lists. */
 #include "prefix_marker.h"
+#include "system_timestamp.h"
 struct startup_list {
     void *reservation;
     LONG refs;
@@ -9,6 +10,7 @@ struct startup_list {
     D3D12_COMMAND_LIST_TYPE type;
     HRESULT error;
     struct prefix_marker *marker;
+    struct system_timestamp *stamp;
     BOOL closed,host_exposed;
     IUnknown iface; /* Last: pooled callers' inline packet fields are not host bookkeeping. */
 };
@@ -34,6 +36,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
+        drop_timestamp(s->stamp);
         drop_marker(s->marker);
         drop_heaps(s->heaps);
         if (s->pool_owner) IUnknown_Release(s->pool_owner);
@@ -108,6 +111,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     s->allocator = alloc;
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
+    drop_timestamp(s->stamp); s->stamp=NULL;
     s->closed = FALSE;
     s->error = S_OK;
     return S_OK;
@@ -176,7 +180,7 @@ static HRESULT prefix_write(struct startup_list *s,UINT64 addr,UINT value,UINT64
     struct scarlett_section_info lease;
     /* shortcut: prefix only, before any host recorder escapes; no mid-list stage inferred. */
     if (!s->reservation || !s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        s->host_exposed || s->marker || control || flags) return E_NOTIMPL;
+        s->host_exposed || s->marker || s->stamp || control || flags) return E_NOTIMPL;
     if (!addr || (addr&3)) return E_INVALIDARG;
     struct prefix_marker *m=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *m);
     if (!m) return E_OUTOFMEMORY;
@@ -198,6 +202,18 @@ static void WINAPI sl_marker(IUnknown *i,UINT64 addr,UINT value,UINT64 control,U
 {
     if (FAILED(prefix_write(sl(i),addr,value,control,flags))) xs_stop();
 }
+static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+{
+    /* shortcut: only the observed kind-2 query encoding and one query per recording. */
+    if (!s->reservation || !s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
+        s->stamp || x || y || flags!=1) return E_NOTIMPL;
+    if (!addr || (addr&7)) return E_INVALIDARG;
+    return record_timestamp(s->device,s->host,addr,&s->stamp);
+}
+static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+{
+    if (FAILED(pool_timestamp(sl(i),addr,x,y,flags))) xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
@@ -207,12 +223,13 @@ static const struct {
     __typeof__(&sl_bind) bind;
     xs_stop_fn gap108[38];
     __typeof__(&sl_marker) marker;
-    xs_stop_fn gap240[67];
+    __typeof__(&sl_timestamp) timestamp;
+    xs_stop_fn gap248[66];
     __typeof__(&sl_reset) reset;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, {[0 ... 66]=xs_stop}, sl_reset
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 37]=xs_stop}, sl_marker, sl_timestamp, {[0 ... 65]=xs_stop}, sl_reset
 };
-_Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
+_Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),marker)==0x238 && offsetof(__typeof__(pool_vtbl),timestamp)==0x240 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
 
 /* Checked counterpart of the void guest slot. */
@@ -274,13 +291,13 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
-struct heap_retirement { struct prefix_marker *native; IUnknown *pair[2]; ID3D12Fence *fence; HANDLE event; };
+struct heap_retirement { struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence; HANDLE event; };
 static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_WAIT wait,TP_WAIT_RESULT result)
 {
     struct heap_retirement *r=ctx;
     (void)instance;(void)result;
     CloseThreadpoolWait(wait);
-    drop_marker(r->native); drop_heaps(r->pair); ID3D12Fence_Release(r->fence); CloseHandle(r->event); HeapFree(GetProcessHeap(),0,r);
+    drop_timestamp(r->stamp); drop_marker(r->native); drop_heaps(r->pair); ID3D12Fence_Release(r->fence); CloseHandle(r->event); HeapFree(GetProcessHeap(),0,r);
 }
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
 {
@@ -298,13 +315,14 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     ID3D12CommandList *host = (ID3D12CommandList *)s->host;
     struct heap_retirement *r=NULL;
     PTP_WAIT wait=NULL;
-    if (s->heaps[0]) {
+    if (s->heaps[0] || s->stamp) {
         r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r || FAILED(ID3D12Device_CreateFence(s->device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&r->fence)) ||
             !(r->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(wait=CreateThreadpoolWait(retire_heaps,r,NULL)) ||
             FAILED(ID3D12Fence_SetEventOnCompletion(r->fence,1,r->event))) xs_stop();
         if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
-        for (unsigned i=0;i<2;i++) { r->pair[i]=s->heaps[i]; IUnknown_AddRef(r->pair[i]); }
+        if ((r->stamp=s->stamp)) InterlockedIncrement(&r->stamp->refs);
+        for (unsigned i=0;i<2;i++) if ((r->pair[i]=s->heaps[i])) IUnknown_AddRef(r->pair[i]);
     }
     SRWLOCK *lock=&CONTAINING_RECORD(iface,struct adapter,iface)->submit_lock;
     AcquireSRWLockExclusive(lock);
