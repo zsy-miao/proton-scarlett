@@ -253,6 +253,14 @@ static BOOL msaa_desc(const D3D12_RESOURCE_DESC *r)
          (r->Format==DXGI_FORMAT_R32G8X24_TYPELESS && r->Flags==D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL));
 }
 
+static BOOL small_rt(const D3D12_RESOURCE_DESC *r)
+{
+    return (r->Width==256 && r->Height==256 && (r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT ||
+            r->Format==DXGI_FORMAT_R11G11B10_FLOAT || r->Format==DXGI_FORMAT_R16G16_FLOAT)) ||
+            (r->Width==64 && r->Height==2 && r->Format==DXGI_FORMAT_R11G11B10_FLOAT) ||
+            (r->Width==127 && r->Height==128 && r->Format==DXGI_FORMAT_R16G16_UNORM) ||
+            (r->Width==64 && r->Height==64 && r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT);
+}
 static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
 {
     return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment &&
@@ -260,7 +268,8 @@ static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
         ((r->Format==DXGI_FORMAT_R32G8X24_TYPELESS && r->Width==2560 && r->Height==1440 && (UINT)r->Flags==0x4800002) ||
          (r->Format==DXGI_FORMAT_R8_UINT && r->Width==640 && r->Height==360 && (UINT)r->Flags==0xc00005) ||
          (r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT && r->Width==2560 && r->Height==1440 && (UINT)r->Flags==0x300005) ||
-         ((UINT)r->Flags==0x300001 && ((r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
+         ((UINT)r->Flags==0x300001 && (small_rt(r) ||
+         (r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
          (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048))));
 }
 #include "queue/rtx3070.h"
@@ -294,6 +303,12 @@ static const struct page_group *deferred_pages(const D3D12_RESOURCE_DESC *rd)
         /* Desktop DS+UAV is invalid; this deferred owner consumes only DS size. */
         {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x80300006,{480,304},2,FALSE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,3840,2160,0x80300002,{1020,655},2,FALSE},
+        {DXGI_FORMAT_R16G16B16A16_FLOAT,256,256,0x300001,{8,8},1,TRUE},
+        {DXGI_FORMAT_R11G11B10_FLOAT,256,256,0x300001,{4,4},1,TRUE},
+        {DXGI_FORMAT_R16G16_FLOAT,256,256,0x300001,{4,4},1,TRUE},
+        {DXGI_FORMAT_R11G11B10_FLOAT,64,2,0x300001,{1,1},1,TRUE},
+        {DXGI_FORMAT_R16G16_UNORM,127,128,0x300001,{1,1},1,TRUE},
+        {DXGI_FORMAT_R16G16B16A16_FLOAT,64,64,0x300001,{1,1},1,TRUE},
         {DXGI_FORMAT_R16G16_FLOAT,1280,720,0x300001,{60,61},1,FALSE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,0x4800002,{480,304},2,TRUE},
         {DXGI_FORMAT_R32G8X24_TYPELESS,2560,1440,2,{480,304},2,FALSE},
@@ -640,19 +655,20 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
     DXGI_FORMAT format=rd->Format;
     BOOL ds1440=format==DXGI_FORMAT_R32G8X24_TYPELESS && rd->SampleDesc.Count==1;
     BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS,a8=format==DXGI_FORMAT_A8_UNORM,bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM;
-    BOOL fp=format==DXGI_FORMAT_R16G16B16A16_FLOAT,u8=format==DXGI_FORMAT_R8_UINT,single=ds1440 || fp || a8 || bgra || u8;
+    BOOL small=small_rt(rd);
+    BOOL fp=format==DXGI_FORMAT_R16G16B16A16_FLOAT,u8=format==DXGI_FORMAT_R8_UINT,single=ds1440 || fp || a8 || bgra || u8 || small;
     D3D12_CLEAR_VALUE cv={0};
     if (!copy_in(&cv,clear,depth ? offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+sizeof cv.DepthStencil.Stencil : sizeof cv)) return E_POINTER;
-    if (state!=((fp || u8)?3u:6u)) return E_NOTIMPL;
+    if (state!=((fp && !small) || u8 ? 3u : 6u)) return E_NOTIMPL;
     if (depth) {
         if (cv.Format!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || cv.DepthStencil.Depth!=0 || cv.DepthStencil.Stencil!=(ds1440?7:0)) return E_NOTIMPL;
     } else if (cv.Format!=format || memcmp(cv.Color,u8?(float[4]){0,0,0,1}:single?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
-    UINT span=ds1440?0x1300000:u8?0x40000:fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    UINT span=small?deferred_pages(rd)->pages[0]*65536:ds1440?0x1300000:u8?0x40000:fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     ID3D12Heap *native=NULL;UINT off=0;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&native,NULL,&off);
     if(hr==S_FALSE) {
-        if (fp || ds1440) span=0x1e00000; else if (bgra) span=0x1000000; else if (a8) span=0x800000;
+        if ((fp && !small) || ds1440) span=0x1e00000; else if (bgra) span=0x1000000; else if (a8) span=0x800000;
         hr=scarlett_query_section(0x53430005,(void *)va,span,&i);
     }
     else if(SUCCEEDED(hr))i=(struct scarlett_section_info){span,(void *)(va-off),WC_POOL_BYTES,off,NULL};
@@ -665,7 +681,10 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
         struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r) hr=E_OUTOFMEMORY;
         else {
-            if(u8 || ds1440) {
+            if(small) {
+                HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,DXGI_FORMAT,UINT,UINT,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettSmallRTV1");
+                hr=place?place(d->host,native,i.section,i.view_size,i.offset,format,rd->Width,rd->Height,&r->host):DXGI_ERROR_UNSUPPORTED;
+            }else if(u8 || ds1440) {
                 HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),ds1440?"ScarlettDepth1440ImageV1":"ScarlettR8UintImageV1");
                 hr=place?place(d->host,native,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
             }else if(native && single) {
@@ -677,7 +696,7 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,const D3D12_RESOURC
             }else hr=import?import(d->host,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
             if (FAILED(hr)) HeapFree(GetProcessHeap(),0,r);
             else {
-                r->iface.lpVtbl=&color_vtbl.unknown; r->single_format=single?format:DXGI_FORMAT_UNKNOWN; r->msaa=!single; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
+                r->iface.lpVtbl=&color_vtbl.unknown; r->small_rt=small; r->single_format=single?format:DXGI_FORMAT_UNKNOWN; r->msaa=!single; r->depth=depth; r->refs=1; r->owner=d; IUnknown_AddRef(&d->iface);
                 AcquireSRWLockExclusive(&d->descriptor_lock); r->next=d->colors; d->colors=r; ReleaseSRWLockExclusive(&d->descriptor_lock);
                 *out=&r->iface;
             }

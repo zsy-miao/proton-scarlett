@@ -123,3 +123,8 @@ retirement and includes the full guest allocation on both adapters.
 `0037` reuses the WC buffer slice and cross-format reservation for the
 460,800-byte row-major buffer at `+0xe650000`. A row buffer does not count
 as a tiled R32 predecessor. Run `wc-float1440.sh GPU TOOL row` on each GPU.
+
+`0038` qualifies six single-sample RT-only textures at the measured WC
+pool offsets after the read-only depth views. Run `wc-float1440.sh GPU
+TOOL small` on both adapters; Vulkan byte spans may be smaller than the
+reserved guest span.

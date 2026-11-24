@@ -138,7 +138,8 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         UINT mip=kind==UAV?words[2]:words[4], levels=kind==UAV?1:words[5];
         const DWORD sw[]={26,4,0x1688,0,mip,levels,0,0},uw[]={26,4,mip,0};
         if (mip>=5 || (kind==SRV ? (levels!=1 && !(mip==0 && levels==5)) || memcmp(words,sw,sizeof sw) : memcmp(words,uw,sizeof uw))) return E_NOTIMPL;
-        return write_tile_record(d,object,kind==SRV?TILE_R11_SRV:TILE_R11_UAV,0,dest,mip,levels);
+        HRESULT hr=write_tile_record(d,object,kind==SRV?TILE_R11_SRV:TILE_R11_UAV,0,dest,mip,levels);
+        if(hr!=S_FALSE)return hr;
     }
     if (object && words[0]==DXGI_FORMAT_R32_UINT && words[1]==4 && (kind==SRV || kind==UAV)) {
         const DWORD sw[]={42,4,0x1688,0,0,1,0,0},uw[]={42,4,0,0};
@@ -155,9 +156,10 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     BOOL stencil=object && kind==SRV && words[0]==DXGI_FORMAT_X32_TYPELESS_G8X24_UINT && words[1]==D3D12_SRV_DIMENSION_TEXTURE2D;
     BOOL ds2d=object && ((kind==SRV && (stencil || words[0]==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && words[1]==D3D12_SRV_DIMENSION_TEXTURE2D) ||
             (kind==DSV && words[0]==DXGI_FORMAT_D32_FLOAT_S8X24_UINT && words[1]==D3D12_DSV_DIMENSION_TEXTURE2D));
-    BOOL single_color=fp || words[0]==DXGI_FORMAT_R8_UINT || words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
+    BOOL single_color=fp || words[0]==DXGI_FORMAT_R16G16_FLOAT || words[0]==DXGI_FORMAT_R16G16_UNORM || words[0]==DXGI_FORMAT_R11G11B10_FLOAT || words[0]==DXGI_FORMAT_R8_UINT || words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
 #ifdef SCARLETT_STAGED_PLACED
-    const DWORD row_srv[]={0,1,0x1688,0,0,0,0x1c200,4,0,0};
+    /* Byte 12 is alignment padding before the SRV union (retail: 0 or stale VA high word). */
+    const DWORD row_srv[]={0,1,0x1688,words[3],0,0,0x1c200,4,0,0};
     const DWORD row_uav[]={0,1,0,0,0x1c200,4,0,0,0,1};
     BOOL row=object && ((kind==SRV && !memcmp(words,row_srv,sizeof row_srv)) ||
             (kind==UAV && !memcmp(words,row_uav,sizeof row_uav)));
@@ -237,7 +239,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
 #endif
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !c->tiled_r32 && !c->tiled_r11 && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+            if (&c->iface==object && !(c->small_rt && kind==UAV) && !c->tiled_r32 && !c->tiled_r11 && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
                 c->depth==(kind==DSV || stencil || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(ds2d?DXGI_FORMAT_R32G8X24_TYPELESS:single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }

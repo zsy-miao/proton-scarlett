@@ -75,6 +75,7 @@ static HRESULT write_tile_record(struct xbox_device *d,IUnknown *id,UINT kind,UI
     HRESULT hr=E_INVALIDARG;
     AcquireSRWLockExclusive(&d->descriptor_lock);
     for (struct color_resource *c=d->colors;c;c=c->next) {
+        if (id==&c->iface && c->single_format==DXGI_FORMAT_R11G11B10_FLOAT && kind==TILE_R11_SRV) {hr=S_FALSE;goto done;}
         if ((kind==TILE_R11_SRV || kind==TILE_R11_UAV) ? !c->tiled_r11 : !c->tiled_r32) continue;
         if ((id ? &c->iface!=id : c->tile_va!=va) || !tile_mapping(c)) continue;
         if (buffer) goto done;

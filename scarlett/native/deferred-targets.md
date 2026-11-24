@@ -250,3 +250,31 @@ both SRVs simultaneously in a pixel shader, compares the samples against
 full depth/stencil readbacks, and clears only the writable aspect through
 each partial DSV. The original pool remains pinned across VA recycling;
 invalid writes leave the descriptor intact. This draw is fixture evidence.
+
+### Six small WC render targets (0038)
+
+The same constructing thread made six +c8 / +360 / +428 sequences, each
+one sample, layer and mip, layout/alignment zero, flags `0x300001`, state
+6, resource IID and same-format zero clear. Native detail offset was zero,
+alignment 65536, size equal to the full reservation. Original WC pool
+offsets matched across RTX marked-section imports and RADV native heaps.
+
+| Extent | DXGI format | Pool offset | Reserved | Vulkan bytes RTX / RADV |
+|---|---|---:|---:|---:|
+| 256×256 | R16G16B16A16_FLOAT | 0xe6d0000 | 0x80000 | 0x80000 / 0x80000 |
+| 256×256 | R11G11B10_FLOAT | 0xe750000 | 0x40000 | 0x40000 / 0x40000 |
+| 256×256 | R16G16_FLOAT | 0xe790000 | 0x40000 | 0x40000 / 0x40000 |
+| 64×2 | R11G11B10_FLOAT | 0xe7d0000 | 0x10000 | 0x800 / 0x2000 |
+| 127×128 | R16G16_UNORM | 0xe7e0000 | 0x10000 | 0x10000 / 0x10000 |
+| 64×64 | R16G16B16A16_FLOAT | 0xe7f0000 | 0x10000 | 0x8000 / 0x8000 |
+
+Each wrapper received a 2D SRV (identity mapping, mip zero, one level),
+then an RTV. No UAV was observed. The following `+c8` (return `+344188`)
+requested 160×90 R32G32_FLOAT, one level, layout `0x102`, flags `0x300004`.
+During qualification the earlier row-buffer SRV also had a nonzero DWORD
+at byte 12, padding before its 64-bit FirstElement. The writer now ignores
+that DWORD while checking all active fields and the source object.
+
+`wc-float1440.sh GPU TOOL small` checks guarded original backing after
+VA reuse, exact sizing, duplicate placement and incompatible descriptors,
+all RTV pixels and two shader SRV loads across each clear boundary.

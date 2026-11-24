@@ -44,7 +44,7 @@ struct color_resource {
     ID3D12CommandQueue *writer;
     BOOL multi_writer,claimed,flipping;
 #endif
-    BOOL msaa,depth,tiled_r32,tiled_r11;
+    BOOL msaa,depth,tiled_r32,tiled_r11,small_rt;
     DXGI_FORMAT single_format;
     void *slice;
     void (WINAPI *xfree)(void *,UINT64);

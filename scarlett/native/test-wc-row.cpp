@@ -30,9 +30,9 @@ int main(){
     ComPtr<ID3D12Resource> row;row.Attach(test_row_backing(title.Get()));CK(row && row->GetDesc().Width==size);
     using Make=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);using Start=SIZE_T(WINAPI*)(IUnknown*);
     UINT hd[]={0,4,1,1};ComPtr<IUnknown> slots;HR(((Make)vt[0x70/8])(dev.Get(),hd,IID_ID3D12DescriptorHeap,(void**)slots.GetAddressOf()));SIZE_T slot=((Start)((*(void***)slots.Get())[0x48/8]))(slots.Get());
-    DWORD views[][10]={{0,1,0x1688,0,0,0,n,4,0,0},{0,1,0,0,n,4,0,0,0,1}};
+    DWORD views[][10]={{0,1,0x1688,0xd,0,0,n,4,0,0},{0,1,0,0,n,4,0,0,0,1}};
     ID3D12DescriptorHeap *bank[2];D3D12_GPU_DESCRIPTOR_HANDLE h[2];for(UINT j=0;j<2;j++){UINT kind=j?0x98:0x90;SIZE_T dest=slot+32*j;auto write=[&](IUnknown *object){return xs_write_view(dev.Get(),kind,object,views[j],dest);};HR(write(title.Get()));UINT64 tag[2];memcpy(tag,(void*)dest,16);
-        CK(FAILED(write(dev.Get())));for(auto &word:views[j]){word^=1;CK(FAILED(write(title.Get())));word^=1;}CK(!memcmp(tag,(void*)dest,16));HR(xs_resolve_view(slots.Get(),dest,kind,&bank[j],&h[j]));}CK(bank[0]==bank[1]);title.Reset();CK(create(off)==DXGI_ERROR_INVALID_CALL && !obj);
+        CK(FAILED(write(dev.Get())));for(UINT k=0;k<10;k++){if(!j && k==3)continue;views[j][k]^=1;CK(FAILED(write(title.Get())));views[j][k]^=1;}CK(!memcmp(tag,(void*)dest,16));HR(xs_resolve_view(slots.Get(),dest,kind,&bank[j],&h[j]));}CK(bank[0]==bank[1]);title.Reset();CK(create(off)==DXGI_ERROR_INVALID_CALL && !obj);
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.VisibleNodeMask=hp.CreationNodeMask=1;auto desc=row->GetDesc();ComPtr<ID3D12Resource> result,read;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&result)));hp.Type=D3D12_HEAP_TYPE_READBACK;desc.Flags=D3D12_RESOURCE_FLAG_NONE;desc.Width=2*size+2*guard;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read)));
