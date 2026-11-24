@@ -6,7 +6,11 @@
 #include <vector>
 #include "xmem/marked_section.h"
 using Microsoft::WRL::ComPtr;
-extern "C" HRESULT xs_r11_mip_table(IUnknown*,IUnknown*,SIZE_T,ID3D12DescriptorHeap**);
+extern "C" HRESULT xs_write_address_srv(IUnknown*,const void*,const void*,SIZE_T);
+extern "C" HRESULT xs_r32_texel_table(IUnknown*,IUnknown*,SIZE_T,ID3D12DescriptorHeap**);
+extern "C" HRESULT xs_r32_packed_uint_table(IUnknown*,IUnknown*,SIZE_T,ID3D12DescriptorHeap**);
+extern "C" HRESULT xs_color_allocation_info(IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO*);
+extern "C" HRESULT xs_msaa_allocation_info1(IUnknown*,UINT,UINT,const void*,D3D12_RESOURCE_ALLOCATION_INFO*,D3D12_RESOURCE_ALLOCATION_INFO1*);
 extern "C" HRESULT xs_copy_wc_view(IUnknown*,SIZE_T,SIZE_T);
 extern "C" HRESULT xs_resolve_view(IUnknown*,SIZE_T,UINT,ID3D12DescriptorHeap**,D3D12_GPU_DESCRIPTOR_HANDLE*);
 extern "C" ID3D12Resource *test_small_tile_backing(IUnknown*,SIZE_T,DXGI_FORMAT);
@@ -14,13 +18,13 @@ extern "C" HRESULT xs_write_view(IUnknown*,UINT,IUnknown*,const void*,SIZE_T);
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
 #define CK(x) do{if(!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);return 1;}}while(0)
 #define HR(x) CK(SUCCEEDED(x))
-static int check(bool rg){
+static int check(DXGI_FORMAT fmt){
+    bool rg=fmt==DXGI_FORMAT_R32G32_FLOAT, ui=fmt==DXGI_FORMAT_R32_UINT;
     constexpr UINT W=160,H=90,pool=0x89700000;UINT bytes=rg?0x1cc00:0xf000,word=rg?8:4;
-    DXGI_FORMAT fmt=rg?DXGI_FORMAT_R32G32_FLOAT:DXGI_FORMAT_R32_FLOAT;
 #ifdef TEST_RADV
-    UINT off=rg?0x15440000:0xe6c0800;
+    UINT off=rg?0x15440000:ui?0x1545cc00:0xe6c0800;
 #else
-    UINT off=rg?0x15fd0000:0xe6c0800;
+    UINT off=rg?0x15fd0000:ui?0x15fecc00:0xe6c0800;
 #endif
     using Alloc=void*(WINAPI*)(void*,SIZE_T,DWORD,UINT64,DWORD);auto alloc=(Alloc)(void*)GetProcAddress(LoadLibraryW(L"xmem.dll"),"XMemVirtualAlloc");CK(alloc);
     BYTE *wc=(BYTE*)alloc(nullptr,pool,0x20003000,0x283,0x2404);CK(wc);
@@ -49,9 +53,19 @@ static int check(bool rg){
         wire[2]=4096*k;D3D12_RESOURCE_ALLOCATION_INFO a={};D3D12_RESOURCE_ALLOCATION_INFO1 b={};b.Offset=~0ull;
         CK(((Q)vt[0xc8/8])(&a,dev.Get(),1,1,wire)==&a && a.SizeInBytes==bytes && a.Alignment==256);
         CK(((Q1)vt[0x360/8])(&a,dev.Get(),1,1,wire,&b)==&a && b.SizeInBytes==bytes && b.Alignment==256 && !b.Offset);
+        if(ui){
+            wire[8]=DXGI_FORMAT_R8_UINT;
+            CK(((Q)vt[0xc8/8])(&a,dev.Get(),1,1,wire)==&a && a.SizeInBytes==0x3c00 && a.Alignment==256);
+            CK(FAILED(xs_msaa_allocation_info1(dev.Get(),1,1,wire,&a,&b)));
+            CK(FAILED(place(wc+off,3,nullptr,IID_ID3D12Resource,&bad)) && !bad);
+            wire[6]++;CK(FAILED(xs_color_allocation_info(dev.Get(),1,1,wire,&a)));wire[6]--;
+            wire[8]=DXGI_FORMAT_R8G8B8A8_SNORM;CK(FAILED(xs_color_allocation_info(dev.Get(),1,1,wire,&a)));
+            wire[8]=fmt;
+        }
     }
     wire[2]=4096;CK(FAILED(place(wc+off,3,nullptr,IID_ID3D12Resource,&bad)) && !bad);wire[2]=0;
     wire[12]^=4;CK(FAILED(place(wc+off,3,nullptr,IID_ID3D12Resource,&bad)) && !bad);wire[12]^=4;
+    if(ui)CK(FAILED(place(wc+0xe6c0800,3,nullptr,IID_ID3D12Resource,&bad)) && !bad);
     CK(FAILED(place(wc+off+256,3,nullptr,IID_ID3D12Resource,&bad)) && !bad);
     CK(FAILED(place(wc+off,6,nullptr,IID_ID3D12Resource,&bad)) && !bad);
     CK(FAILED(place(wc+off,3,wire,IID_ID3D12Resource,&bad)) && !bad);
@@ -71,6 +85,14 @@ static int check(bool rg){
         w[0]=rg?41:16;CK(FAILED(xs_write_view(dev.Get(),kind,object.Get(),w,at)));w[0]=fmt;CK(!memcmp(tag,(void*)at,16));
         HR(xs_copy_wc_view(dev.Get(),dst+32*i,at));ID3D12DescriptorHeap *host=nullptr;D3D12_GPU_DESCRIPTOR_HANDLE g={};
         CK(xs_resolve_view(views.Get(),dst+32*i,kind,&host,&g)==E_NOTIMPL && !host && !g.ptr);
+    }
+    if(ui){
+        DWORD rgb[]={3,0,0,0,1280,0,720,0x10001,67,1,0,0x102,0x300000};
+        DWORD aw[]={67,4,0x1688,0,0,1,0,0,0,0,0,0,0,0,0,3};SIZE_T va=(SIZE_T)(wc+off);memcpy(aw+10,&va,8);
+        CK(FAILED(xs_write_address_srv(dev.Get(),rgb,aw,dst+64)));
+        ID3D12DescriptorHeap *table=nullptr;
+        CK(FAILED(xs_r32_texel_table(dev.Get(),views.Get(),dst,&table)) && !table);
+        CK(FAILED(xs_r32_packed_uint_table(dev.Get(),views.Get(),dst,&table)) && !table);
     }
     staging.Reset();object.Reset();CK(place(wc+off,3,nullptr,IID_ID3D12Resource,&bad)==DXGI_ERROR_INVALID_CALL && !bad);
     original.Attach(test_small_tile_backing(views.Get(),dst,fmt));CK(original && original->GetDesc().Width==bytes);views.Reset();
@@ -112,4 +134,4 @@ static int check(bool rg){
     CK(VirtualFree(wc,0,MEM_RELEASE));
     printf("PASS tiled fmt=%u bytes=%x off=%x: 14400 texels, padding and guards, copied lease, gated original bytes both directions after VA reuse, inert shader slots\n",fmt,bytes,off);return 0;
 }
-int main(){return check(true) || check(false);}
+int main(){return check(DXGI_FORMAT_R32G32_FLOAT) || check(DXGI_FORMAT_R32_FLOAT) || check(DXGI_FORMAT_R32_UINT);}

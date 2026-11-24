@@ -309,3 +309,23 @@ present. Neither ordinary run presented a second token.
 fixture, including distinct address fingerprints, handle generation,
 descriptor copying, negative fields, allocation collisions, GPU read/write
 of both original spans after VA reuse, padding and both 64 KiB guards.
+
+### 160×90 tiled UINT (0040)
+
+The `+1edc948` owner queried `+c8` then `+360`, each with input alignment
+4096 then zero. Both returned `0xf000 / 0x100`. The independent reference
+copy and all 14,400 coordinates matched the small R32_FLOAT 8×8 permutation
+(`003d5566177d7e25`, 960 padding words). `+428` at `+193e2db` placed it
+in the original WC pool, at offset `0x1545cc00` on RADV and `0x15fecc00`
+on RTX. Its object SRV and UAV have distinct small-UINT record kinds;
+the 720p address alias and shader table do not apply.
+
+The two R8_UINT callers (`+1edca3f`, `+1edcd74`) each made only the `+c8`
+probe/retry, returning `0x3c00 / 0x100`. Neither diagnostic reached the
+predicted SNORM or later float queries. Next observed stop: `+344188` at
+`+c8`, 3840×2160 RGBA8_UNORM, flags `0x300001`, layout and alignment zero.
+
+Four retail launches: one diagnostic per adapter, then one ordinary run
+per adapter on the same staged provider and core. RTX presented token 1
+(count 0 → 1). RADV completed the producer fence with no logged count
+increment. Neither ordinary run presented a second token.

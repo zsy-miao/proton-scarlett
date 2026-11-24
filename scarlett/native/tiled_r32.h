@@ -20,7 +20,7 @@ static HRESULT open_wc_buffer(struct xbox_device *d,UINT64 va,UINT span,const ch
     return hr;
 }
 /* Included by d3d12_device.c, only for the observed WC swizzle 0x102 resource. */
-static HRESULT create_tiled_buffer(struct xbox_device *d,DXGI_FORMAT fmt,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
+static HRESULT create_tiled_buffer(struct xbox_device *d,DXGI_FORMAT fmt,BOOL small,UINT64 va,UINT state,const void *clear,REFIID iid,void **out)
 {
     if (!out) return E_POINTER;
     *out=NULL;IID id;
@@ -30,10 +30,12 @@ static HRESULT create_tiled_buffer(struct xbox_device *d,DXGI_FORMAT fmt,UINT64 
     struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
     if (!r)return E_OUTOFMEMORY;
     BOOL r11=fmt==DXGI_FORMAT_R11G11B10_FLOAT, rg=fmt==DXGI_FORMAT_R32G32_FLOAT;
-    r->tiled_r11=r11;r->tiled_r32=fmt==DXGI_FORMAT_R32_UINT;
-    if(!r11 && !r->tiled_r32)r->small_tile_format=fmt;
+    r->tiled_r11=r11;r->tiled_r32=!small && fmt==DXGI_FORMAT_R32_UINT;
+    if(small)r->small_tile_format=fmt;
     r->tile_va=va;
-    HRESULT hr=open_wc_buffer(d,va,tile_span(r),rg?"ScarlettTiledRG160V1":fmt==DXGI_FORMAT_R32_FLOAT?"ScarlettTiledFloat160V1":r11?"ScarlettTiledR11FiveV1":"ScarlettTiledR32BufferV1",
+    const char *name=rg?"ScarlettTiledRG160V1":fmt==DXGI_FORMAT_R32_FLOAT?"ScarlettTiledFloat160V1":
+            small?"ScarlettTiledUint160V1":r11?"ScarlettTiledR11FiveV1":"ScarlettTiledR32BufferV1";
+    HRESULT hr=open_wc_buffer(d,va,tile_span(r),name,
             &r->host,&r->tile_heap,&r->tile_section,&r->tile_offset);
     if (FAILED(hr)) {HeapFree(GetProcessHeap(),0,r);return hr;}
     r->iface.lpVtbl=&color_vtbl.unknown;r->refs=1;r->owner=d;IUnknown_AddRef(&d->iface);

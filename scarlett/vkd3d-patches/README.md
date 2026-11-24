@@ -132,3 +132,7 @@ reserved guest span.
 `0039` reuses the WC buffer reservation for two measured 160×90 tiled
 float textures. It adds no shader lowering. Test with `rtx-r32-tile.sh
 TOOL rtx-small` and `radv-small` sequentially.
+
+`0040` adds the measured 160×90 R32_UINT starts to the WC reservation
+via a separate export. `rtx-small` / `radv-small` also cover its two
+R8_UINT sizing-only siblings and rejection of the 720p alias.

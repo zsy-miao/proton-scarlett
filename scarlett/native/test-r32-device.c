@@ -22,7 +22,7 @@ ID3D12Resource *test_row_backing(IUnknown *object)
 ID3D12Resource *test_small_tile_backing(IUnknown *heap,SIZE_T slot,DXGI_FORMAT fmt)
 {
     struct desc_heap *h=CONTAINING_RECORD(heap,struct desc_heap,iface);
-    UINT kind=fmt==DXGI_FORMAT_R32G32_FLOAT?TILE_RG_SRV:TILE_F_SRV;
+    UINT kind=fmt==DXGI_FORMAT_R32G32_FLOAT?TILE_RG_SRV:fmt==DXGI_FORMAT_R32_UINT?TILE_UINT160_SRV:TILE_F_SRV;
     D3D12_CPU_DESCRIPTOR_HANDLE unused;
     if(!h->visible || !h->records || FAILED(descriptor_slot(heap,slot,&unused,NULL)))return NULL;
     struct descriptor_record *r=&h->records[(slot-h->start)/h->stride];

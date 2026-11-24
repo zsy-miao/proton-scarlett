@@ -6,8 +6,8 @@ w=$(mktemp -d "${TMPDIR:-/tmp}/r32-tile.XXXXXXXX")
 gpu=${2:-nvidia}; defines=()
 source=test-r32-tile; marker="^PASS +c8/+360"
 case "$gpu" in
-    rtx-small) gpu=nvidia; display=xvfb; source=test-small-tile; marker="^PASS tiled fmt=41" ;;
-    radv-small) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-small-tile; marker="^PASS tiled fmt=41" ;;
+    rtx-small) gpu=nvidia; display=xvfb; source=test-small-tile; marker="^PASS tiled fmt=42" ;;
+    radv-small) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-small-tile; marker="^PASS tiled fmt=42" ;;
     radv-r11) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-r11-place; marker="^PASS R11 original five-mip WC" ;; rtx-r11) gpu=nvidia; display=xvfb; source=test-r11-place; marker="^PASS R11 original five-mip WC" ;; radv-typed) gpu=radv; display=sway; defines+=(-DTEST_RADV); source=test-r32-typed; marker="^PASS RADV 0032 typed aliases" ;; rtx-typed) gpu=nvidia; display=xvfb; source=test-r32-typed; marker="^PASS RTX 0032 typed aliases" ;; nvidia) display=xvfb ;; radv) display=sway; defines+=(-DTEST_RADV) ;; *) exit 2 ;; esac
 mkdir "$w/game"
 for unit in test-r32-device d3d12_vm queue/queue; do
