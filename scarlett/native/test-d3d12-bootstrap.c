@@ -113,7 +113,7 @@ static int test_pool(IUnknown *device, IUnknown *queue, UINT type)
     IUnknown_Release(l);
     CHECK(IUnknown_QueryInterface(l,&list_id,&p) == E_NOINTERFACE && !p);
     MEMORY_BASIC_INFORMATION mb;
-    CHECK(VirtualQuery((BYTE *)l+0x544,&mb,sizeof(mb)) && mb.State == MEM_RESERVE);
+    CHECK(VirtualQuery((BYTE *)l+0x544,&mb,sizeof(mb)) && (type?mb.State==MEM_RESERVE:mb.Protect==PAGE_READWRITE));
     CHECK(alloc(device,type,&IID_ID3D12CommandAllocator,(void **)&next) == S_OK);
     CHECK(METHOD(l,0x458,ResetList)(l,next,NULL,1) == E_NOTIMPL);
     CHECK(METHOD(l,0x458,ResetList)(l,next,NULL,0) == S_OK);

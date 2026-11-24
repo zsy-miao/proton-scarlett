@@ -27,7 +27,10 @@ struct startup_list {
     void *reservation;
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
-    ID3D12RootSignature *graphics_root;
+    BYTE *cache_page;
+    IUnknown *graphics_identity,*bound,*required_root;
+    ID3D12PipelineState *pipeline; /* borrowed from bound */
+    ID3D12RootSignature *graphics_root; /* borrowed from graphics_identity */
     ID3D12Device *device; /* Kept alive by host. */
     IUnknown *allocator,*pool_owner,*heaps[2];
     D3D12_COMMAND_LIST_TYPE type;
@@ -80,7 +83,8 @@ static ULONG WINAPI sl_release(IUnknown *i)
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
         if (s->sync_owner) IUnknown_Release(s->sync_owner);
 #endif
-        if(s->graphics_root)ID3D12RootSignature_Release(s->graphics_root);
+        if(s->graphics_identity)IUnknown_Release(s->graphics_identity);
+        if(s->bound)IUnknown_Release(s->bound);
         sl_free(s);
     }
     return refs;
@@ -121,10 +125,14 @@ static void WINAPI sl_418(IUnknown *i, UINT mask, UINT control, UINT64 address, 
     sl_barrier(s, mask == (direct ? 0xc3c0u : 0xc380u) && control == (direct ? 0x80020000u : 0x20000u)
             && !address && range == 0xffffffffff00ull);
 }
+/* +540 is pointer-aligned; only +544..563 is guest cache data. Padding is
+ * inert, contains no native pointers, and must remain intact at bind/close. */
+static const BYTE cache_template[4096]={[0 ... 3]=0xa5,[36 ... 4095]=0xa5};
 static HRESULT WINAPI sl_close(IUnknown *i)
 {
     struct startup_list *s = sl(i);
     if (s->closed) return E_FAIL;
+    if(s->cache_page && memcmp(s->cache_page,cache_template,sizeof cache_template))return E_NOTIMPL;
     HRESULT hr = ID3D12GraphicsCommandList7_Close(s->host);
     s->closed = TRUE;
     batch_step(s,B_CLOSED);
@@ -152,7 +160,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     IUnknown_AddRef(alloc);
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
-    if(s->graphics_root){ID3D12RootSignature_Release(s->graphics_root);s->graphics_root=NULL;}
+    if(s->graphics_identity){IUnknown_Release(s->graphics_identity);s->graphics_identity=NULL;s->graphics_root=NULL;}
     s->primary_cleared=FALSE;
     s->primary_released=FALSE;
     if (s->primary) { ID3D12Resource_Release(s->primary); s->primary=NULL; }
@@ -160,6 +168,8 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
+    if(s->bound){IUnknown_Release(s->bound);s->bound=NULL;s->required_root=NULL;s->pipeline=NULL;}
+    if(s->cache_page)memcpy(s->cache_page,cache_template,sizeof cache_template);
     s->depth_zero_pending=FALSE; /* host_exposed stays sticky: an earlier borrower may still hold host. */
     ReleaseSRWLockExclusive(&s->borrow_lock);
     s->closed = FALSE;
@@ -295,7 +305,7 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
     ID3D12GraphicsCommandList7 *tail=NULL;
     ID3D12CommandAllocator *a=NULL;
     HRESULT hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void **)&a);
-    if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,NULL,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
+    if (SUCCEEDED(hr)) hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,s->pipeline,&IID_ID3D12GraphicsCommandList7,(void **)&tail);
     if (SUCCEEDED(hr) && s->graphics_root)ID3D12GraphicsCommandList7_SetGraphicsRootSignature(tail,s->graphics_root);
     if (SUCCEEDED(hr) && s->heaps[0]) {
         ID3D12DescriptorHeap *banks[2]; hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
@@ -554,17 +564,41 @@ static void WINAPI pool_rate(IUnknown *i,UINT rate,const D3D12_SHADING_RATE_COMB
 static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
 {
     if(!open_direct_state(s) || !identity)return E_INVALIDARG;
-    ID3D12RootSignature *host=xs_retain_graphics_root(s->pool_owner,identity);
-    if(!host)return E_INVALIDARG;
-    /* shortcut: one distinct root per recording, until a replacement is observed. */
-    if(s->graphics_root && s->graphics_root!=host){ID3D12RootSignature_Release(host);return E_NOTIMPL;}
-    if(s->graphics_root)ID3D12RootSignature_Release(host);else s->graphics_root=host;
+    if((s->required_root && s->required_root!=identity) ||
+        (s->graphics_identity && s->graphics_identity!=identity))return E_NOTIMPL;
+    if(!s->graphics_identity){
+        s->graphics_root=xs_retain_graphics_root(s->pool_owner,identity);
+        if(!s->graphics_root)return E_INVALIDARG;
+        s->graphics_identity=identity;
+    }
     ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,s->graphics_root);
     recorded_direct_state(s);return S_OK;
 }
 static void WINAPI pool_root(IUnknown *i,IUnknown *root)
 {
     if(FAILED(record_graphics_root(sl(i),root)))xs_stop();
+}
+static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
+{
+    HRESULT hr=E_NOTIMPL;
+    AcquireSRWLockExclusive(&s->borrow_lock);
+    if(open_direct_state(s) && s->cache_page && !memcmp(s->cache_page,cache_template,sizeof cache_template) &&
+        (!s->bound || s->bound==identity)){
+        IUnknown *root=NULL;
+        ID3D12PipelineState *p=xs_pin_clear4(s->pool_owner,s->device,identity,&root);
+        if(p){
+            if(!s->graphics_identity || s->graphics_identity==root){
+                if(!s->bound){s->bound=identity;s->pipeline=p;s->required_root=root;}
+                else IUnknown_Release(identity);
+                ID3D12GraphicsCommandList7_SetPipelineState(s->host,p);recorded_direct_state(s);hr=S_OK;
+            }else IUnknown_Release(identity);
+        }
+    }
+    ReleaseSRWLockExclusive(&s->borrow_lock);return hr;
+}
+static void WINAPI pool_pipeline(IUnknown *i,IUnknown *pso)
+{
+    if(FAILED(record_clear4(sl(i),pso)))xs_stop();
 }
 static HRESULT unbind_index(struct startup_list *s,const D3D12_INDEX_BUFFER_VIEW *view)
 {
@@ -584,7 +618,7 @@ static const struct {
     __typeof__(&sl_close) close;
     xs_stop_fn gap50[10];
     __typeof__(&pool_topology) topology;
-    xs_stop_fn gapa8[11];
+    xs_stop_fn gapa8[4]; __typeof__(&pool_pipeline) pipeline; xs_stop_fn gapd0[6];
     __typeof__(&sl_bind) bind;
     xs_stop_fn gap108; __typeof__(&pool_root) root; xs_stop_fn gap118[12];
     __typeof__(&pool_index) index; xs_stop_fn gap180[4];
@@ -604,8 +638,9 @@ static const struct {
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 3]=xs_stop},pool_pipeline,{[0 ... 5]=xs_stop}, sl_bind, xs_stop, pool_root, {[0 ... 11]=xs_stop},pool_index,{[0 ... 3]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, pool_depth_order, {[0 ... 49]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),pipeline)==0xc8,"pooled PSO ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),root)==0x110,"pooled graphics root ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),index)==0x178,"index buffer ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),depth_order)==0x258,"pooled depth-order ABI");
@@ -642,15 +677,18 @@ HRESULT xs_device_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnkn
         SYSTEM_INFO info;
         GetSystemInfo(&info);
         SIZE_T page=info.dwPageSize;
-        BYTE *base = VirtualAlloc(NULL, 3 * page, MEM_RESERVE, PAGE_NOACCESS);
+        BOOL cache=type==D3D12_COMMAND_LIST_TYPE_DIRECT && pool_owner;
+        if(cache && page!=sizeof cache_template)return E_NOTIMPL;
+        BYTE *base = VirtualAlloc(NULL, (cache?4:3) * page, MEM_RESERVE, PAGE_NOACCESS);
         if (!base) return E_OUTOFMEMORY;
-        if (!VirtualAlloc(base, 2 * page, MEM_COMMIT, PAGE_READWRITE)) {
+        if (!VirtualAlloc(base, (cache?3:2) * page, MEM_COMMIT, PAGE_READWRITE)) {
             VirtualFree(base,0,MEM_RELEASE);
             return E_OUTOFMEMORY;
         }
         s = (struct startup_list *)base;
         s->reservation = base;
         SIZE_T prefix=type==D3D12_COMMAND_LIST_TYPE_DIRECT?sizeof(struct direct_prefix):sizeof(IUnknown);
+        if(cache){s->cache_page=base+2*page;memcpy(s->cache_page,cache_template,page);prefix=0x540;}
         face=(struct list_face *)(base+2*page-prefix - offsetof(struct list_face,iface));
         face->state=s;
         face->iface.lpVtbl=&pool_vtbl.prefix;
@@ -689,7 +727,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
     struct startup_list *s=sl(i);
     ID3D12GraphicsCommandList7 *host=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
-    if (!s->primary_released && !s->depth_zero_pending
+    if (!s->primary_released && !s->depth_zero_pending && !s->bound
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
         && escape_native()
 #endif
@@ -703,7 +741,7 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 
 /* A list may be reset or released as soon as it is submitted. Pin this
  * recording's guest heaps independently until this queue passes the list. */
-struct heap_retirement { ID3D12RootSignature *root; ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event;
+struct heap_retirement { IUnknown *bound; ID3D12RootSignature *root; ID3D12Resource *primary; ID3D12CommandAllocator *tail_alloc; IUnknown *head_alloc; struct prefix_marker *native; struct system_timestamp *stamp; IUnknown *pair[2]; ID3D12Fence *fence,*gate; HANDLE event;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     ID3D12GraphicsCommandList7 *tag_head,*tag_tail;
     ID3D12Fence *prefix_gate;
@@ -729,6 +767,7 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
         IUnknown_Release(r->tag_queue);
     }
 #endif
+    if(r->bound)IUnknown_Release(r->bound);
     if(r->root)ID3D12RootSignature_Release(r->root);
     if (r->primary) ID3D12Resource_Release(r->primary);
     if (r->head_alloc) IUnknown_Release(r->head_alloc);
@@ -739,6 +778,7 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
 static void retain_recording(struct heap_retirement *r,struct startup_list *s)
 {
     if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
+    if ((r->bound=s->bound))IUnknown_AddRef(r->bound);
     if ((r->root=s->graphics_root))ID3D12RootSignature_AddRef(r->root);
     if ((r->primary=s->primary)) ID3D12Resource_AddRef(r->primary);
     if (s->post || s->primary) {r->head_alloc=s->allocator;IUnknown_AddRef(r->head_alloc);}
@@ -795,7 +835,7 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     if (!match || !s->closed || FAILED(s->error) || desc.Type != s->type) xs_stop();
     struct heap_retirement *r=NULL;
     PTP_WAIT wait=NULL;
-    if (s->heaps[0] || s->stamp || s->primary || s->graphics_root) {
+    if (s->heaps[0] || s->stamp || s->primary || s->graphics_root || s->bound) {
         r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r || FAILED(ID3D12Device_CreateFence(s->device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&r->fence)) ||
             !(r->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(wait=CreateThreadpoolWait(retire_heaps,r,NULL)) ||

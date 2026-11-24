@@ -7,7 +7,26 @@ static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
     (void)i; (void)name;
     return E_NOTIMPL;
 }
-static const struct bp_methods clear_methods={{bp_query,bp_addref,bp_release},
+struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next;};
+static ULONG WINAPI clear_release(IUnknown *i)
+{
+    struct clear_wrapper *p=CONTAINING_RECORD(i,struct clear_wrapper,pso.iface);
+    struct xbox_device *d=p->pso.owner;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    ULONG refs=InterlockedDecrement(&p->pso.refs);
+    if(!refs && p->root){
+        struct clear_wrapper **link=&d->clear4;while(*link!=p)link=&(*link)->next;
+        *link=p->next;
+    }
+    ReleaseSRWLockExclusive(&d->descriptor_lock);
+    if(!refs){
+        if(p->root)IUnknown_Release(p->root);
+        ID3D12PipelineState_Release(p->pso.host);ID3D12RootSignature_Release(p->pso.root);
+        IUnknown_Release(&d->iface);HeapFree(GetProcessHeap(),0,p);
+    }
+    return refs;
+}
+static const struct bp_methods clear_methods={{bp_query,bp_addref,clear_release},
     {xs_stop,xs_stop,xs_stop},clear_name,xs_stop,xs_stop};
 
 static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE_STREAM_DESC *desc,
@@ -51,12 +70,7 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     if (!shader_digest_matches(vs,sizeof vs,vs_digest) || !shader_digest_matches(ps,sizeof ps,ps_digest))
         return E_NOTIMPL;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
-    AcquireSRWLockShared(&d->descriptor_lock);
-    struct bvh_root *r=d->bvh_roots;
-    while (r && &r->iface!=guest_root) r=r->next;
-    ID3D12RootSignature *host=r && r->owner==d && r->kind==ROOT_SRV_SPACE3 ? r->host : NULL;
-    if (host) ID3D12RootSignature_AddRef(host);
-    ReleaseSRWLockShared(&d->descriptor_lock);
+    ID3D12RootSignature *host=xs_retain_graphics_root(device,guest_root);
     if (!host) return E_INVALIDARG;
     q[1]=(UINT_PTR)host;
     q[3]=(UINT_PTR)clear_vs_dxil; q[4]=sizeof clear_vs_dxil;
@@ -69,16 +83,24 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
         hr=ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void **)&pso);
         ID3D12Device2_Release(d2);
     }
-    if (FAILED(hr)) { ID3D12RootSignature_Release(host); return hr; }
-    struct bvh_pipeline *p=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *p);
-    if (!p) {
+    if (FAILED(hr)) { IUnknown_Release(guest_root); return hr; }
+    struct clear_wrapper *wrap=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *wrap);
+    if (!wrap) {
         ID3D12PipelineState_Release(pso);
-        ID3D12RootSignature_Release(host);
+        IUnknown_Release(guest_root);
         return E_OUTOFMEMORY;
     }
+    struct bvh_pipeline *p=&wrap->pso;
+    ID3D12RootSignature_AddRef(host);
     p->iface.lpVtbl=&clear_methods.unknown; p->refs=1;
     p->owner=d; IUnknown_AddRef(device);
     p->root=host; p->host=pso;
+    if ((UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT){
+        wrap->root=guest_root;
+        AcquireSRWLockExclusive(&d->descriptor_lock);
+        wrap->next=d->clear4;d->clear4=wrap;
+        ReleaseSRWLockExclusive(&d->descriptor_lock);
+    }else IUnknown_Release(guest_root);
     *out=&p->iface;
     OutputDebugStringA("scarlett: created qualified clear-pair graphics PSO\n");
     return S_OK;

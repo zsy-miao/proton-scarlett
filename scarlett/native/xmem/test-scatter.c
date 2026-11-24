@@ -88,7 +88,8 @@ int main(int argc,char **argv)
        same(second.section,x.section) && second.base==other && second.offset==13*P &&
        second.view_size==x.view_size && CloseHandle(second.section));
     CK(!XMemMapPhysicalPagesScatter(va2+1,1,NULL) && !XMemMapPhysicalPagesScatter(va2,2,id+start+4));
-    void *third[]={at+5*P};CK(!XMemMapPhysicalPagesScatter(third,1,id+start+6));
+    void *gap[]={at+5*P};
+    CK(!XMemMapPhysicalPagesScatter(gap,1,id+start+5) && GetLastError()==ERROR_NOT_SUPPORTED); /* overlaps second backing only */
     for(SIZE_T i=0;i<2*P;++i)other[i]=(BYTE)(17+i);
     CK(!memcmp(src2,other,2*P));memset(src2,0x71,2*P);
     for(SIZE_T i=0;i<2*P;i++)CK(other[i]==0x71);
@@ -97,9 +98,12 @@ int main(int argc,char **argv)
     /* Remove the higher span first; reinstall in reverse VA order. */
     CK(XMemMapPhysicalPagesScatter(va2,2,NULL) && reserved(other) && at[0]==0x34);
     CK(XMemMapPhysicalPagesScatter(va,3,NULL) && reserved(at));
-    /* Measured VA gap, page counts and backing offsets; first/last bytes only. */
-    enum { N1=6720,N2=4136 };static void *span[N1+N2];
-    for(unsigned j=0;j<N1+N2;j++)span[j]=at+((SIZE_T)j+(j<N1?0:1472))*P;
+    /* Measured VAs 0x54b070000, 0x56b070000, 0x58b070000; IDs 0x3800, 0x1dc00, 0x2de80. */
+    enum { N1=6720,N2=4136,N12=N1+N2,STEP=8192 };
+    static void *span[N12+1];
+    for(unsigned j=0;j<N1;j++)span[j]=at+(SIZE_T)j*P;
+    for(unsigned j=0;j<N2;j++)span[N1+j]=at+(SIZE_T)(STEP+j)*P;
+    BYTE *last_va=span[N12]=at+2*STEP*P;
     CK(XMemMapPhysicalPagesScatter(span,N1,id));
 #ifdef SCATTER_TEST_ROLLBACK
     /* Fixture DLL fails the first N2 bind after both flanks were marked. */
@@ -109,12 +113,17 @@ int main(int argc,char **argv)
        m.AllocationBase==at+N1*P && m.RegionSize==size-(at-dst)-N1*P && m.State==MEM_RESERVE);
 #endif
     CK(XMemMapPhysicalPagesScatter(span+N1,N2,id+N1));
+    CK(!XMemMapPhysicalPagesScatter(span+N12-1,1,id+N12) && GetLastError()==ERROR_INVALID_ADDRESS);
+    CK(XMemMapPhysicalPagesScatter(span+N12,1,id+N12));
+    void *fourth[]={last_va+P};
+    CK(!XMemMapPhysicalPagesScatter(fourth,1,id+N12+1) && GetLastError()==ERROR_INVALID_ADDRESS && reserved(fourth[0]));
     struct scarlett_section_info original;
-    CK(SUCCEEDED(scarlett_query_section(0x5343000c,base,(N1+N2)*P,&original)) &&
+    CK(SUCCEEDED(scarlett_query_section(0x5343000c,base,(N12+1)*P,&original)) &&
        original.base==base && !original.offset && original.view_size==tile_bytes(0));
-    for(unsigned j=0;j<2;j++) {
-        SIZE_T offset=j?N1*P:0,bytes=j?N2*P:N1*P;
-        BYTE *alias=span[j?N1:0];
+    const unsigned starts[]={0,N1,N12,N12+1};
+    for(unsigned j=0;j<3;j++) {
+        SIZE_T offset=starts[j]*P,bytes=(starts[j+1]-starts[j])*P;
+        BYTE *alias=span[starts[j]];
         CK(SUCCEEDED(scarlett_query_section(0x5343000c,alias,bytes,&second)) &&
            same(second.section,original.section) && second.base==alias && second.offset==offset &&
            second.view_size==original.view_size && CloseHandle(second.section));
@@ -127,10 +136,18 @@ int main(int argc,char **argv)
 #ifdef SCATTER_TEST_ROLLBACK
     /* Fixture DLL fails the first N1 unbind after both flanks were released. */
     CK(!XMemMapPhysicalPagesScatter(span,N1,NULL) && GetLastError()==ERROR_GEN_FAILURE);
-    CK(at[0]==0x51 && ((BYTE *)span[N1])[0]==0x52 && reserved(at+N1*P));
+    CK(at[0]==0x51 && ((BYTE *)span[N1])[0]==0x52 && last_va[0]==0x53 && reserved(at+N1*P));
 #endif
-    CK(XMemMapPhysicalPagesScatter(span,N1,NULL) && ((BYTE *)span[N1])[0]==0x52 &&
-       XMemMapPhysicalPagesScatter(span+N1,N2,NULL));
+    CK(XMemMapPhysicalPagesScatter(span+N1,N2,NULL));
+    CK(VirtualQuery(at+N1*P,&m,sizeof m)==sizeof m && m.AllocationBase==at+N1*P &&
+       m.RegionSize==(2*STEP-N1)*P && m.State==MEM_RESERVE);
+    base[N1*P-1]=0x68; last_va[0]=0x69;
+    CK(at[N1*P-1]==0x68 && base[N12*P]==0x69);
+    /* Reinsert in the middle, then shift both survivors out and back at the front. */
+    CK(XMemMapPhysicalPagesScatter(span+N1,N2,id+N1) && ((BYTE *)span[N1])[0]==0x52);
+    CK(XMemMapPhysicalPagesScatter(span,N1,NULL) && XMemMapPhysicalPagesScatter(span,N1,id));
+    CK(XMemMapPhysicalPagesScatter(span,N1,NULL) && XMemMapPhysicalPagesScatter(span+N1,N2,NULL) &&
+       last_va[0]==0x69 && XMemMapPhysicalPagesScatter(span+N12,1,NULL));
     CK(XMemMapPhysicalPagesScatter(va2,2,id+start+4) && XMemMapPhysicalPagesScatter(va,3,id+start));
     CK(XMemMapPhysicalPages(base,n,NULL)==base && !XMemFreePhysicalPages(n,id) && GetLastError()==ERROR_BUSY);
     CK(XMemMapPhysicalPagesScatter(va,3,NULL) && reserved(at));
@@ -155,6 +172,6 @@ int main(int argc,char **argv)
     CK(dst); for (unsigned j=0;j<3;j++) va[j]=dst+j*P;
     CK(XMemFreePhysicalPages(n,id) && !XMemMapPhysicalPagesScatter(va,3,id+start));
     CK(VirtualFree(dst,0,MEM_RELEASE) && VirtualFree(base,0,MEM_RELEASE) && CloseHandle(x.section) && CloseHandle(y.section));
-    puts("PASS scatter: two original-section aliases, measured spans and gap, atomic refusal, independent teardown");
+    puts("PASS scatter: three measured original-section aliases, atomic refusal, middle teardown and surviving neighbors");
     return 0;
 }

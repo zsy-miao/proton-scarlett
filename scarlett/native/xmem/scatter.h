@@ -33,7 +33,7 @@ static DWORD scatter_span(Arena *a,BYTE *at,SIZE_T bytes,ULONG_PTR id,BOOL unmap
 {
     SIZE_T delta=(UINT_PTR)at-(UINT_PTR)a->base;
     if (bytes>a->size-delta) return ERROR_INVALID_ADDRESS;
-    /* shortcut: two disjoint spans from one tile section. All vacant gaps keep
+    /* shortcut: three disjoint spans from one tile section. All vacant gaps keep
      * the reservation marker, including the gap restored by a partial teardown. */
     unsigned n=(unsigned)a->views,pos=0;
     if (n>ARRAYSIZE(a->extent) || (n && !a->tile_run)) return ERROR_INVALID_ADDRESS;
@@ -58,7 +58,7 @@ static DWORD scatter_span(Arena *a,BYTE *at,SIZE_T bytes,ULONG_PTR id,BOOL unmap
             DWORD err=GetLastError(); restore_gap(begin,left,FALSE); restore_gap(at+bytes,right,FALSE); return err;
         }
         restore_gap(begin,end-begin,left || right);
-        if (pos+1<n) a->extent[pos]=a->extent[pos+1];
+        for (unsigned j=pos+1;j<n;j++) a->extent[j-1]=a->extent[j];
         a->extent[n-1]=(ScatterExtent){0};
         --a->tile_run->views; --a->views;
         if (!a->views) a->tile_run=NULL;
@@ -74,9 +74,11 @@ static DWORD scatter_span(Arena *a,BYTE *at,SIZE_T bytes,ULONG_PTR id,BOOL unmap
     unsigned part=0;
     while (off>=tile_bytes(part)) { off-=tile_bytes(part); ++part; }
     if (bytes>tile_bytes(part)-off) return ERROR_NOT_SUPPORTED;
-    if (n && (a->tile_run!=r || a->scatter_part!=part ||
-            (off<a->extent[0].offset+a->extent[0].bytes && a->extent[0].offset<off+bytes)))
-        return ERROR_NOT_SUPPORTED;
+    if (n && (a->tile_run!=r || a->scatter_part!=part)) return ERROR_NOT_SUPPORTED;
+    for (unsigned j=0;j<n;j++) {
+        ScatterExtent v=a->extent[j];
+        if (off<v.offset+v.bytes && v.offset<off+bytes) return ERROR_NOT_SUPPORTED;
+    }
     SIZE_T left=at-begin,right=end-(at+bytes);
     BOOL split=left || right;
     if (!release_gap(begin,end-begin)) return GetLastError();
@@ -96,7 +98,7 @@ static DWORD scatter_span(Arena *a,BYTE *at,SIZE_T bytes,ULONG_PTR id,BOOL unmap
         restore_gap(begin,end-begin,split); return err;
     }
     a->tile_run=r; ++r->views; ++a->views;
-    if (pos<n) a->extent[pos+1]=a->extent[pos];
+    for (unsigned j=n;j>pos;j--) a->extent[j]=a->extent[j-1];
     a->extent[pos]=(ScatterExtent){at,bytes,off}; a->scatter_part=part;
     return ERROR_SUCCESS;
 }

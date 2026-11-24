@@ -502,3 +502,17 @@ pipeline. No retail clear draw has been observed.
 Six retail launches (four diagnostics and two ordinary runs) and ten
 passing fixtures on the main-based build. AMD stopped at `+3278b`; RTX
 stopped at `+4ecc821`. Both issued tokens 1 and 2 and presented only 1.
+
+Pooled Direct `+c8` now binds the selected clear pipeline. The two
+16-byte guest cache stores land on a separate page; the inline cursor
+and limit remain read-only zeros. The bind checks the owning device's
+live pipeline object and exact root, and retains them through submission.
+On AMD the next call was `+c0(0)`, return `+329a1`, with depth order
+pending. No retail draw was observed.
+
+Four retail launches (two diagnostics and two ordinary). RTX first
+stopped at `+4ecc821` creating the A8 lookup texture's shader view. Both
+ordinary runs presented only token 1. Of 14 fixture launches, 13 passed;
+the first byte-buffer test package was missing a shader and its corrected
+retry passed. Three simultaneous scatter mappings and removal of the
+middle mapping passed on both GPUs; the third retail return is unverified.

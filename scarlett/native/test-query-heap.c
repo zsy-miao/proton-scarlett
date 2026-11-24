@@ -115,7 +115,7 @@ int main(void)
     const struct direct_prefix *prefix=(const void*)list;
     MEMORY_BASIC_INFORMATION mb;
     CHECK(!prefix->put && !prefix->limit && VirtualQuery(prefix,&mb,sizeof mb) && mb.Protect==PAGE_READONLY);
-    CHECK(VirtualQuery(prefix+1,&mb,sizeof mb) && mb.State==MEM_RESERVE);
+    CHECK(VirtualQuery(prefix+1,&mb,sizeof mb) && mb.Protect==PAGE_READONLY);
     l=(ID3D12GraphicsCommandList*)sl(list)->host;
     ID3D12GraphicsCommandList_SetPipelineState(l,pso);
     OK(ID3D12Device_CreateFence(host,0,0,&IID_ID3D12Fence,(void **)&f));

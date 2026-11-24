@@ -1,4 +1,5 @@
 #include "test-clear-common.hpp"
+extern "C" BOOL test_clear4_bind(ID3D12Device *,IUnknown *,IUnknown *,IUnknown *,IUnknown *,IUnknown *,IUnknown *);
 static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso,int mode,bool srgb,bool with_ds=false) {
     constexpr UINT W=16,H=8;
     auto resource=[&](D3D12_HEAP_TYPE t,D3D12_RESOURCE_STATES st,UINT64 bytes=4096) {
@@ -119,6 +120,7 @@ int main(){
     ComPtr<IUnknown> srgb;HR(create(d.Get(),&sd,IID_ID3D12PipelineState,(void**)srgb.GetAddressOf()));
     hp=clear_test_host(srgb.Get());CK(hp);
     for(int mode=0;mode<3;++mode)draw(hd.Get(),host,hp,mode,true);
+    auto second=root(d.Get());CK(test_clear4_bind(hd.Get(),d.Get(),other.Get(),r.Get(),second.Get(),ds4.Detach(),p.Get()));
     puts("PASS clear sRGB: dark RGB, linear alpha, coverage and guards");
     puts("PASS +2b0 qualified creation, guest identity and rejection controls");
 }

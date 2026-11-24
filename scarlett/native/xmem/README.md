@@ -347,8 +347,10 @@ stride 16. This maps 420 MiB from offset zero of its first 1 GiB section.
 The provider snapshots both arrays, checks the complete span against one live
 arena and one tile section, and replaces a single placeholder with a WB RW
 view of the original section. The second captured RTX request used 4,136
-pages starting at ID `0x1dc00`, 92 MiB beyond the live first view. Allow
-two disjoint destination and backing ranges in the same arena, run and section.
+pages starting at ID `0x1dc00`, 92 MiB beyond the live first view. A third
+requested one page at VA `0x58b070000`, ID `0x2de80`, immediately after the
+second backing range. Allow up to three disjoint destination and backing
+ranges in the same arena, run and section.
 Exact whole-span unmap (null array or all-zero IDs) drops that run reference
 and restores only the gap between the surviving neighbors. Noncontiguous lists, mixed
 map/unmap, cross-section spans, partial unmap and overlapping remap are
@@ -357,10 +359,10 @@ An existing ordinary page mapping makes an arena ineligible for scatter.
 
 In an RTX retail trace both the 6,720-page and 4,136-page maps returned
 `TRUE` to `+f2cc43`. They shared the original section at offsets `0` and
-`0x1a400000`. A third, one-page request in the extended diagnostic still
-failed with error 487 while the first two were live. Normal mapping,
-stale-gap rejection and failure rollback passed in separate processes
-on both adapters.
+`0x1a400000`. With the earlier two-span limit the third request failed
+with error 487 while the first two were live. Normal mapping, stale-gap
+rejection and failure rollback for that version passed in separate
+processes on both adapters.
 
 `test-scatter.c` links against the x64 XMem import library; run it using the
 same hardware harness as `test-tile-pages.cpp`. It checks a nonzero offset

@@ -48,7 +48,7 @@ typedef struct Arena {
     PageRun *tile_run;
     unsigned tile_mapped;
     BOOL scatter; /* marked 24 GiB CPU reservation */
-    ScatterExtent extent[2]; /* sorted by VA, same run and section */
+    ScatterExtent extent[3]; /* sorted by VA, same run and section */
     unsigned scatter_part;
 } Arena;
 
