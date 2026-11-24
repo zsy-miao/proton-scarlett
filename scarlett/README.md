@@ -13,4 +13,7 @@ Requires x86-64 MinGW GCC and the matching Proton 11.0-2e depot. Move any previo
 
 ## What the first graphics test covers
 
+The runtime also includes an original [xmem.dll](native/xmem/README.md) supporting ordinary
+CPU page reservation and commitment. Physical page mapping and title allocation hooks are still missing.
+
 `./scarlett/tests/queue-fence.sh` builds a synthetic PE importing `d3d12_xs.dll`, then exercises a desktop-compatible D3D12 device, command queue, CPU/GPU signaling and completion. It runs in an isolated Wine prefix on the NixOS/NVIDIA test host. `D3D12XboxCreateDevice`, console-specific COM methods and Xbox shaders are separate work; this test does not boot a retail game. `SCARLETT_RECORD=1` enables recording of the private test display.
