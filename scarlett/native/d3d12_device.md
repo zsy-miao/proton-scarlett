@@ -105,6 +105,58 @@ at `0x17f6d34` uses `(type,6,1,0)`, requests a different list IID
 `{5b160d0f-ac1b-4185-8ba8-b3ae42a5a455}`, and closes the result at
 `0x17f6d48`. Neither description establishes the semantics of words 1–3.
 
+#### What the two pre-Close calls consume
+
+All four initialization call sites reload RCX from the list output at
+`[rsp+0x60]`. Values below are hex, at the **caller's** stack pointer.
+Writing EDX/R8D zero-extends them; this doesn't by itself establish the
+declared parameter widths. The final argument is a qword.
+
+| List and call RVA | Slot | RDX | R8 | R9 | `[rsp+0x20]` |
+|---|---:|---:|---:|---:|---:|
+| Direct `2478b9e` | `420` | `700000` | `0` | `0` | `0000ffffffffff00` |
+| Direct `2478bbf` | `418` | `c3c0` | `80020000` | `0` | `0000ffffffffff00` |
+| Compute `2478c93` | `420` | `100000` | `0` | `0` | `0000ffffffffff00` |
+| Compute `2478cb4` | `418` | `c380` | `20000` | `0` | `0000ffffffffff00` |
+
+No output buffer is supplied and neither return register is consumed. In
+contrast, the immediately following `+0x48` call has its HRESULT tested.
+The lists are saved at RVA `75e7300 + index*8`; `2482660` later takes the
+address of an entry and issues `queue[+0x118](queue,1,&entry,...,0)`.
+The submission worker reaches that helper at `24821b4` and `2482493`.
+Effects recorded here may therefore matter when the list is submitted,
+even though no rendering commands intervene between creation and Close.
+
+One independent renderer path (`1560960`) takes the current list from
+`context+0x127c8`, acquiring it via `188430` if necessary. At `1560994` it
+calls `+0x418` with `(c280,20000,0,0000ffffffffff00)`. Its caller at `1560942`
+then returns the object saved in RDI and sets a context byte; it does not
+return or store a value obtained from `+0x418`. This is the same argument
+pattern as initialization on another list path, not proof of identical IIDs.
+Filtering by receiver matters: `24745e4` uses `+0x420` on the **device**
+(`75df048`), while `437cfed`/`437d01a` pass stack addresses in RDX and read
+back dwords. Neither is evidence for list getters.
+
+**Interpretation:** the strongest public match is a pair of range-based GPU
+synchronization commands. Microsoft's [Series API directory](https://docs.xbox.com/nda/nda-topic-directory)
+names `SyncBottomOfPipeX`, `SyncTopOfPipeX`, `D3D12XBOX_SYNC_FLAGS` and
+`D3D12XBOX_SYNC_CONTROL_FLAGS`. Its public
+[DirectStorageTextureShuffling sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/DirectStorageTextureShuffling/DirectStorageTextureShuffling.cpp#L198-L203)
+records a cache flush using top/bottom masks, null GPU VA and
+`D3D12XBOX_FLUSH_RANGE_ALL` before Close. That sample uses **three**
+explicit arguments to `FlushPipelineX`, not these four; it supplies a
+semantic analogy, not a slot map. The two integers, zero and large aligned
+constant look like masks plus an address/range. No call passes a GUID, a
+data buffer or a size pointer as the public private-data APIs would require.
+
+No authoritative slot order, flag values, or mapping of the control bits
+to host synchronization was found. In particular, an ignored return is
+not proof of `void`, and a global UAV barrier is not evidence of coverage
+for every cache or pipeline stage in these masks. Keep `+0x248` returning
+`E_NOTIMPL` with null output for these requests. The most useful next
+evidence would be a named, publicly redistributable Scarlett call compiled
+for the same interface, with known nonzero controls and address/range.
+
 The prior trace stops at `0x19f4f58` with ECX=`0x80004002`, before any
 success-path calls. `+0x188` **is not needed with this runtime/prefix**:
 `0x24785cd` first checks the title configuration byte. Even when set, the
