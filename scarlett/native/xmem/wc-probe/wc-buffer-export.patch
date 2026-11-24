@@ -1,0 +1,53 @@
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+index ef0bb46..8b29385 100644
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -2142,6 +2142,9 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+ {
+     struct vkd3d_allocate_heap_memory_info heap_info;
+     struct vkd3d_allocate_memory_info alloc_info;
++#ifdef _WIN32
++    VkExportMemoryAllocateInfo export_info = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
++#endif
+     HRESULT hr;
+ 
+     memset(&alloc_info, 0, sizeof(alloc_info));
+@@ -2153,6 +2156,16 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+     alloc_info.host_ptr = info->host_ptr;
+     alloc_info.vk_memory_priority = info->vk_memory_priority;
+     alloc_info.explicit_global_buffer_usage = info->explicit_global_buffer_usage;
++#ifdef _WIN32
++    if (!info->host_ptr && alloc_info.heap_properties.Type == D3D12_HEAP_TYPE_CUSTOM &&
++            alloc_info.heap_properties.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE &&
++            alloc_info.heap_flags == (D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS))
++    {
++        export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        alloc_info.pNext = &export_info;
++        alloc_info.flags |= VKD3D_ALLOCATION_FLAG_DEDICATED;
++    }
++#endif
+ 
+     alloc_info.flags |= info->extra_allocation_flags;
+ 
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index c36bfe9..48fc48b 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -202,6 +202,17 @@ HRESULT vkd3d_create_buffer(struct d3d12_device *device,
+         external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+         buffer_info.pNext = &external_info;
+     }
++#ifdef _WIN32
++    else if (heap_properties && heap_properties->Type == D3D12_HEAP_TYPE_CUSTOM &&
++            heap_properties->CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE &&
++            heap_flags == (D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS))
++    {
++        external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
++        external_info.pNext = NULL;
++        external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        buffer_info.pNext = &external_info;
++    }
++#endif
+ 
+     if (sparse_resource)
+     {
