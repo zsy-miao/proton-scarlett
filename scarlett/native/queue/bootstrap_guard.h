@@ -10,15 +10,18 @@ static __attribute__((noreturn)) void WINAPI xs_stop(void)
     void *frames[16];
     USHORT n=CaptureStackBackTrace(0,ARRAYSIZE(frames),frames,NULL);
     HMODULE exe=GetModuleHandleW(NULL);
+    HMODULE builder=GetModuleHandleW(L"XboxBvhBuilder.dll");
     for (USHORT i=0;i<n;i++) {
         HMODULE module=NULL;
         if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                (const char *)frames[i],&module) && module==exe) {
+                (const char *)frames[i],&module) && (module==exe || module==builder)) {
             char text[96];
-            snprintf(text,sizeof text,"scarlett: unsupported graphics call; title return RVA +%llx\n",
-                    (unsigned long long)((UINT_PTR)frames[i]-(UINT_PTR)exe));
+            snprintf(text,sizeof text,"scarlett: unsupported graphics call; %s return RVA +%llx\n",
+                    module==exe ? "title" : "XboxBvhBuilder.dll",
+                    (unsigned long long)((UINT_PTR)frames[i]-(UINT_PTR)module));
             OutputDebugStringA(text);
-            break;
+            if (module==exe) break;
+            builder=NULL; /* Only the innermost builder call identifies the missing slot. */
         }
     }
     RaiseFailFastException(NULL, NULL, 0);

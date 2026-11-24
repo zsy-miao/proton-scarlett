@@ -31,3 +31,14 @@ At this call the root matched the wrapper returned by `+0x80`; both extra
 arguments were null, the IID was `ID3D12PipelineState` and no cached
 pipeline was supplied. This identifies the first requested compute pipeline;
 it does not establish shader compatibility or execution.
+
+The executable DXIL is compute shader model 6.5, target `dxil-ms-xb2`,
+wave32. Direct submission on RADV with the translated root returned
+`0x80004005`, null pipeline, and dxil-spirv's `Unhandled instruction!`.
+The two Xbox store operations take their destination from the first
+64 bits of the 40-byte initializer at `t0`. The UAV `u0` is not that
+destination. A scratch translation tested partition counts 0, 1 and 5 on
+RADV and RTX 3070: all 96 destination words (including guards and
+untouched fields) matched after retirement; all 96 decoy UAV words
+remained unchanged. That test supplied a valid host address. A retail
+dispatch still requires a checked translation of the embedded title address.
