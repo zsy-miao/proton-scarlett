@@ -12,6 +12,8 @@ struct placed_backing {
     struct placed_backing *next;
     HMODULE module;
     struct XsPlacedCapture *capture;
+    UINT64 guest_va;
+    __typeof__(&ScarlettPlacedMatchesV1) matches;
     __typeof__(&ScarlettPlacedDataV1) data;
     __typeof__(&ScarlettReleasePlacedV1) drop;
 };
@@ -78,8 +80,9 @@ static HRESULT placed_create(struct xbox_device *d,UINT64 va,const void *wire,UI
     if (!GetModuleHandleExW(0,L"xmem.dll",&p->module)) goto fail;
     __typeof__(&ScarlettCapturePlacedV1) take=(void *)GetProcAddress(p->module,"ScarlettCapturePlacedV1");
     p->data=(void *)GetProcAddress(p->module,"ScarlettPlacedDataV1");
+    p->matches=(void *)GetProcAddress(p->module,"ScarlettPlacedMatchesV1");
     p->drop=(void *)GetProcAddress(p->module,"ScarlettReleasePlacedV1");
-    if (!take || !p->data || !p->drop || !GetProcAddress(p->module,"ScarlettCreatePlacedTableV1") ||
+    if (!take || !p->data || !p->drop || !p->matches || !GetProcAddress(p->module,"ScarlettCreatePlacedTableV1") ||
         !GetProcAddress(p->module,"ScarlettBindPlacedTableV1") ||
         !GetProcAddress(p->module,"ScarlettReleasePlacedTableV1")) goto fail;
     ID3D12Device3 *host=NULL;
@@ -89,7 +92,7 @@ static HRESULT placed_create(struct xbox_device *d,UINT64 va,const void *wire,UI
     ID3D12Device3_Release(host);
     if (FAILED(hr)) goto fail;
     *title=(struct placed_identity){{&placed_vtbl.unknown},1,p};
-    p->owner=d; p->title=title;
+    p->owner=d; p->title=title; p->guest_va=va;
     IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);
     p->next=d->placed; d->placed=p;

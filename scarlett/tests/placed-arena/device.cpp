@@ -2,6 +2,7 @@
 struct xs_placed_dispatch;
 extern "C" {
 HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
+HRESULT xs_write_address_srv(IUnknown *,const void *,const void *,SIZE_T);
 HRESULT xs_record_placed_dispatch(IUnknown *,IUnknown *,SIZE_T,SIZE_T,const void *,SIZE_T,ID3D12GraphicsCommandList *,ID3D12Resource *,xs_placed_dispatch **);
 void xs_drop_placed_dispatch(xs_placed_dispatch *);
 __declspec(dllimport) BOOL WINAPI XMemAllocatePhysicalPages(ULONGLONG,PULONG_PTR,PULONG_PTR);
@@ -32,6 +33,7 @@ using Make=HRESULT(WINAPI *)(IUnknown *,UINT64,const void *,UINT,const void *,RE
 using Heap=HRESULT(WINAPI *)(IUnknown *,const void *,REFIID,void **);
 using Start=SIZE_T(WINAPI *)(IUnknown *);
 using Srv=void(WINAPI *)(IUnknown *,IUnknown *,const void *,SIZE_T);
+using AddressSrv=void(WINAPI *)(IUnknown *,const void *,const void *,SIZE_T);
 using Uav=void(WINAPI *)(IUnknown *,IUnknown *,IUnknown *,const void *,SIZE_T);
 static UINT seed(UINT p) { return 0x10000000u | (p/4); }
 int main() {
@@ -61,10 +63,26 @@ int main() {
     IUnknown *heap,*wrong; HR(SLOT(dev,0x70,Heap)(dev,&hd,IID_ID3D12DescriptorHeap,(void **)&heap));
     HR(SLOT(dev,0x70,Heap)(dev,&hd,IID_ID3D12DescriptorHeap,(void **)&wrong));
     SIZE_T srv=SLOT(heap,0x48,Start)(heap),uav=srv+32;
-    DWORD sw[10]={39,1,0x1688,0,0,0,E/4,0,1},uw[10]={39,1,0,0,E/4,0,0,0,1};
-    SLOT(dev,0x90,Srv)(dev,obj,sw,srv); SLOT(dev,0x98,Uav)(dev,obj,nullptr,uw,uav);
+    DWORD sw[16]={39,1,0x1688,0,0,0,E/4,0,1,0xffff},uw[10]={39,1,0,0,E/4,0,0,0,1};
+    UINT64 base=(UINT64)at[2]; memcpy(sw+10,&base,8);
+    // First resource word at +4 and the last qword copied by 4ecc8c4 contain padding.
+    DWORD wire[13]={1,1,0,0,E,0,1,0x10001,0,1,0,1,0};
+    auto attempt=[&](){ return xs_write_address_srv(dev,wire,sw,srv); };
+    *(DWORD *)srv=0x12; *(UINT64 *)(srv+16)=0x12345678;
+    sw[6]--; if (SUCCEEDED(attempt())) return 1; sw[6]++;
+    sw[12]=1; if (SUCCEEDED(attempt())) return 1; sw[12]=0;
+    wire[12]=0x20004; if (SUCCEEDED(attempt())) return 1; wire[12]=0;
+    sw[10]+=32; if (SUCCEEDED(attempt())) return 1; sw[10]-=32;
+    IUnknown *dup; HR(create(dev,base,&desc,~0u,nullptr,IID_ID3D12Resource,(void **)&dup));
+    if (SUCCEEDED(attempt()) || dup->Release()!=0 || *(DWORD *)srv!=0x12) return 1;
+    SLOT(dev,0x230,AddressSrv)(dev,wire,sw,srv);
+    if (*(UINT64 *)(srv+16)!=0x12345678) return 1;
+    SLOT(dev,0x98,Uav)(dev,obj,nullptr,uw,uav);
     for(UINT p=0;p<E;p+=4) guest(p)=seed(p);
-    MemoryBarrier(); map(-1); map(1);
+    MemoryBarrier(); map(-1);
+    if (SUCCEEDED(attempt())) return 1;
+    map(1);
+    if (SUCCEEDED(attempt())) return 1; // old wrapper is still live, current run is different
     for(UINT p=0;p<E;p+=4) guest(p)=~seed(p)^0x53000000;
     MemoryBarrier();
     HR(create(dev,(UINT64)at[2],&desc,~0u,nullptr,IID_ID3D12Resource,(void **)&other));
@@ -110,5 +128,5 @@ int main() {
     D3D12_RANGE none={}; rb->Unmap(0,&none);
     map(-1); for (auto &run:ids) if(!XMemFreePhysicalPages(n,run))return 1;
     for(auto v:at) if(!VirtualFree(v,0,MEM_RELEASE))return 1;
-    std::printf("PASS factory->SRV/UAV->trusted shader: %u dwords read, %u stores rejected, %u accepted; both cross-boundary pairs, end/overflow/alignment, original + replacement XMem generation checked after producer release; mismatched identities, heap, swapped slots, stale tags, mutated shader rejected\n",E/4,A/4,(E-A)/4);
+    std::printf("PASS +428 -> +230 address SRV / +98 UAV -> trusted shader: %u dwords read, %u stores rejected, %u accepted; fenced original and replacement generations checked. Wrong wire, ambiguous, unmapped and stale addresses rejected\n",E/4,A/4,(E-A)/4);
 }

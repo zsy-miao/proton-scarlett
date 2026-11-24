@@ -188,7 +188,7 @@ static BOOL has_descriptor_layout(void)
 /* DLL-internal. XMemMapPhysicalPages and XMemFreePhysicalPages both take the
  * exclusive side. Duplicate the run's three original handles before unlocking;
  * importing by title VA after this point could silently select a different run. */
-HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3])
+HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3], ULONG_PTR *generation)
 {
     static const unsigned order[] = {4,0,1}; /* code, WC data, WB data */
     UINT_PTR at = (UINT_PTR)base;
@@ -207,7 +207,7 @@ HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3])
         run = v->run;
         at += v->size;
     }
-    for (unsigned i = 0; i < ARRAYSIZE(order); ++i) {
+    for (unsigned i = 0; parts && i < ARRAYSIZE(order); ++i) {
         if (!DuplicateHandle(GetCurrentProcess(),run->parts[order[i]],GetCurrentProcess(),
                              &parts[i],0,FALSE,DUPLICATE_SAME_ACCESS)) {
             hr = HRESULT_FROM_WIN32(GetLastError());
@@ -215,6 +215,7 @@ HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3])
             goto done;
         }
     }
+    *generation = run->first; /* page IDs increase monotonically and never wrap */
     hr = S_OK;
 done:
     ReleaseSRWLockShared(&page_lock);

@@ -32,10 +32,11 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettAcquireCodeReadSourceV1(
     return hr;
 }
 
-extern "C" HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3]);
+extern "C" HRESULT xmem_pin_placed(const void *base, UINT64 width, HANDLE parts[3], ULONG_PTR *generation);
 
 struct XsPlacedCapture {
     LONG refs = 1;
+    ULONG_PTR generation;
     IUnknown *owner = nullptr;
     ImportedBuffer code;
     ID3D12Resource *data[2]{};
@@ -54,10 +55,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12De
     *out = nullptr;
     if (!device) return E_INVALIDARG;
     HANDLE parts[3];
-    HRESULT hr = xmem_pin_placed(base,width,parts);
+    ULONG_PTR generation;
+    HRESULT hr = xmem_pin_placed(base,width,parts,&generation);
     if (FAILED(hr)) return hr;
     auto *p = new(std::nothrow) XsPlacedCapture;
     if (p) {
+        p->generation=generation;
         hr = device->QueryInterface(IID_PPV_ARGS(&p->owner));
         if (SUCCEEDED(hr)) hr = p->code.wc(device,edges[1],parts[0],nullptr);
         if (SUCCEEDED(hr)) hr = xs_place_arena_data_uav(device,parts[1],0x2404,47u<<20,&p->data[0]);
@@ -67,6 +70,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12De
     } else hr = E_OUTOFMEMORY;
     for (auto h:parts) CloseHandle(h);
     return hr;
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI ScarlettPlacedMatchesV1(const XsPlacedCapture *p,const void *base)
+{
+    ULONG_PTR live;
+    return p && SUCCEEDED(xmem_pin_placed(base,edges[3],nullptr,&live)) && p->generation==live;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedDataV1(const XsPlacedCapture *p,

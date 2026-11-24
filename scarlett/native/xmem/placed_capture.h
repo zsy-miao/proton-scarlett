@@ -11,6 +11,7 @@ struct XsDataOperand {
 extern "C" {
 #endif
 HRESULT WINAPI ScarlettCapturePlacedV1(ID3D12Device3 *, const void *, UINT64 width, struct XsPlacedCapture **);
+BOOL WINAPI ScarlettPlacedMatchesV1(const struct XsPlacedCapture *,const void *liveBase);
 HRESULT WINAPI ScarlettPlacedDataV1(const struct XsPlacedCapture *, UINT64 offset, UINT64 bytes, struct XsDataOperand *);
 /* On success release *retained with ScarlettReleasePlacedV1 after retirement (or list discard). */
 HRESULT WINAPI ScarlettPlacedCopyToV1(struct XsPlacedCapture *, UINT64 sourceOffset, UINT64 bytes,

@@ -255,6 +255,43 @@ static void WINAPI write_srv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T des
 {
     if (FAILED(xs_write_view(d,SRV,r,desc,dest))) xs_stop();
 }
+#ifdef SCARLETT_STAGED_PLACED
+/* 5bdba51..5bdba67: SRV by title VA, not by COM identity or desktop GPU VA. */
+HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *view,SIZE_T dest)
+{
+    D3D12_RESOURCE_DESC rd;
+    DWORD w[16];
+    if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
+        !copy_in(w,view,sizeof w)) return E_POINTER;
+    if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment || rd.Width!=PLACED_WIDTH ||
+        rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
+        rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Layout!=D3D12_TEXTURE_LAYOUT_ROW_MAJOR || rd.Flags ||
+        w[0]!=39 || w[1]!=1 || w[2]!=0x1688 || w[4] || w[5] || w[6]!=PLACED_WIDTH/4 ||
+        w[7] || w[8]!=1 || w[12] || w[13] || w[14] || w[15]) return E_NOTIMPL;
+    UINT64 va; memcpy(&va,w+10,sizeof va);
+    struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
+    struct placed_backing *found=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for (struct placed_backing *p=d->placed;p;p=p->next) if (p->guest_va==va) {
+        if (found) { found=NULL; break; } /* address alone cannot choose between wrappers */
+        found=p;
+    }
+    IUnknown *id=NULL;
+    if (found && found->matches(found->capture,(const void *)va)) {
+        id=&found->title->iface;
+        IUnknown_AddRef(id);
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    if (!id) return E_INVALIDARG;
+    HRESULT hr=placed_write(d,SRV,id,w,dest);
+    IUnknown_Release(id);
+    return hr==S_FALSE ? E_INVALIDARG : hr;
+}
+static void WINAPI write_address_srv(IUnknown *d,const void *rd,const void *desc,SIZE_T dest)
+{
+    if (FAILED(xs_write_address_srv(d,rd,desc,dest))) xs_stop();
+}
+#endif
 static void WINAPI write_uav(IUnknown *d,IUnknown *r,IUnknown *counter,const void *desc,SIZE_T dest)
 {
     if (counter || FAILED(xs_write_view(d,UAV,r,desc,dest))) xs_stop();

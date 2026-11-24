@@ -310,7 +310,13 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_signature) signature;
     xs_stop_fn gap150[6];
     __typeof__(&bootstrap_extended) extended;
-    xs_stop_fn gap188[24];
+    xs_stop_fn gap188[21];
+#ifdef SCARLETT_STAGED_PLACED
+    __typeof__(&write_address_srv) address_srv;
+#else
+    xs_stop_fn address_srv;
+#endif
+    xs_stop_fn gap238[2];
     __typeof__(&bootstrap_list) list;
     xs_stop_fn gap250[4];
     __typeof__(&bootstrap_frame_interval) frame_interval;
@@ -325,6 +331,7 @@ struct bootstrap_vtbl {
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, committed) == 0x3f8 &&
                offsetof(struct bootstrap_vtbl, placed) == 0x428 &&
+               offsetof(struct bootstrap_vtbl, address_srv) == 0x230 &&
                offsetof(struct bootstrap_vtbl, descriptors) == 0x70 &&
                offsetof(struct bootstrap_vtbl, stride) == 0x78 &&
                offsetof(struct bootstrap_vtbl, cbv) == 0x88 && offsetof(struct bootstrap_vtbl, srv) == 0x90 &&
@@ -380,7 +387,13 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
-    .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 3] = xs_stop },
+    .gap188 = { [0 ... 20] = xs_stop },
+#ifdef SCARLETT_STAGED_PLACED
+    .address_srv = write_address_srv,
+#else
+    .address_srv = xs_stop,
+#endif
+    .gap238 = {xs_stop,xs_stop}, .list = bootstrap_list, .gap250 = { [0 ... 3] = xs_stop },
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
     .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 44] = xs_stop },
     .committed = bootstrap_committed, .gap400 = { [0 ... 4] = xs_stop }, .placed = bootstrap_placed

@@ -36,6 +36,25 @@ UAV would additionally expose the code store. Existing `xs_bind_view_buffer`
 registers one actual resource, and `xs_write_view` accepts no non-null UAV.
 A copy would cease to alias title/queue writes. The display ring is unrelated.
 
+**Address-based SRV (`+0x230`):** the observed branch in `5bdb950` does
+not pass `owner[+0x20]` to `+0x90`. `5bdba51` converts its SRV to a
+zero-initialized 64-byte description; `5bdba63` sets its `+0x28` qword
+to `owner[+0x38]`, the original guest placement base. `4ecc81b` calls
+`void(This, bufferDesc, extendedSrv, titleSlot)`. The buffer description
+is row-major, width `0xae00000`, layout 1, flags **zero** (different
+from creation). The raw SRV is format 39, first zero, count `0x2b80000`,
+stride zero, RAW 1, mapping `0x1688`. The observed DWORD 1 at resource
+offset 4 and `0xffff` at SRV offset 36 are padding, not selectors.
+
+The slot writer matches a unique wrapper on the device to that VA and
+checks all three live XMem mappings against its captured run. It retains
+the resulting SRV identity; reuse does not retarget an existing descriptor.
+It overwrites the consumed free-list link with the normal 16-byte tag,
+preserving the rest of the slot. `4ecc821` passes the slot to
+`4ecc830` for `clwb`; there is no inline descriptor-byte edit on this
+return path. `5bdb887` stores the SRV wrapper and `5bdb8a1` restores bit
+4 in the resource owner's flags, outside the slot.
+
 **Smallest tested consumer:** the paired indirect Dispatch paths in
 `command-signatures.md` pass `[75df108]` and `A-[75df140]` to list `+1e8`.
 Resolve the four-byte-aligned 12-byte operand against *one* data extent and
