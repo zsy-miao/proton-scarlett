@@ -220,14 +220,14 @@ present. Invalid descriptors and mappings preserve both the count and token.
 
 ```sh
 s="$PWD/scarlett/native"; w=$(mktemp -d); mkdir "$w/game"
-x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP \
-  "$s/test-present-x.c" "$s/d3d12_device.c" "$s/queue/queue.c" -ld3d12 -ldxgi \
+x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED \
+  "$s/test-present-x.c" "$s/d3d12_device.c" "$s/d3d12_vm.c" "$s/queue/queue.c" -ld3d12 -ldxgi \
   -o "$w/game/game_scarlett_master.exe"
 SCARLETT_TEST_GPU=radv SCARLETT_TEST_DISPLAY=sway SCARLETT_RECORD=1 TMPDIR="$w" \
   scarlett/test-launch-nixos.sh "$w/game"
 ```
 
-Check `PASS PresentX` in the Proton log and decode the center pixel of
+Check `PASS q118 zero-token sync-list submit` in the Proton log and decode the center pixel of
 `display.mp4` as in `scarlett/tests/radv-present.sh`; it should change
 from red to green in that order.
 
