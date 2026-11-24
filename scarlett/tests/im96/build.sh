@@ -31,11 +31,16 @@ trap 'rm -rf -- "$obj"' EXIT
 flags=(-Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED
     -DSCARLETT_EXPERIMENTAL_TAGGED_BATCH -DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
     -DSCARLETT_EXPERIMENTAL_DIRECT_WAIT -DSCARLETT_EXPERIMENTAL_BRIDGE)
+extra=()
+if [[ -n ${XMEM_DLL:-} ]]; then
+    flags+=(-DTEST_IM96_USED)
+    extra+=("$(realpath -e "$XMEM_DLL")")
+fi
 for f in test-clear-device d3d12_vm queue/queue; do
     x86_64-w64-mingw32-gcc "${flags[@]}" -c "$s/../../native/$f.c" -o "$obj/${f##*/}.o"
 done
-x86_64-w64-mingw32-g++ -std=c++17 -Os -static -Wall -Wextra -Werror -Wl,--no-insert-timestamp \
+x86_64-w64-mingw32-g++ "${flags[@]}" -std=c++17 -static -Wl,--no-insert-timestamp \
     -DTEST_IM96_EXACT_ROOT "$s/draw.cpp" "$obj"/{test-clear-device,d3d12_vm,queue}.o \
-    -ld3d12 -ldxgi -ldxguid -o "$g/game_scarlett_master.exe"
+    "${extra[@]}" -ld3d12 -ldxgi -ldxguid -o "$g/game_scarlett_master.exe"
 python3 -IB "$s/fixture.py" "$g"
 python3 -IB "$s/cpu.py" "$g"

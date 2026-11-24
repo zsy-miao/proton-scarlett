@@ -17,8 +17,13 @@ static std::vector<unsigned char> file(const char *name,size_t expected=0) {
 #ifdef TEST_IM96_EXACT_ROOT
 #include "test-exact.hpp"
 #endif
+#ifdef TEST_IM96_USED
+#include "used-table.hpp"
+#endif
 int main() {
-#ifdef TEST_IM96_EXACT_ROOT
+#ifdef TEST_IM96_USED
+    auto guest=owner();auto root=exact_root(guest.Get());UsedTable used(guest.Get());ComPtr<ID3D12Device>d;HR(root->GetDevice(IID_PPV_ARGS(&d)));
+#elif defined(TEST_IM96_EXACT_ROOT)
     auto root=exact_root();ComPtr<ID3D12Device> d;HR(root->GetDevice(IID_PPV_ARGS(&d)));
 #else
     ComPtr<ID3D12Device> d; HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&d)));
@@ -95,7 +100,10 @@ int main() {
     auto current=slot(rtv.Get(),3); l->OMSetRenderTargets(1,&current,FALSE,nullptr);
     D3D12_RECT sc={0,0,8,8}; D3D12_VIEWPORT vp={0,0,8,8,0,1}; l->RSSetScissorRects(1,&sc); l->RSSetViewports(1,&vp);
     l->SetGraphicsRootSignature(root.Get()); ID3D12DescriptorHeap*heaps[]={srv.Get()}; l->SetDescriptorHeaps(1,heaps);
-#ifdef TEST_IM96_EXACT_ROOT
+#ifdef TEST_IM96_USED
+    used.setup(d.Get(),l.Get());*(UINT64*)used.u.raw_slot^=1;CK(FAILED(used.consume(l.Get())));*(UINT64*)used.u.raw_slot^=1;
+    HR(used.consume(l.Get()));
+#elif defined(TEST_IM96_EXACT_ROOT)
     l->SetGraphicsRootDescriptorTable(0,srv->GetGPUDescriptorHandleForHeapStart());
 #else
     for(UINT i=0;i<2;++i) l->SetGraphicsRootDescriptorTable(i,srv->GetGPUDescriptorHandleForHeapStart());
@@ -110,14 +118,31 @@ int main() {
         D3D12_TEXTURE_COPY_LOCATION from={},to={}; from.pResource=image[i].Get(); from.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         to.pResource=rb[i].Get(); to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; to.PlacedFootprint=fp[i]; l->CopyTextureRegion(&to,0,0,0,&from,nullptr);
     }
+#ifdef TEST_IM96_USED
+    used.copy_checks(l.Get());HR(l->Close());
+    ComPtr<ID3D12Fence> gate;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate)));HR(q->Wait(gate.Get(),1));
+    *(UINT64*)used.u.cb_slot^=16;CK(FAILED(used.submit(q.Get(),l.Get())));*(UINT64*)used.u.cb_slot^=16;HR(used.submit(q.Get(),l.Get()));
+#else
     HR(l->Close()); ID3D12CommandList*lists[]={l.Get()}; q->ExecuteCommandLists(1,lists);
+#endif
     ComPtr<ID3D12Fence>f; HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f))); HR(q->Signal(f.Get(),1));
     HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(event); HR(f->SetEventOnCompletion(1,event));
+#ifdef TEST_IM96_USED
+    CK(WaitForSingleObject(event,0)==WAIT_TIMEOUT);used.replace();HR(gate->Signal(1));
+#endif
     CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0); CloseHandle(event); HR(d->GetDeviceRemovedReason()); CK(f->GetCompletedValue()==1);
     for(UINT i=0;i<4;++i){auto gold=file(i==3?"expected.bin":names[i],1024);
         BYTE*p; HR(rb[i]->Map(0,nullptr,(void**)&p)); for(UINT y=0;y<8;++y)for(UINT x=0;x<8;++x){
+#ifdef TEST_IM96_USED
+            if(i==3 && x>=2 && x<6 && y>=2 && y<6){
+                float u=(x-2+.5f)/4,v=(y-2+.5f)/4;const float c[]={u,0,1-u,1-v};memcpy(gold.data()+(y*8+x)*16,c,16);
+            }
+#endif
             if(memcmp(p+fp[i].Offset+y*fp[i].Footprint.RowPitch+x*16,gold.data()+(y*8+x)*16,16)){
                 fprintf(stderr,"FAIL %s at (%u,%u)\n",names[i],x,y); return 1;}}
         rb[i]->Unmap(0,nullptr);}
     puts("PASS im96 src17 -> dst41: 16 shaded, 48 border, src17/src18/dst40 intact");
+#ifdef TEST_IM96_USED
+    used.verify();
+#endif
 }

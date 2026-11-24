@@ -52,6 +52,8 @@ bytes and all 32 independently filled padding bytes after address reuse.
 The object SRV used a separate 64-byte copy starting at `0x3de20`;
 rounding that address down to a 64-byte stride boundary would read 32
 wrong bytes. Both adapters matched the 16 shaded pixels and 48 guards.
+Set `XMEM_DLL` to the matching staged XMem DLL when running `build.sh`
+to include the placed-buffer lifetime and padding checks.
 
 | Stage | Register | Consumer |
 |---|---|---|

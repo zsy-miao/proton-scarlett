@@ -1,4 +1,76 @@
 #include "d3d12_device.c"
+#ifdef TEST_IM96_USED
+#include "../tests/im96/used-proof.h"
+/* Internal fixture callers hold both heaps, image and allocation identities. */
+BOOL test_used_current(const struct used_proof *u)
+{
+    if(!u->owner || u->owner->lpVtbl!=&bootstrap_vtbl.unknown || !u->cb_allocation ||
+       !u->raw_allocation || !u->cb_generation || !u->raw_serial || !u->tex_serial)return FALSE;
+    struct xbox_device *d=CONTAINING_RECORD(u->owner,struct xbox_device,iface);
+    struct desc_heap *src=NULL,*vis=NULL;
+    BOOL ok=FALSE;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(struct desc_heap*h=d->heaps;h;h=h->next){
+        if(&h->iface==u->src_heap && !h->visible)src=h;
+        if(&h->iface==u->visible && h->visible)vis=h;
+    }
+    if(!src || !vis || src->stride!=32 || vis->stride!=32 || src->count<=690 || vis->count<=98 ||
+       u->raw_slot!=src->start+690*32 || u->cb_slot!=src->start+18*32 || u->tex_slot!=vis->start+98*32 ||
+       u->table<vis->start || (u->table-vis->start)%32 || (u->table-vis->start)/32+2>=vis->count)goto done;
+    struct descriptor_record *a=src->records+690,*b=vis->records+98,*c=src->records+18;
+    if(a->serial!=u->raw_serial || a->kind!=PLACED_RAW32_VIEW || a->placed!=u->raw_allocation ||
+       a->offset!=0x3de20 || a->elements!=32 || a->stride || b->serial!=u->tex_serial || b->kind!=SRV ||
+       !u->image || b->resource!=u->image || memcmp(&b->captured_srv,&u->view,sizeof u->view) ||
+       c->serial || c->kind || c->resource || c->placed)goto done;
+    const UINT64 expected[3][4]={{a->serial,0x5853444553430500ULL,0,0},{b->serial,0x5853444553430090ULL,0,0},
+            {0x0010000000000000ULL+u->base+0x3dc40,0x0002403c0000001eULL,0,0}};
+    const SIZE_T slots[]={u->raw_slot,u->tex_slot,u->cb_slot};
+    for(UINT i=0;i<3;++i){
+        struct descriptor_record *dst=vis->records+(u->table-vis->start)/32+i;
+        UINT64 wire[4],copied[4];
+        if(dst->kind || dst->serial || dst->resource || dst->placed || !copy_in(wire,(void*)slots[i],32) ||
+           !copy_in(copied,(void*)(u->table+32*i),32) || memcmp(wire,expected[i],32) || memcmp(copied,wire,32))goto done;
+    }
+    UINT matches=0;
+    for(struct placed_backing *p=d->placed;p;p=p->next){
+        if(p->guest_va!=u->base || !p->matches(p->capture,(void*)u->base))continue;
+        if(++matches!=1 || &p->title->iface!=u->raw_allocation || &p->title->iface!=u->cb_allocation ||
+           (UINT_PTR)p->capture!=u->cb_generation)goto done;
+    }
+    ok=matches==1;
+done:ReleaseSRWLockShared(&d->descriptor_lock);return ok;
+}
+HRESULT test_used_copy(const struct used_proof *u,BOOL camera,ID3D12GraphicsCommandList *l,ID3D12Resource *dst)
+{
+    if(!test_used_current(u))return E_INVALIDARG;
+    IUnknown *id=camera?u->cb_allocation:u->raw_allocation;
+    struct placed_backing*p=CONTAINING_RECORD(id,struct placed_identity,iface)->private;
+    struct XsPlacedCapture *hold=NULL;
+    HRESULT hr=p->copy(p->capture,camera?0x3dc40:0x3de20,camera?480:64,l,dst,0,&hold);
+    if(SUCCEEDED(hr))p->drop(hold); /* caller pins the two proved source ranges through its fence */
+    return hr;
+}
+UINT64 test_used_generation(IUnknown *pinned)
+{
+    struct placed_backing*p=CONTAINING_RECORD(pinned,struct placed_identity,iface)->private;
+    return (UINT_PTR)p->capture; /* retained opaque generation capability; matches() checks live XMem mapping */
+}
+/* Fixture calls this at producer allocation, before encoding a CBV. The slot's
+ * unregistered bytes alone are never used as evidence of allocation lifetime. */
+IUnknown *test_used_cb_pin(IUnknown *owner,SIZE_T producer,UINT bytes)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || bytes!=480)return NULL;
+    struct xbox_device*d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    IUnknown *out=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(struct placed_backing*p=d->placed;p;p=p->next)if(producer-p->guest_va==0x3dc40 && p->matches(p->capture,(void*)p->guest_va)){
+        if(out){out=NULL;break;}
+        out=&p->title->iface;
+    }
+    if(out)IUnknown_AddRef(out);
+    ReleaseSRWLockShared(&d->descriptor_lock);return out;
+}
+#endif
 
 /* Fixture-only owner/kind lookup; success pins the guest wrapper. */
 ID3D12RootSignature *test_retain_im96(IUnknown *d,IUnknown *r)

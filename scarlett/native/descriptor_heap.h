@@ -21,6 +21,9 @@ static DXGI_FORMAT refresh_format(UINT kind)
 enum { STRUCT_MAX_BYTES=16u<<20 };
 static BOOL refresh_required(UINT kind) { return kind==STRUCT_VIEW || refresh_format(kind)!=DXGI_FORMAT_UNKNOWN; }
 struct descriptor_record {
+#ifdef TEST_IM96_USED
+    D3D12_SHADER_RESOURCE_VIEW_DESC captured_srv;
+#endif
     UINT64 serial;
     UINT kind, offset; /* Address views: byte offset in the retained WC buffer */
     union { struct {UINT elements,stride;}; UINT_PTR rtv_key; }; /* kind-specific; comparison only */

@@ -7,8 +7,8 @@ static ComPtr<IUnknown> owner(){
     IID boot={0x5405c344,0xd457,0x444e,{0xb4,0xdd,0x23,0x66,0xe4,0x5a,0xee,0x39}};
     ComPtr<IUnknown> o;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)o.GetAddressOf()));return o;
 }
-static ComPtr<ID3D12RootSignature> exact_root(){
-    auto d=owner(),other=owner();
+static ComPtr<ID3D12RootSignature> exact_root(IUnknown *supplied=nullptr){
+    ComPtr<IUnknown> d=supplied;if(!d)d=owner();auto other=owner();
     using Create=HRESULT(WINAPI*)(IUnknown*,UINT,const void*,SIZE_T,REFIID,void**);
     auto create=(Create)(*(void***)d.Get())[0x80/8];
     auto wire=file("exact.rs",1304),base=file("B27.rs",112);

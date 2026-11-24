@@ -288,6 +288,9 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
 #endif
     if (resource) ID3D12Resource_AddRef(resource);
     *r=(struct descriptor_record){.serial=tag[0],.kind=kind,.resource=resource};
+#ifdef TEST_IM96_USED
+    if(kind==SRV)r->captured_srv=srv;
+#endif
     if(kind==RTV)r->rtv_key=(UINT_PTR)object;
     hr=S_OK;
 done:
