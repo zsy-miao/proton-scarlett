@@ -2,6 +2,8 @@
 
 Proton launches the title directly in Wine. Only this title's launch adds the tool's `scarlett/` DLL directory to `WINEPATH`. Wine supplies Win32, and vkd3d-proton supplies desktop D3D12. The fork implements the Scarlett-facing interfaces. No game files are used to build the runtime.
 
+The title uses `scarlett-title/pfx` under its Steam compatibility-data directory. Its system32 links to the tool's GameInput provider. Existing regular prefixes are preserved; saves or settings in them are not automatically migrated.
+
 ```bash
 export SCARLETT_GAMEINPUT_HEADER="/path/to/Windows Kits/10/Include/10.0.26100/um/GameInput.h"
 ./scarlett/build-runtime.sh "$PWD/scarlett/runtime"  # choose a new directory

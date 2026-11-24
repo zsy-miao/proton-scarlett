@@ -630,8 +630,26 @@ class Proton:
                 g_session.run_proc([self.wine_bin, "wineboot"], local_env)
                 g_session.run_proc([self.wineserver_bin, "-w"], local_env)
 
+def is_scarlett_launch(argv):
+    return len(argv) > 2 and argv[1] in ("run", "waitforexitandrun") and \
+        ntpath.basename(argv[2]).lower() == "game_scarlett_master.exe"
+
 class CompatData:
-    def __init__(self, compatdata):
+    def __init__(self, compatdata, scarlett=False):
+        self.scarlett = scarlett
+        if scarlett:
+            # Never change the system32 DLL in the user's regular prefix.
+            compatdata = os.path.join(os.path.realpath(compatdata), "scarlett-title")
+            system32 = os.path.join(compatdata, "pfx", "drive_c", "windows", "system32")
+            if os.path.realpath(system32) != system32:
+                raise ValueError("Refusing a redirected Scarlett prefix: " + system32)
+            provider = os.path.abspath(g_proton.path("scarlett/GameInput.dll"))
+            dll = os.path.join(system32, "gameinput.dll")
+            if not os.path.isfile(provider):
+                raise FileNotFoundError("Missing Scarlett provider: " + provider)
+            if os.path.lexists(dll) and os.path.realpath(dll) != os.path.realpath(provider):
+                raise ValueError("Refusing to replace an existing GameInput DLL: " + dll)
+            os.makedirs(compatdata, mode=0o700, exist_ok=True)
         self.base_dir = compatdata + "/"
         self.prefix_dir = self.path("pfx/")
         self.creation_sync_guard = self.path("pfx/creation_sync_guard")
@@ -849,6 +867,10 @@ class CompatData:
             return
 
     def pfx_copy(self, src, dst, dll_copy=False):
+        if self.scarlett and dst == self.prefix_dir + "drive_c/windows/system32/gameinput.dll":
+            # system32 precedes WINEPATH. Only create the link in a new/empty slot.
+            os.symlink(os.path.abspath(g_proton.path("scarlett/GameInput.dll")), dst)
+            return
         if os.path.islink(src):
             contents = os.readlink(src)
             if os.path.dirname(contents).endswith(('/lib/wine/i386-unix', '/lib/wine/i386-windows',
@@ -2094,16 +2116,22 @@ class Session:
 
     def run(self):
         target = sys.argv[2:] + self.cmdlineappend
-        scarlett_title = target and ntpath.basename(target[0]).lower() == "game_scarlett_master.exe"
+        scarlett_title = is_scarlett_launch(sys.argv)
         if scarlett_title:
             # Wine's loader resolves console DLL imports from the tool's own PE directory.
             shim_dir = os.path.abspath(g_proton.path("scarlett"))
+            provider = os.path.join(shim_dir, "GameInput.dll")
+            dll = g_compatdata.path("pfx/drive_c/windows/system32/gameinput.dll")
+            if not os.path.isfile(provider) or os.path.realpath(dll) != os.path.realpath(provider):
+                log("Missing Scarlett GameInput provider or conflicting prefix DLL: " + dll)
+                return 1
             path = subprocess.run([g_proton.wine_bin, "winepath", "-w", shim_dir],
                                   env=self.env, stdout=subprocess.PIPE, stderr=self.log_file)
             if path.returncode or not path.stdout.strip():
                 log("Could not locate Scarlett libraries: " + shim_dir)
                 return 1
             prepend_to_env_str(self.env, "WINEPATH", os.fsdecode(path.stdout).rstrip("\r\n"), ";")
+            append_to_env_str(self.env, "WINEDLLOVERRIDES", "gameinput=n", ";")
 
         if shutil.which('steam-runtime-launcher-interface-0') is not None:
             adverb = ['steam-runtime-launcher-interface-0', 'proton']
@@ -2160,7 +2188,11 @@ if __name__ == "__main__":
     g_proton.cleanup_legacy_dist()
     g_proton.do_steampipe_fixups()
 
-    g_compatdata = CompatData(os.environ["STEAM_COMPAT_DATA_PATH"])
+    try:
+        g_compatdata = CompatData(os.environ["STEAM_COMPAT_DATA_PATH"], is_scarlett_launch(sys.argv))
+    except (OSError, ValueError) as e:
+        log(str(e))
+        sys.exit(1)
 
     g_session = Session()
 
