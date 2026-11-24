@@ -106,14 +106,27 @@ successive 64 KiB-aligned slices. A live trace at both creations confirmed
 the next allocator was `4deb540`. The host committed textures do not call
 this hook, so the entire 64 MiB is still available at the assertion.
 
+The default node tail-calls `xmem.dll!XMemAllocDefault` with the original
+64-bit attributes and a size of 64 MiB. Only the allocator ID and display
+selector are established: `(attributes & 0x00ffc000) == 0x00808000`.
+The filter does not specify the other bits or the memory's cache policy.
+The ring rebuild's free hook at `248d980` absorbs interior-slice frees
+and forwards the base to `XMemFreeDefault`. A reference trace needs only
+the first `(size, attributes)` pair at `56a2a60` and the resulting arena's
+alignment and memory protection. That allocation does not occur in the
+current retail run.
+
 The [native Vulkan test](../../tests/display-arena.c) imported one 64 MiB
 host allocation on RADV `1002:164e`. Two linear RGBA8 textures fit in it
-at offsets `0` and `0x1fb0000`. Fenced red and green clears reached every
-pixel in the original allocation; the last `0xa0000` bytes stayed untouched.
+at offsets `0` and `0x1fb0000`. Both were color attachments, sampled
+images and storage images; fenced CPU readback verified all 8,294,400 pixels
+per image. Reimporting the same coherent, cached host memory also passed;
+inter-slice padding and the last `0xa0000` bytes stayed untouched.
 The regular D3D12 texture layout needs `0x2010000` per image and does not
-fit twice. To reproduce the linear test with Vulkan headers and loader:
-`cc -O2 scarlett/tests/display-arena.c -lvulkan -o /tmp/display-arena`,
-then run it with `VK_DRIVER_FILES` set to the RADV ICD. Retail still needs
+fit twice. From the repository root, run
+`glslangValidator -V scarlett/tests/display-arena.comp -o display-arena.spv`
+and `cc -O2 scarlett/tests/display-arena.c -lvulkan -o /tmp/display-arena`,
+then run `/tmp/display-arena` from the same directory with `VK_DRIVER_FILES` set to the RADV ICD. Retail still needs
 the two real image allocations bound to the slices its allocator supplies.
 
 `24784d5` registers ANSI `sgaWindowClass` (class name `677b672`; window

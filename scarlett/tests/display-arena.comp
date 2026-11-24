@@ -1,0 +1,11 @@
+#version 450
+layout(local_size_x=16,local_size_y=16) in;
+layout(set=0,binding=0) uniform sampler2D src;
+layout(set=0,binding=1,rgba8) uniform image2D dst;
+void main() {
+    ivec2 xy=ivec2(gl_GlobalInvocationID.xy);
+    uvec4 a=uvec4(round(texelFetch(src,xy,0)*255.0));
+    uvec4 b=uvec4(round(imageLoad(dst,xy)*255.0));
+    uvec4 mask=uvec4(xy.x&255,xy.y&255,(xy.x^xy.y)&255,0);
+    imageStore(dst,xy,vec4(a.bgra^b^mask)/255.0);
+}
