@@ -18,13 +18,15 @@ int main()
     using Query=D3D12_RESOURCE_ALLOCATION_INFO *(WINAPI *)(D3D12_RESOURCE_ALLOCATION_INFO *,IUnknown *,UINT,UINT,const void *);
     auto slot=(Query)((*reinterpret_cast<void***>(dev.Get()))[0xc8/8]);
     DWORD w[]={3,0,4096,0,256,0,128,0x10001,61,1,0,0,0x300000};
-#ifdef TEST_CUBE1
-    constexpr bool six=true;
-    w[4]=w[6]=1;w[7]=0x10006;w[8]=28;
+#if defined(TEST_CUBE_PAIR)
+    constexpr UINT layers=12;
+#elif defined(TEST_CUBE1)
+    constexpr UINT layers=6;
 #else
-    constexpr bool six=false;
+    constexpr UINT layers=1;
 #endif
-    constexpr UINT nativeBytes=six?4096:32768,guestBytes=six?24576:32768;
+    if(layers>1){w[4]=w[6]=1;w[7]=0x10000+layers;w[8]=28;}
+    constexpr UINT nativeBytes=layers==12?8192:layers==6?4096:32768,guestBytes=layers>1?layers*4096:32768;
     SYSTEM_INFO sys; GetSystemInfo(&sys);
     auto pages=(BYTE *)VirtualAlloc(nullptr,2*sys.dwPageSize,MEM_RESERVE,PAGE_NOACCESS);
     CK(pages && VirtualAlloc(pages,sys.dwPageSize,MEM_COMMIT,PAGE_READWRITE)==pages);
@@ -35,7 +37,7 @@ int main()
     for (DWORD align:{0u,4096u}) {
         w[2]=align; memcpy(prefix,w,sizeof w); rd.Alignment=align;
         auto native=d->GetResourceAllocationInfo(1,1,&rd);
-        if (six && !align) {CK(native.Alignment==65536 && native.SizeInBytes==65536);continue;}
+        if (layers>1 && !align) {CK(native.Alignment==65536 && native.SizeInBytes==65536);continue;}
         CK(slot(&got.info,dev.Get(),1,1,prefix)==&got.info && got.before==1 && got.after==2);
         CK(!memcmp(&got.info,&native,sizeof native));
         CK(native.Alignment==(align?4096u:65536u) && native.SizeInBytes==(align?nativeBytes:65536u));
@@ -70,7 +72,7 @@ int main()
 
     // Three adjacent small placements, none at a 64 KiB boundary. Seed the guards
     // first, then write the middle texture and check all three after the fence.
-    constexpr UINT layers=six?6:1,face=six?512:32768,bytes=layers*face,total=3*bytes;
+    constexpr UINT face=layers>1?512:32768,bytes=layers*face,total=3*bytes;
     D3D12_HEAP_DESC hd={}; hd.SizeInBytes=2*65536; hd.Properties.Type=D3D12_HEAP_TYPE_DEFAULT;
     hd.Properties.CreationNodeMask=hd.Properties.VisibleNodeMask=1;
     hd.Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
@@ -113,7 +115,7 @@ int main()
     HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(e); HR(f->SetEventOnCompletion(1,e));
     CK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0); CloseHandle(e);
     HR(readback->Map(0,nullptr,(void **)&p));
-    for (UINT n=0;n<total;n++) if(!six || n%face<4)CK(p[n]==value(n));
+    for (UINT n=0;n<total;n++) if(layers==1 || n%face<4)CK(p[n]==value(n));
     readback->Unmap(0,nullptr);
     printf("PASS native placement offsets %#x/%#x/%#x, checked all %u subresources after fence\n",4096,4096+nativeBytes,4096+2*nativeBytes,3*layers);
 }

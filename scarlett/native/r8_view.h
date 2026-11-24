@@ -20,10 +20,15 @@ static BOOL valid_address_record(const struct descriptor_record *r,SIZE_T slot,U
         tag[0]==r->serial && tag[1]==(0x5853444553430000ull|kind);
 }
 
+static UINT view_layers(UINT kind)
+{
+    return kind==CUBE_PAIR_VIEW?CUBE_PAIR_FACES:kind==CUBE1_VIEW || kind==ARRAY6_VIEW?CUBE1_FACES:1;
+}
 static D3D12_SHADER_RESOURCE_VIEW_DESC texture_srv(UINT kind)
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC v={.Format=refresh_format(kind),.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
     if (kind==CUBE1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBE; v.TextureCube.MipLevels=1; }
+    else if (kind==CUBE_PAIR_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURECUBEARRAY; v.TextureCubeArray.MipLevels=1; v.TextureCubeArray.NumCubes=2; }
     else if (kind==ARRAY6_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=CUBE1_FACES; }
     else if (kind==VOLUME1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; v.Texture3D.MipLevels=1; }
     else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=1; }
@@ -54,16 +59,16 @@ static HRESULT store_address_view(struct xbox_device *d,UINT kind,SIZE_T dest,ID
 static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,SIZE_T dest)
 {
     static const DWORD raw[]={39,1,0x1688,0,0,0,38,0,1,0};
-    BOOL tex=refresh_required(kind),six=kind==CUBE1_VIEW || kind==ARRAY6_VIEW;
+    BOOL tex=refresh_required(kind);
     D3D12_SHADER_RESOURCE_VIEW_DESC srv=texture_srv(kind);
-    DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==ARRAY6_VIEW?CUBE1_FACES:0,0,0};
+    DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==CUBE_PAIR_VIEW?2:kind==ARRAY6_VIEW?CUBE1_FACES:0,0,0};
     if (memcmp(w,tex?texture:raw,sizeof texture) || w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
     UINT alignment=tex ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
     if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;
-    HRESULT hr=retain_wc_buffer(device,(void *)va,six?CUBE1_BYTES:kind==R8_VIEW?R8_BYTES:tex?R8_ALIGNMENT:160,&buffer,&offset);
+    HRESULT hr=retain_wc_buffer(device,(void *)va,kind==R8_VIEW?R8_BYTES:tex?view_layers(kind)*R8_ALIGNMENT:160,&buffer,&offset);
     if (FAILED(hr)) return hr;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     struct descriptor_record old={0};
@@ -150,7 +155,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         if (FAILED(hr)) goto fail;
     }
     rd.Dimension=kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=texel32?1:256; rd.Height=texel32?1:128;
-    rd.DepthOrArraySize=(kind==CUBE1_VIEW || kind==ARRAY6_VIEW)?CUBE1_FACES:1; rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    rd.DepthOrArraySize=view_layers(kind); rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
     if (FAILED(hr)) goto fail;
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,1};

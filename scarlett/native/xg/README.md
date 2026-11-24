@@ -256,3 +256,21 @@ or `-DTEST_ARRAY6` and compile `test-six-face.hlsl` with the matching define,
 `-T cs_6_0 -E main`, as `cube1.dxil` or `array6.dxil`. Each test compares all
 24 normalized channel values twice, including writes after queue submission,
 visible slot overwrite, heap release, original VA reuse, and padding guards.
+
+### Twelve 1×1 RGBA8_UNORM layers (RTX 3070)
+
+The next `+c8` small UNKNOWN-layout query returned 8192/4096 on RTX. The
+explicit `0x105` guest layout uses twelve separate 4096-byte tiles (49152
+bytes total), confirmed by an independent texture computer. XG retains the
+same full-span check and stack DWORD copy as the six-layer path; only the
+bounded layer count changes. Retail copied subresources 0..11, pitches 4/4,
+first white at WC offset `e5ec000`, then zero at `e5f8000`. Both `+230`
+views were TextureCubeArray, first face 0, two cubes, one mip. The next
+unsupported `+c8` was a **two-layer** RGBA8 allocation, return `+344145`.
+
+Build both allocation and view fixtures as above with `-DTEST_CUBE_PAIR`.
+Use the same define for `test-six-face.hlsl`, output `cube-pair.dxil`. Native
+adjacent placements at 0x1000, 0x3000 and 0x5000 preserve all 36 subresources.
+The shader fixture checks all twelve directions/cube indices (48 channels)
+for two gated patterns, including exact VA reuse. Retail evidence covers
+creation/copy/view writes; sampling was exercised by the fixture.

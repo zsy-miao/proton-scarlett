@@ -301,7 +301,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     if ((!texel32 && !is_r8(&rd)) || (rd.Alignment && rd.Alignment!=R8_ALIGNMENT)) return E_NOTIMPL;
     if ((UINT)rd.Layout==R8_LAYOUT && rd.Alignment==R8_ALIGNMENT) {
         /* Runtime R8 occupies eight tiles; the single RGBA8 texel occupies one. */
-        *out=(D3D12_RESOURCE_ALLOCATION_INFO){cube?CUBE1_BYTES:texel32?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
+        *out=(D3D12_RESOURCE_ALLOCATION_INFO){cube?rd.DepthOrArraySize*R8_ALIGNMENT:texel32?R8_ALIGNMENT:R8_BYTES,R8_ALIGNMENT};
         return S_OK;
     }
     if (rd.Layout!=D3D12_TEXTURE_LAYOUT_UNKNOWN) return E_NOTIMPL;
@@ -309,7 +309,7 @@ HRESULT xs_color_allocation_info(IUnknown *iface,UINT node,UINT count,const void
     host->lpVtbl->GetResourceAllocationInfo(host,out,node,1,&rd);
     /* +34414d compares Alignment only. Never let a failed probe masquerade as small. */
     if (out->Alignment!=(rd.Alignment ? rd.Alignment : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) ||
-        out->SizeInBytes!=(texel32 ? R8_ALIGNMENT : rd.Alignment ? R8_BYTES : 65536)) {
+        out->SizeInBytes!=(cube && rd.DepthOrArraySize==CUBE_PAIR_FACES ? 8192 : texel32 ? R8_ALIGNMENT : rd.Alignment ? R8_BYTES : 65536)) {
         *out=(D3D12_RESOURCE_ALLOCATION_INFO){UINT64_MAX,D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT};
         return S_FALSE;
     }

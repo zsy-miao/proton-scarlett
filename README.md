@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game hasn't shown its first frame or reached the main menu. |
 | How far does it get? | The original Xbox game starts on Linux with both AMD graphics and an NVIDIA RTX 3070. It opens game files and begins setting up graphics. |
 | Can it draw anything yet? | In a [separate test](scarlett/tests/clear-fallback/README.md), the game's own drawing code produced the expected colored rectangle on both GPUs. |
-| What's blocking it? | On RTX, the game sets up four six-layer textures, then stops when it asks how much memory a twelve-layer texture needs. On AMD, it can't create the color image in the memory it reserved. |
+| What's blocking it? | On RTX, the game sets up its six- and twelve-layer textures, then stops when it asks how much memory a two-layer texture needs. On AMD, it can't create the color image in the memory it reserved. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
@@ -21,7 +21,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 Both GPUs pass the size and alignment queries for the [four-sample color target](scarlett/native/msaa-color.md) and [depth/stencil buffer](scarlett/native/msaa-depth.md): 4 MiB for each. RTX retail places both in its original pool and creates their shader, render-target and depth/stencil views. A GPU test drew through the color view: exactly 16 bytes changed in the original allocation. The [depth test](scarlett/native/rtx-depth.md) verified which samples passed or failed depth and stencil comparisons. RADV rejects both multisample placements. A [controlled comparison](scarlett/native/msaa-radv-placement.md) traced its `+0xcc2936` breakpoint to the missing color target.
 
-RTX retail copies all six layers of each of four 1×1 RGBA8 textures and creates two cube views and two array views. [GPU tests](scarlett/native/xg/README.md#six-11-rgba8_unorm-layers-rtx-3070) read all 24 channel values through each view type after the original CPU address was reused. The next retail allocation query requests **12 layers** (device `+0xc8`, title return `+0x344145`).
+RTX retail sets up four six-layer RGBA8 textures, then copies two [twelve-layer cube arrays](scarlett/native/xg/README.md#twelve-11-rgba8_unorm-layers-rtx-3070) and creates their shader views. GPU tests read all 48 channel values across both cubes after the original CPU address was reused. The next retail allocation query requests **two layers** (device `+0xc8`, title return `+0x344145`).
 
 A [native AMD test](scarlett/tests/radv-native-msaa/README.md) drew and read all four samples by placing the image and buffer in one directly mapped allocation. In a [Wine test](scarlett/tests/radv-native-wc-wine/README.md), the program freed and reused the same address before the GPU finished. The GPU still wrote to the original allocation; both 64 KiB guards and the replacement memory stayed intact. AMD retail still uses exported memory. Its allocator, texture writes and graphics descriptors need to share the tested allocation before retail can use this path.
 

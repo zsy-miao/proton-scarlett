@@ -131,7 +131,7 @@ __declspec(dllexport) HRESULT WINAPI XGCreateTextureComputer(
     if ((!texel32 && !is_r8(&desc)) || (UINT)desc.Layout!=R8_LAYOUT || desc.Alignment!=R8_ALIGNMENT) return E_NOTIMPL;
     struct computer *c=HeapAlloc(GetProcessHeap(),0,sizeof *c);
     if (!c) return E_OUTOFMEMORY;
-    *c=(struct computer){&methods,1,texel32,cube?CUBE1_FACES:1};
+    *c=(struct computer){&methods,1,texel32,cube?desc.DepthOrArraySize:1};
     *out=c;
     return S_OK;
 }
