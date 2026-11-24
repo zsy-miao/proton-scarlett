@@ -520,6 +520,12 @@ static void WINAPI sampler_write(IUnknown *iface,const void *desc,SIZE_T dest)
 }
 static void WINAPI sampler_copy(IUnknown *iface,UINT count,SIZE_T dest,SIZE_T src,UINT type)
 {
+#ifdef SCARLETT_STAGED_PLACED
+    if (count==1 && type==D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
+        if (FAILED(xs_copy_r8_view(iface,dest,src))) xs_stop();
+        return;
+    }
+#endif
     if (count!=1 || type!=D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) xs_stop();
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_CPU_DESCRIPTOR_HANDLE from,to;

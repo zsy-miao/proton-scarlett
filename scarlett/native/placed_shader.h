@@ -32,7 +32,7 @@ static BOOL placed_shader_digest(const BYTE *code,DWORD n)
 static IUnknown *placed_slot_identity(struct desc_heap *h,SIZE_T slot,UINT kind)
 {
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
-    if (FAILED(xs_descriptor_slot(&h->iface,slot,NULL,&gpu))) return NULL;
+    if (FAILED(descriptor_slot(&h->iface,slot,NULL,&gpu))) return NULL;
     const struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
     UINT64 tag[2];
     return r->placed && r->kind==kind && r->serial && copy_in(tag,(void *)slot,sizeof tag) &&

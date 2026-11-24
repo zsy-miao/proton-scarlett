@@ -34,14 +34,14 @@ for `+230`. Its resource had layout `105`, alignment 0, same R8 shape and
 flags; view words were `3d 4 1688 0 0 1 0 0 0 0 94602000 d 0 0 0 3`.
 That is the original texture backing on RADV at `0xd94602000`. On RTX the
 corresponding backing was `0xd4b202000`; the view carried that address.
-Both runs completed the copy before the buffer-only SRV writer stopped at
+Before the R8 address view was implemented, both runs completed the copy before the buffer-only SRV writer stopped at
 title return `4ecc821`. No shader sampled the view in these runs.
 
 The recommendation applies to this runtime-created descriptor. Device `+c8`
 sizes the explicit mode with alignment 4096 as eight 4 KiB tiles; the texture
 computer writes them into the original WC backing. Creation with unknown
 layout remains unsupported. The original-backing readback below qualifies
-the byte order on both GPUs; retail stops at the unsupported texture SRV.
+the byte order on both GPUs.
 
 To probe a particular x64 library's recommendation,
 build `test-r8-suggest.c` with `x86_64-w64-mingw32-gcc -std=c11 -municode
@@ -134,3 +134,34 @@ before sampling gave a bitwise match at all 393,216 point-wrap samples and
 393,216 linear-wrap samples per adapter. The test covered explicit mip zero
 and kept the refreshed texture alive through the fence. It must be refreshed
 again if the source changes before another draw.
+
+## R8 address view
+
+Device `+230` accepts the exact R8 resource and view above. A slot owns an
+import of the original WC buffer and a checked 32,768-byte span. Device `+c0`
+can copy one such record from a CPU heap to a visible heap; overwriting or
+releasing either slot does not revoke the other's reference. Ordinary view
+and range resolvers reject R8 records. A tag copied as bytes is insufficient.
+
+An adapter must call `xs_refresh_r8` immediately before use on an open,
+ordered direct or compute list with the WC buffer in COMMON. Each call records
+2,048 contiguous 16-byte GPU copies into private linear rows and a footprint
+copy into a private native R8 texture. The recorder returns its one-slot heap
+only after recording the shader-readable transition. Bind that heap for the
+following use; never cache its contents across writes. Keep the returned hold
+until the queue fence retires. All fallible operations precede the first
+recorded copy. No draw-state changes or refresh work occur at descriptor write.
+
+Retail on RADV and RTX 3070 writes a visible slot from WC offset `0x2000`
+and subsequently breaks at title RVA `+28c95ce`. This run did not sample
+the texture. The ordinary D3D12 fixture samples the copied slot at all
+32,768 coordinates after gated CPU writes, including release of the title
+heaps and exact VA reuse. It checks the last valid span, clipped/misaligned
+spans, resource/view mutations and tag tampering.
+
+To reproduce, build `../test-r8-view.hlsl` with `dxc -T cs_6_0 -E main -Fo
+sample.dxil`. Use the device, queue and VM objects and compiler flags in
+[the allocation test](../r8-allocation.md), compiling `d3d12_device.c`
+instead of the fixture-specific device file. Link `../test-r8-view.cpp` and
+the XG import library. Place `sample.dxil` beside `game_scarlett_master.exe`.
+Build with `-DTEST_R8_DIRECT` for a direct list or omit it for compute.

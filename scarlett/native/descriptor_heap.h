@@ -1,11 +1,20 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
+enum { R8_VIEW=0x230 };
 struct descriptor_record {
-    UINT64 serial, kind;
+    UINT64 serial;
+    UINT kind, offset; /* R8_VIEW: byte offset in the retained WC buffer */
     ID3D12Resource *resource;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *placed; /* exactly first=0, 174 MiB / 4 RAW dwords */
 #endif
 };
+static void drop_record(struct descriptor_record r)
+{
+    if (r.resource) ID3D12Resource_Release(r.resource);
+#ifdef SCARLETT_STAGED_PLACED
+    if (r.placed) IUnknown_Release(r.placed);
+#endif
+}
 struct desc_heap {
     IUnknown iface;
     LONG refs;
@@ -52,12 +61,7 @@ static ULONG WINAPI desc_release(IUnknown *i)
             ReleaseSRWLockExclusive(&owner->descriptor_lock);
         }
         if (h->records) {
-            for (UINT n=0;n<h->count;n++) {
-                if (h->records[n].resource) ID3D12Resource_Release(h->records[n].resource);
-#ifdef SCARLETT_STAGED_PLACED
-                if (h->records[n].placed) IUnknown_Release(h->records[n].placed);
-#endif
-            }
+            for (UINT n=0;n<h->count;n++) drop_record(h->records[n]);
             HeapFree(GetProcessHeap(),0,h->records);
         }
         ID3D12DescriptorHeap_Release(h->host);
@@ -168,7 +172,7 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
 
 /* Caller holds this heap until consuming commands retire. This resolves a slot address,
  * not the contents of a title slot. Only use the result with an evidenced descriptor writer. */
-HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorHeap **bank,
+static HRESULT descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorHeap **bank,
         D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 {
     if (bank) *bank = NULL;
@@ -194,6 +198,31 @@ HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorH
         gpu->ptr += n * h->host_stride;
     }
     return S_OK;
+}
+
+static HRESULT descriptor_slot(IUnknown *i,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+{
+    return descriptor_range(i,slot,1,NULL,cpu,gpu);
+}
+
+/* Raw bank access cannot represent a refresh-required texture. */
+HRESULT xs_descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12DescriptorHeap **bank,
+        D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+{
+    HRESULT hr=descriptor_range(i,slot,count,bank,cpu,gpu);
+    if (FAILED(hr)) return hr;
+    struct desc_heap *h=CONTAINING_RECORD(i,struct desc_heap,iface);
+    if (!h->records || h->rtv) return S_OK;
+    AcquireSRWLockShared(&h->owner->descriptor_lock);
+    SIZE_T first=(slot-h->start)/h->stride;
+    for (UINT n=0;n<count;n++) if (h->records[first+n].kind==R8_VIEW) {
+        if (bank) *bank=NULL;
+        if (cpu) cpu->ptr=0;
+        if (gpu) gpu->ptr=0;
+        hr=E_NOTIMPL; break;
+    }
+    ReleaseSRWLockShared(&h->owner->descriptor_lock);
+    return hr;
 }
 
 HRESULT xs_descriptor_slot(IUnknown *i,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)

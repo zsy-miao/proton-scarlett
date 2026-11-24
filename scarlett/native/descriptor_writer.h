@@ -95,7 +95,7 @@ static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,con
     struct desc_heap *h=NULL;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     for (struct desc_heap *it=d->heaps;it;it=it->next) {
-        if (FAILED(xs_descriptor_slot(&it->iface,dest,&cpu,NULL))) continue;
+        if (FAILED(descriptor_slot(&it->iface,dest,&cpu,NULL))) continue;
         if (h) goto done;
         h=it;
     }
@@ -111,8 +111,7 @@ static HRESULT placed_write(struct xbox_device *d,UINT kind,IUnknown *object,con
     hr=S_OK;
 done:
     ReleaseSRWLockExclusive(&d->descriptor_lock);
-    if (old.placed) IUnknown_Release(old.placed);
-    if (old.resource) ID3D12Resource_Release(old.resource);
+    drop_record(old);
     return hr;
 }
 #endif
@@ -201,12 +200,12 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     struct desc_heap *h=NULL;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     for (struct desc_heap *p=kind==RTV?d->rtv_heaps:d->heaps;p;p=p->next) {
-        if (FAILED(xs_descriptor_slot(&p->iface,dest,&cpu,NULL))) continue;
+        if (FAILED(descriptor_slot(&p->iface,dest,&cpu,NULL))) continue;
         if (h) goto done;
         h=p;
     }
     if (!h || (wc && (!h->visible || h->count!=DESC_STARTUP_COUNT)) ||
-        FAILED(xs_descriptor_slot(&h->iface,dest,&cpu,NULL))) goto done;
+        FAILED(descriptor_slot(&h->iface,dest,&cpu,NULL))) goto done;
     struct descriptor_record *r=h->records+(dest-h->start)/h->stride;
     UINT64 tag[2]={++d->descriptor_serial,0x5853444553430000ull|kind};
     if (!store_slot_tag(dest,kind==CBV?inline_null_cbv:tag)) {
@@ -252,11 +251,12 @@ HRESULT xs_resolve_view(IUnknown *heap,SIZE_T slot,UINT kind,ID3D12DescriptorHea
     AcquireSRWLockExclusive(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     ID3D12DescriptorHeap *bank;
-    HRESULT hr=xs_descriptor_range(heap,slot,1,&bank,&cpu,gpu);
+    HRESULT hr=descriptor_range(heap,slot,1,&bank,&cpu,gpu);
     if (SUCCEEDED(hr)) {
         UINT64 bits[2];
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
         if (!copy_in(bits,(void *)slot,sizeof bits)) hr=E_POINTER;
+        else if (kind==SRV && r->kind==R8_VIEW) hr=E_NOTIMPL;
         else if (kind==CBV && !memcmp(bits,inline_null_cbv,16)) {
             if (r->kind!=CBV) {
                 D3D12_CONSTANT_BUFFER_VIEW_DESC zero={0};
@@ -305,7 +305,7 @@ HRESULT xs_resolve_color_rtv(IUnknown *heap,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HAN
     struct xbox_device *d=h->owner;
     AcquireSRWLockShared(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-    if (SUCCEEDED(xs_descriptor_slot(heap,slot,&cpu,NULL))) {
+    if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
         UINT64 tag[2];
         if (r->resource && r->kind==RTV && copy_in(tag,(void *)slot,sizeof tag) &&
@@ -325,21 +325,18 @@ static void WINAPI write_srv(IUnknown *d,IUnknown *r,const void *desc,SIZE_T des
 #ifdef SCARLETT_STAGED_PLACED
 #include "xmem/marked_section.h"
 /* Each lookup pins the live section; a reused VA cannot hit another generation's import. */
-static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,const void *va,SIZE_T dest)
+enum { WC_POOL_BYTES=0x89700000u };
+static HRESULT retain_wc_buffer(IUnknown *device,const void *va,UINT64 bytes,ID3D12Resource **out,UINT *offset)
 {
-    const SIZE_T pool_size=0x89700000;
-    UINT64 first; memcpy(&first,w+4,sizeof first);
-    if (((UINT_PTR)va&255) || !rd->Width || rd->Width>pool_size || (rd->Width&15) ||
-        !w[6] || w[6]>(1u<<D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP) ||
-        first>rd->Width/2 || w[6]>rd->Width/2-first) return E_INVALIDARG;
+    const SIZE_T pool_size=WC_POOL_BYTES;
     struct scarlett_section_info i;
-    HRESULT hr=scarlett_query_section(0x53430005,va,rd->Width,&i);
+    HRESULT hr=scarlett_query_section(0x53430005,va,bytes,&i);
     if (FAILED(hr)) return hr;
     if (!i.section) return E_INVALIDARG;
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     ID3D12Resource *resource=NULL;
     if (i.view_size!=pool_size || i.offset!=(UINT_PTR)va-(UINT_PTR)i.base ||
-        i.offset>pool_size-rd->Width) hr=E_INVALIDARG;
+        bytes>pool_size || i.offset>pool_size-bytes) hr=E_INVALIDARG;
     else {
         AcquireSRWLockExclusive(&d->descriptor_lock);
         BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
@@ -349,8 +346,9 @@ static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,
             ID3D12Heap *heap=NULL;
             hr=open_wc ? open_wc(d->host,pool_size,i.section,NULL,&heap) : E_NOTIMPL;
             if (SUCCEEDED(hr)) {
-                rd->Width=pool_size;
-                hr=ID3D12Device_CreatePlacedResource(d->host,heap,0,rd,D3D12_RESOURCE_STATE_COMMON,NULL,&IID_ID3D12Resource,(void **)&resource);
+                D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=pool_size,.Height=1,
+                    .DepthOrArraySize=1,.MipLevels=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+                hr=ID3D12Device_CreatePlacedResource(d->host,heap,0,&rd,D3D12_RESOURCE_STATE_COMMON,NULL,&IID_ID3D12Resource,(void **)&resource);
                 ID3D12Heap_Release(heap);
                 if (SUCCEEDED(hr)) {
                     if (d->pool_buffer) ID3D12Resource_Release(d->pool_buffer);
@@ -364,11 +362,28 @@ static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,
     }
     if (i.section) CloseHandle(i.section);
     if (FAILED(hr)) return hr;
-    first+=i.offset/2; memcpy(w+4,&first,sizeof first);
+    *out=resource; *offset=(UINT)i.offset;
+    return S_OK;
+}
+
+static HRESULT write_pool_srv(IUnknown *device,D3D12_RESOURCE_DESC *rd,DWORD *w,const void *va,SIZE_T dest)
+{
+    const SIZE_T pool_size=WC_POOL_BYTES;
+    UINT64 first; memcpy(&first,w+4,sizeof first);
+    if (((UINT_PTR)va&255) || !rd->Width || rd->Width>pool_size || (rd->Width&15) ||
+        !w[6] || w[6]>(1u<<D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP) ||
+        first>rd->Width/2 || w[6]>rd->Width/2-first) return E_INVALIDARG;
+    ID3D12Resource *resource;
+    UINT offset;
+    HRESULT hr=retain_wc_buffer(device,va,rd->Width,&resource,&offset);
+    if (FAILED(hr)) return hr;
+    first+=offset/2; memcpy(w+4,&first,sizeof first);
     hr=write_view(device,SRV,NULL,w,dest,resource);
     ID3D12Resource_Release(resource);
     return hr;
 }
+
+#include "r8_view.h"
 
 /* 5bdba51..5bdba67: SRV by title VA, not by COM identity or desktop GPU VA. */
 HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *view,SIZE_T dest)
@@ -377,6 +392,8 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     DWORD w[16];
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
+    if (is_r8(&rd) && !rd.Alignment && (UINT)rd.Layout==R8_LAYOUT)
+        return write_r8_view(device,w,dest);
     if (rd.Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER || rd.Alignment ||
         rd.Height!=1 || rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format ||
         rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Layout!=D3D12_TEXTURE_LAYOUT_ROW_MAJOR || rd.Flags ||
@@ -443,7 +460,7 @@ HRESULT xs_placed_copy_readback(IUnknown *heap,SIZE_T slot,UINT64 at,UINT64 byte
     IUnknown *id=NULL;
     AcquireSRWLockShared(&d->descriptor_lock);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-    if (SUCCEEDED(xs_descriptor_slot(heap,slot,&cpu,NULL))) {
+    if (SUCCEEDED(descriptor_slot(heap,slot,&cpu,NULL))) {
         UINT64 tag[2];
         struct descriptor_record *r=h->records+(slot-h->start)/h->stride;
         if (r->placed && r->kind==SRV && copy_in(tag,(void *)slot,sizeof tag) &&
