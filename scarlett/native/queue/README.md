@@ -627,3 +627,25 @@ reference; the corrected source and ordering fixtures passed on both GPUs.
 The input diagnostic recorded successful `GameInputCreate` and completion
 of the controller enumeration callback in the title. It recorded no
 gamepad reading or state copy before the draw stop.
+
+### Diagnostic only: after the clear request
+
+In six retail diagnostic launches and six guard fixtures, a probe saved
+the arguments to `+60` and made the recording ineligible for submission.
+On the final matched RADV and RTX runs it returned to the caller without
+issuing a host draw. The game dropped one hold on the vertex chunk
+(`2→1`) and cleared its source pointer. No chunk reuse or consuming fence
+was observed. Both runs next stopped at list `+a0`, return `+325c0`.
+
+A follow-up RADV diagnostic measured topology **17** there, on the same
+offscreen color/depth pair. The title was setting up a color-only
+rectangle, before the optional pass that samples the color image.
+Recording just the topology request exposed a null shader group in the
+pipeline lookup at `+b5a5f8`. The previous clear pipeline was still
+cached. Both topology guard fixtures passed; rectangle coverage was not
+tested in these runs.
+
+The only observed token-2 queue submission was a flags-0 sync singleton
+on a different list. The diagnostic builds were not promoted. The
+ordinary first stop remains `+bff06` on both GPUs, with one startup
+presentation each.
