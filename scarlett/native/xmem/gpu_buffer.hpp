@@ -3,6 +3,31 @@
 #include <windows.h>
 #include <d3d12.h>
 
+using Alloc2 = void *(WINAPI *)(HANDLE, void *, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
+using Map3 = void *(WINAPI *)(HANDLE, HANDLE, void *, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
+
+static void *map_aligned_section(HANDLE section, SIZE_T size)
+{
+    HMODULE kernel = GetModuleHandleW(L"kernelbase.dll");
+    auto reserve = (Alloc2)(void *)GetProcAddress(kernel, "VirtualAlloc2");
+    auto map = (Map3)(void *)GetProcAddress(kernel, "MapViewOfFile3");
+    if (!reserve || !map) { SetLastError(ERROR_NOT_SUPPORTED); return nullptr; }
+    MEM_ADDRESS_REQUIREMENTS limits = {};
+    limits.Alignment = 2u << 20;
+    MEM_EXTENDED_PARAMETER param = {};
+    param.Type = MemExtendedParameterAddressRequirements;
+    param.Pointer = &limits;
+    void *p = reserve(nullptr, nullptr, size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                      PAGE_NOACCESS, &param, 1);
+    if (!p) return nullptr;
+    if (map(section, GetCurrentProcess(), p, 0, size, MEM_REPLACE_PLACEHOLDER,
+            PAGE_READWRITE, nullptr, 0)) return p;
+    DWORD err = GetLastError();
+    VirtualFree(p, 0, MEM_RELEASE);
+    SetLastError(err);
+    return nullptr;
+}
+
 class ImportedBuffer {
 public:
     ImportedBuffer() = default;
@@ -12,21 +37,13 @@ public:
         // The owner must retire GPU work and release any other views first.
         if (buffer) buffer->Release();
         if (heap) heap->Release();
-        if (base) VirtualFree(base, 0, MEM_RELEASE);
+        if (base) UnmapViewOfFile(base);
     }
 
-    HRESULT create(ID3D12Device3 *device, SIZE_T size) {
+    HRESULT create(ID3D12Device3 *device, HANDLE section, SIZE_T size) {
         const SIZE_T alignment = 2u << 20;
-        if (!device || base || !size || size % alignment) return E_INVALIDARG;
-        using Alloc2 = void *(WINAPI *)(HANDLE, void *, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
-        auto reserve = (Alloc2)(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "VirtualAlloc2");
-        if (!reserve) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
-        MEM_ADDRESS_REQUIREMENTS limits = {};
-        limits.Alignment = alignment;
-        MEM_EXTENDED_PARAMETER param = {};
-        param.Type = MemExtendedParameterAddressRequirements;
-        param.Pointer = &limits;
-        base = reserve(nullptr, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, &param, 1);
+        if (!device || !section || base || !size || size % alignment) return E_INVALIDARG;
+        base = map_aligned_section(section, size);
         if (!base) return HRESULT_FROM_WIN32(GetLastError());
         HRESULT hr = device->OpenExistingHeapFromAddress(base, IID_PPV_ARGS(&heap));
         if (FAILED(hr)) return hr;

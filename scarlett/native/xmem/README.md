@@ -57,29 +57,49 @@ failed on this branch. Other pool cases at `0x1e1d288` and `0x1e1d369` use
 the same flags with per-pool sizes; `0x1e1d4d6` uses `0x283, 0x2404`.
 Those are static call sites, not observed failures.
 
-`gpu_buffer.hpp` is a private graphics-backend prototype. It imports a
-2 MiB-aligned, CPU-writable allocation via desktop
+`gpu_buffer.hpp` imports a **privately owned view** of a pagefile-backed
+section via desktop
 [`OpenExistingHeapFromAddress`](https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12device3-openexistingheapfromaddress),
-creates a placed cross-adapter buffer, and resolves interior CPU pointers to
-GPU buffer addresses with a bounds check. Alignment is verified; the backing
-is system memory, with no guarantee of contiguous 2 MiB physical pages,
-console cache attributes or GPU-local bandwidth.
+then creates a placed cross-adapter buffer. The test verifies 2 MiB VA
+alignment; this does not establish physical page size, console cache
+attributes or GPU-local bandwidth.
 
 On an NVIDIA RTX 3070 (driver 595.112.7), vkd3d-proton 3.0.0 build
 `212991fc2c266bc`, `test_gpu.cpp` passed at the exact `0x49400000` size.
-The CPU wrote a marker at offset zero. A fenced GPU copy moved it into a
-separate default-heap resource; after the CPU erased the source, a second
-fenced GPU copy put it at the last word of the original CPU allocation.
-CPU base was `0x03a00000`, GPU base `0x0c600000`. This proves shared bytes
-for a buffer, not identical address spaces or Xbox graphics protection.
+The observed `VirtualFree(base, 0, MEM_RELEASE)` results were:
 
-The public DLL still rejects this request. Enabling it needs the graphics
-consumer to resolve each title address against the owning device's live
-resource. The title imports ordinary `VirtualFree` (IAT `0x6793a70`):
-release must retire GPU work and release all views **before** the underlying
-CPU allocation is freed or reused. Keeping only a map of raw pointers in
-`xmem.dll` would not observe that free. No console ABI is introduced by the
-prototype and the public DLL gains no graphics dependency.
+| Title VA backing | Result |
+| --- | --- |
+| `MapViewOfFileEx` | `FALSE`, error 87; remains committed. |
+| `MapViewOfFile3` replacing a `VirtualAlloc2` placeholder | Same failure. |
+| `VirtualAlloc2` replacing a placeholder with `MEM_RESERVE \| MEM_COMMIT \| MEM_REPLACE_PLACEHOLDER` | Success; `MEM_FREE` afterward. Before release it was `MEM_PRIVATE`; there is no section argument to this API. |
+
+The copy queue first saved a title-written word to a default heap. With a
+second GPU copy submitted but blocked on a fence, the test explicitly
+**unmapped** the title view and mapped an unrelated section at the exact same
+VA with identical `VirtualQuery` metadata. After opening the gate and
+observing the retirement fence, the GPU had written the saved word to the
+last word of the old backing. The replacement's marker was unchanged. The
+test never imports the public VA and holds the private view and resource
+through retirement.
+
+**Production decision:** keep the public request unsupported. The title
+imports ordinary `VirtualFree` (IAT `0x6793a70`). In [pinned Wine's VM
+implementation](https://github.com/ValveSoftware/wine/blob/e60892cc2398b0a83c332a2078c7b85e47bdb42b/dlls/ntdll/unix/virtual.c#L5790-L5815),
+`NtFreeVirtualMemory` rejects non-valloc views before dispatching `MEM_RELEASE`;
+placeholder replacement preserves the section classification. Importing a
+private allocation lazily from its raw VA instead would leave the consumer
+unable to prevent a concurrent free or distinguish reuse.
+
+For the two-view path Wine needs an opt-in, release-compatible title view
+and a way to acquire a referenced backing and offset for a live range
+atomically with respect to release. Ordinary release must remove that view
+and invalidate future lookups before VA reuse; already-acquired GPU bindings
+retain the old backing until all consuming queues retire. A section unmap
+must also update wineserver mapping state. Ordinary section views must keep
+their current behavior. A consumer taking an explicit lifetime token at
+allocation could avoid a late pointer lookup, but would still need the
+title-side release contract. No public GPU allocation or resolver is enabled.
 
 To reproduce on the NixOS GPU test host, from this directory:
 
@@ -88,7 +108,7 @@ mkdir -p build/gpu-game build/gpu-run
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
   test_gpu.cpp -ld3d12 -o build/gpu-game/game_scarlett_master.exe
 TMPDIR="$PWD/build/gpu-run" ../../test-launch-nixos.sh "$PWD/build/gpu-game"
-grep -h 'GPU copied CPU sentinel' build/gpu-run/scarlett-run.*/logs/steam-999001.log
+grep -h 'PASS: VirtualFree rejected both section views' build/gpu-run/scarlett-run.*/logs/steam-999001.log
 ```
 
 The harness requires this executable name; the directory above contains only
