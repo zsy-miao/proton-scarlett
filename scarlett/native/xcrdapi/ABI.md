@@ -46,5 +46,25 @@ The file returned by `+20` is stored in a wrapper at `f43623`. That routine
 opens a *separate* Win32 handle by path at `f4363f` and reads from it. This
 does not establish the order of the console file object's `Close` and
 `GetHandle` methods. The DLL therefore declines console `OpenFile` rather
-than returning the Windows file vtable. Status and queue creation likewise
-remain unavailable; no retail data-path success is implied.
+than returning the Windows file vtable. Queue creation remains unavailable.
+
+## Console status array
+
+At RVA `28c9507`, the fifth argument for `CreateStatusArray` points to the
+wrapper's `+30` field; `28c9615` reloads that field and `28c961f` releases
+the object through `+10`. At `e8940` the queue (`wrapper+18`) receives the
+status object (`wrapper+30`) and index 0 in RDX/R8D, then the caller submits
+through queue slot `+30` at `e894d`. The poll at `e8981` dispatches **status**
+slot `+18` with EDX=0 and branches on AL. `4f65847` does the same in a
+nonblocking check. Both match `bool IsComplete(UINT32)`. The documented
+[IDStorageStatusArrayX](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragestatusarrayx/idstoragestatusarrayx)
+has only one other method after `IUnknown`: `GetHResult(UINT32)` therefore
+occupies `+20`; this is not a claim that a direct caller of that slot was seen.
+
+[EnqueueStatus](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragequeuex/methods/idstoragequeuex_enqueuestatus)
+explicitly leaves pre-enqueue state undefined. This implementation initializes
+each slot to `E_PENDING`. Once enqueued, [GetHResult](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragestatusarrayx/methods/idstoragestatusarrayx_gethresult)
+stays pending while any covered request is outstanding, then reports `S_OK`
+or the first failure in request order. For valid indices, [IsComplete](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/interfaces/idstoragestatusarrayx/methods/idstoragestatusarrayx_iscomplete)
+is true on either terminal result. Only a private producer fixture exercises
+transitions; the DLL exposes no queue or completion writer.

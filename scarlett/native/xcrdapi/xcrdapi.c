@@ -2,10 +2,12 @@
 #include <windows.h>
 #include <unknwn.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 static const IID factory_iid = {0x6924ea0c,0xc3cd,0x4826,{0xb1,0x0a,0xf6,0x4f,0x4e,0xd9,0x27,0xc1}};
 static const IID file_iid = {0x5de95e7b,0x955a,0x4868,{0xa7,0x3c,0x24,0x3b,0x29,0xf4,0xb8,0xda}};
 static const IID console_factory_iid = {0x62959d11,0xd45f,0x4884,{0xa0,0xa3,0xf7,0x86,0x2e,0xa2,0x43,0xae}};
+static const IID status_iid = {0xcd66d752,0x2786,0x44f7,{0x90,0x70,0xe2,0xa6,0xfd,0xad,0x3f,0x1b}};
 
 typedef struct Factory Factory;
 typedef struct File File;
@@ -133,6 +135,78 @@ static HRESULT STDMETHODCALLTYPE create_status(Factory *f, UINT32 capacity, PCST
     return iid ? E_NOTIMPL : E_POINTER;
 }
 static void STDMETHODCALLTYPE set_debug_flags(Factory *f, UINT32 flags) { (void)f; (void)flags; }
+
+typedef struct Status Status;
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *query)(Status *, REFIID, void **);
+    ULONG (STDMETHODCALLTYPE *add_ref)(Status *);
+    ULONG (STDMETHODCALLTYPE *release)(Status *);
+    bool (STDMETHODCALLTYPE *is_complete)(Status *, UINT32);
+    HRESULT (STDMETHODCALLTYPE *get_hresult)(Status *, UINT32);
+} StatusVtable;
+struct Status { const StatusVtable *vt; LONG refs; UINT32 capacity; LONG entries[]; };
+_Static_assert(offsetof(StatusVtable, is_complete) == 0x18 && offsetof(StatusVtable, get_hresult) == 0x20,
+               "console status vtable");
+
+static ULONG STDMETHODCALLTYPE status_add_ref(Status *s) { return InterlockedIncrement(&s->refs); }
+static ULONG STDMETHODCALLTYPE status_release(Status *s)
+{
+    ULONG refs = InterlockedDecrement(&s->refs);
+    if (!refs) HeapFree(GetProcessHeap(), 0, s);
+    return refs;
+}
+static HRESULT STDMETHODCALLTYPE status_query(Status *s, REFIID iid, void **out)
+{
+    HRESULT hr = check_interface(iid, &status_iid, out);
+    if (FAILED(hr)) return hr;
+    status_add_ref(s);
+    *out = s;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE status_result(Status *s, UINT32 i)
+{
+    return i < s->capacity ? InterlockedCompareExchange(&s->entries[i], 0, 0) : E_INVALIDARG;
+}
+static bool STDMETHODCALLTYPE status_complete(Status *s, UINT32 i)
+{
+    return i < s->capacity && status_result(s, i) != E_PENDING;
+}
+/* Private producer owns a reference and does not reuse an in-flight entry. */
+static inline HRESULT status_begin(Status *s, UINT32 i)
+{
+    if (i >= s->capacity) return E_INVALIDARG;
+    InterlockedExchange(&s->entries[i], E_PENDING);
+    return S_OK;
+}
+static inline HRESULT status_finish(Status *s, UINT32 i, const HRESULT *requests, size_t count)
+{
+    HRESULT first = S_OK;
+    if (i >= s->capacity) return E_INVALIDARG;
+    if (!requests && count) return E_POINTER;
+    for (size_t n = 0; n < count; ++n) {
+        if (requests[n] == E_PENDING) return E_PENDING;
+        if (first == S_OK && FAILED(requests[n])) first = requests[n];
+    }
+    InterlockedExchange(&s->entries[i], first);
+    return S_OK;
+}
+static const StatusVtable status_vt = {status_query, status_add_ref, status_release, status_complete, status_result};
+static HRESULT STDMETHODCALLTYPE console_create_status(Factory *f, UINT32 capacity, PCSTR name, REFIID iid, void **out)
+{
+    (void)f; (void)name;
+    HRESULT hr = check_interface(iid, &status_iid, out);
+    if (FAILED(hr)) return hr;
+    if (!capacity) return E_INVALIDARG;
+    if (capacity > 65536) return E_NOTIMPL; /* local allocation bound, not a console ABI limit */
+    Status *s = HeapAlloc(GetProcessHeap(), 0, sizeof(*s) + capacity * sizeof(*s->entries));
+    if (!s) return E_OUTOFMEMORY;
+    s->vt = &status_vt;
+    s->refs = 1;
+    s->capacity = capacity;
+    for (UINT32 i = 0; i < capacity; ++i) s->entries[i] = E_PENDING;
+    *out = s;
+    return S_OK;
+}
 static HRESULT STDMETHODCALLTYPE set_staging_size(Factory *f, UINT32 size) { (void)f; (void)size; return E_NOTIMPL; }
 
 static const FactoryVtable factory_vt = {factory_query, factory_add_ref, factory_release,
@@ -211,7 +285,7 @@ typedef struct {
 _Static_assert(offsetof(ConsoleVtable, set_staging_size) == 0x40 &&
                offsetof(ConsoleVtable, create_queue1) == 0x50, "console x64 vtable");
 static const ConsoleVtable console_vt = {factory_query, factory_add_ref, factory_release,
-    create_queue, console_open, create_status, {unsupported_scalar, unsupported_scalar},
+    create_queue, console_open, console_create_status, {unsupported_scalar, unsupported_scalar},
     console_staging, console_stats, create_queue};
 static Factory console = {&console_vt};
 

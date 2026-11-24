@@ -19,8 +19,11 @@ its first operation, `SetStagingBufferSize(32 MiB)`. The console interface
 commits a private 32 MiB buffer with `VirtualAlloc`, reuses it on repeated
 requests, and releases it on size zero or DLL unload; other sizes return
 `E_NOTIMPL`. `GetStats` reports current/peak staging bytes; queue, storage,
-and decompression counters are zero. Console file, status and queue creation
-return `E_NOTIMPL` and clear the output. No requests are submitted.
+and decompression counters are zero. Console `CreateStatusArray` supports
+1–65,536 independent entries. Each starts as `E_PENDING`/incomplete (a local
+choice; the GDK leaves pre-enqueue state undefined). Out-of-range indices
+return `E_INVALIDARG`/false. Console file and queue creation return `E_NOTIMPL`
+and clear the output. No requests are submitted.
 
 ## Build and verify
 
@@ -37,7 +40,10 @@ NuGet package](https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1
 the script verifies the package SHA-256 and extracts only headers. The caller
 imports the new DLL by name and dispatches through the published vtables.
 The separate console caller tests the observed GUIDs and raw vtable offsets,
-checking the 32 MiB commit and release independently with `VirtualQuery`.
+checking the 32 MiB commit and release independently with `VirtualQuery` and
+creating, polling and releasing a status object. `test_status.c` drives the
+private writer with synthetic request results to verify pending, successful
+and failed completion, index isolation and reuse.
 Only synthetic callers run, in a newly created private Wine prefix
 removed on exit. No SDK runtime DLL is installed or loaded. The resulting
 `build/XCRDAPI.dll` remains available after the test.

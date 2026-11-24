@@ -23,3 +23,5 @@ wine "$tmp/test.exe"
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror test_console.cpp \
     -L"$tmp" -lxcrdapi -lole32 -luuid -static -o "$tmp/test_console.exe"
 wine "$tmp/test_console.exe"
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror test_status.c -luuid -o "$tmp/test_status.exe"
+wine "$tmp/test_status.exe"

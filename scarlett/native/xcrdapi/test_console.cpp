@@ -50,8 +50,24 @@ int main()
     out = f;
     CHECK(slot<Open>(f, 0x20)(f, L"C:\\fixture", file, &out) == E_NOTIMPL && !out);
     using Status = HRESULT (WINAPI *)(void *, UINT32, PCSTR, REFIID, void **);
+    auto make_status = slot<Status>(f, 0x28);
     out = f;
-    CHECK(slot<Status>(f, 0x28)(f, 1, "", status, &out) == E_NOTIMPL && !out);
+    CHECK(make_status(f, 1, "", file, &out) == E_NOINTERFACE && !out);
+    CHECK(make_status(f, 0, "", status, &out) == E_INVALIDARG && !out);
+    CHECK(make_status(f, UINT32_MAX, "", status, &out) == E_NOTIMPL && !out);
+    CHECK(make_status(f, 1, "", status, nullptr) == E_POINTER);
+    CHECK(make_status(f, 1, "", status, &out) == S_OK && out);
+    auto *array = static_cast<IUnknown *>(out);
+    CHECK(array->QueryInterface(IID_IUnknown, &out) == S_OK && out == array);
+    CHECK(static_cast<IUnknown *>(out)->Release() == 1);
+    CHECK(array->QueryInterface(status, &out) == S_OK && out == array);
+    CHECK(static_cast<IUnknown *>(out)->Release() == 1);
+    CHECK(array->QueryInterface(queue, &out) == E_NOINTERFACE && !out);
+    using Complete = bool (WINAPI *)(void *, UINT32);
+    using Result = HRESULT (WINAPI *)(void *, UINT32);
+    CHECK(!slot<Complete>(array, 0x18)(array, 0) && slot<Result>(array, 0x20)(array, 0) == E_PENDING);
+    CHECK(!slot<Complete>(array, 0x18)(array, 1) && slot<Result>(array, 0x20)(array, 1) == E_INVALIDARG);
+    CHECK(array->Release() == 0);
     using Queue = HRESULT (WINAPI *)(void *, const void *, REFIID, void **);
     UINT64 desc[4] = {};
     out = f;
@@ -63,5 +79,5 @@ int main()
     static_cast<IUnknown *>(out)->Release();
     identity->Release();
     fac->Release();
-    std::puts("PASS console factory: observed IID/slots, 32 MiB committed and freed, output/error contracts");
+    std::puts("PASS console factory: observed IID/slots, staging, status-array creation/poll/release, queue refusal");
 }
