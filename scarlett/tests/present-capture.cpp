@@ -4,6 +4,9 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdio>
+#ifdef TEST_GAMEINPUT
+#include <GameInput.h>
+#endif
 using Microsoft::WRL::ComPtr;
 #define HR(x) do { HRESULT h=(x); if (h!=S_OK) { fprintf(stderr,"%s: %#lx\n",#x,(unsigned long)h); return 1; } } while (0)
 
@@ -39,7 +42,8 @@ int main()
     HR(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&done)));
     HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     if (!event) return 1;
-    for (unsigned frame=0;frame<4;++frame) {
+    UINT64 serial=0;
+    auto present=[&](const float (&color)[4]) -> int {
         ComPtr<ID3D12Resource> image;
         HR(swap->GetBuffer(swap->GetCurrentBackBufferIndex(),IID_PPV_ARGS(&image)));
         auto rtv=heap->GetCPUDescriptorHandleForHeapStart();
@@ -51,7 +55,6 @@ int main()
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Transition={image.Get(),0,D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_RENDER_TARGET};
         list->ResourceBarrier(1,&barrier);
-        float color[4]={float(frame<2),float(frame>=2),0,1};
         list->ClearRenderTargetView(rtv,color,0,nullptr);
         barrier.Transition.StateBefore=D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter=D3D12_RESOURCE_STATE_PRESENT;
@@ -60,9 +63,42 @@ int main()
         ID3D12CommandList *batch[]={list.Get()};
         queue->ExecuteCommandLists(1,batch);
         HR(swap->Present(1,0));
-        HR(queue->Signal(done.Get(),frame+1));
-        HR(done->SetEventOnCompletion(frame+1,event));
+        HR(queue->Signal(done.Get(),++serial));
+        HR(done->SetEventOnCompletion(serial,event));
         if (WaitForSingleObject(event,5000)!=WAIT_OBJECT_0) return 1;
+        return 0;
+    };
+#ifdef TEST_GAMEINPUT
+    ComPtr<IGameInput> pad;
+    HR(GameInputCreate(&pad));
+    SetForegroundWindow(window);
+    SetFocus(window);
+    int previous=-1, transitions=0;
+    ULONGLONG changed=0, deadline=GetTickCount64()+12000;
+    while (GetTickCount64()<deadline) {
+        MSG m;
+        while (PeekMessageW(&m,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&m);
+        ComPtr<IGameInputReading> reading;
+        HR(pad->GetCurrentReading(GameInputKindGamepad,nullptr,&reading));
+        GameInputGamepadState state{};
+        if (!reading->GetGamepadState(&state) || GetForegroundWindow()!=window) return 1;
+        int buttons=state.buttons;
+        if (buttons!=previous) {
+            if (buttons!=(transitions==1 ? GameInputGamepadA : 0) || transitions>=3) return 1;
+            previous=buttons;
+            ++transitions;
+            changed=GetTickCount64();
+            printf("GameInput buttons=%#x\n",buttons); fflush(stdout);
+        }
+        if (present({0,float(!!buttons),float(!buttons),1})) return 1;
+        if (transitions==3 && GetTickCount64()-changed>=500) break;
+        Sleep(10);
+    }
+    if (transitions!=3) return 1;
+    puts("PASS synthetic GameInput DXGI: neutral, A, released");
+#else
+    for (unsigned frame=0;frame<4;++frame) {
+        if (present({float(frame<2),float(frame>=2),0,1})) return 1;
         const ULONGLONG until=GetTickCount64()+1200;
         do {
             MSG m;
@@ -70,6 +106,7 @@ int main()
             Sleep(10);
         } while (GetTickCount64()<until);
     }
-    CloseHandle(event);
     puts("PASS synthetic DXGI: presented red then green");
+#endif
+    CloseHandle(event);
 }

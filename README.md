@@ -17,7 +17,7 @@ The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additio
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 
-Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
+An [end-to-end input test](scarlett/tests/radv-gameinput.sh) sent a 700 ms virtual A press to a synthetic game window on RADV. The installed GameInput provider reported neutral → A → released, and the recorded window changed blue → green → blue. Separate polling tests cover the movement and camera sticks. Retail input has not yet been exercised.
 
 The previous [XCL experiment](https://github.com/rcx2135/proton-scarlett/tree/archive/xcl-prototype) is archived separately.
 

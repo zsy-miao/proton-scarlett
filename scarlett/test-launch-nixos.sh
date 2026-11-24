@@ -44,6 +44,12 @@ case ${SCARLETT_TEST_DISPLAY:-xvfb} in
         fi ;;
     *) echo "SCARLETT_TEST_DISPLAY must be xvfb or sway" >&2; exit 2 ;;
 esac
+if [[ -n ${SCARLETT_INPUT_TITLE:-} ]]; then
+    [[ ${SCARLETT_TEST_DISPLAY:-} == sway ]] || { echo "External input requires private sway" >&2; exit 2; }
+    x86_64-w64-mingw32-gcc -O2 -Wall -Werror -municode "$(dirname "$0")/tests/private-key.c" -o "$work/private-key.exe"
+    display_env+=(--setenv INPUT_TITLE "$SCARLETT_INPUT_TITLE")
+    mkfifo -m 600 "$work/input.fifo"
+fi
 for node in "${nodes[@]}"; do
     gpu+=(--dev-bind "$node" "$node")
 done
@@ -84,6 +90,13 @@ exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-
             [[ -S ${w[0]} && -S ${x[0]} ]]
             export DISPLAY=:${x[0]##*X}
             "$2" >/work/logs/xrandr.log
+            if [[ -n ${INPUT_TITLE:-} ]]; then
+                (while read -r key ms extra; do
+                    [[ -z $extra && $(cat /proc/1/comm) == bwrap && -S /tmp/.X11-unix/X${DISPLAY#:} ]] &&
+                        WINEPREFIX=/work/compat/scarlett-title/pfx /proton/files/bin/wine \
+                        /work/private-key.exe "$INPUT_TITLE" "$key" "$ms" || echo "refused input"
+                 done) <>/work/input.fifo >/work/logs/input.log 2>&1 &
+            fi
             if [[ -n $3 ]]; then
                 mkfifo /tmp/screencopy
                 (export WAYLAND_DISPLAY=${w[0]##*/}; unset LD_LIBRARY_PATH
