@@ -383,3 +383,17 @@ Run `scarlett/tests/tail-timestamp.sh radv STAGED-TOOL tagged` (or `nvidia`).
 The optional last argument selects a paired timestamp in the original 64 KiB
 window: `0x6218`, `0x64a8`, or `0x6698`. This is an ordinary queue-order
 experiment for one recorded sequence; the console flag-bit semantics remain unknown.
+
+### Markers after the first presentation
+
+On a reused pooled Direct list, retail writes `1` at control-page offset
+`0x50`, then `0x29a5ee15` at `0x54` after a timestamp. AMD records native
+GPU writes; RTX uses the fence-ordered alias of the original page.
+`test-marker-bank.c` checks this pair and the earlier `+8/+c` pair on
+both paths: an unsubmitted recording changes nothing, and a submitted
+recording updates only the two original words after address reuse.
+
+Four retail launches (two diagnostic, two ordinary). Both ordinary runs
+presented token 1. AMD then stopped at timestamp `+240` (`+2482b37`);
+RTX issued token 2 and stopped at wait `+250` (`+2484b12`). Neither
+presented token 2.

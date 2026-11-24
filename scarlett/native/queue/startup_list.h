@@ -196,9 +196,10 @@ static void WINAPI sl_bind(IUnknown *i,UINT count,IUnknown *const *input)
     if (FAILED(bind_initial_heaps(sl(i),count,input))) xs_stop();
 }
 /* The acquire pins the original AMD control section, independent of later VA reuse. */
-static HRESULT record_control_zero(struct startup_list *s,struct prefix_marker *m,const struct scarlett_section_info *id,UINT value)
+static HRESULT record_control_prefix(struct startup_list *s,struct prefix_marker *m,const struct scarlett_section_info *id,UINT value)
 {
-    if (!s->heaps[0] || !s->heaps[1] || value || !id->section || id->view_size!=65536 || id->offset!=8) return E_NOTIMPL;
+    if (!s->heaps[0] || !s->heaps[1] || !id->section || id->view_size!=65536 ||
+        !((id->offset==8 && !value) || (id->offset==0x50 && value==1))) return E_NOTIMPL;
     D3D12_FEATURE_DATA_D3D12_OPTIONS3 opts;
     HRESULT hr=ID3D12Device_CheckFeatureSupport(s->device,D3D12_FEATURE_D3D12_OPTIONS3,&opts,sizeof opts);
     if (FAILED(hr) || !(opts.WriteBufferImmediateSupportFlags&D3D12_COMMAND_LIST_SUPPORT_FLAG_DIRECT)) return E_NOTIMPL;
@@ -217,6 +218,7 @@ static HRESULT record_control_zero(struct startup_list *s,struct prefix_marker *
     if (!gpu || gpu>UINT64_MAX-id->offset) return E_FAIL;
     D3D12_WRITEBUFFERIMMEDIATE_PARAMETER op={gpu+id->offset,value};
     ID3D12GraphicsCommandList7_WriteBufferImmediate(s->host,1,&op,NULL);
+    m->value=value;
     return S_OK;
 }
 static HRESULT prefix_write(struct startup_list *s,UINT64 addr,UINT value,UINT64 control,UINT flags)
@@ -231,7 +233,7 @@ static HRESULT prefix_write(struct startup_list *s,UINT64 addr,UINT value,UINT64
     m->refs=1;
     HRESULT hr=scarlett_query_section(0x5343000a,(void*)addr,4,&lease);
     if (SUCCEEDED(hr)) {
-        hr=record_control_zero(s,m,&lease,value);
+        hr=record_control_prefix(s,m,&lease,value);
         if (SUCCEEDED(hr)) m->control_section=lease.section;
         else if (lease.section) CloseHandle(lease.section);
         if (FAILED(hr)) drop_marker(m); else s->marker=m;
@@ -259,12 +261,13 @@ static HRESULT record_native_post(struct startup_list *s,UINT64 addr,UINT value,
     HRESULT hr=scarlett_query_section(0x5343000a,(void *)addr,4,&id);
     if (FAILED(hr)) return hr;
     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void *)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
-    BOOL match=id.view_size==65536 && id.offset==12 && same && same(id.section,m->control_section);
+    BOOL match=id.view_size==65536 && (m->value==1 ? id.offset==0x54 && value==0x29a5ee15 : id.offset==12) &&
+        same && same(id.section,m->control_section);
     if (id.section) CloseHandle(id.section);
     if (!match) return E_INVALIDARG;
     D3D12_GLOBAL_BARRIER b={D3D12_BARRIER_SYNC_ALL,D3D12_BARRIER_SYNC_ALL,D3D12_BARRIER_ACCESS_COMMON,D3D12_BARRIER_ACCESS_COMMON};
     D3D12_BARRIER_GROUP g={.Type=D3D12_BARRIER_TYPE_GLOBAL,.NumBarriers=1,.pGlobalBarriers=&b};
-    D3D12_WRITEBUFFERIMMEDIATE_PARAMETER op={ID3D12Resource_GetGPUVirtualAddress(m->buffer)+12,value};
+    D3D12_WRITEBUFFERIMMEDIATE_PARAMETER op={ID3D12Resource_GetGPUVirtualAddress(m->buffer)+id.offset,value};
     ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
     ID3D12GraphicsCommandList7_WriteBufferImmediate(s->host,1,&op,NULL);
     ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
@@ -298,13 +301,15 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
 }
 static HRESULT split_after_timestamp(struct startup_list *s,UINT64 addr,UINT value,UINT64 control,UINT flags)
 {
-    if (!s->marker || !s->marker->alias || s->marker->value || !s->stamp || s->closed ||
+    if (!s->marker || !s->marker->alias || !s->stamp || s->closed ||
         s->host_exposed || s->post || control || flags) return E_NOTIMPL;
+    SIZE_T prefix=s->marker->value==1 ? 0x50 : 8;
+    if (s->marker->value && (s->marker->value!=1 || value!=0x29a5ee15)) return E_NOTIMPL;
     struct scarlett_section_info id;
     HRESULT hr=scarlett_query_section(0x53430015,(void *)addr,4,&id);
     if (FAILED(hr)) return hr;
-    if (id.offset!=s->marker->generation || id.view_size!=65536 || addr!=(UINT_PTR)id.base+12 ||
-        s->marker->word!=(LONG *)((BYTE *)s->marker->alias+8)) return E_INVALIDARG;
+    if (id.offset!=s->marker->generation || id.view_size!=65536 || addr!=(UINT_PTR)id.base+prefix+4 ||
+        s->marker->word!=(LONG *)((BYTE *)s->marker->alias+prefix)) return E_INVALIDARG;
     struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);
     if (!post) return E_OUTOFMEMORY;
     post->word=s->marker->word+1;post->value=value;
