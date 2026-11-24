@@ -63,7 +63,9 @@ lists that archive as 8,880 bytes. With its SHA-256 verified, the next run opene
 and reached a later breakpoint (`+0x1ce6e13`), still in System Init with zero presents.
 With `data.rpf` subsequently verified, the retail host reported 93 presents before a breakpoint
 at `+0x1dac734`; the game's own crash log reported `Game Init`, frame 0. Frame contents and
-gameplay have not been verified. `python3 scarlett/test_route.py` checks path and argument handling.
+gameplay were not verified in that run. With `core_bvh4.rpf` verified, a later run reached
+1,360 presents and then faulted in `d3d12core.dll+0x219546`. The sampled private display
+remained black apart from the cursor. `python3 scarlett/test_route.py` checks path and argument handling.
 
 To repeat the actual test on this NixOS/NVIDIA host without restarting Steam:
 
