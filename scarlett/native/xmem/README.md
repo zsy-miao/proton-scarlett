@@ -1,6 +1,6 @@
 # xmem.dll — Windows x64 subset for Proton
 
-This original DLL has nine named exports. There is no
+This original DLL has nine named XMem exports and a private host copy-source export. There is no
 console SDK, external compatibility runtime, or ordinal compatibility contract.
 
 | Export | Supported behavior |
@@ -46,7 +46,7 @@ editing the underlying virtual reservations.
 | `1e86760` (`2004`) | `[752,2352)` | WB/RW | buffer read/write |
 | `1e86784` (`1004`) | `[2352,2512)` | WB/RW | read source |
 | `1e867ac` (`1404`) | `[2512,2528)` | WC/RW | read source |
-| `1e867d1` (`8404`) | `[2528,2960)` | WC/RW | translated compute shader store; no buffer handle or raw GPU VA |
+| `1e867d1` (`8404`) | `[2528,2960)` | WC/RW | translated compute shader store and bounded GPU copy source; no buffer handle or raw GPU VA |
 
 `test-descriptor-pages.cpp` builds like `test_wc_pages.cpp`. On RADV it tests
 the actual layout, all five maps, last-word GPU reads and writes permitted by
@@ -58,6 +58,18 @@ views. The ordinary acquire operations refuse the latter. `ImportedReadSpan`
 uses `0x53430010/11` privately and only records bounded source copies. This is
 a restriction of the translation path, not a GPU page-table permission or a
 sandbox against arbitrary native code. CPU access is never made read-only.
+
+At `4f45cf`–`4f45fd` the upload path also uses the `8404` extent as a
+buffer copy source. For this extent `ImportedReadSpan::acquire` calls the
+loaded XMem provider's private `ScarlettAcquireCodeReadSourceV1`. XMem
+checks the requested bytes against a live page view under its page lock,
+pins that run's backing and imports it on the supplied host device. The
+returned object can only record a bounded `CopyBufferRegion` and release;
+it doesn't grant writable access, even after title VA reuse. The trusted
+recorder supplies a same-device list and destination buffer in appropriate
+states and retains the span through its retirement fence. Follow the XMem
+map/unmap protocol for active page views. This is a buffer-copy operation,
+not an implementation of pitched copies or full-width SRV/UAV bindings.
 
 The last extent is a code store, not an executable CPU mapping or a host GPU
 instruction buffer. `0x53430012` maps the exact 432-page WC backing; the

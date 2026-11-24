@@ -135,16 +135,12 @@ private:
     bool wb_mapped = false;
 };
 
-/* Restricted imports are usable only as copy sources. No writable resource or raw GPU VA escapes. */
-class ImportedReadSpan {
+/* Trusted host recorder supplies list/dst and keeps the source alive through its fence. */
+class ReadSpanBacking {
 public:
-    HRESULT acquire(ID3D12Device3 *d, const void *va, SIZE_T bytes) {
-        scarlett_section_info i;
-        bool wb = SUCCEEDED(scarlett_query_section(0x53430010,va,bytes,&i));
-        HRESULT hr = wb ? S_OK : scarlett_query_section(0x53430011,va,bytes,&i);
-        if (FAILED(hr)) return hr;
-        hr = backing.wc(d,i.view_size,i.section,nullptr,false,wb,true);
-        CloseHandle(i.section);
+    HRESULT bind(ID3D12Device3 *d, const scarlett_section_info &i, SIZE_T bytes, bool wb) {
+        if (!bytes || i.offset >= i.view_size || bytes > i.view_size-i.offset) return E_INVALIDARG;
+        HRESULT hr = backing.wc(d,i.view_size,i.section,nullptr,false,wb,true);
         if (SUCCEEDED(hr)) { offset=i.offset; length=bytes; }
         return hr;
     }
@@ -158,4 +154,46 @@ public:
 private:
     ImportedBuffer backing;
     SIZE_T offset=0, length=0;
+};
+
+/* Private x64 xmem.dll ABI. No section, host resource, CPU pointer or GPU VA accessor. */
+struct CodeReadSource {
+    HRESULT (WINAPI *copy)(CodeReadSource *, ID3D12GraphicsCommandList *, ID3D12Resource *, UINT64);
+    void (WINAPI *release)(CodeReadSource *);
+};
+
+class ImportedReadSpan {
+public:
+    ~ImportedReadSpan() {
+        if (code) code->release(code);
+        if (module) FreeLibrary(module);
+    }
+    HRESULT acquire(ID3D12Device3 *d, const void *va, SIZE_T bytes) {
+        if (!d || !va || !bytes || bound) return E_INVALIDARG;
+        scarlett_section_info i;
+        bool wb = SUCCEEDED(scarlett_query_section(0x53430010,va,bytes,&i));
+        HRESULT hr = wb ? S_OK : scarlett_query_section(0x53430011,va,bytes,&i);
+        if (SUCCEEDED(hr)) {
+            hr = data.bind(d,i,bytes,wb);
+            CloseHandle(i.section);
+        } else {
+            HMODULE m;
+            if (!GetModuleHandleExW(0,L"xmem.dll",&m)) return hr;
+            using Acquire = HRESULT (WINAPI *)(ID3D12Device3 *,const void *,SIZE_T,CodeReadSource **);
+            auto fn = (Acquire)(void *)GetProcAddress(m,"ScarlettAcquireCodeReadSourceV1");
+            hr = fn ? fn(d,va,bytes,&code) : E_NOTIMPL;
+            if (SUCCEEDED(hr)) module = m;
+            else FreeLibrary(m);
+        }
+        bound = SUCCEEDED(hr);
+        return hr;
+    }
+    HRESULT copy_to(ID3D12GraphicsCommandList *list, ID3D12Resource *dst, UINT64 at) const {
+        return code ? code->copy(code,list,dst,at) : data.copy_to(list,dst,at);
+    }
+private:
+    ReadSpanBacking data;
+    CodeReadSource *code = nullptr;
+    HMODULE module = nullptr;
+    bool bound = false;
 };

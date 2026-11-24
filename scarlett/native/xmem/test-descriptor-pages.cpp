@@ -65,14 +65,25 @@ static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, 
     scarlett_section_info qi;
     for (ULONG op: {0x53430002u,0x53430005u,0x5343000au,0x5343000cu,0x53430010u,0x53430011u})
         CHECK(FAILED(scarlett_query_section(op,base,4,&qi)));
+    BYTE *last=base+size-1;
+    ImportedReadSpan held, denied;
+    CHECK(FAILED(denied.acquire(d,last,2)) && FAILED(denied.acquire(d,last,0)) &&
+          FAILED(denied.acquire(d,last,SIZE_T(-1))) && FAILED(denied.acquire(d,last+1,1)));
+    ImportedBuffer writable;
+    SIZE_T offset;
+    CHECK(FAILED(writable.acquire(d,last,1,&offset)) && !writable.resource());
     BYTE *slot=base+size-n;
     memcpy(slot,code,n); MemoryBarrier();
+    HR(held.acquire(d,last,1));
     CHECK(XMemMapPhysicalPages(base,size/65536,nullptr)==base);
+    CHECK(FAILED(denied.acquire(d,last,1)));
     CHECK(FAILED(xs_code_pipeline(d,root,slot,{code,n},&bad)) && !bad);
     CHECK(XMemMapPhysicalPages(base,size/65536,ids)==base && !memcmp(slot,code,n));
+    *last = code[n-1]^0xff; MemoryBarrier(); // change original backing after acquisition
     CHECK(XMemMapPhysicalPages(base,size/65536,nullptr)==base && VirtualFree(base,0,MEM_RELEASE));
     CHECK(VirtualAlloc(base,size,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==base);
     memcpy(slot,code,n);
+    CHECK(FAILED(denied.acquire(d,last,1)));
     CHECK(FAILED(xs_code_pipeline(d,root,slot,{code,n},&bad)) && !bad);
 
     D3D12_COMMAND_QUEUE_DESC qd={}; qd.Type=D3D12_COMMAND_LIST_TYPE_COMPUTE;
@@ -86,7 +97,7 @@ static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, 
     r.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ID3D12Resource *dst,*rb;
     HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&r,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&dst)));
-    h.Type=D3D12_HEAP_TYPE_READBACK; r.Flags=D3D12_RESOURCE_FLAG_NONE;
+    h.Type=D3D12_HEAP_TYPE_READBACK; r.Flags=D3D12_RESOURCE_FLAG_NONE; r.Width=16;
     HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&r,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));
     l->SetComputeRootSignature(root); l->SetComputeRootUnorderedAccessView(0,dst->GetGPUVirtualAddress());
     constexpr UINT64 mib = 1ull << 20, end = 174*mib, boundary = 74*mib;
@@ -108,7 +119,10 @@ static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, 
     D3D12_RESOURCE_BARRIER b={}; b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b.Transition.pResource=dst; b.Transition.StateBefore=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;
-    l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb,0,dst,0,8); HR(l->Close());
+    l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb,0,dst,0,8);
+    CHECK(FAILED(held.copy_to(l,rb,r.Width)) && FAILED(held.copy_to(l,rb,UINT64(-1))) &&
+          FAILED(denied.copy_to(l,rb,0)));
+    HR(held.copy_to(l,rb,r.Width-1)); HR(l->Close());
     // Recycle both data VAs as zero-filled private RAM before executing. A VA
     // lookup at submit time would now produce zero groups (or fail import).
     for (UINT64 off : {UINT64(size),boundary}) {
@@ -123,11 +137,13 @@ static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, 
     HR(f->SetEventOnCompletion(1,e)); CHECK(WaitForSingleObject(e,10000)==WAIT_OBJECT_0);
     UINT *data; HR(rb->Map(0,nullptr,(void **)&data));
     CHECK(data[0]==0xc0de8404 && data[1]==0x8404beef);
+    CHECK(((BYTE *)data)[r.Width-1]==(BYTE)(*last^0xff));
     rb->Unmap(0,nullptr);
     sig->Release();
     puts("PASS segmented placed Dispatch: WC/WB operands survived exact VA reuse; code, crossing and out-of-range operands rejected");
     CloseHandle(e); f->Release(); l->Release(); a->Release(); q->Release(); dst->Release(); rb->Release();
     ps[0]->Release(); ps[1]->Release(); root->Release();
+    puts("PASS 8404 read span: fenced final byte from original backing after remap, write and exact VA reuse; overruns and writable imports refused");
     puts("PASS code store: two immutable PSOs from the same last-byte-aligned slot, post-reuse fenced GPU results c0de8404/8404beef; imports and unknown code denied");
     return 0;
 }

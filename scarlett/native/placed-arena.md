@@ -19,7 +19,7 @@ Ranges below are relative to **placement**, in MiB, not physical ID order.
 |---|---|---|
 | `[-11,-1)` | `[2352,2512)` | excluded WB source |
 | `[-1,0)` | `[2512,2528)` | excluded WC source |
-| `[0,27)` | `[2528,2960)` | guest code/data source; shim currently provides code snapshots only |
+| `[0,27)` | `[2528,2960)` | known shader snapshots and bounded GPU buffer copies |
 | `[27,74)` | `[0,752)` | WC data heap |
 | `[74,174)` | `[752,2352)` | WB data heap |
 
@@ -43,16 +43,16 @@ record its heap-relative offset. Reject crossing, code and out-of-bounds
 operands before recording. Other `+1e8` callers use Draw/DrawIndexed/DispatchMesh
 (16/20/12-byte records). They are not tested here.
 
-**Copy-source blocker:** `24792f9 -> 247ac20` associates the first covered
+**Copy-source support:** `24792f9 -> 247ac20` associates the first covered
 extent with the chunk allocator at `75df1b8`. `4f458a`–`4f45fd` copies CPU
 bytes into one such chunk, then passes the interface, chunk-relative-to-base
 offset and byte length to list `+78`. `4f4379`/`4f4819` also use it in a
 pitched copy location. This requires live GPU reads of `8404` *as data*.
-Current `ImportedReadSpan` only accepts `1004/1404`; ordinary imports refuse
-`8404` too. Shader snapshots (limited to 64 KiB) cannot substitute. A
-bounded source-only copy operation must reference the retained original
-backing through retirement, validate the destination/footprint too, and
-expose no handle or GPU VA to callers. Until then fail these uses.
+`ImportedReadSpan` pins a live `8404` subrange in XMem and records a bounded
+buffer-to-buffer copy. A RADV test acquired the final byte, changed it,
+reused its title VA for different data, and read the changed original byte
+back after a GPU fence. The recorder must hold the span until retirement.
+The pitched texture-copy path and its destination footprint remain unsupported.
 
 `xmem/test-descriptor-pages.cpp` tests this operand against the known live
 WC/WB imports, with the code-store fixtures and the actual 2,960-ID layout.

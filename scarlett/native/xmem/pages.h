@@ -144,6 +144,27 @@ static const struct { ULONG_PTR pages; DWORD policy; } layout[] = {
     {752,0x2404},{1600,0x2004},{160,0x1004},{16,0x1404},{432,0x8404}
 };
 
+/* Internal only: pin the live code view's dedicated backing before unmap/free can race. */
+HRESULT xmem_pin_code_source(const void *addr, SIZE_T bytes, HANDLE *section, SIZE_T *size, SIZE_T *offset)
+{
+    HRESULT hr = E_INVALIDARG;
+    AcquireSRWLockShared(&page_lock);
+    for (PageView *v = views; v; v = v->next) {
+        SIZE_T off = (UINT_PTR)addr - (UINT_PTR)v->address;
+        if (off >= v->size) continue;
+        if (v->arena->policy == 0x8404 && v->run->parts[4] && bytes && bytes <= v->size-off) {
+            if (DuplicateHandle(GetCurrentProcess(),v->run->parts[4],GetCurrentProcess(),section,0,FALSE,DUPLICATE_SAME_ACCESS)) {
+                *offset = off;
+                *size = v->size;
+                hr = S_OK;
+            } else hr = HRESULT_FROM_WIN32(GetLastError());
+        }
+        break;
+    }
+    ReleaseSRWLockShared(&page_lock);
+    return hr;
+}
+
 static BOOL has_descriptor_layout(void)
 {
     static const unsigned order[] = {2,3,4,0,1};

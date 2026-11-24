@@ -1,5 +1,33 @@
 #include "gpu_buffer.hpp"
 #include <winternl.h>
+#include <new>
+
+extern "C" HRESULT xmem_pin_code_source(const void *, SIZE_T, HANDLE *, SIZE_T *, SIZE_T *);
+struct CodeSource : CodeReadSource {
+    ReadSpanBacking backing;
+    static HRESULT WINAPI record(CodeReadSource *s, ID3D12GraphicsCommandList *l, ID3D12Resource *dst, UINT64 at) {
+        return static_cast<CodeSource *>(s)->backing.copy_to(l,dst,at);
+    }
+    static void WINAPI drop(CodeReadSource *s) { delete static_cast<CodeSource *>(s); }
+    CodeSource() : CodeReadSource{record,drop} {}
+};
+
+extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettAcquireCodeReadSourceV1(ID3D12Device3 *d,
+        const void *va, SIZE_T bytes, CodeReadSource **out)
+{
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (!d || !va || !bytes) return E_INVALIDARG;
+    scarlett_section_info i = {};
+    HRESULT hr = xmem_pin_code_source(va,bytes,&i.section,&i.view_size,&i.offset);
+    if (FAILED(hr)) return hr;
+    auto s = new (std::nothrow) CodeSource;
+    hr = s ? s->backing.bind(d,i,bytes,false) : E_OUTOFMEMORY;
+    CloseHandle(i.section);
+    if (SUCCEEDED(hr)) *out = s;
+    else delete s;
+    return hr;
+}
 
 static HRESULT validate_import(void *base, SIZE_T size, void **wc_result, HANDLE *wc_backing = nullptr, bool control = false, bool wb = false)
 {
