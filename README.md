@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
 | How far does it get? | AMD and RTX both display the startup image and issue a second frame token. Neither has displayed a second frame. |
-| What's blocking it? | Both GPUs now get past selecting how triangles are drawn. The graphics worker stops at the next unsupported command; on RTX the main thread first hits a missing shader group. |
+| What's blocking it? | Both GPUs now set the shading rate. The graphics worker stops at the next command. On RTX the main thread finds the video shader technique, but its selected shader group is missing. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress

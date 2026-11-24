@@ -485,21 +485,43 @@ static void WINAPI pool_sync418(IUnknown *i,UINT mask,UINT control,UINT64 addres
     s->phase=B_INELIGIBLE; /* The primary-clear singleton contract has no atlas barrier. */
 #endif
 }
-static BOOL can_set_topology(struct startup_list *s,UINT topology)
+static BOOL open_direct_state(struct startup_list *s)
 {
     return s->pool_owner && s->reservation && s->type==D3D12_COMMAND_LIST_TYPE_DIRECT &&
-        !s->closed && SUCCEEDED(s->error) && !s->host_exposed && !s->primary_released &&
-        topology==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        !s->closed && SUCCEEDED(s->error) && !s->host_exposed && !s->primary_released;
+}
+static BOOL can_set_topology(struct startup_list *s,UINT topology)
+{
+    return open_direct_state(s) && topology==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+}
+static void recorded_direct_state(struct startup_list *s)
+{
+    s->post_boundary=FALSE;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    s->phase=B_INELIGIBLE;
+#endif
 }
 static void WINAPI pool_topology(IUnknown *i,UINT topology)
 {
     struct startup_list *s=sl(i);
     if (!can_set_topology(s,topology)) xs_stop();
     ID3D12GraphicsCommandList7_IASetPrimitiveTopology(s->host,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    s->post_boundary=FALSE;
-#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
-    s->phase=B_INELIGIBLE;
-#endif
+    recorded_direct_state(s);
+}
+static HRESULT record_pool_rate(struct startup_list *s,UINT rate,const D3D12_SHADING_RATE_COMBINER *input)
+{
+    D3D12_SHADING_RATE_COMBINER pair[2];SIZE_T n;
+    if (!open_direct_state(s) || rate!=D3D12_SHADING_RATE_1X1) return E_INVALIDARG;
+    if (!input || !ReadProcessMemory(GetCurrentProcess(),input,pair,sizeof pair,&n) || n!=sizeof pair) return E_POINTER;
+    if (pair[0]!=D3D12_SHADING_RATE_COMBINER_PASSTHROUGH || pair[1]!=D3D12_SHADING_RATE_COMBINER_PASSTHROUGH)
+        return E_NOTIMPL;
+    ID3D12GraphicsCommandList7_RSSetShadingRate(s->host,D3D12_SHADING_RATE_1X1,pair);
+    recorded_direct_state(s);
+    return S_OK;
+}
+static void WINAPI pool_rate(IUnknown *i,UINT rate,const D3D12_SHADING_RATE_COMBINER *pair)
+{
+    if (FAILED(record_pool_rate(sl(i),rate,pair))) xs_stop();
 }
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
@@ -517,15 +539,18 @@ static const struct {
     __typeof__(&sl_timestamp) timestamp;
     xs_stop_fn gap248;
     __typeof__(&sl_wait64) wait64;
-    xs_stop_fn gap258[56];
+    xs_stop_fn gap258[51];
+    __typeof__(&pool_rate) rate;
+    xs_stop_fn gap3f8[4];
     __typeof__(&pool_sync418) sync418;
     xs_stop_fn gap420[7];
     __typeof__(&sl_reset) reset;
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 55]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 50]=xs_stop}, pool_rate, {[0 ... 3]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),rate)==0x3f0,"pooled shading rate ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),topology)==0xa0,"pooled topology ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),sync418)==0x418,"pooled sync ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),wait64)==0x250,"pooled wait ABI");

@@ -442,3 +442,10 @@ Both GPUs returned the expected fenced sample counts: 64, 48, 32, 16.
 Two ordinary retail launches, no diagnostic launches. Both workers then
 reached list `+0x3f0` (return `+3263e`); on RTX the main thread first
 faulted at `+b5a5f8`. Both runs issued tokens 1 and 2 and presented only 1.
+
+The next pooled Direct command, `+0x3f0` (return `+3263e`), sets a 1×1
+shading rate with two `PASSTHROUGH` combiners. Both GPUs produced 16
+coarse and 48 fine pixels in the ordering fixture. One diagnostic and
+two ordinary retail launches followed the worker to `+110` (return
+`+327cb`). On RTX the `rage_bink` technique lookup succeeded at index 1
+but group slot 1 was null. Both ordinary runs presented only token 1.
