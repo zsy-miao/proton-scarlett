@@ -8,6 +8,15 @@ The RTX 3070 retail run stops at `+0x24786d1`, before these uses execute. Static
 | Progress markers | Allocates three banks of 18 DWORDs at `+0x5cabb50`. Slot `+0x238` receives a marker address and value at `+0x2490030`. The CPU reads the same memory at `+0x2473050` and clears it for reuse. The exact GPU pipeline stage is unknown. |
 | Fence allocation | A temporary allocation callback around the shared fence constructor at `+0x1d0b2fa` can return a suballocation from this page. The internal layout of that allocation is unknown. |
 
+Two RADV retail traces reached graphics pipeline creation (`+0x2479a8d`).
+Five shared fences were created while the temporary hook was registered;
+none advanced the page allocator, and no fence completion-address request
+was recorded. The title then allocated an 8-byte counter at offset 0, set it
+to 1, and allocated 54 marker DWORDs at offset 8. All markers were zero at
+the stop. Watchpoints on the graphics initialization thread recorded no
+subsequent counter access or known GPU wait/marker call before that point.
+This bounds a CPU-only startup experiment on RTX; later GPU use remains untested.
+
 The [marker test](../../tests/control-markers.cpp) exercises one possible host operation: D3D12 `WriteBufferImmediate` into mapped readback memory. A fence gate holds back a second write. While it is blocked, the CPU must observe the first marker and be able to clear it; after retirement only the second marker may be set. This passed on the RTX 3070. It tests CPU-visible ordering across two command lists, not the stage of the retail operation or the cache properties of the requested page.
 
 ```sh
