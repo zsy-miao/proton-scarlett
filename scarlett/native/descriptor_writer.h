@@ -163,11 +163,13 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     const DWORD row_srv[]={0,1,0x1688,words[3],0,0,0x1c200,4,0,0};
     const DWORD row_uav[]={0,1,0,0,0x1c200,4,0,0,0,1};
     const DWORD tiny_srv[]={42,1,0x1688,words[3],0,0,4,0,0,0};
-    BOOL tiny=object && kind==SRV && !memcmp(words,tiny_srv,sizeof tiny_srv);
+    const DWORD tiny_uav[]={42,1,0,0,4,0,0,0,0,1};
+    BOOL tiny=object && ((kind==SRV && !memcmp(words,tiny_srv,sizeof tiny_srv)) ||
+            (kind==UAV && !memcmp(words,tiny_uav,sizeof tiny_uav)));
     BOOL row=object && (tiny || (kind==SRV && !memcmp(words,row_srv,sizeof row_srv)) ||
             (kind==UAV && !memcmp(words,row_uav,sizeof row_uav)));
     if (row && kind==UAV) {
-        uav.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;uav.Buffer.NumElements=words[4];uav.Buffer.StructureByteStride=words[5];
+        uav.Format=(DXGI_FORMAT)words[0];uav.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;uav.Buffer.NumElements=words[4];uav.Buffer.StructureByteStride=words[5];
     } else if (row) {
         srv.Format=(DXGI_FORMAT)words[0];srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;srv.Shader4ComponentMapping=words[2];
         srv.Buffer.NumElements=words[6];srv.Buffer.StructureByteStride=words[7];

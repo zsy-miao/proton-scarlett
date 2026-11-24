@@ -369,3 +369,12 @@ Five retail launches: three diagnostic and two ordinary. In both final
 runs the next stop was a UAV write (device `+98`, return `+1647616`).
 RTX presented token 1; RADV issued token 1 without a logged presentation.
 Neither presented a second token.
+
+The subsequent batch traced the 16-byte buffer's UAV at `+1647616` to
+the same object as its SRV: four `R32_UINT` elements, null counter.
+The row fixture verified typed writes and reads after VA reuse on both
+GPUs. Retail publication alone does not establish shader execution.
+Three retail launches (one RADV diagnostic, then one ordinary per GPU)
+reached command-list `+238`, return `+4ed46aa`. Both ordinary runs
+presented token 1. RTX issued token 2 on the same clock and epoch;
+neither run presented it.

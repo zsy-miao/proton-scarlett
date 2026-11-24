@@ -3,7 +3,11 @@ Buffer<uint> input : register(t0);
 #else
 StructuredBuffer<uint> input : register(t0);
 #endif
+#if defined(TYPED) && defined(WRITE)
+RWBuffer<uint> target : register(u0);
+#else
 RWStructuredBuffer<uint> target : register(u0);
+#endif
 #ifdef TYPED
 [numthreads(4,1,1)]
 #else

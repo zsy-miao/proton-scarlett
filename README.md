@@ -8,8 +8,8 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
-| How far does it get? | The same experimental build presented the game's first startup image on AMD and an NVIDIA RTX 3070. Neither run displayed a second frame. |
-| What's blocking it? | Both GPUs now create the 16-byte graphics buffer that caused the null pointer. Startup stops at the next request to let a shader write to a resource. |
+| How far does it get? | Both GPUs displayed the startup image. The RTX 3070 received a second frame token, but neither GPU presented a second frame. |
+| What's blocking it? | Both GPUs now create the shader-write view of the 16-byte buffer. Startup stops when the game tries to record a marker in its graphics command list. |
 | Do the controls work? | On both GPUs, a [controller test](scarlett/tests/radv-gameinput.sh) detected a button press, forward movement, and a camera turn. In-game controls are still untested. |
 
 ## Technical progress
