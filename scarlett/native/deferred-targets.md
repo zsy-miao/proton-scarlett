@@ -118,3 +118,21 @@ R8_UINT clear value with words `0,0,0,0x3f800000`. Placement returned
 The guarded fixture checks both sizing slots against native allocation
 info, rejects descriptor-field and node/count neighbors and tests short
 input at a page boundary. It does not place these five guest resources.
+
+### 640×360 R8_UINT placement after 0035
+
+Both title VAs resolved to `+0xe610000` in the `0x89700000` WC pool:
+RTX `0xd59810000` in the marked section at `0xd4b200000`, RADV
+`0xda2c10000` in the native heap mapped at `0xd94600000`. The other
+backing lookup failed on each adapter. Vulkan required `0x3c000` bytes
+on both, with alignment `0x400` / `0x1000` and memory type bits `3` /
+`0x7ad` respectively. Reserve the full queried `0x40000`, not just the
+Vulkan requirement. Both runs wrote SRV `3e 4 1688 0 0 1 0 0`, RTV
+`3e 4 0 0`, and null-counter UAV `3e 4 0 0` to distinct slots. Next
+came device `+230`, return `+4ecc821`: an address SRV of a 192-byte
+buffer (6 structured elements of stride 32, word 9 `0x800100`). It is
+not a view of the placed R8 image.
+
+`wc-float1440.sh radv|nvidia TOOL r8uint` tests the original backing after
+VA replacement, all texels, both guards and unused allocation tail. Its
+shader samples, UAV clear and RTV stripe are fixture operations.

@@ -1,0 +1,131 @@
+--- a/libs/d3d12core/d3d12core.def
++++ b/libs/d3d12core/d3d12core.def
+@@ -1,6 +1,7 @@
+ LIBRARY d3d12core.dll
+ 
+ EXPORTS
++    ScarlettR8UintImageV1 @40
+     ScarlettTiledR11FiveV1 @39
+     ScarlettTiledR32BufferV1 @38
+     ScarlettFloat1440V1 @36
+--- a/libs/vkd3d/scarlett_primary_image.h
++++ b/libs/vkd3d/scarlett_primary_image.h
+@@ -204,6 +204,7 @@
+     const SIZE_T base=0xf000000, first=base+(native?0x880000:0x800000);
+     const SIZE_T bgra=native?0x1010000:0x1000000, full=native?0x1ce0000:0x1e00000;
+     switch(format) {
++        case DXGI_FORMAT_R8_UINT: return off==0xe610000;
+         case DXGI_FORMAT_A8_UNORM: return off==base;
+         case DXGI_FORMAT_R16G16B16A16_FLOAT:
+             return (!native && off==base) || off==first || off==first+bgra || off==first+2*bgra;
+@@ -236,8 +237,8 @@
+         ID3D12Resource **out, DXGI_FORMAT format)
+ {
+     bool depth=format==DXGI_FORMAT_R32G8X24_TYPELESS, a8=format==DXGI_FORMAT_A8_UNORM;
+-    bool bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM, full=format==DXGI_FORMAT_R16G16B16A16_FLOAT, single=a8 || bgra || full;
+-    SIZE_T span=full?0x1e00000:bgra?0x1000000:a8?0x800000:0x400000;
++    bool bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM, full=format==DXGI_FORMAT_R16G16B16A16_FLOAT, u8=format==DXGI_FORMAT_R8_UINT, single=a8 || bgra || full || u8;
++    SIZE_T span=u8?0x40000:full?0x1e00000:bgra?0x1000000:a8?0x800000:0x400000;
+     /* Private Wine selector: tagged WC pool, with fd compatibility checked on import. */
+     const VkExternalMemoryHandleTypeFlagBits dma = (VkExternalMemoryHandleTypeFlagBits)0x04000000u;
+     VkPhysicalDeviceExternalImageFormatInfo ext={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,NULL,dma};
+@@ -256,9 +257,9 @@
+     VkImportMemoryWin32HandleInfoKHR imp={VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,NULL,dma,section};
+     VkMemoryAllocateInfo ai={VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,&imp,size,0};
+     VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,NULL,0,0,off};
+-    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,full?2560:bgra?2048:a8?3840:1,full?1440:bgra?2048:a8?2160:1,1,1,format,
+-        {single?1:4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | (full ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : 0)};
+-    const D3D12_CLEAR_VALUE cv={.Format=format,.Color={!single,!single,!single,!single}};
++    const D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,u8?640:full?2560:bgra?2048:a8?3840:1,u8?360:full?1440:bgra?2048:a8?2160:1,1,1,format,
++        {single?1:4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | ((full || u8) ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : 0)};
++    const D3D12_CLEAR_VALUE cv={.Format=format,.Color={!single,!single,!single,!single || u8}};
+     const D3D12_CLEAR_VALUE ds_clear={.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT,.DepthStencil={0.0f,0}};
+     const D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
+     const struct vkd3d_vk_device_procs *vk_procs;
+@@ -274,9 +275,9 @@
+     if (!iface || !section || size!=0x89700000u || off>size-span || (single ? !scarlett_single_offset(format,off,false) : off%0x400000)) return E_INVALIDARG;
+     d=impl_from_ID3D12Device(iface); vk_procs=&d->vk_procs; p=&d->device_info.properties2.properties;
+     if(single) {
+-        VkFormat vk_format=full?VK_FORMAT_R16G16B16A16_SFLOAT:bgra?VK_FORMAT_B8G8R8A8_UNORM:VK_FORMAT_A8_UNORM_KHR;
++        VkFormat vk_format=u8?VK_FORMAT_R8_UINT:full?VK_FORMAT_R16G16B16A16_SFLOAT:bgra?VK_FORMAT_B8G8R8A8_UNORM:VK_FORMAT_A8_UNORM_KHR;
+         if (vkd3d_get_format(d,format,false)->vk_format!=vk_format) return DXGI_ERROR_UNSUPPORTED;
+-        if(full){fi.usage|=VK_IMAGE_USAGE_STORAGE_BIT;ci.usage=fi.usage;}
++        if(full || u8){fi.usage|=VK_IMAGE_USAGE_STORAGE_BIT;ci.usage=fi.usage;}
+         ci.format=fi.format=vk_format;
+         ci.extent=(VkExtent3D){rd.Width,rd.Height,1};ci.samples=VK_SAMPLE_COUNT_1_BIT;
+     }
+@@ -288,8 +289,8 @@
+         VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))!=VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) return DXGI_ERROR_UNSUPPORTED;
+     if ((vr=VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,&im)))<0) return hresult_from_vk_result(vr);
+     ri.image=im;VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&ri,&mr));
+-    if (dd.requiresDedicatedAllocation || mr.memoryRequirements.size!=((bgra || full)?span:a8?0x7f8000:512) ||
+-        mr.memoryRequirements.alignment!=1024 || (full && mr.memoryRequirements.memoryTypeBits!=3) || !(mr.memoryRequirements.memoryTypeBits & 1)) {hr=DXGI_ERROR_UNSUPPORTED;goto image_fail;}
++    if (dd.requiresDedicatedAllocation || mr.memoryRequirements.size!=(u8?0x3c000:(bgra || full)?span:a8?0x7f8000:512) ||
++        mr.memoryRequirements.alignment!=1024 || ((full || u8) && mr.memoryRequirements.memoryTypeBits!=3) || !(mr.memoryRequirements.memoryTypeBits & 1)) {hr=DXGI_ERROR_UNSUPPORTED;goto image_fail;}
+     if (!(s=vkd3d_calloc(1,sizeof(*s)))) {hr=E_OUTOFMEMORY;goto image_fail;}
+     if (!DuplicateHandle(GetCurrentProcess(),section,GetCurrentProcess(),&s->wc_section,0,FALSE,DUPLICATE_SAME_ACCESS)) {
+         hr=HRESULT_FROM_WIN32(GetLastError());vkd3d_free(s);goto image_fail;
+@@ -300,7 +301,7 @@
+     bi.image=im;bi.memory=s->memory;
+     if ((vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi)))<0) {hr=hresult_from_vk_result(vr);goto slice_fail;}
+     if (FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,
+-            &rd,&hp,0,full ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET,
++            &rd,&hp,0,(full || u8) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET,
+             depth ? &ds_clear : &cv,0,NULL,&r))) goto slice_fail;
+     r->res.vk_image=im;r->initial_layout_transition=1;r->common_layout=VK_IMAGE_LAYOUT_GENERAL;
+     pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;pthread_mutex_unlock(&scarlett_slice_lock);
+@@ -372,31 +373,31 @@
+     VkImageMemoryRequirementsInfo2 ri={VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};VkMemoryDedicatedRequirements dd={VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};VkMemoryRequirements2 mr={VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,&dd};VkBindImageMemoryInfo bi={VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,NULL,0,0,off};
+     D3D12_RESOURCE_DESC1 rd={D3D12_RESOURCE_DIMENSION_TEXTURE2D,0,1,1,1,1,depth?DXGI_FORMAT_R32G8X24_TYPELESS:DXGI_FORMAT_R8G8B8A8_UNORM,{4,0},D3D12_TEXTURE_LAYOUT_UNKNOWN,depth?D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL:D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+     D3D12_CLEAR_VALUE cv={.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.Color={1,1,1,1}};D3D12_HEAP_PROPERTIES hp={D3D12_HEAP_TYPE_DEFAULT,0,0,1,1};
+-    const bool a8=single==DXGI_FORMAT_A8_UNORM,bgra=single==DXGI_FORMAT_B8G8R8A8_UNORM,full=single==DXGI_FORMAT_R16G16B16A16_FLOAT;
+-    const SIZE_T span=full?0x1ce0000:bgra?0x1010000:a8?0x880000:0x400000;
++    const bool a8=single==DXGI_FORMAT_A8_UNORM,bgra=single==DXGI_FORMAT_B8G8R8A8_UNORM,full=single==DXGI_FORMAT_R16G16B16A16_FLOAT,u8=single==DXGI_FORMAT_R8_UINT;
++    const SIZE_T span=u8?0x40000:full?0x1ce0000:bgra?0x1010000:a8?0x880000:0x400000;
+     if(!out)return E_POINTER;
+     *out=NULL;
+     if(!heap || !heap->scarlett_native_pool || heap->device!=d || heap->desc.SizeInBytes!=0x89700000u || (!single && off%0x400000) || off>heap->desc.SizeInBytes-span || heap->allocation.offset || heap->allocation.device_allocation.vk_memory_type!=2)return E_INVALIDARG;
+     if(FAILED(hr=ID3D12Device_GetDeviceRemovedReason((ID3D12Device*)iface)))return hr;
+     if(single) {
+         if(!scarlett_single_offset(single,off,true)) return E_INVALIDARG;
+-        rd.Format=single;rd.Width=full?2560:bgra?2048:3840;rd.Height=full?1440:bgra?2048:2160;rd.SampleDesc.Count=1;
+-        if(full){ci.usage|=VK_IMAGE_USAGE_STORAGE_BIT;rd.Flags|=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;}
++        rd.Format=single;rd.Width=u8?640:full?2560:bgra?2048:3840;rd.Height=u8?360:full?1440:bgra?2048:2160;rd.SampleDesc.Count=1;
++        if(full || u8){ci.usage|=VK_IMAGE_USAGE_STORAGE_BIT;rd.Flags|=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;}
+         ci.format=vkd3d_get_format(d,rd.Format,false)->vk_format;
+         ci.samples=VK_SAMPLE_COUNT_1_BIT;ci.extent=(VkExtent3D){rd.Width,rd.Height,1};
+-        cv=(D3D12_CLEAR_VALUE){.Format=rd.Format};
++        cv=(D3D12_CLEAR_VALUE){.Format=rd.Format,.Color={0,0,0,u8}};
+     }
+     if(depth)cv=(D3D12_CLEAR_VALUE){.Format=DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
+     if ((vr=VK_CALL(vkCreateImage(d->vk_device,&ci,NULL,&im)))<0)return hresult_from_vk_result(vr);
+     ri.image=im;VK_CALL(vkGetImageMemoryRequirements2(d->vk_device,&ri,&mr));hr=DXGI_ERROR_UNSUPPORTED;
+-    if (single && (mr.memoryRequirements.size!=(full?0x1cde000:bgra?0x1010000:0x87c000) || mr.memoryRequirements.alignment!=0x10000)) goto fail;
++    if (single && (mr.memoryRequirements.size!=(u8?0x3c000:full?0x1cde000:bgra?0x1010000:0x87c000) || mr.memoryRequirements.alignment!=(u8?0x1000:0x10000) || (u8 && mr.memoryRequirements.memoryTypeBits!=0x7ad))) goto fail;
+     if(dd.requiresDedicatedAllocation || !mr.memoryRequirements.alignment || off%mr.memoryRequirements.alignment || mr.memoryRequirements.size>span || !(mr.memoryRequirements.memoryTypeBits&4)) goto fail;
+     if(!(s=vkd3d_calloc(1,sizeof *s))){hr=E_OUTOFMEMORY;goto fail;}
+     s->start=off;s->end=off+span;s->lease=(IUnknown*)h;IUnknown_AddRef(s->lease);
+     if(FAILED(hr=scarlett_reserve_wc_slice(s,NULL))){IUnknown_Release(s->lease);vkd3d_free(s);goto fail;}
+     bi.image=im;bi.memory=heap->allocation.device_allocation.vk_memory;
+     if((vr=VK_CALL(vkBindImageMemory2(d->vk_device,1,&bi)))<0){hr=hresult_from_vk_result(vr);goto fail_slice;}
+-    if(FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,&rd,&hp,0,full?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:depth?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET,&cv,0,NULL,&r)))goto fail_slice;
++    if(FAILED(hr=d3d12_resource_create(d,VKD3D_RESOURCE_PLACED|VKD3D_RESOURCE_GENERAL_LAYOUT|SCARLETT_PRIMARY,&rd,&hp,0,(full || u8)?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:depth?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET,&cv,0,NULL,&r)))goto fail_slice;
+     r->res.vk_image=im;r->initial_layout_transition=1;r->common_layout=VK_IMAGE_LAYOUT_GENERAL;
+     pthread_mutex_lock(&scarlett_slice_lock);s->resource=r;pthread_mutex_unlock(&scarlett_slice_lock);*out=(ID3D12Resource*)&r->ID3D12Resource_iface;return S_OK;
+ fail_slice:VK_CALL(vkDestroyImage(d->vk_device,im,NULL));scarlett_remove_slice(s);return hr;
+@@ -412,6 +413,15 @@
+ HRESULT WINAPI ScarlettNativeFloat1440V1(d3d12_device_iface *iface,ID3D12Heap *h,SIZE_T off,ID3D12Resource **out)
+ {return native_pool_image(iface,h,off,FALSE,DXGI_FORMAT_R16G16B16A16_FLOAT,out);}
+ 
++HRESULT WINAPI ScarlettR8UintImageV1(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,ID3D12Resource **out)
++{
++    if (!out) return E_POINTER;
++    *out=NULL;
++    if (!iface || !!native==!!section || size!=0x89700000u) return E_INVALIDARG;
++    return native ? native_pool_image(iface,native,off,FALSE,DXGI_FORMAT_R8_UINT,out) :
++            scarlett_wc_image(iface,section,size,off,out,DXGI_FORMAT_R8_UINT);
++}
++
+ HRESULT WINAPI ScarlettWcHeapV1(d3d12_device_iface*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**);
+ static HRESULT scarlett_tiled_buffer(d3d12_device_iface *iface,ID3D12Heap *native,HANDLE section,SIZE_T size,SIZE_T off,bool r11,ID3D12Resource **out)
+ {

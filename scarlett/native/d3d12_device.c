@@ -256,7 +256,8 @@ static BOOL single_desc(const D3D12_RESOURCE_DESC *r)
 {
     return r->Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && !r->Alignment &&
         r->DepthOrArraySize==1 && r->MipLevels==1 && r->SampleDesc.Count==1 && !r->SampleDesc.Quality && !r->Layout &&
-        ((r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT && r->Width==2560 && r->Height==1440 && (UINT)r->Flags==0x300005) ||
+        ((r->Format==DXGI_FORMAT_R8_UINT && r->Width==640 && r->Height==360 && (UINT)r->Flags==0xc00005) ||
+         (r->Format==DXGI_FORMAT_R16G16B16A16_FLOAT && r->Width==2560 && r->Height==1440 && (UINT)r->Flags==0x300005) ||
          ((UINT)r->Flags==0x300001 && ((r->Format==DXGI_FORMAT_A8_UNORM && r->Width==3840 && r->Height==2160) ||
          (r->Format==DXGI_FORMAT_B8G8R8A8_UNORM && r->Width==2048 && r->Height==2048))));
 }
@@ -611,15 +612,15 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,
     if (!copy_in(&id,iid,sizeof id)) return E_POINTER;
     if (!IsEqualIID(&id,&IID_ID3D12Resource)) return E_NOINTERFACE;
     BOOL depth=format==DXGI_FORMAT_R32G8X24_TYPELESS,a8=format==DXGI_FORMAT_A8_UNORM,bgra=format==DXGI_FORMAT_B8G8R8A8_UNORM;
-    BOOL fp=format==DXGI_FORMAT_R16G16B16A16_FLOAT,single=fp || a8 || bgra;
+    BOOL fp=format==DXGI_FORMAT_R16G16B16A16_FLOAT,u8=format==DXGI_FORMAT_R8_UINT,single=fp || a8 || bgra || u8;
     D3D12_CLEAR_VALUE cv={0};
     if (!copy_in(&cv,clear,depth ? offsetof(D3D12_CLEAR_VALUE,DepthStencil.Stencil)+sizeof cv.DepthStencil.Stencil : sizeof cv)) return E_POINTER;
-    if (state!=(fp?3u:6u)) return E_NOTIMPL;
+    if (state!=((fp || u8)?3u:6u)) return E_NOTIMPL;
     if (depth) {
         if (cv.Format!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || cv.DepthStencil.Depth!=0 || cv.DepthStencil.Stencil) return E_NOTIMPL;
-    } else if (cv.Format!=format || memcmp(cv.Color,single?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
+    } else if (cv.Format!=format || memcmp(cv.Color,u8?(float[4]){0,0,0,1}:single?(float[4]){0}:(float[4]){1,1,1,1},16)) return E_NOTIMPL;
     struct scarlett_section_info i;
-    UINT span=fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+    UINT span=u8?0x40000:fp?0x1ce0000:bgra?0x1010000:a8?0x880000:D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     ID3D12Heap *native=NULL;UINT off=0;
     HRESULT hr=native_pool_ref(d->host,(void*)va,span,&native,NULL,&off);
     if(hr==S_FALSE) {
@@ -636,7 +637,10 @@ static HRESULT create_target(struct xbox_device *d,UINT64 va,DXGI_FORMAT format,
         struct color_resource *r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
         if (!r) hr=E_OUTOFMEMORY;
         else {
-            if(native && single) {
+            if(u8) {
+                HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettR8UintImageV1");
+                hr=place?place(d->host,native,i.section,i.view_size,i.offset,&r->host):DXGI_ERROR_UNSUPPORTED;
+            }else if(native && single) {
                 HRESULT(WINAPI *place)(ID3D12Device*,ID3D12Heap*,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),fp?"ScarlettNativeFloat1440V1":bgra?"ScarlettNativeBgraImageV1":"ScarlettNativeA8ImageV1");
                 hr=place?place(d->host,native,off,&r->host):DXGI_ERROR_UNSUPPORTED;
             }else if(native){

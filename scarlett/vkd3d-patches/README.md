@@ -111,3 +111,7 @@ two live tiled R32 buffers on the same device and section. The overlap check
 and reservation happen under the same lock. Run `python3 scarlett/tests/test-r11-pair-cpu.py
 PATH/TO/libs/vkd3d/scarlett_primary_image.h` on the patched source, then
 `scarlett/tests/rtx-r32-tile.sh TOOL rtx-r11` for the GPU checks.
+
+`0035` binds the observed 640×360 R8_UINT image to the original WC section
+(RTX) or same-device native heap (RADV), at `+0xe610000`. The 256 KiB range
+uses the same cross-format lease and final-resource retirement as `0034`.
