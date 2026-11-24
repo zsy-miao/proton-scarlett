@@ -826,6 +826,10 @@ It reads no descriptor bytes and needs no CPU transaction. The focused
 fixture passed on both adapters, including an empty slot, a later rewrite,
 split replay and a delayed pipeline bind.
 
+To rebuild that fixture with local test inputs, run
+`scarlett/tests/build-colour-recorder.sh PRIVATE-INPUT-DIR MATCHED-XMEM-DLL NEW-OUTPUT-DIR`.
+Pass the resulting `game/` directory to the shared test launcher.
+
 Both ordinary runs then stopped at a **second** vertex-buffer bind, list
 `+180`, return `+32966`. The caller chain `+1263f0 ← +4fd1e7b` puts this
 call in the alternate composite pass. On each GPU it was the first
