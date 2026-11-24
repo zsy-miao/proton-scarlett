@@ -64,6 +64,18 @@ int main(void)
     DWORD device_params[20]={[0]=0x20004,[2]=0x100000,[10]=1,[15]=0x20};
     IUnknown *d,*q;
     HR(D3D12XboxCreateDevice(NULL,device_params,&id,(void **)&d),S_OK);
+    typedef HRESULT (WINAPI *Placed)(IUnknown *,UINT64,const void *,UINT,const void *,REFIID,void **);
+    typedef HRESULT (WINAPI *Committed)(IUnknown *,const void *,UINT,const void *,UINT,const void *,
+            const void *,UINT,const void *,REFIID,void **);
+    D3D12_RESOURCE_DESC desc={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=W,.Height=H,
+        .DepthOrArraySize=1,.MipLevels=1,.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.SampleDesc={1,0},
+        .Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+    void *result=d;
+    HR(SLOT(d,0x428,Placed)(d,0x12340000,&desc,6,NULL,&IID_ID3D12Resource,&result),E_NOTIMPL);
+    CHECK(!result); result=d;
+    D3D12_HEAP_PROPERTIES props={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
+    HR(SLOT(d,0x3f8,Committed)(d,&props,8,&desc,0,NULL,NULL,0,NULL,&IID_ID3D12Resource,&result),E_NOTIMPL);
+    CHECK(!result);
     D3D12_COMMAND_QUEUE_DESC qd={.NodeMask=1};
     HR(SLOT(d,0x40,Queue)(d,&qd,&IID_ID3D12CommandQueue,(void **)&q),S_OK);
     HR(SLOT(d,0x270,Interval)(d,NULL,33333,3,0),S_OK);
@@ -96,16 +108,17 @@ int main(void)
     ID3D12Resource *buf[2];
     for (UINT i=0;i<2;++i)
         HR(IDXGISwapChain3_GetBuffer(chain,i,&IID_ID3D12Resource,(void **)&buf[i]),S_OK);
-    /* Stand-ins for separately allocated title wrappers; never use the host resource as key. */
-    ID3D12Fence *keys[2];
+    IUnknown *keys[2];
     ID3D12CommandQueue *hostq=xs_display_queue(q);
-    ID3D12Device *host;
-    HR(ID3D12CommandQueue_GetDevice(hostq,&IID_ID3D12Device,(void **)&host),S_OK);
     for (UINT i=0;i<2;++i) {
-        HR(ID3D12Device_CreateFence(host,0,0,&IID_ID3D12Fence,(void **)&keys[i]),S_OK);
-        HR(xs_display_bind(q,i,(IUnknown *)keys[i],buf[1-i]),E_INVALIDARG);
-        HR(xs_display_bind(q,i,(IUnknown *)keys[i],buf[i]),S_OK);
+        HR(xs_display_wrap(q,i,buf[1-i],&keys[i]),E_INVALIDARG); CHECK(!keys[i]);
+        HR(xs_display_wrap(q,i,buf[i],&keys[i]),S_OK);
+        CHECK(xs_surface_host(keys[i])==buf[i]);
+        IUnknown *again;
+        HR(xs_display_wrap(q,i,buf[i],&again),DXGI_ERROR_INVALID_CALL); CHECK(!again);
+        HR(IUnknown_QueryInterface(keys[i],&IID_ID3D12Resource,(void **)&again),E_NOINTERFACE);
     }
+    for (UINT i=0;i<2;++i) ID3D12Resource_Release(buf[i]);
     HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL);
     key=(IUnknown *)keys[1-first];
     HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL);
@@ -126,7 +139,7 @@ int main(void)
         key=(IUnknown *)keys[index];
         if (i) HR(present(q,1,wire,opts),DXGI_ERROR_INVALID_CALL); /* spent token, correct key */
         wire[0]=token[i];
-        CHECK(!paint(hostq,buf[index],i ? 0xff00ff00 : 0xff0000ff));
+        CHECK(!paint(hostq,xs_surface_host(keys[index]),i ? 0xff00ff00 : 0xff0000ff));
         HR(present(q,1,wire,opts),S_OK);
         HR(wait(d,2,5000,NULL,0,&token[i]),S_OK);
         HR(IDXGISwapChain3_GetLastPresentCount(chain,&after),S_OK); CHECK(after==before+i+1);
@@ -136,8 +149,8 @@ int main(void)
         do { MSG m; while (PeekMessageW(&m,NULL,0,0,PM_REMOVE)) DispatchMessageW(&m); Sleep(10); }
         while (GetTickCount64()<end);
     }
-    for (UINT i=0;i<2;++i) { ID3D12Fence_Release(keys[i]); ID3D12Resource_Release(buf[i]); }
-    ID3D12Device_Release(host); IDXGISwapChain3_Release(chain); IDXGIFactory2_Release(factory);
+    for (UINT i=0;i<2;++i) IUnknown_Release(keys[i]);
+    IDXGISwapChain3_Release(chain); IDXGIFactory2_Release(factory);
     IUnknown_Release(q); IUnknown_Release(d); DestroyWindow(window);
     puts("PASS PresentX: rejected inputs preserve count/token; mapped red then green, two exact completions");
     return 0;

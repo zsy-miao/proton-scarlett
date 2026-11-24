@@ -27,7 +27,91 @@ bytes):** `+00` threshold float, `+04` view count, `+08` extension count,
 Field order agrees with the [public Go declarations](https://github.com/hajimehoshi/ebiten/blob/4c219926eef626a924f821547f2b7231a4572783/internal/graphicsdriver/directx/d3d12_windows.go).
 Microsoft's [FramePacing example](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/FramePacing/FramePacing.cpp#L2074-L2113) passes an origin token and a display render target to `PresentX`.
 
-## Minimum retail integration
+## Display creation: primary ring vs. general texture allocator
+
+**The primary ring call sites lead to device `+3f8`, not `+428`, on the
+ordinary SDR path.** This follows from the arguments, rather than from
+recognizing a function name:
+
+- `247add3` builds the compact texture description; `247add8` ORs `8` into
+  byte `+c`. `501f4a0` initializes byte `+d` to zero. `247ae4c/aeb1` pass
+  null reuse/placement arguments. `cc27b4` sets texture flags to `28` (or
+  `a8` in the alternate loop). `34bfd6/bff9` pass the null fifth argument
+  of `34beb0` to `193de10`; the reuse branch `193de5d` cannot be selected.
+  `164e52`–`164e65` copy all 14 compact bytes to texture `+38`; consequently
+  the display bit lives at texture `+44`, not in the resource pointer.
+- `193de6b` clears texture `+18`; `193dedc` sends the null allocation
+  argument to the regular descriptor builder (or control already went there
+  at `193dec9`). `193e11d` tests bit `8` at texture `+44` and takes
+  `193e150` → `193e1b4`. RCX is device alias `75df040`, RDX points to
+  heap properties `{DEFAULT,0,0,1,1}`, R8D=`8` (`ALLOW_DISPLAY`), R9
+  points to the resource descriptor. Caller stack `+20/+28/+30/+38/+40/
+  +48/+50`: initial state, optimized clear pointer, null, u32 zero, null,
+  IID, `&texture[+20]` (byte offset). The IID at `63fa690` is
+  `696442be-a72e-4059-bc79-5b5c98040fad` (`ID3D12Resource`).
+  Do not truncate this extended committed-call ABI to the desktop signature.
+- By contrast `193e2d4` on device `75df048` matches the public
+  [`CreatePlacedResourceX(address,desc,state,clear,iid,out)` call](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/DirectStorageTextureShuffling/DirectStorageTextureShuffling.cpp#L606-L625).
+  RDX is a **placement address**. `abfad0` provides the size/alignment pair;
+  `193e243` calls `2474690` to allocate if no backing was supplied.
+  `2474690` selects `221ad20` or `24746d0` (which calls `4fc99c0` and
+  tail-calls `4fac3c0`), optionally rounding size/alignment to 128.
+  There is also an allocation attempt at `193e220` for a different flag
+  combination. If `base <= addr < base+size`, `193e28a`–`193e2ad`
+  maps `addr` to `addr-base+alias` using `9e1dac0/c8/d0`. R8=`&desc`,
+  R9D=state, caller stack `+20/+28/+30`=clear/IID/out. `193dff8` is a
+  second `+428` call with texture `+18` as address, state 6, null clear.
+  Size, alignment and address equality are not proof of shared GPU storage.
+- The descriptor built at `c4b030` has dimension u32 `+00`, alignment u64
+  `+08`, width u64 `+10`, height u32 `+18`, depth/array and mips u16
+  `+1c/+1e`, format u32 `+20`, sample count/quality `+24/+28`, layout
+  `+2c`, flags `+30`; builder zeroes through `+3f`. It can write console
+  layout/flag values as well as standard values. In the ordinary `28`
+  texture-flags branch, `48d8d0` → `4dbffb0` maps initial state selector
+  1 to raw state **6**, not desktop `PRESENT`. `193e089` supplies an
+  optimized clear value from format and the title's color table. Don't
+  discard it or assume the image starts in scanout state.
+
+**Output and ring.** `2478130` stores configured width/height. Before the
+window or device, `2478481` calls `5eb24f0`, copying those values and the
+format byte from `a9438cc/d0/dc` to `75e6fe0/e4/e8`. `247ada6`–`247add3`
+use these for the primary texture; `501f4ba/c2/d3` write width/height u16
+and format u8. `58aacb0` selects mode 2 by default, with a runtime
+override; `58aad40` returns `1c` (RGBA8 UNORM) for 2. Other modes read
+table `61e03e0 + mode*28 +20` (`18` and `0a` for modes 0 and 1).
+The secondary loop runs **before** the primary loop if enabled (`247ad69`,
+`5eb25b1`); it uses different dimension/format globals and also sets the
+display bit. Heap flag 8 alone cannot identify the primary output.
+
+`22435f2`–`22435fc` set ring count to `2 | configByte`; `2479373/937e`
+copy it to the wrap limit. `247afa2` resets index to zero, `24747c6`–`24747dc`
+increment then wrap at that limit. This is ascending title order, not an
+observed equality with the host index at the first present.
+
+`24784d5` registers ANSI `sgaWindowClass` (class name `677b672`; window
+procedure `247a660` tail-calls `DefWindowProcA`). `247853a` calls
+`CreateWindowExA` with that class, title `a9437b8`, style `00cf0000`,
+configured dimensions, no parent. The nonnull returned HWND goes straight
+to `ShowWindow` at `2478553`; device creation follows. The input dimensions
+are outer-window dimensions, not proof of client or surface size. A window
+bridge can pass this successful create result for the current process and
+lifetime to the graphics bootstrap. Nothing in the resource call identifies
+that HWND. Do not use a foreground-window search or create a competing window.
+
+## Decision at future initialization
+
+Correlate the returned HWND with device/queue creation; record primary vs.
+secondary loop, index/count, full descriptor, heap properties, clear value
+and initial state at `193e1b4`; follow the returned interface into the
+actual resource/view and transition calls. Compare the first plane key
+and index with this ring before turning on a retail bridge. Direct wrapping
+requires an equivalent backbuffer for **all** required rendering uses and
+states. Otherwise preserve the original render target and use a synchronized
+copy/resolve into a compatible output. For a genuinely placed request also
+prove host allocation/offset/alias ownership. Both observed slots currently
+report the descriptor prefix and fail with a null output.
+
+## Private binding
 
 1. Obtain a trusted host HWND/factory, actual dimensions and a compatible
    SDR format and ring length. Open the chain once on the **presenting
@@ -36,8 +120,10 @@ Microsoft's [FramePacing example](https://github.com/microsoft/Xbox-GDK-Samples/
    established before enabling this route.
 2. In display-resource creation, have the title resource wrapper returned at
    texture `+20` actually render into `chain->GetBuffer(i)`. Call
-   `xs_display_bind(queue,i,titleInterface,hostRenderResource)` there.
-   The binder checks `GetBuffer(i)` identity and retains both objects.
+   `xs_display_wrap(queue,i,hostRenderResource,&privateSurface)` there.
+   The wrapper owns the checked `GetBuffer(i)` and `xs_surface_host` returns
+   that exact image for rendering. This private IUnknown is not a retail
+   ID3D12Resource implementation and must not be returned for that IID.
    Resource reuse must preserve the association. A separately allocated or
    differently formatted title image needs an explicit synchronized copy or
    conversion path; registering it against an unrelated buffer is incorrect.
@@ -55,8 +141,8 @@ the separate `+118` token-bearing submit are unchanged.
 ## Synthetic check
 
 `test-present-x.c` creates the console queue via device `+40` and builds
-the wire arrays independently. Two distinct synthetic COM keys stand in for
-title resource interfaces. A D3D12 upload copy on the underlying Direct queue
+the wire arrays independently. The opaque keys are the two real surface
+wrappers. A D3D12 upload copy via each wrapper on the underlying Direct queue
 paints mapped buffers red, then green. Only the console queue `+100` presents;
 each token completes via type 2, and the other stays pending after the first
 present. Invalid descriptors and mappings preserve both the count and token.

@@ -62,18 +62,39 @@ HRESULT xs_display_open(IUnknown *queue, IDXGIFactory2 *factory, HWND window,
     return hr;
 }
 
-HRESULT xs_display_bind(IUnknown *queue, UINT index, IUnknown *key, ID3D12Resource *render)
+/* Private identity only: don't advertise a console resource ABI we cannot service. */
+static const IUnknownVtbl surface_vtbl = {query, addref, release};
+
+ID3D12Resource *xs_surface_host(IUnknown *surface)
 {
-    if (!as_queue(queue) || index>=2 || !key || !render) return E_INVALIDARG;
+    return surface && surface->lpVtbl == &surface_vtbl ?
+            CONTAINING_RECORD(surface,struct adapter,iface)->host.surface : NULL;
+}
+
+HRESULT xs_display_wrap(IUnknown *queue, UINT index, ID3D12Resource *render, IUnknown **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    if (!as_queue(queue) || index>=2 || !render) return E_INVALIDARG;
     struct adapter *a=CONTAINING_RECORD(queue,struct adapter,iface);
     AcquireSRWLockExclusive(&a->display.lock);
     HRESULT hr=DXGI_ERROR_INVALID_CALL;
-    if (a->display.chain && !a->display.keys[index] && a->display.keys[1-index]!=key) {
+    if (a->display.chain && !a->display.keys[index]) {
         ID3D12Resource *buffer;
         hr=IDXGISwapChain3_GetBuffer(a->display.chain,index,&IID_ID3D12Resource,(void **)&buffer);
         if (SUCCEEDED(hr)) {
-            if (buffer!=render) { hr=E_INVALIDARG; ID3D12Resource_Release(buffer); }
-            else { IUnknown_AddRef(key); a->display.keys[index]=key; a->display.buffers[index]=buffer; }
+            if (buffer!=render) hr=E_INVALIDARG;
+            else {
+                struct adapter *s=HeapAlloc(GetProcessHeap(),0,sizeof(*s));
+                if (!s) hr=E_OUTOFMEMORY;
+                else {
+                    s->iface.lpVtbl=&surface_vtbl;
+                    s->refs=2; /* caller and queue; wrapper owns the GetBuffer reference */
+                    s->host.surface=buffer;
+                    a->display.keys[index]=*out=&s->iface;
+                }
+            }
+            if (FAILED(hr)) ID3D12Resource_Release(buffer);
         }
     }
     ReleaseSRWLockExclusive(&a->display.lock);

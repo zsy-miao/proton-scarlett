@@ -17,6 +17,7 @@ struct adapter {
         ID3D12Fence *fence;
         ID3D12CommandAllocator *allocator;
         ID3D12CommandSignature *signature;
+        ID3D12Resource *surface;
     } host;
     union {
         D3D12_COMMAND_LIST_TYPE allocator_type;
@@ -28,7 +29,6 @@ struct adapter {
         IUnknown *owner;
         IDXGISwapChain3 *chain;
         IUnknown *keys[2];
-        ID3D12Resource *buffers[2];
         UINT width, height;
     } display;
 #endif
@@ -70,6 +70,7 @@ struct atable {
     xs_stop_fn callback;
 };
 static const struct atable at;
+static const IUnknownVtbl surface_vtbl;
 static const struct {
     IUnknownVtbl prefix;
     xs_stop_fn inherited[5];
@@ -102,13 +103,12 @@ static ULONG WINAPI release(IUnknown *iface)
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
         else if (iface->lpVtbl == &at.prefix) ID3D12CommandAllocator_Release(a->host.allocator);
         else if (iface->lpVtbl == &st.prefix) ID3D12CommandSignature_Release(a->host.signature);
+        else if (iface->lpVtbl == &surface_vtbl) ID3D12Resource_Release(a->host.surface);
 #endif
         else {
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
-            for (unsigned j=0;j<2;++j) if (a->display.keys[j]) {
+            for (unsigned j=0;j<2;++j) if (a->display.keys[j])
                 IUnknown_Release(a->display.keys[j]);
-                ID3D12Resource_Release(a->display.buffers[j]);
-            }
             if (a->display.chain) IDXGISwapChain3_Release(a->display.chain);
             if (a->display.owner) IUnknown_Release(a->display.owner);
 #endif

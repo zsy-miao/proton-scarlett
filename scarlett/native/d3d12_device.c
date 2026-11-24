@@ -244,6 +244,39 @@ static HRESULT WINAPI bootstrap_signature(IUnknown *iface, const D3D12_COMMAND_S
 
 #include "frame_clock.h"
 
+/* Read only the common caller-written prefix; the console layout/flags need
+ * translation. Neither entry has the title's ring index or HWND. */
+static HRESULT resource_gap(UINT slot, UINT64 address, const void *wire, UINT state,
+        UINT heap_flags, const void *clear, void **out)
+{
+    if (!out) return E_POINTER;
+    *out=NULL;
+    D3D12_RESOURCE_DESC d={0};
+    SIZE_T copied;
+    size_t n=offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof(d.Flags);
+    if (!wire || !ReadProcessMemory(GetCurrentProcess(),wire,&d,n,&copied) || copied!=n) return E_POINTER;
+    char text[384];
+    snprintf(text,sizeof(text),"scarlett: device +%#x unsupported: placement=%#llx heapFlags=%#x "
+            "dim=%u width=%llu height=%u format=%u depth=%u mips=%u samples=%u:%u "
+            "layout=%#x flags=%#x state=%#x clear=%p\n",slot,(unsigned long long)address,heap_flags,
+            d.Dimension,(unsigned long long)d.Width,d.Height,d.Format,d.DepthOrArraySize,d.MipLevels,
+            d.SampleDesc.Count,d.SampleDesc.Quality,d.Layout,d.Flags,state,clear);
+    OutputDebugStringA(text);
+    return E_NOTIMPL;
+}
+static HRESULT WINAPI bootstrap_placed(IUnknown *iface, UINT64 address, const void *desc, UINT state,
+        const void *clear, REFIID iid, void **out)
+{
+    (void)iface; (void)iid;
+    return resource_gap(0x428,address,desc,state,0,clear,out);
+}
+static HRESULT WINAPI bootstrap_committed(IUnknown *iface, const void *props, UINT flags, const void *desc,
+        UINT state, const void *clear, const void *extra1, UINT extra2, const void *extra3, REFIID iid, void **out)
+{
+    (void)iface; (void)props; (void)extra1; (void)extra2; (void)extra3; (void)iid;
+    return resource_gap(0x3f8,0,desc,state,flags,clear,out);
+}
+
 struct bootstrap_vtbl {
     IUnknownVtbl unknown;
     xs_stop_fn gap18[5];
@@ -271,8 +304,14 @@ struct bootstrap_vtbl {
     __typeof__(&bootstrap_frame_event) frame_event;
     __typeof__(&bootstrap_frame_wait) frame_wait;
     xs_stop_fn gap288;
+    xs_stop_fn gap290[45];
+    __typeof__(&bootstrap_committed) committed;
+    xs_stop_fn gap400[5];
+    __typeof__(&bootstrap_placed) placed;
 };
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
+               offsetof(struct bootstrap_vtbl, committed) == 0x3f8 &&
+               offsetof(struct bootstrap_vtbl, placed) == 0x428 &&
                offsetof(struct bootstrap_vtbl, descriptors) == 0x70 &&
                offsetof(struct bootstrap_vtbl, stride) == 0x78 &&
                offsetof(struct bootstrap_vtbl, cbv) == 0x88 && offsetof(struct bootstrap_vtbl, srv) == 0x90 &&
@@ -330,7 +369,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,
     .gap188 = { [0 ... 23] = xs_stop }, .list = bootstrap_list, .gap250 = { [0 ... 3] = xs_stop },
     .frame_interval = bootstrap_frame_interval, .frame_event = bootstrap_frame_event,
-    .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop
+    .frame_wait = bootstrap_frame_wait, .gap288 = xs_stop, .gap290 = { [0 ... 44] = xs_stop },
+    .committed = bootstrap_committed, .gap400 = { [0 ... 4] = xs_stop }, .placed = bootstrap_placed
 };
 #endif
 
