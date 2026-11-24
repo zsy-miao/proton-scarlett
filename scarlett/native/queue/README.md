@@ -844,7 +844,7 @@ at `0x1143df10` while its first range at `0x1143ef30` was still pinned.
 The recorder rejected that replacement. Neither the composite's output
 generation nor a rendering submission for token 2 has been observed.
 
-### Ordered-batch display control (synthetic)
+### [Ordered-batch display control](../../tests/ordered-display.md) (synthetic)
 
 On both GPUs the same fixture executable presented a red/blue primary
 for token 1. For token 2 it submitted two lists: the first filled an

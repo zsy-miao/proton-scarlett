@@ -23,6 +23,9 @@ struct adapter {
     IUnknown iface;
     LONG refs;
     SRWLOCK submit_lock;
+#ifdef XS_TEST_ORDERED_QUEUE
+    struct startup_list *ordered; /* weak, under submit_lock */
+#endif
 #ifdef SCARLETT_EXPERIMENTAL_DIRECT_WAIT
     BOOL external_submissions;
 #endif

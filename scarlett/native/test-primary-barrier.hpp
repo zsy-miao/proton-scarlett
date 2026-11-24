@@ -58,17 +58,32 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     constexpr UINT headOff=0x6218;
 #endif
     auto head=pool+window+headOff;scarlett_section_info id;
-#ifdef TEST_WB_TAIL
-    auto ctrl=(volatile UINT*)reserve(nullptr,65536,0x20401000,0x283,0x42404);CK(ctrl);
-    scarlett_section_info copy;
-    HR(scarlett_query_section(0x5343000c,head,8,&id));
-    HR(scarlett_query_section_handle(0x5343000b,nullptr,span,&copy,id.section));
-    auto original=(BYTE*)copy.base+window;
+#ifdef TEST_ORDERED_PRESENT
+    ComPtr<IDXGIFactory4> factory;ComPtr<IDXGIAdapter1> adapter;DXGI_ADAPTER_DESC1 ad={};
+    const LUID luid=d->GetAdapterLuid();
+    HR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));HR(factory->EnumAdapterByLuid(luid,IID_PPV_ARGS(&adapter)));
+    HR(adapter->GetDesc1(&ad));
+    CK(ad.AdapterLuid.LowPart==luid.LowPart && ad.AdapterLuid.HighPart==luid.HighPart && !(ad.Flags&DXGI_ADAPTER_FLAG_SOFTWARE));
+    const bool wb=ad.VendorId==0x1002 && ad.DeviceId==0x164e;
+    CK(wb || (ad.VendorId==0x10de && ad.DeviceId==0x2484));
+#elif defined(TEST_WB_TAIL)
+    constexpr bool wb=true;
 #else
-    volatile UINT *ctrl=nullptr;
-    auto make=(HRESULT(WINAPI*)(ID3D12Device*,SIZE_T,void**))(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");
-    CK(make);HR(make(d,65536,(void**)&ctrl));HR(scarlett_acquire_section(head,8,&id));
-    auto original=(BYTE*)MapViewOfFile(id.section,FILE_MAP_READ|FILE_MAP_WRITE,0,window,65536);CK(original);
+    constexpr bool wb=false;
+#endif
+    volatile UINT *ctrl=nullptr;BYTE *original;scarlett_section_info copy={};
+    if(wb) {
+        ctrl=(volatile UINT*)reserve(nullptr,65536,0x20401000,0x283,0x42404);CK(ctrl);
+        HR(scarlett_query_section(0x5343000c,head,8,&id));
+        HR(scarlett_query_section_handle(0x5343000b,nullptr,span,&copy,id.section));CK(copy.base);
+        original=(BYTE*)copy.base+window;
+    } else {
+        auto make=(HRESULT(WINAPI*)(ID3D12Device*,SIZE_T,void**))(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");
+        CK(make);HR(make(d,65536,(void**)&ctrl));CK(ctrl);HR(scarlett_acquire_section(head,8,&id));
+        original=(BYTE*)MapViewOfFile(id.section,FILE_MAP_READ|FILE_MAP_WRITE,0,window,65536);CK(original);
+    }
+#ifdef TEST_ORDERED_PRESENT
+    printf("TAIL adapter=%04x:%04x path=%s\n",ad.VendorId,ad.DeviceId,wb?"wb-section":"cpu-control");
 #endif
     CK(CloseHandle(id.section));memset(original,0xad,65536);
     auto ticks=(volatile UINT64*)(original+headOff-8);
@@ -219,7 +234,11 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
        D3D12_BARRIER_LAYOUT_RENDER_TARGET,(D3D12_BARRIER_LAYOUT)0x1f,(ID3D12Resource*)other,{UINT_MAX,0,0,0,0,0},D3D12_TEXTURE_BARRIER_FLAG_NONE};
     SLOT(s2,0x490,Barrier)(s2,1,&group);SLOT(s2,0x240,Stamp)(s2,head-8,0,0,1);HR(SLOT(s2,0x48,Close)(s2));
     IUnknown *keys[]={surface,other},*batches[]={list.Get(),s2};ID3D12Resource *sources[]={texture.Get(),sibling.Get()};
-    int checked=bridge_fixture(d,dev,keys,batches,sources,dest,pattern,ctrl,ticks);
+    int checked=bridge_fixture(d,dev,keys,batches,
+#ifdef TEST_ORDERED_PRESENT
+            upload.Get(),views.Get(),
+#endif
+            sources,dest,pattern,ctrl,ticks);
     upload->Unmap(0,nullptr);other->Release();surface->Release();return checked;
 #endif
     PrimaryWitness witness;CK(witness.gone);const GUID tag={0x490,0,0,{}};
@@ -350,11 +369,8 @@ static int primary_barrier(ID3D12Device *d,IUnknown *dev,IUnknown *surface,IUnkn
     CK(configure(dev) && status(FALSE)==DXGI_ERROR_INVALID_CALL && status(TRUE)==DXGI_ERROR_INVALID_CALL);
     printf("PASS tagged singleton: sync fence retired while batch pending, separate tail completion, stale/duplicate rejection, head offset %#x\n",window+headOff);
 #endif
-#ifdef TEST_WB_TAIL
-    CK(VirtualFree(copy.base,0,MEM_RELEASE));
-#else
-    CK(UnmapViewOfFile(original));
-#endif
+    if(wb) {CK(VirtualFree(copy.base,0,MEM_RELEASE));}
+    else {CK(UnmapViewOfFile(original));}
     CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree((void*)ctrl,65536,MEM_RELEASE));
     puts("PASS +240 pair: gated replay, original GPU timestamps and exact-VA replacement guards");
 #endif

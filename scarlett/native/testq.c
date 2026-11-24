@@ -1,3 +1,6 @@
+#ifdef TEST_ORDERED_BATCH
+#define XS_TEST_ORDERED_QUEUE
+#endif
 #include "queue/queue.c"
 #ifdef TEST_PRESENT_BRIDGE
 HANDLE test_pending_present;
@@ -10,6 +13,34 @@ HRESULT test_bridge_count(IUnknown *q,UINT *count)
 }
 #endif
 ID3D12CommandQueue *test_host_queue(IUnknown *q){return as_queue(q);}
+#ifdef TEST_ORDERED_BATCH
+#include "test-ordered-queue.h"
+#ifdef TEST_ORDERED_PRESENT
+/* Inject a completed but unrelated release fence; leave the clock record intact. */
+HRESULT test_replace_end(IUnknown *q,ID3D12Fence *expected,ID3D12Fence *replacement)
+{
+    struct adapter *a=CONTAINING_RECORD(q,struct adapter,iface);
+    AcquireSRWLockExclusive(&a->submit_lock);
+    HRESULT hr=E_INVALIDARG;
+    if (a->display.released_end==expected && a->display.released_token==2) {
+        ID3D12Fence_AddRef(replacement);a->display.released_end=replacement;ID3D12Fence_Release(expected);hr=S_OK;
+    }
+    ReleaseSRWLockExclusive(&a->submit_lock);return hr;
+}
+#endif
+UINT test_ordered_host_submissions(void){return ordered_host_submissions;}
+HRESULT test_ordered_ineligible(IUnknown *list,void *context)
+{
+    /* These faults occur independently; no flag is cleared to qualify a generation. */
+    switch (*(UINT *)context) {
+    case 0: sl(list)->error=E_FAIL;break;
+    case 1: sl(list)->pending_470=TRUE;break;
+    case 2: if (!xs_list_host(list)) return E_FAIL;break;
+    case 3: sl(list)->cache_page[0]^=1;break;
+    }
+    return S_OK;
+}
+#endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
 HRESULT test_tagged(IUnknown *q,UINT n,IUnknown *const *lists,UINT64 token,UINT flags)
 {return checked_tagged_submit(q,n,lists,token,flags);}

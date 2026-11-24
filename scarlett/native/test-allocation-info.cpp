@@ -67,6 +67,9 @@ extern "C" { __declspec(dllexport) struct {decltype(&take) a;decltype(&give) f;}
 #ifdef TEST_PRIMARY_BARRIER
 #include "test-primary-barrier.hpp"
 #endif
+#if defined(TEST_ORDERED_BATCH) && !defined(TEST_ORDERED_PRESENT)
+#include "test-ordered-batch.hpp"
+#endif
 int main()
 {
     HMODULE xm=LoadLibraryW(L"xmem.dll"); CK(xm);
@@ -158,6 +161,9 @@ int main()
     writer(dev.Get(),surface,rw,dest); // overwrite; the last slot still refers to other
     CK(*(UINT64 *)(dest+16)==0xa0cafe);
     CK(taken==2 && !given && (64u<<20)-used==0xa0000);
+#if defined(TEST_ORDERED_BATCH) && !defined(TEST_ORDERED_PRESENT)
+    return ordered_fixture(d.Get(),dev.Get(),surface,other,views.Get(),dest);
+#endif
 #ifdef TEST_PRIMARY_BARRIER
     return primary_barrier(d.Get(),dev.Get(),surface,other,heap,views,slot,dest,xm);
 #endif

@@ -17,6 +17,12 @@ _Static_assert(offsetof(struct direct_prefix,put)==0x18 && offsetof(struct direc
         sizeof(struct direct_prefix)==0x38,"Direct inline capacity check");
 #include "../om-views.h"
 struct startup_list {
+#ifdef XS_TEST_ORDERED_QUEUE
+    BOOL single_use,consumed;
+    struct startup_list *ordered_next;
+    struct adapter *ordered_queue;
+    IUnknown *ordered_id,*ordered_lease,*primary_key;
+#endif
     struct om_views om;
     struct xs_clear_source previous_vb,vb,source;
     /* Borrow the recording's strong heap and root references. Only root parameter 0 is admitted. */
@@ -102,7 +108,26 @@ static void drop_split(struct startup_list *s)
 static ULONG WINAPI sl_release(IUnknown *i)
 {
     struct startup_list *s = sl(i);
+#ifdef XS_TEST_ORDERED_QUEUE
+    struct adapter *a=s->ordered_queue;
+    if (a) AcquireSRWLockExclusive(&a->submit_lock);
+#endif
     ULONG refs = InterlockedDecrement(&s->refs);
+#ifdef XS_TEST_ORDERED_QUEUE
+    if (a) {
+        if (!refs) {
+            struct startup_list **p=&a->ordered;
+            while (*p!=s) p=&(*p)->ordered_next;
+            *p=s->ordered_next;
+        }
+        ReleaseSRWLockExclusive(&a->submit_lock);
+        if (!refs) {
+            if (s->primary_key) IUnknown_Release(s->primary_key);
+            IUnknown_Release(s->ordered_lease);
+            IUnknown_Release(&a->iface);
+        }
+    }
+#endif
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
@@ -185,6 +210,9 @@ static BOOL allocator_matches(ID3D12CommandAllocator *a, ID3D12Device *device)
 static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT flags)
 {
     struct startup_list *s = sl(i);
+#ifdef XS_TEST_ORDERED_QUEUE
+    if (s->single_use) return E_ACCESSDENIED;
+#endif
     if (flags || pso) return E_NOTIMPL;
     if (!s->closed) return E_FAIL;
     ID3D12CommandAllocator *a = xs_allocator_host(alloc, s->type);
@@ -1027,6 +1055,9 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
     ID3D12GraphicsCommandList7 *host=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
     if (!s->prior_pso && !s->primary_released && !s->depth_zero_pending && !s->pending_470 && !s->bound
+#ifdef XS_TEST_ORDERED_QUEUE
+        && !(s->single_use && s->closed)
+#endif
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
         && escape_native()
 #endif
@@ -1133,6 +1164,9 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
         !ReadProcessMemory(GetCurrentProcess(),list,&vt,sizeof vt,&n) || n!=sizeof vt ||
         (vt!=&sl_vtbl.prefix && vt!=&pool_vtbl.prefix)) return E_INVALIDARG;
     struct startup_list *s = sl(list);
+#ifdef XS_TEST_ORDERED_QUEUE
+    if (s->single_use) return E_ACCESSDENIED;
+#endif
     if (!s->closed || FAILED(s->error)) return E_INVALIDARG;
     if (s->b27.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;
