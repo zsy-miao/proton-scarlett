@@ -161,3 +161,25 @@ The next call was `+428` (return `+193e2db`), state 6, resource IID, typed
 D32_FLOAT_S8X24_UINT clear of depth 0 and stencil 7. Guest VAs were
 `0xd5f3d0000` (RTX) and `0xda8740000` (RADV). The call returned
 `E_NOTIMPL`; both ordinary runs stopped at title `+5707b8c`.
+
+### Original-backed 2560×1440 depth target (0036)
+
+With flags `0x4800002`, state 6 and typed clear depth 0/stencil 7, RTX
+resolved `0xd5f3d0000` to offset `0x141d0000` in the marked `0x89700000`
+WC section; RADV resolved `0xda8740000` to `0x14140000` in its retained
+native heap. The other lookup missed on each adapter. The image reservations
+are `0x1e00000` / `0x1300000`; actual Vulkan requirements were `0x1e00000`
+bytes, alignment `0x400`, memory mask `3` / `0x12fc008` bytes, alignment
+`0x10000`, mask `0x7ad`. Both use the shared cross-format range lease.
+
+Retail published depth SRV `15 4 1688 0 0 1 0 0`, then DSV `14 3 0 0 0 0`
+(hex). Both ordinary runs next rejected device `+c8` at `+344188` for a
+2560×1440 R32_FLOAT, one mip, layout `0x102`, flags `0x300004`.
+
+`wc-float1440.sh radv|nvidia TOOL depth1440` checks every depth/stencil
+texel after independent rectangular clears. A fixture-only stencil SRV
+beside the guest depth SRV checks shader loads and comparison results.
+Fenced GPU commands execute after replacing the guest VA; both adapters
+retain the original storage, preserve both 64 KiB guards and reject
+partial MSAA color overlap in both orders. RADV also preserves the unused
+allocation tail beyond the Vulkan requirement.

@@ -115,3 +115,7 @@ PATH/TO/libs/vkd3d/scarlett_primary_image.h` on the patched source, then
 `0035` binds the observed 640×360 R8_UINT image to the original WC section
 (RTX) or same-device native heap (RADV), at `+0xe610000`. The 256 KiB range
 uses the same cross-format lease and final-resource retirement as `0034`.
+
+`0036` binds the 2560×1440 D32S8 image at its observed offset in either
+original WC backing. The reservation lasts through final host-resource
+retirement and includes the full guest allocation on both adapters.

@@ -151,13 +151,15 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     }
 #endif
     BOOL fp=words[0]==DXGI_FORMAT_R16G16B16A16_FLOAT;
+    BOOL ds2d=object && ((kind==SRV && words[0]==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS && words[1]==D3D12_SRV_DIMENSION_TEXTURE2D) ||
+            (kind==DSV && words[0]==DXGI_FORMAT_D32_FLOAT_S8X24_UINT && words[1]==D3D12_DSV_DIMENSION_TEXTURE2D));
     BOOL single_color=fp || words[0]==DXGI_FORMAT_R8_UINT || words[0]==DXGI_FORMAT_A8_UNORM || words[0]==DXGI_FORMAT_B8G8R8A8_UNORM;
     if (wc) {
         srv.Format=DXGI_FORMAT_R16_UINT; srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
         memcpy(&srv.Buffer.FirstElement,words+4,sizeof srv.Buffer.FirstElement);
         srv.Shader4ComponentMapping=words[2]; srv.Buffer.NumElements=words[6];
     } else if (kind==DSV) {
-        if (!object || words[0]!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || words[1]!=D3D12_DSV_DIMENSION_TEXTURE2DMS ||
+        if (!object || words[0]!=DXGI_FORMAT_D32_FLOAT_S8X24_UINT || (!ds2d && words[1]!=D3D12_DSV_DIMENSION_TEXTURE2DMS) ||
             memcmp(words+2,(DWORD[4]){0},16)) return E_NOTIMPL;
         dsv.Format=words[0]; dsv.ViewDimension=words[1];
     } else if (kind==RTV) {
@@ -198,7 +200,7 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
         srv.Format=words[0];
         srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DMS;
         srv.Shader4ComponentMapping=words[2];
-    } else if (kind==SRV && (words[0]==DXGI_FORMAT_R8G8B8A8_UNORM || (single_color && !words[3])) &&
+    } else if (kind==SRV && (words[0]==DXGI_FORMAT_R8G8B8A8_UNORM || ((single_color || ds2d) && !words[3])) &&
                words[1]==D3D12_SRV_DIMENSION_TEXTURE2D && words[2]==0x1688 &&
                !words[4] && words[5]==1 && !words[6] && !words[7]) {
         srv.Format=words[0];
@@ -217,8 +219,8 @@ static HRESULT write_view(IUnknown *device,UINT kind,IUnknown *object,const void
     AcquireSRWLockExclusive(&d->descriptor_lock);
     if (object && (kind==DSV || kind==RTV || kind==UAV || ms_srv || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
-            if (&c->iface==object && !c->tiled_r32 && !c->tiled_r11 && c->msaa==(kind==DSV || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
-                c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
+            if (&c->iface==object && !c->tiled_r32 && !c->tiled_r11 && c->msaa==((kind==DSV && !ds2d) || ms_srv || rtv.ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2DMS) &&
+                c->depth==(kind==DSV || srv.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) && c->single_format==(ds2d?DXGI_FORMAT_R32G8X24_TYPELESS:single_color?(DXGI_FORMAT)words[0]:DXGI_FORMAT_UNKNOWN)) {
                 resource=c->host; break;
             }
         if (!resource) goto done;
