@@ -70,11 +70,16 @@ static const struct ftable ft;
 _Static_assert(offsetof(struct qtable, execute) == 0x118, "x64 queue submit");
 _Static_assert(offsetof(struct qtable, present) == 0x100, "x64 PresentX");
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
+struct command_allocator {
+    struct adapter a;
+    SRWLOCK lock;
+    void *entry, *context; /* Borrowed title values, not COM interfaces. */
+};
 struct atable {
     IUnknownVtbl prefix;
     xs_stop_fn gap18[5];
     HRESULT (WINAPI *reset)(IUnknown *);
-    xs_stop_fn callback;
+    void (WINAPI *callback)(IUnknown *, void *, void *);
 };
 static const struct atable at;
 static const IUnknownVtbl surface_vtbl;
@@ -226,9 +231,26 @@ static HRESULT WINAPI allocator_reset(IUnknown *iface)
     return ID3D12CommandAllocator_Reset(CONTAINING_RECORD(iface, struct adapter, iface)->host.allocator);
 }
 
+static BOOL register_callback(IUnknown *iface, void *entry, void *context)
+{
+    if (!iface || iface->lpVtbl!=&at.prefix || !entry || !context) return FALSE;
+    struct command_allocator *alloc=CONTAINING_RECORD(iface,struct command_allocator,a.iface);
+    if (alloc->a.allocator_type!=D3D12_COMMAND_LIST_TYPE_DIRECT) return FALSE;
+    AcquireSRWLockExclusive(&alloc->lock);
+    /* Only initial registration is evidenced; no packet-memory request or unregister yet. */
+    BOOL ok=!alloc->entry || (alloc->entry==entry && alloc->context==context);
+    if (ok) { alloc->entry=entry; alloc->context=context; }
+    ReleaseSRWLockExclusive(&alloc->lock);
+    return ok;
+}
+static void WINAPI allocator_callback(IUnknown *iface, void *entry, void *context)
+{
+    if (!register_callback(iface,entry,context)) xs_stop();
+}
+
 static const struct atable at = {
     .prefix = {query, addref, release}, .gap18 = { [0 ... 4] = xs_stop },
-    .reset = allocator_reset, .callback = xs_stop
+    .reset = allocator_reset, .callback = allocator_callback
 };
 
 ID3D12CommandAllocator *xs_allocator_host(IUnknown *iface, D3D12_COMMAND_LIST_TYPE type)
@@ -244,8 +266,9 @@ HRESULT xs_allocator(ID3D12Device *host, D3D12_COMMAND_LIST_TYPE type, IUnknown 
     *out = NULL;
     if (!host) return E_INVALIDARG;
     if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE) return E_NOTIMPL;
-    struct adapter *a = HeapAlloc(GetProcessHeap(), 0, sizeof(*a));
-    if (!a) return E_OUTOFMEMORY;
+    struct command_allocator *alloc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*alloc));
+    if (!alloc) return E_OUTOFMEMORY;
+    struct adapter *a=&alloc->a;
     HRESULT hr = ID3D12Device_CreateCommandAllocator(host, type, &IID_ID3D12CommandAllocator,
             (void **)&a->host.allocator);
     if (FAILED(hr)) {

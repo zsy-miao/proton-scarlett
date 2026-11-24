@@ -84,3 +84,34 @@ and later `2^63+2^32+3` behind a second gate. Another monitored fence was
 released with its signal still queued. The device-removal check injects
 only the failed device reason; the host fence is real. It does not induce a
 GPU reset (`ID3D12Device5::RemoveDevice` is a stub in pinned vkd3d).
+
+## Direct command allocator callback registration (`+48`)
+
+At `1884fe` the x64 title passes This in RCX, the function at `555df10`
+in RDX and the enclosing title context in R8. It does not set a fourth
+argument for this call or inspect a result (`188501`). The function's
+body is consistent with a memory allocator: R9 supplies a size, argument
+5 supplies an alignment (small values are log2), and argument 7 supplies
+the context. It requests storage, updates the context's tracked allocation
+and returns a pointer. This is static evidence, not a complete callback
+invocation ABI. There is no demonstrated size/alignment request at registration.
+
+The pair is opaque, borrowed and local to the direct guest allocator. The
+adapter records it together under a lock. The existing list reference keeps
+the wrapper alive across recording; GPU retirement follows the host queue
+and fence. Reset does not dispatch or consume the registration. Neither
+context nor returned title storage is owned by a retirement worker. A new
+registration with different values, a null pair or a compute registration
+is outside the observed contract. No packet-memory invocation is implemented.
+
+`test-allocator-registration.c` includes the queue adapter for private
+inspection. Build with the staged-device defines and link d3d12_device.o,
+d3d12_vm.o and `-ld3d12` (not queue.o). It registers a counter function
+and inaccessible context, submits a real barrier list behind a queue gate,
+drops the caller's allocator reference, waits for completion, checks reset
+preserves the pair, then releases the list and the caller's context. There
+are no callback calls during these operations.
+
+Unchanged RTX retail registered the pair, reset a pooled direct list on
+that allocator, then stopped at the list's `+100` (`4e4cac9`) with two
+visible heaps of the same device: 0x130000 resource entries and 128 samplers.
