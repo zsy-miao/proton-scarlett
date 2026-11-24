@@ -13,13 +13,11 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail creates the four indexed Compute queues, initializes the command-list pools, registers frame events, and maps all five regions of the 185 MiB descriptor arena. The next request (device slot `+0x428`) is for a [174 MiB buffer](scarlett/native/placed-arena.md) spanning the 27 MiB code store and the adjacent 47 and 100 MiB read/write regions. Placed buffer creation is unsupported; the caller stops at `+0x19f4f58`. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** The installed build maps all five regions of the 185 MiB descriptor arena, creates the [174 MiB placed buffer](scarlett/native/placed-arena.md), and backs the title's 1,245,184 descriptor slots with two host heaps. Retail gets past heap initialization and stops while writing the first null shader-resource view (`E_POINTER`, device `+0x90`, caller `+0x247905f`). **No retail frame has been presented.**
 
 A [GPU regression](scarlett/native/xmem/README.md) built two compute pipelines from known shader fixtures in the code store. Both produced their expected results after the title address was unmapped and reused. Retail shader translation remains unverified.
 
 A [RADV shader test](scarlett/tests/placed-arena/live.cpp) read all 45,613,056 words of the original 174 MiB buffer after its addresses were reused. The shader could write the last 147 MiB; the first 27 MiB and the replacement allocation stayed unchanged. This verifies the host binding with a test shader. Translating retail shaders to use that binding remains unverified.
-
-An experimental build with the [placed-resource factory](scarlett/native/placed-arena.md) enabled passed the `+0x428` call in retail. Two host heaps now back the title’s 1,245,184 descriptor slots. Retail gets past heap initialization and stops while writing the first null shader-resource view (`E_POINTER`, device `+0x90`, caller `+0x247905f`). The default build still rejects the placement.
 
 The [queue presentation test](scarlett/native/queue/present.md) presented two registered backbuffers through `PresentX` on RADV. The recorder saw red followed by green; each present completed its own frame token. Retail still needs to bind the title's display resources to the host swapchain before it can use this path.
 

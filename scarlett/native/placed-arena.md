@@ -85,11 +85,11 @@ can consume the SRV's WC/WB subrange on an open copy list into same-device
 readback memory. It returns one owned reference per recorded command for
 the caller to release after queue retirement. No padding byte is a key.
 
-This flag is **off** in the installer and normal builds. A retail shader
-consumer still needs to resolve the logical slot at bind time, translate
-multi-extent accesses with protected-code-store semantics, and retain those
-bindings through fence retirement. The fixture recorder is not a guest
-command-list ABI and does not qualify pitched copies or code-source access.
+The runtime build enables this exact creation tuple. The [device test](../tests/placed-arena/device.cpp)
+checks that both slots refer to the same placed resource, records a dispatch
+with the approved test shader, and releases producer references before
+submission. The GPU checks the original allocation after its VA was reused.
+This qualifies resource creation, not translation of unknown retail shaders.
 
 Build from the repository root with a matched RADV tool containing this
 revision's XMem, using a fresh synthetic game directory:
@@ -106,7 +106,7 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
 TMPDIR="$w" SCARLETT_TEST_GPU=radv ./scarlett/test-launch-nixos.sh "$w/game" "$tool"
 ```
 
-For the default-build negative control, omit `-DSCARLETT_STAGED_PLACED` when
+For the factory-disabled negative control, omit `-DSCARLETT_STAGED_PLACED` when
 compiling the device and add `-DTEST_DEFAULT_PLACED` when compiling the test.
 
 ### Separate shader access fixture

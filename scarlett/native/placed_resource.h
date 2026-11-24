@@ -79,7 +79,9 @@ static HRESULT placed_create(struct xbox_device *d,UINT64 va,const void *wire,UI
     __typeof__(&ScarlettCapturePlacedV1) take=(void *)GetProcAddress(p->module,"ScarlettCapturePlacedV1");
     p->data=(void *)GetProcAddress(p->module,"ScarlettPlacedDataV1");
     p->drop=(void *)GetProcAddress(p->module,"ScarlettReleasePlacedV1");
-    if (!take || !p->data || !p->drop) goto fail;
+    if (!take || !p->data || !p->drop || !GetProcAddress(p->module,"ScarlettCreatePlacedTableV1") ||
+        !GetProcAddress(p->module,"ScarlettBindPlacedTableV1") ||
+        !GetProcAddress(p->module,"ScarlettReleasePlacedTableV1")) goto fail;
     ID3D12Device3 *host=NULL;
     hr=ID3D12Device_QueryInterface(d->host,&IID_ID3D12Device3,(void **)&host);
     if (FAILED(hr)) goto fail;

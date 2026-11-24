@@ -60,6 +60,9 @@ _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline
 #include "placed_resource.h"
 #endif
 #include "descriptor_writer.h"
+#ifdef SCARLETT_STAGED_PLACED
+#include "placed_shader.h"
+#endif
 #endif
 
 /* Private host-side operations. No console method returns a host interface. */
