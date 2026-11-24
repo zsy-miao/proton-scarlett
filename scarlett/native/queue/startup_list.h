@@ -8,6 +8,13 @@ enum batch_phase { B_EMPTY,B_BOUND,B_PREFIX,B_REBOUND,B_HEAD_STAMP,B_POST,B_WAIT
 #else
 #define batch_step(s,to) ((void)0)
 #endif
+struct list_face { struct startup_list *state; IUnknown iface; };
+struct direct_prefix {
+    IUnknown iface;
+    UINT64 reserved08[2],put,reserved20[2],limit;
+};
+_Static_assert(offsetof(struct direct_prefix,put)==0x18 && offsetof(struct direct_prefix,limit)==0x30 &&
+        sizeof(struct direct_prefix)==0x38,"Direct inline capacity check");
 struct startup_list {
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     enum batch_phase phase;
@@ -32,9 +39,8 @@ struct startup_list {
     ID3D12CommandAllocator *tail_allocator;
     struct system_timestamp *stamp;
     BOOL closed,host_exposed,post_boundary;
-    IUnknown iface; /* Last: pooled callers' inline packet fields are not host bookkeeping. */
+    struct list_face local; /* Non-pooled lists need no inline ABI. */
 };
-_Static_assert(offsetof(struct startup_list,iface)+sizeof(IUnknown)==sizeof(struct startup_list),"interface at end");
 const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
 const IID xs_pool_list_id = {0x5b160d0f,0xac1b,0x4185,{0x8b,0xa8,0xb3,0xae,0x42,0xa5,0xa4,0x55}};
 
@@ -43,7 +49,7 @@ static void sl_free(struct startup_list *s)
     if (s->reservation) VirtualFree(s->reservation, 0, MEM_RELEASE);
     else HeapFree(GetProcessHeap(), 0, s);
 }
-static struct startup_list *sl(IUnknown *i) { return CONTAINING_RECORD(i, struct startup_list, iface); }
+static struct startup_list *sl(IUnknown *i) { return CONTAINING_RECORD(i, struct list_face, iface)->state; }
 static ULONG WINAPI sl_addref(IUnknown *i) { return InterlockedIncrement(&sl(i)->refs); }
 static void drop_heaps(IUnknown *pair[2])
 {
@@ -479,12 +485,30 @@ static void WINAPI pool_sync418(IUnknown *i,UINT mask,UINT control,UINT64 addres
     s->phase=B_INELIGIBLE; /* The primary-clear singleton contract has no atlas barrier. */
 #endif
 }
+static BOOL can_set_topology(struct startup_list *s,UINT topology)
+{
+    return s->pool_owner && s->reservation && s->type==D3D12_COMMAND_LIST_TYPE_DIRECT &&
+        !s->closed && SUCCEEDED(s->error) && !s->host_exposed && !s->primary_released &&
+        topology==D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+}
+static void WINAPI pool_topology(IUnknown *i,UINT topology)
+{
+    struct startup_list *s=sl(i);
+    if (!can_set_topology(s,topology)) xs_stop();
+    ID3D12GraphicsCommandList7_IASetPrimitiveTopology(s->host,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    s->post_boundary=FALSE;
+#ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+    s->phase=B_INELIGIBLE;
+#endif
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
     xs_stop_fn gap18[6];
     __typeof__(&sl_close) close;
-    xs_stop_fn gap50[22];
+    xs_stop_fn gap50[10];
+    __typeof__(&pool_topology) topology;
+    xs_stop_fn gapa8[11];
     __typeof__(&sl_bind) bind;
     xs_stop_fn gap108[19];
     __typeof__(&sl_primary_clear) clear;
@@ -500,8 +524,9 @@ static const struct {
     xs_stop_fn gap460[6];
     __typeof__(&sl_primary_barrier) barrier;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 55]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 9]=xs_stop}, pool_topology, {[0 ... 10]=xs_stop}, sl_bind, {[0 ... 18]=xs_stop}, sl_primary_clear, {[0 ... 17]=xs_stop}, sl_marker, sl_timestamp, xs_stop, sl_wait64, {[0 ... 55]=xs_stop}, pool_sync418, {[0 ... 6]=xs_stop}, sl_reset, {[0 ... 5]=xs_stop}, sl_primary_barrier
 };
+_Static_assert(offsetof(__typeof__(pool_vtbl),topology)==0xa0,"pooled topology ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),sync418)==0x418,"pooled sync ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),wait64)==0x250,"pooled wait ABI");
 _Static_assert(offsetof(__typeof__(pool_vtbl),clear)==0x1a0,"pooled clear ABI");
@@ -527,25 +552,37 @@ HRESULT xs_device_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnkn
     if (FAILED(hr)) return hr;
     if (!options.EnhancedBarriersSupported) return DXGI_ERROR_UNSUPPORTED;
     struct startup_list *s;
+    struct list_face *face;
     if (pooled) {
-        /* +0x18/+0x30 are packet cursors, +0x544/+0x554 are inline writes. Trap until translated. */
+        /* A read-only zero-capacity prefix selects typed methods. Guard everything past it. */
         SYSTEM_INFO info;
         GetSystemInfo(&info);
-        BYTE *base = VirtualAlloc(NULL, 2 * info.dwPageSize, MEM_RESERVE, PAGE_NOACCESS);
+        SIZE_T page=info.dwPageSize;
+        BYTE *base = VirtualAlloc(NULL, 3 * page, MEM_RESERVE, PAGE_NOACCESS);
         if (!base) return E_OUTOFMEMORY;
-        if (!VirtualAlloc(base, info.dwPageSize, MEM_COMMIT, PAGE_READWRITE)) {
+        if (!VirtualAlloc(base, 2 * page, MEM_COMMIT, PAGE_READWRITE)) {
             VirtualFree(base,0,MEM_RELEASE);
             return E_OUTOFMEMORY;
         }
-        s = (struct startup_list *)(base + info.dwPageSize - sizeof(*s));
+        s = (struct startup_list *)base;
         s->reservation = base;
+        SIZE_T prefix=type==D3D12_COMMAND_LIST_TYPE_DIRECT?sizeof(struct direct_prefix):sizeof(IUnknown);
+        face=(struct list_face *)(base+2*page-prefix - offsetof(struct list_face,iface));
+        face->state=s;
+        face->iface.lpVtbl=&pool_vtbl.prefix;
+        DWORD old;
+        if (!VirtualProtect(base+page,page,PAGE_READONLY,&old)) {
+            hr=HRESULT_FROM_WIN32(GetLastError());sl_free(s);return hr;
+        }
     } else {
         s = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*s));
         if (!s) return E_OUTOFMEMORY;
+        face=&s->local;
+        face->state=s;
+        face->iface.lpVtbl=&sl_vtbl.prefix;
     }
     hr = ID3D12Device_CreateCommandList(device, 1, type, a, NULL, &IID_ID3D12GraphicsCommandList7, (void **)&s->host);
     if (FAILED(hr)) { sl_free(s); return hr; }
-    s->iface.lpVtbl = pooled ? &pool_vtbl.prefix : &sl_vtbl.prefix;
     if (pooled && (s->pool_owner=pool_owner)) IUnknown_AddRef(pool_owner);
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     if (!pooled && (s->sync_owner=pool_owner)) IUnknown_AddRef(pool_owner);
@@ -555,7 +592,7 @@ HRESULT xs_device_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnkn
     s->type = type;
     IUnknown_AddRef(alloc);
     s->allocator = alloc;
-    *out = &s->iface;
+    *out = &face->iface;
     return S_OK;
 }
 HRESULT xs_startup_list(ID3D12Device *device,D3D12_COMMAND_LIST_TYPE type,IUnknown *alloc,BOOL pooled,IUnknown **out)

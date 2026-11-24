@@ -43,7 +43,6 @@ int main(void)
         h[i]=CONTAINING_RECORD(heap[i],struct adapter,iface)->host.query_heap;
         CHECK((void *)h[i]!=(void *)heap[i]);
     }
-    CHECK(!IUnknown_Release(dev)); /* The console children now solely own their native heaps. */
     OK(ID3D12QueryHeap_GetDevice(h[0],&IID_ID3D12Device,(void **)&host));
 
     /* Synthetic 8x8 depth-only full-screen triangle. */
@@ -87,28 +86,40 @@ int main(void)
     ID3D12Resource_Unmap(result,0,NULL);
     D3D12_COMMAND_QUEUE_DESC qd={.Type=D3D12_COMMAND_LIST_TYPE_DIRECT};
     ID3D12CommandQueue *q;
-    ID3D12CommandAllocator *a;
+    IUnknown *a,*list;
     ID3D12GraphicsCommandList *l;
     ID3D12Fence *f;
     OK(ID3D12Device_CreateCommandQueue(host,&qd,&IID_ID3D12CommandQueue,(void **)&q));
-    OK(ID3D12Device_CreateCommandAllocator(host,qd.Type,&IID_ID3D12CommandAllocator,(void **)&a));
-    OK(ID3D12Device_CreateCommandList(host,0,qd.Type,a,pso,&IID_ID3D12GraphicsCommandList,(void **)&l));
+    OK(xs_allocator(host,qd.Type,&a));
+    OK(xs_device_list(host,qd.Type,a,TRUE,dev,&list));
+    OK(sl_close(list));
+    CHECK(!can_set_topology(sl(list),4));
+    OK(sl_reset(list,a,NULL,0));
+    CHECK(!can_set_topology(sl(list),5));
+    const struct direct_prefix *prefix=(const void*)list;
+    MEMORY_BASIC_INFORMATION mb;
+    CHECK(!prefix->put && !prefix->limit && VirtualQuery(prefix,&mb,sizeof mb) && mb.Protect==PAGE_READONLY);
+    CHECK(VirtualQuery(prefix+1,&mb,sizeof mb) && mb.State==MEM_RESERVE);
+    l=(ID3D12GraphicsCommandList*)sl(list)->host;
+    ID3D12GraphicsCommandList_SetPipelineState(l,pso);
     OK(ID3D12Device_CreateFence(host,0,0,&IID_ID3D12Fence,(void **)&f));
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(l,root);
     ID3D12GraphicsCommandList_OMSetRenderTargets(l,0,NULL,FALSE,&dsv);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D12GraphicsCommandList_IASetPrimitiveTopology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    if(prefix->put>=prefix->limit) ((void(WINAPI*)(IUnknown*,UINT))(*(void***)list)[0xa0/8])(list,4);
     D3D12_VIEWPORT viewport={0,0,8,8,0,1};
     ID3D12GraphicsCommandList_RSSetViewports(l,1,&viewport);
     for (int i=0;i<4;++i) {
         D3D12_RECT scissor={0,0,8-i*2,8};
         ID3D12GraphicsCommandList_RSSetScissorRects(l,1,&scissor);
         ID3D12GraphicsCommandList_BeginQuery(l,h[i],D3D12_QUERY_TYPE_OCCLUSION,2459);
-        ID3D12GraphicsCommandList_DrawInstanced(l,3,1,0,0);
+        /* Last three vertices coincide. A strip would rasterize the first triangle twice. */
+        ID3D12GraphicsCommandList_DrawInstanced(l,6,1,0,0);
         ID3D12GraphicsCommandList_EndQuery(l,h[i],D3D12_QUERY_TYPE_OCCLUSION,2459);
     }
     for (int i=0;i<4;++i)
         ID3D12GraphicsCommandList_ResolveQueryData(l,h[i],D3D12_QUERY_TYPE_OCCLUSION,2459,1,result,(i+1)*8);
-    OK(ID3D12GraphicsCommandList_Close(l));
+    OK(sl_close(list));
     ID3D12CommandList *submit=(ID3D12CommandList *)l;
     ID3D12CommandQueue_ExecuteCommandLists(q,1,&submit);
     OK(ID3D12CommandQueue_Signal(q,f,1));
@@ -119,12 +130,13 @@ int main(void)
     CHECK(words[1]==64 && words[2]==48 && words[3]==32 && words[4]==16);
     CHECK(words[0]==UINT64_MAX && words[5]==UINT64_MAX);
     ID3D12Resource_Unmap(result,0,NULL);
-    CloseHandle(e); ID3D12Fence_Release(f); ID3D12GraphicsCommandList_Release(l);
-    ID3D12CommandAllocator_Release(a); ID3D12CommandQueue_Release(q);
+    CloseHandle(e); ID3D12Fence_Release(f); IUnknown_Release(list);
+    IUnknown_Release(a); ID3D12CommandQueue_Release(q);
     ID3D12PipelineState_Release(pso); ID3D12RootSignature_Release(root);
     ID3D12Resource_Release(result);
     ID3D12Resource_Release(depth_image); ID3D12DescriptorHeap_Release(views);
     for (unsigned i=0;i<4;++i) CHECK(!IUnknown_Release(heap[i]));
+    CHECK(!IUnknown_Release(dev));
     CHECK(!ID3D12Device_Release(host));
     puts("PASS device+0x138: four independent 2460-entry occlusion heaps, guarded GPU results and native lifetime");
     return 0;

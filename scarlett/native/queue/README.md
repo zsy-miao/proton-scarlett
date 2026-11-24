@@ -429,3 +429,16 @@ Six retail launches (four diagnostic, two ordinary). The two ordinary
 runs issued tokens 1 and 2, presented only token 1, and stopped at the
 virtual call returning to `+5121894`. Slot `+40` alone does not identify
 the receiver. The earlier RTX breakpoint at `+5707b8c` did not recur.
+
+### Pooled Direct topology fallback
+
+The title checks the inline cursor (`+0x18`) against the limit (`+0x30`).
+The Direct wrapper advertises zero capacity in a read-only prefix, with a
+guard at `+0x38`. The observed fallback calls `+0xa0` with topology 4;
+the host list records `IASetPrimitiveTopology(TRIANGLELIST)`. The draw
+fixture first sets a strip so that omitting the fallback changes the result.
+Both GPUs returned the expected fenced sample counts: 64, 48, 32, 16.
+
+Two ordinary retail launches, no diagnostic launches. Both workers then
+reached list `+0x3f0` (return `+3263e`); on RTX the main thread first
+faulted at `+b5a5f8`. Both runs issued tokens 1 and 2 and presented only 1.
