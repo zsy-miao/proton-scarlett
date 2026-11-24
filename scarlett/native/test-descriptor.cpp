@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <cstdio>
+#include <initializer_list>
 extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void *,const void *,REFIID,void **);
 extern "C" HRESULT xs_descriptor_slot(IUnknown *,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE *,D3D12_GPU_DESCRIPTOR_HANDLE *);
 #define CK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); ExitProcess(1); } } while(0)
@@ -61,6 +62,7 @@ static void check_rtv(ID3D12Device *d,D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     DWORD *word; HR(readback->Map(0,nullptr,(void **)&word)); CK(*word==0xff0000ff); readback->Unmap(0,nullptr);
     CloseHandle(event); fence->Release(); list->Release(); alloc->Release(); queue->Release(); readback->Release(); target->Release();
 }
+#include "test-view.hpp"
 int main()
 {
     CK(LoadLibraryW(L"xmem.dll"));
@@ -81,7 +83,7 @@ int main()
         HR(h->QueryInterface(IID_IUnknown,(void **)&qi)); CK(qi==h); qi->Release();
         auto cpu=SLOT(h,0x48,Start)(h), gpu=SLOT(h,0x50,Start)(h);
         UINT stride=increment(d,v[0]); CK(cpu && stride>=16 && (v[2]?gpu==cpu:!gpu));
-        if (!v[0]) CK(cpu==(SIZE_T)arena && taken==1);
+        if (!v[0]) { CK(cpu==(SIZE_T)arena && taken==1); test_writers(d,host,h,cpu,stride); }
         SIZE_T last=cpu+(v[1]-1)*stride;
         *(UINT64*)last=0x10000000000000ull; *((UINT64*)last+1)=0x2403c00000000ull;
         D3D12_CPU_DESCRIPTOR_HANDLE c0,cl; D3D12_GPU_DESCRIPTOR_HANDLE g0,gl;
@@ -98,6 +100,15 @@ int main()
     UINT bad[]={4,128,0,1}; void *out=d;
     CK(increment(d,4)==0 && create(d,bad,IID_ID3D12DescriptorHeap,&out)==E_NOTIMPL && !out);
     CK(returned==1 && *(UINT64*)(arena+extent-increment(d,0))==0x10000000000000ull);
+    const SIZE_T stale=(SIZE_T)arena+2*increment(d,0);
+    UINT nulls[10]={42,1,0x1688};
+    CK(xs_write_view(d,0x90,nullptr,nulls,stale)==E_INVALIDARG);
+    IUnknown *fresh;
+    alloc_hook=true; HR(create(d,desc[0],IID_ID3D12DescriptorHeap,(void **)&fresh)); alloc_hook=false;
+    ID3D12DescriptorHeap *desktop=nullptr; D3D12_GPU_DESCRIPTOR_HANDLE g={};
+    CK(FAILED(xs_resolve_view(fresh,stale,0x90,&desktop,&g)) && !desktop && !g.ptr);
+    HR(xs_write_view(d,0x90,nullptr,nulls,stale)); HR(xs_resolve_view(fresh,stale,0x90,&desktop,&g));
+    free_hook=true; CK(!fresh->Release()); free_hook=false; CK(returned==2);
     CK(VirtualFree(arena,0,MEM_RELEASE)); d->Release(); host->Release();
     puts("PASS descriptor heaps: XMem placed base/free, five heap shapes, bounds, title writes isolated, final-slot RTV GPU clear/readback");
 }

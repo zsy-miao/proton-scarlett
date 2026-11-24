@@ -1,4 +1,5 @@
 /* Included by the bootstrap device. No desktop heap or descriptor handle crosses the title ABI. */
+struct descriptor_record { UINT64 serial, kind; ID3D12Resource *resource; };
 struct desc_heap {
     IUnknown iface;
     LONG refs;
@@ -6,6 +7,9 @@ struct desc_heap {
     SIZE_T start;
     UINT count, stride, host_stride;
     BOOL visible;
+    struct xbox_device *owner;
+    struct desc_heap *next;
+    struct descriptor_record *records; /* type 0 only */
     HMODULE xmem;
     void (WINAPI *xfree)(void *,UINT64);
 };
@@ -27,11 +31,25 @@ static ULONG WINAPI desc_release(IUnknown *i)
     struct desc_heap *h = CONTAINING_RECORD(i,struct desc_heap,iface);
     ULONG refs = InterlockedDecrement(&h->refs);
     if (!refs) {
+        struct xbox_device *owner = h->owner;
+        if (owner) {
+            AcquireSRWLockExclusive(&owner->descriptor_lock);
+            struct desc_heap **p = &owner->heaps;
+            while (*p != h) p = &(*p)->next;
+            *p = h->next;
+            ReleaseSRWLockExclusive(&owner->descriptor_lock);
+        }
+        if (h->records) {
+            for (UINT n=0;n<h->count;n++)
+                if (h->records[n].resource) ID3D12Resource_Release(h->records[n].resource);
+            HeapFree(GetProcessHeap(),0,h->records);
+        }
         ID3D12DescriptorHeap_Release(h->host);
         if (h->xfree && h->start) h->xfree((void *)h->start,DESC_ATTR);
         else if (h->start) VirtualFree((void *)h->start,0,MEM_RELEASE);
         if (h->xmem) FreeLibrary(h->xmem);
         HeapFree(GetProcessHeap(),0,h);
+        if (owner) IUnknown_Release(&owner->iface);
     }
     return refs;
 }
@@ -93,6 +111,9 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
     h->visible = d.Flags == 1;
     SIZE_T size = (SIZE_T)h->stride * h->count;
     if (!d.Type) {
+        if (!(h->records = HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(*h->records)*h->count))) {
+            desc_release(&h->iface); return E_OUTOFMEMORY;
+        }
         void *(WINAPI *alloc)(SIZE_T,UINT64) = NULL;
         if (GetModuleHandleExW(0,L"xmem.dll",&h->xmem)) {
             alloc = (void *)GetProcAddress(h->xmem,"XMemAlloc");
@@ -103,6 +124,14 @@ static HRESULT WINAPI descriptor_heap(IUnknown *device,const void *input,REFIID 
         h->start = (SIZE_T)alloc(size,DESC_ATTR);
     } else h->start = (SIZE_T)VirtualAlloc(NULL,size,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
     if (!h->start) { desc_release(&h->iface); return E_OUTOFMEMORY; }
+    if (h->records) {
+        h->owner = CONTAINING_RECORD(device,struct xbox_device,iface);
+        IUnknown_AddRef(device);
+        AcquireSRWLockExclusive(&h->owner->descriptor_lock);
+        h->next = h->owner->heaps;
+        h->owner->heaps = h;
+        ReleaseSRWLockExclusive(&h->owner->descriptor_lock);
+    }
     *out = &h->iface;
     return S_OK;
 }

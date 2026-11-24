@@ -42,6 +42,10 @@ struct xbox_device {
     ID3D12Device *host;
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
     BYTE inline_descriptor_mode;
+    SRWLOCK descriptor_lock;
+    struct desc_heap *heaps;
+    struct xs_buffer_binding *buffers;
+    UINT64 descriptor_serial;
     struct frame_clock clock;
 #endif
 };
@@ -49,6 +53,7 @@ struct xbox_device {
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 _Static_assert(offsetof(struct xbox_device,inline_descriptor_mode)==0x18,"inline descriptor flag");
 #include "descriptor_heap.h"
+#include "descriptor_writer.h"
 #endif
 
 /* Private host-side operations. No console method returns a host interface. */
@@ -247,7 +252,11 @@ struct bootstrap_vtbl {
     xs_stop_fn gap50[4];
     __typeof__(&descriptor_heap) descriptors;
     __typeof__(&descriptor_stride) stride;
-    xs_stop_fn gap80[10];
+    xs_stop_fn gap80;
+    __typeof__(&write_cbv) cbv;
+    __typeof__(&write_srv) srv;
+    __typeof__(&write_uav) uav;
+    xs_stop_fn gapa0[6];
     __typeof__(&bootstrap_heap) heap;
     xs_stop_fn gapd8[9];
     __typeof__(&bootstrap_fence) fence;
@@ -266,6 +275,8 @@ struct bootstrap_vtbl {
 _Static_assert(offsetof(struct bootstrap_vtbl, queue) == 0x40 &&
                offsetof(struct bootstrap_vtbl, descriptors) == 0x70 &&
                offsetof(struct bootstrap_vtbl, stride) == 0x78 &&
+               offsetof(struct bootstrap_vtbl, cbv) == 0x88 && offsetof(struct bootstrap_vtbl, srv) == 0x90 &&
+               offsetof(struct bootstrap_vtbl, uav) == 0x98 &&
                offsetof(struct bootstrap_vtbl, frame_interval) == 0x270 &&
                offsetof(struct bootstrap_vtbl, frame_event) == 0x278 &&
                offsetof(struct bootstrap_vtbl, frame_wait) == 0x280 &&
@@ -312,7 +323,8 @@ static const struct bootstrap_vtbl bootstrap_vtbl = {
     .unknown = { device_query, device_addref, device_release },
     .gap18 = { [0 ... 4] = xs_stop }, .queue = bootstrap_queue,
     .allocator = bootstrap_allocator, .gap50 = { [0 ... 3] = xs_stop },
-    .descriptors = descriptor_heap, .stride = descriptor_stride, .gap80 = { [0 ... 9] = xs_stop }, .heap = bootstrap_heap,
+    .descriptors = descriptor_heap, .stride = descriptor_stride, .gap80 = xs_stop,
+    .cbv = write_cbv, .srv = write_srv, .uav = write_uav, .gapa0 = { [0 ... 5] = xs_stop }, .heap = bootstrap_heap,
     .gapd8 = { [0 ... 8] = xs_stop }, .fence = bootstrap_fence,
     .gap128 = { [0 ... 3] = xs_stop }, .signature = bootstrap_signature,
     .gap150 = { [0 ... 5] = xs_stop }, .extended = bootstrap_extended,

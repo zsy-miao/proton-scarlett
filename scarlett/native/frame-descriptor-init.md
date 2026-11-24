@@ -95,9 +95,7 @@ start is zero. Given a **live heap reference**, private `xs_descriptor_slot`
 checks alignment, bounds and visibility and scales the index by the actual
 host stride. Only the resulting private handles may be passed to D3D12;
 they are never dereferenced by the title. The bootstrap device's byte at
-`+0x18` is explicitly allocated and zero. Raw bytes remain shadow bytes:
-there is no exposed command-list descriptor-table path, `+0x90` descriptor
-writer or automatic translation of arbitrary hardware records.
+`+0x18` is explicitly allocated and zero. See the writer subset below.
 
 `test-descriptor.cpp` models the alloc/free interceptors using a real adjacent
 `xmem.dll`. It creates the five shapes, checks placement and release, writes
@@ -117,5 +115,48 @@ done
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static \
   "$src/test-descriptor.cpp" d3d12_device.o queue.o -ld3d12 -o game/game_scarlett_master.exe
 cp "$tool/scarlett/xmem.dll" game/
+dxc -T cs_6_0 -E main -Fo game/test-view.dxil "$src/test-view.hlsl"
 SCARLETT_TEST_GPU=radv TMPDIR="$w" "$src/../test-launch-nixos.sh" "$w/game" "$tool"
 ```
+
+### Descriptor writers (RVA evidence, native x64)
+
+| Slot | Evidence and accepted input |
+|---|---|
+| Device `+0x90` SRV | `164efb`: `(This, resource, desc, titleCPUHandle)`. Five calls `247905a`–`24790b5` use a null resource and a 40-byte input: DWORDs at `+0,+4,+8` are format `42` (`R32_UINT`), dimension `2,4,9,8,1`, mapping `0x1688`. Remaining bytes are zero. These are 1D, 2D, cube, 3D and buffer null views. |
+| Device `+0x98` UAV | `1647610`: `(This, resource, counterResource, desc, titleCPUHandle)` with handle on stack. `24791cf`–`2479224` pass both resources null, format `42`, dimensions `2,4,5,8,1`, remaining 32 bytes zero. Dimension 5 is 2D array. |
+| Device `+0x88` CBV / inline | `2479244` zeroes the 16-byte description, `247924f` tests device byte `+0x18`. If set, `247927a` passes `(This, &zeroDesc, titleCPUHandle)`; if clear, `2479269`/`247926c` write qwords `0x0010000000000000`, `0x0002403c00000000` directly. The slot writer and the bound-heap resolver both recognize this exact null CBV. This doesn't establish other inline formats. |
+| Non-null raw buffer SRV | `5bdb96c`–`5bdb9c2`: format `39` (`R32_TYPELESS`), dimension 1, mapping `0x1688`, first element `UINT64` at `+16`, count `UINT32` at `+24`, stride zero at `+28`, RAW=1 at `+32`. `5bdba95` loads `resourceOwner[+0x20]` as the **interface pointer** and calls the SRV helper. Padding at offsets 12 and 36 is ignored. Only an explicitly bound same-device host buffer, a nonzero count, and an in-bounds range in four-byte elements are accepted. |
+
+Ownership: each device maintains a lock-protected list of its live type-0
+heaps. The writer translates only an aligned, in-bounds destination in
+exactly one such heap. Final heap release removes it before dropping backing.
+A write at a reused VA addresses the new heap; a stale raw VA cannot select
+the old allocation. Callers must keep the heap and their title allocation
+alive and synchronize descriptor updates with GPU retirement. Unsupported
+void-slot inputs stop; the typed backend returns an HRESULT.
+
+API writes leave a checked slot stamp (serial and kind) in title storage
+alongside a separate owned descriptor record. No host pointer is stored
+there. Resolving for GPU use checks the stamp and expected kind on the
+specific bound heap, or recognizes the exact inline CBV above. This rejects
+free-list overwrites, stale stamps after exact-address reuse, and copied
+stamps in other slots. Arbitrary raw hardware encodings and bulk descriptor
+copies require their own implementation. Command-list bindings must use
+the checked resolver rather than the address-only heap arithmetic helper.
+
+`xs_bind_view_buffer` is private: an owning factory registers an interface
+identity and a real host buffer, removing the registration before recycling
+the identity. The synthetic test supplies this producer; a retail resource
+factory has not yet been identified/connected. A recognized write retains
+the host buffer in the slot until overwrite or heap release. Foreign COM
+pointers are never queried or assumed to be desktop resources. The distinct
+`4ecc800` route and dimension 11 at `56ac05c` are not decoded.
+
+`test-view.hlsl` reads from four descriptors after the synthetic resource
+owner is unregistered and its buffer reference dropped. Fenced readback
+must contain the word from the selected raw-buffer offset, plus zeros from
+the null buffer SRV, inline CBV, and null UAV after a write. The fixture also
+tests all ten startup SRV/UAV shapes, wrong-kind/misaligned/overrun/foreign
+inputs, free-list overwrite, and exact-VA heap recreation. It uses a host
+compute command list to isolate descriptor correctness. No retail execution.
