@@ -3,11 +3,11 @@
 scarlett-proton is a Proton fork implementing Xbox Series X|S console APIs for x86-64 games on Linux.
 Wine loads the original executable; project-owned DLLs supply console imports. [Build and test](scarlett/README.md).
 
-**Native layer status:** early development. The graphics DLL exposes a small desktop-compatible subset through vkd3d-proton. Xbox device creation, rendering a retail frame, and gameplay are not yet supported.
+**Native layer status:** early development. The graphics DLL creates a device wrapper backed by vkd3d-proton for the observed retail request. Console rendering and gameplay are not yet supported.
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
-Retail build `1.0.2.1` initializes the fork's [Gaming Runtime provider](scarlett/native/gameruntime/README.md), opens `G:\appdata0.rpf`, and passes the worker's 710 MiB physical-page allocation. Startup now reaches the [Xbox graphics device initializer](scarlett/native/d3d12_device.md). The factory rejects the requested console device interface (`E_NOINTERFACE`), and the title stops at `+0x19f4f58`. No native retail frame has been presented.
+Retail build `1.0.2.1` initializes the fork's [Gaming Runtime provider](scarlett/native/gameruntime/README.md), opens `G:\appdata0.rpf`, passes the worker's 710 MiB physical-page allocation, and obtains its [Xbox graphics device](scarlett/native/d3d12_device.md). The next observed failure is a 64 KiB `XMemVirtualAlloc` call during graphics setup (protection `0x42404`, breakpoint `+0x24786d1`). No native retail frame has been presented.
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 

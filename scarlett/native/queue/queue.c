@@ -2,6 +2,9 @@
 #define CONST_VTABLE
 #include "queue.h"
 #include <stddef.h>
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+#include "bootstrap_guard.h"
+#endif
 
 struct adapter {
     IUnknown iface;
@@ -12,8 +15,18 @@ struct adapter {
     } host;
 };
 
-static const struct xs_queue_prefix queue_prefix;
-static const IUnknownVtbl fence_prefix;
+struct qtable {
+    struct xs_queue_prefix prefix;
+    void *other[17]; /* Through observed +0x118. */
+};
+struct ftable {
+    IUnknownVtbl prefix;
+    void *other[10]; /* Through observed +0x60. */
+};
+static const struct qtable qt;
+static const struct ftable ft;
+#define queue_prefix qt.prefix
+#define fence_prefix ft.prefix
 _Static_assert(offsetof(struct xs_queue_prefix, signal) == 0x80, "x64 queue Signal");
 _Static_assert(offsetof(struct xs_queue_prefix, frequency) == 0x90, "x64 queue frequency");
 
@@ -39,7 +52,12 @@ static HRESULT WINAPI query(IUnknown *iface, REFIID iid, void **out)
     if (!out) return E_POINTER;
     *out = NULL;
     if (!iid) return E_INVALIDARG;
-    if (!IsEqualIID(iid, &IID_IUnknown)) return E_NOINTERFACE;
+    if (!IsEqualIID(iid, &IID_IUnknown)
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+            && !(iface->lpVtbl == &queue_prefix.unknown && IsEqualIID(iid, &IID_ID3D12CommandQueue))
+            && !(iface->lpVtbl == &fence_prefix && IsEqualIID(iid, &IID_ID3D12Fence))
+#endif
+            ) return E_NOINTERFACE;
     addref(iface);
     *out = iface;
     return S_OK;
@@ -72,10 +90,23 @@ static HRESULT WINAPI frequency(IUnknown *queue, UINT64 *out)
     return q ? ID3D12CommandQueue_GetTimestampFrequency(q, out) : E_INVALIDARG;
 }
 
-static const struct xs_queue_prefix queue_prefix = {
-    .unknown = {query, addref, release}, .signal = queue_signal, .frequency = frequency
+static const struct qtable qt = {
+    .prefix = {
+        .unknown = {query, addref, release}, .signal = queue_signal, .frequency = frequency,
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+        .reserved18 = { [0 ... 12] = (void *)xs_stop }, .reserved88 = (void *)xs_stop,
+#endif
+    },
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+    .other = { [0 ... 16] = (void *)xs_stop },
+#endif
 };
-static const IUnknownVtbl fence_prefix = {query, addref, release};
+static const struct ftable ft = {
+    .prefix = {query, addref, release},
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+    .other = { [0 ... 9] = (void *)xs_stop },
+#endif
+};
 
 HRESULT xs_queue_wait(IUnknown *queue, IUnknown *fence, UINT64 value)
 {

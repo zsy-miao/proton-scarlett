@@ -1,6 +1,6 @@
 # D3D12XboxCreateDevice: device identity
 
-The factory implements one interface: `IID_IUnknown`. With a null first argument
+The identity-only test build implements one interface: `IID_IUnknown`. With a null first argument
 and non-null parameter block it creates a wrapper owning one reference to the
 default adapter's vkd3d-proton device (desktop feature level 12.0). Each wrapper
 has its own COM identity. `QueryInterface(IID_IUnknown)` returns the same pointer
@@ -51,11 +51,61 @@ This is a lower bound on initialization, not a complete console interface.
 | `0x247924f`, `0x247927a` | Reads a byte at **device object `+0x18`**, bypassing the vtable. If zero the caller writes two literal qwords into descriptor storage; otherwise it calls device `+0x88`. A correctly ordered vtable alone cannot satisfy this ABI. |
 | `0x247954e`–`0x2479646` | Five calls to **device `+0x148`** match `CreateCommandSignature`: stride/count/argument-array descriptor, null root signature, exact `IID_ID3D12CommandSignature`, stack output. Negative HRESULTs go to failure. The initializer sets its success byte at `0x247967a`. |
 
-Only two private host operations are implemented here: the three node-1 heap
+The identity-only build has two private host operations: the three node-1 heap
 queries and the ordinary Direct queue descriptor. They use the real device
 owned by the wrapper. The heap helper writes a **desktop** `D3D12_HEAP_PROPERTIES`
 and the queue helper returns an owned **desktop** queue internally. Neither
 is installed in a console vtable or invoked for an unsupported factory IID.
+
+## Installed bootstrap (`SCARLETT_DEVICE_BOOTSTRAP`)
+
+This build accepts the retail device IID only with the observed 80-byte
+parameter shape (version `0x20004`). It validates that shape; it does not
+claim to implement console scratch/ring allocation or interpret arbitrary
+GDK flags. The device owns a real vkd3d device. Its bootstrap prefix serves
+node-1 `DEFAULT`, `UPLOAD`, `READBACK` heap properties using destination in
+RCX and device in RDX; the return pointer is the destination. It creates
+the exact Direct queue and zero-valued shared fence using separate native
+adapters. For the first extended queue call, `+0x180` clears the output,
+logs the operation and returns `E_NOTIMPL`. The retail caller checks the
+HRESULT and contains `int3` at RVA `0x2478826` on failure.
+
+The prior trace stops at `0x19f4f58` with ECX=`0x80004002`, before any
+success-path calls. `+0x188` **is not needed with this runtime/prefix**:
+`0x24785cd` first checks the title configuration byte. Even when set, the
+helper at `0x55dea0c` queries the runtime analytics IID and the caller
+compares the four hosting-OS words at offset 8 to `10.0.26100.9628`.
+The failed prefix records Windows build 19045. A separate synthetic PE
+initialized the installed runtime, queried that same IID, and read
+`10.0.19045.0` from `hosting_os`. This rules out the version branch regardless
+of the configuration byte; it is not an observation of a successful retail
+run. Unknown slots within the traced prefixes, including `+0x188`, fail fast
+instead of returning a guessed value. Neither their semantics nor the later
+inline console object layout is implemented.
+
+Scratch build and public export test (from the repository root):
+
+Retail passed the device factory call, then requested 64 KiB through
+`XMemVirtualAlloc(NULL, 65536, 0x20401000, 0x283, 0x42404)` at `+0x24786b9`.
+The null result triggered `+0x24786d1`, before the heap and queue calls.
+
+```sh
+src="$PWD/scarlett/native"; work=$(mktemp -d); mkdir "$work/public"; cd "$work"
+cc=x86_64-w64-mingw32-gcc
+"$cc" -Os -s -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -shared \
+  -Wl,--no-insert-timestamp,--out-implib,candidate.a "$src/d3d12_device.c" \
+  "$src/queue/queue.c" "$src/d3d12_vm.c" "$src/d3d12_xs.def" -ld3d12 -o public/d3d12_xs.dll
+"$cc" -O2 -Wall -Wextra -Werror "$src/test-d3d12-bootstrap.c" -ld3d12 candidate.a \
+  -o public/game_scarlett_master.exe
+TMPDIR="$work" "$src/../test-launch-nixos.sh" "$work/public"
+```
+
+`test-d3d12-bootstrap.c` independently dispatches by slot, compares each
+heap result to the desktop device with surrounding canaries, submits a real
+queue signal, and checks `E_NOTIMPL` and null output at `+0x180`. The linked
+variant (`-DXS_TEST_LINKED -DSCARLETT_DEVICE_BOOTSTRAP` plus `d3d12_device.c`
+and `queue/queue.c`) also observes fence completion via a Win32 event. Both
+passed on an RTX 3070. No private test symbol is exported by the DLL.
 
 ## Scratch GPU test
 
