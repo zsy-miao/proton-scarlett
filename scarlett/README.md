@@ -78,6 +78,9 @@ test directory containing `logs/steam-999001.log` and the XCL report. It returns
 status, or 124 if the 90-second test window expires.
 For visual checks, `SCARLETT_TEST_SECONDS=360 XCL_FRAME_DUMP=120` allows six minutes and
 saves sampled back buffers as `frame_*.bmp` in the title's XCL logs directory.
+Set `SCARLETT_RECORD=1` to record the sandbox's private Xvfb framebuffer to `display.mp4`
+(silent H.264, 12 fps) and update `display.png` once a second in the printed test directory.
+This uses the host FFmpeg inside the sandbox; the host display is never opened.
 
 `./scarlett/tests/input-frame.sh` launches a synthetic window in the private Xvfb harness.
 It sends one Space press/release to the focused window and checks that the screen pixel

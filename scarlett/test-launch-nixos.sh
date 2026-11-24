@@ -22,6 +22,12 @@ done
 seconds=${SCARLETT_TEST_SECONDS:-90}
 [[ $seconds =~ ^[1-9][0-9]*$ ]] || { echo "Invalid SCARLETT_TEST_SECONDS" >&2; exit 2; }
 capture=()
+ffmpeg=
+case ${SCARLETT_RECORD:-0} in
+    1) ffmpeg=$(realpath "$(command -v ffmpeg)") ;;
+    0) ;;
+    *) echo "SCARLETT_RECORD must be 0 or 1" >&2; exit 2 ;;
+esac
 if [[ -n ${XCL_FRAME_DUMP:-} ]]; then
     [[ $XCL_FRAME_DUMP =~ ^[1-9][0-9]*$ ]] || { echo "Invalid XCL_FRAME_DUMP interval" >&2; exit 2; }
     capture+=(--setenv XCL_FRAME_DUMP "$XCL_FRAME_DUMP")
@@ -40,12 +46,30 @@ exec timeout -k 5s "${seconds}s" "$bwrap" --unshare-all --die-with-parent --new-
     --setenv SteamGameId 999001 --setenv SteamAppId 999001 \
     --setenv PROTON_LOG 1 --setenv PROTON_LOG_DIR /work/logs \
     --setenv PYTHONDONTWRITEBYTECODE 1 --chdir /game -- /bin/bash -ec '
-        "$1" :93 -noreset -screen 0 800x600x24 -nolisten tcp >/work/logs/xvfb.log 2>&1 &
+        fb=()
+        [[ -z $3 ]] || fb=(-fbdir /tmp)
+        "$1" :93 -noreset -screen 0 800x600x24 -nolisten tcp "${fb[@]}" >/work/logs/xvfb.log 2>&1 &
         for i in {1..50}; do [[ -S /tmp/.X11-unix/X93 ]] && break; sleep 0.1; done
         [[ -S /tmp/.X11-unix/X93 ]]
         # The default Xvfb mode advertises 0 Hz, which breaks DXGI frame timing.
         "$2" --newmode 800x600_60 40 800 840 968 1056 600 601 605 628 +hsync +vsync
         "$2" --addmode screen 800x600_60
         "$2" --output screen --mode 800x600_60
-        exec /proton/proton waitforexitandrun /game/game_scarlett_master.exe
-    ' _ "$xvfb" "$xrandr" </dev/null >"$work/launcher.log" 2>&1
+        title=(/proton/proton waitforexitandrun /game/game_scarlett_master.exe)
+        [[ -n $3 ]] || exec "${title[@]}"
+        # Short, flushed fragments keep the MP4 playable if the sandbox times out.
+        env -u LD_LIBRARY_PATH "$3" -nostdin -loglevel error -re -f image2 -loop 1 \
+            -framerate 12 -c:v xwd -i /tmp/Xvfb_screen0 \
+            -c:v libx264 -threads 2 -preset veryfast -tune zerolatency -crf 24 -pix_fmt yuv420p \
+            -g 12 -movflags +frag_keyframe+empty_moov+default_base_moof -flush_packets 1 /work/display.mp4 \
+            -vf fps=1 -pix_fmt rgb24 -threads 1 -update 1 -atomic_writing 1 /work/display.png >/work/logs/capture.log 2>&1 &
+        recorder=$!
+        for i in {1..50}; do [[ -s /work/display.png ]] && break; kill -0 "$recorder"; sleep 0.1; done
+        test -s /work/display.png
+        status=0
+        "${title[@]}" || status=$?
+        kill -TERM "$recorder"
+        wait "$recorder" || [[ $? == 255 ]]
+        test -s /work/display.mp4
+        exit "$status"
+    ' _ "$xvfb" "$xrandr" "$ffmpeg" </dev/null >"$work/launcher.log" 2>&1
