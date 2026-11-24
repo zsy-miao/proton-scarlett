@@ -4,7 +4,7 @@ struct startup_list {
     LONG refs;
     ID3D12GraphicsCommandList7 *host;
     ID3D12Device *device; /* Kept alive by host. */
-    IUnknown *allocator;
+    IUnknown *allocator,*pool_owner,*heaps[2];
     D3D12_COMMAND_LIST_TYPE type;
     HRESULT error;
     BOOL closed;
@@ -21,6 +21,10 @@ static void sl_free(struct startup_list *s)
 }
 static struct startup_list *sl(IUnknown *i) { return CONTAINING_RECORD(i, struct startup_list, iface); }
 static ULONG WINAPI sl_addref(IUnknown *i) { return InterlockedIncrement(&sl(i)->refs); }
+static void drop_heaps(IUnknown *pair[2])
+{
+    for (unsigned i=0;i<2;i++) if (pair[i]) { IUnknown_Release(pair[i]); pair[i]=NULL; }
+}
 static ULONG WINAPI sl_release(IUnknown *i)
 {
     struct startup_list *s = sl(i);
@@ -28,6 +32,8 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
+        drop_heaps(s->heaps);
+        if (s->pool_owner) IUnknown_Release(s->pool_owner);
         sl_free(s);
     }
     return refs;
@@ -97,6 +103,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     IUnknown_AddRef(alloc);
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
+    drop_heaps(s->heaps);
     s->closed = FALSE;
     s->error = S_OK;
     return S_OK;
@@ -118,20 +125,47 @@ static const struct sl_table sl_vtbl = {
     {[0 ... 120]=xs_stop}, sl_418, sl_420, {[0 ... 5]=xs_stop}, sl_reset
 };
 
+static HRESULT bind_initial_heaps(struct startup_list *s,UINT count,IUnknown *const *input)
+{
+    IUnknown *pair[2]; SIZE_T n;
+    ID3D12DescriptorHeap *banks[2];
+    if (!s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT || count!=2) return E_INVALIDARG;
+    if (!ReadProcessMemory(GetCurrentProcess(),input,pair,sizeof pair,&n) || n!=sizeof pair) return E_POINTER;
+    /* shortcut: one distinct pair per recording, until an in-list replacement is observed. */
+    if (s->heaps[0] && memcmp(s->heaps,pair,sizeof pair)) return E_NOTIMPL;
+    HRESULT hr=xs_initial_heap_banks(s->pool_owner,pair,banks);
+    if (FAILED(hr)) return hr;
+    if (!s->heaps[0]) for (unsigned i=0;i<2;i++) { IUnknown_AddRef(pair[i]); s->heaps[i]=pair[i]; }
+    ID3D12GraphicsCommandList7_SetDescriptorHeaps(s->host,2,banks);
+    return S_OK;
+}
+static void WINAPI sl_bind(IUnknown *i,UINT count,IUnknown *const *input)
+{
+    if (FAILED(bind_initial_heaps(sl(i),count,input))) xs_stop();
+}
 /* Only these slots have been traced on the pool's returned pointer. */
 static const struct {
     IUnknownVtbl prefix;
     xs_stop_fn gap18[6];
     __typeof__(&sl_close) close;
-    xs_stop_fn gap50[129];
+    xs_stop_fn gap50[22];
+    __typeof__(&sl_bind) bind;
+    xs_stop_fn gap108[106];
     __typeof__(&sl_reset) reset;
 } pool_vtbl = {
-    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 128]=xs_stop}, sl_reset
+    {sl_query,sl_addref,sl_release}, {[0 ... 5]=xs_stop}, sl_close, {[0 ... 21]=xs_stop}, sl_bind, {[0 ... 105]=xs_stop}, sl_reset
 };
-_Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
+_Static_assert(offsetof(__typeof__(pool_vtbl),close)==0x48 && offsetof(__typeof__(pool_vtbl),bind)==0x100 && offsetof(__typeof__(pool_vtbl),reset)==0x458,
         "pooled list ABI");
 
-HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *alloc, BOOL pooled, IUnknown **out)
+/* Checked counterpart of the void guest slot. */
+HRESULT xs_bind_pool_heaps(IUnknown *i,UINT count,IUnknown *const *heaps)
+{
+    if (!i || i->lpVtbl!=&pool_vtbl.prefix) return E_INVALIDARG;
+    return bind_initial_heaps(sl(i),count,heaps);
+}
+
+HRESULT xs_device_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnknown *alloc, BOOL pooled,IUnknown *pool_owner, IUnknown **out)
 {
     if (!out) return E_POINTER;
     *out = NULL;
@@ -161,6 +195,7 @@ HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnk
     hr = ID3D12Device_CreateCommandList(device, 1, type, a, NULL, &IID_ID3D12GraphicsCommandList7, (void **)&s->host);
     if (FAILED(hr)) { sl_free(s); return hr; }
     s->iface.lpVtbl = pooled ? &pool_vtbl.prefix : &sl_vtbl.prefix;
+    if ((s->pool_owner=pool_owner)) IUnknown_AddRef(pool_owner);
     s->refs = 1;
     s->device = device;
     s->type = type;
@@ -169,11 +204,25 @@ HRESULT xs_startup_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnk
     *out = &s->iface;
     return S_OK;
 }
+HRESULT xs_startup_list(ID3D12Device *device,D3D12_COMMAND_LIST_TYPE type,IUnknown *alloc,BOOL pooled,IUnknown **out)
+{
+    return xs_device_list(device,type,alloc,pooled,NULL,out);
+}
 ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
 {
     return i && (i->lpVtbl == &sl_vtbl.prefix || i->lpVtbl == &pool_vtbl.prefix) ? sl(i)->host : NULL;
 }
 
+/* A list may be reset or released as soon as it is submitted. Pin this
+ * recording's guest heaps independently until this queue passes the list. */
+struct heap_retirement { IUnknown *pair[2]; ID3D12Fence *fence; HANDLE event; };
+static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_WAIT wait,TP_WAIT_RESULT result)
+{
+    struct heap_retirement *r=ctx;
+    (void)instance;(void)result;
+    CloseThreadpoolWait(wait);
+    drop_heaps(r->pair); ID3D12Fence_Release(r->fence); CloseHandle(r->event); HeapFree(GetProcessHeap(),0,r);
+}
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
 {
     ID3D12CommandQueue *q = as_queue(iface);
@@ -187,5 +236,18 @@ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *
     ID3D12Device_Release(device);
     if (!match || !s->closed || FAILED(s->error) || desc.Type != s->type) xs_stop();
     ID3D12CommandList *host = (ID3D12CommandList *)s->host;
+    struct heap_retirement *r=NULL;
+    PTP_WAIT wait=NULL;
+    if (s->heaps[0]) {
+        r=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *r);
+        if (!r || FAILED(ID3D12Device_CreateFence(s->device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&r->fence)) ||
+            !(r->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(wait=CreateThreadpoolWait(retire_heaps,r,NULL)) ||
+            FAILED(ID3D12Fence_SetEventOnCompletion(r->fence,1,r->event))) xs_stop();
+        for (unsigned i=0;i<2;i++) { r->pair[i]=s->heaps[i]; IUnknown_AddRef(r->pair[i]); }
+    }
     ID3D12CommandQueue_ExecuteCommandLists(q, 1, &host);
+    if (r) {
+        if (FAILED(ID3D12CommandQueue_Signal(q,r->fence,1))) xs_stop();
+        SetThreadpoolWait(wait,r->event,NULL);
+    }
 }

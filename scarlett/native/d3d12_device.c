@@ -208,8 +208,8 @@ static HRESULT WINAPI bootstrap_list(IUnknown *iface, const void *desc, IUnknown
     if (!xs_allocator_host(allocator, words[0])) return E_INVALIDARG;
     if (initial_state || words[1] != (pooled ? 6u : 2u) || words[2] != 1 || words[3]) return E_NOTIMPL;
     IUnknown *list = NULL;
-    HRESULT hr = xs_startup_list(CONTAINING_RECORD(iface, struct xbox_device, iface)->host,
-            words[0], allocator, pooled, &list);
+    HRESULT hr = xs_device_list(CONTAINING_RECORD(iface, struct xbox_device, iface)->host,
+            words[0], allocator, pooled, pooled ? iface : NULL, &list);
     *out = list;
     return hr;
 }

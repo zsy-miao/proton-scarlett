@@ -217,6 +217,24 @@ static HRESULT descriptor_range(IUnknown *i,SIZE_T slot,UINT count,ID3D12Descrip
     return S_OK;
 }
 
+/* Resolve the initial pair by guest device identity, not by a shared desktop device. */
+HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2])
+{
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    HRESULT hr=E_INVALIDARG;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct desc_heap *r=d->heaps,*s=d->sampler_heaps;
+    while (r && &r->iface!=pair[0]) r=r->next;
+    while (s && &s->iface!=pair[1]) s=s->next;
+    if (r && r->visible && r->count==DESC_STARTUP_COUNT && r->tail && s && s->visible && s->count==128) {
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+        hr=descriptor_range(&r->iface,r->start,1,&banks[0],NULL,&gpu);
+        if (SUCCEEDED(hr)) hr=descriptor_range(&s->iface,s->start,1,&banks[1],NULL,&gpu);
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);
+    return hr;
+}
+
 static HRESULT descriptor_slot(IUnknown *i,SIZE_T slot,D3D12_CPU_DESCRIPTOR_HANDLE *cpu,D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 {
     return descriptor_range(i,slot,1,NULL,cpu,gpu);

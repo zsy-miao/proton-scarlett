@@ -10,6 +10,15 @@ extern "C" HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T)
 extern "C" HRESULT xs_resolve_view(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
 extern "C" HRESULT xs_resolve_sampler(IUnknown *,SIZE_T,ID3D12DescriptorHeap **,D3D12_GPU_DESCRIPTOR_HANDLE *);
 extern "C" HRESULT xs_write_sampler(IUnknown *,const void *,SIZE_T);
+extern "C" const IID xs_pool_list_id;
+extern "C" ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *);
+extern "C" HRESULT xs_bind_pool_heaps(IUnknown *,UINT,IUnknown *const *);
+extern "C" HRESULT xs_descriptor_range(IUnknown *,SIZE_T,UINT,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *,D3D12_GPU_DESCRIPTOR_HANDLE *);
+extern "C" HRESULT xs_direct_queue(ID3D12Device *,IUnknown **);
+extern "C" HRESULT xs_shared_fence(ID3D12Device *,IUnknown **);
+extern "C" HRESULT xs_queue_wait(IUnknown *,IUnknown *,UINT64);
+extern "C" HRESULT xs_cpu_signal(IUnknown *,UINT64);
+extern "C" HRESULT xs_fence_event(IUnknown *,UINT64,HANDLE);
 #define SLOT(o,n,T) ((T)((*reinterpret_cast<void***>(o))[n/8]))
 #define CK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); return 1; } } while(0)
 #define HR(x) CK(SUCCEEDED(x))
@@ -108,14 +117,14 @@ int main()
     using Heap=HRESULT(WINAPI *)(IUnknown *,const void *,REFIID,void **);
     using Start=SIZE_T(WINAPI *)(IUnknown *);
     using UAV=void(WINAPI *)(IUnknown *,IUnknown *,IUnknown *,const void *,SIZE_T);
-    DWORD heapDesc[]={0,2,1,1},view[]={28,4,0,0}; ComPtr<IUnknown> heap;
+    DWORD heapDesc[]={0,0x130000,1,1},view[]={28,4,0,0}; ComPtr<IUnknown> heap;
     HR(SLOT(dev.Get(),0x70,Heap)(dev.Get(),heapDesc,IID_ID3D12DescriptorHeap,(void **)heap.GetAddressOf()));
     SIZE_T slot=SLOT(heap.Get(),0x48,Start)(heap.Get())+32;
     CK(FAILED(xs_write_view(dev.Get(),0x98,(IUnknown *)1,view,slot)));
     view[3]=1; CK(FAILED(xs_write_view(dev.Get(),0x98,surface,view,slot))); view[3]=0;
     SLOT(dev.Get(),0x98,UAV)(dev.Get(),surface,nullptr,view,slot);
     using SRV=void(WINAPI *)(IUnknown *,IUnknown *,const void *,SIZE_T);
-    const SIZE_T sampleSlot=slot-32;
+    const SIZE_T sampleSlot=slot-32+999999ull*32;
     DWORD sw[]={28,4,0x1688,0,0,1,0,0};
     // The head of the device's live color list is deliberately a different texture.
     IUnknown *other; HR(create(&other,8,3,0,IID_ID3D12Resource));
@@ -183,7 +192,16 @@ int main()
     CK(arena[used]==0xa5 && arena[(64u<<20)-1]==0xa5);
     // Transition before dropping the last direct reference. Only the SRV record
     // will retain this texture when the sampling dispatch is submitted.
-    HR(a->Reset()); HR(l->Reset(a.Get(),nullptr));
+    using Alloc=HRESULT(WINAPI*)(IUnknown*,UINT,REFIID,void**);
+    using List=HRESULT(WINAPI*)(IUnknown*,const void*,IUnknown*,IUnknown*,REFIID,void**);
+    using Bind=void(WINAPI*)(IUnknown*,UINT,IUnknown*const*);
+    using Close=HRESULT(WINAPI*)(IUnknown*);
+    using Reset=HRESULT(WINAPI*)(IUnknown*,IUnknown*,IUnknown*,UINT);
+    ComPtr<IUnknown> pooled,alloc0,alloc1;UINT ld[]={0,6,1,0};auto alloc=SLOT(dev.Get(),0x48,Alloc);
+    HR(alloc(dev.Get(),0,IID_ID3D12CommandAllocator,(void**)alloc0.GetAddressOf()));
+    HR(alloc(dev.Get(),0,IID_ID3D12CommandAllocator,(void**)alloc1.GetAddressOf()));
+    HR(SLOT(dev.Get(),0x248,List)(dev.Get(),ld,alloc0.Get(),nullptr,xs_pool_list_id,(void**)pooled.GetAddressOf()));
+    l=xs_list_host(pooled.Get());
     b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
     l->ResourceBarrier(1,&b);
     DWORD nullUav[10]={42,1};
@@ -229,7 +247,6 @@ int main()
     CK(!memcmp(pointTag,(void *)(visibleSlot+16),16));
     ID3D12DescriptorHeap *samBank; D3D12_GPU_DESCRIPTOR_HANDLE samGPU;
     CK(FAILED(xs_resolve_sampler(cpuSam.Get(),cpuSlot,&samBank,&samGPU)));
-    cpuSam.Reset();
     CK(FAILED(xs_resolve_sampler(visibleSam.Get(),visibleSlot-16,&samBank,&samGPU)));
     *(UINT64 *)visibleSlot^=1;
     CK(FAILED(xs_resolve_sampler(visibleSam.Get(),visibleSlot,&samBank,&samGPU)) && !samBank && !samGPU.ptr);
@@ -246,21 +263,45 @@ int main()
     hp.Type=D3D12_HEAP_TYPE_DEFAULT; buf.Width=24; buf.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ComPtr<ID3D12Resource> samples;
     HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&samples)));
-    ID3D12DescriptorHeap *banks[]={bank,samBank};
-    l->SetDescriptorHeaps(2,banks); l->SetComputeRootSignature(root.Get()); l->SetPipelineState(ps.Get());
+    SIZE_T base=SLOT(heap.Get(),0x48,Start)(heap.Get());ID3D12DescriptorHeap *physical;D3D12_GPU_DESCRIPTOR_HANDLE address;
+    HR(xs_descriptor_range(heap.Get(),base,1,&physical,nullptr,&address));CK(physical==bank);
+    HR(xs_descriptor_range(heap.Get(),base+1000000ull*32,1,&physical,nullptr,&address));CK(bank!=physical);
+    CK(FAILED(xs_descriptor_range(heap.Get(),base+999999ull*32,2,&physical,nullptr,&address)));
+    ComPtr<IUnknown> foreign,foreignSam,small;HR(D3D12XboxCreateDevice(nullptr,params,boot,(void**)foreign.GetAddressOf()));
+    HR(mkHeap(foreign.Get(),shape,IID_ID3D12DescriptorHeap,(void**)foreignSam.GetAddressOf()));UINT tiny[]={0,4,1,1};
+    HR(mkHeap(dev.Get(),tiny,IID_ID3D12DescriptorHeap,(void**)small.GetAddressOf()));
+    IUnknown *pair[]={heap.Get(),visibleSam.Get()};auto reject=[&](IUnknown *r,IUnknown *sam){IUnknown *bad[]={r,sam};return FAILED(xs_bind_pool_heaps(pooled.Get(),2,bad));};
+    CK(reject(small.Get(),visibleSam.Get()) && reject(visibleSam.Get(),heap.Get()) && reject(heap.Get(),cpuSam.Get()) && reject(heap.Get(),foreignSam.Get()));
+    CK(reject(heap.Get(),heap.Get()) && reject(heap.Get(),(IUnknown*)1) && FAILED(xs_bind_pool_heaps(pooled.Get(),1,pair)));
+    cpuSam.Reset();SLOT(pooled.Get(),0x100,Bind)(pooled.Get(),2,pair);
+    CK(reject(heap.Get(),foreignSam.Get()));
+    l->SetComputeRootSignature(root.Get()); l->SetPipelineState(ps.Get());
     l->SetComputeRootDescriptorTable(2,samGPU);
     l->SetComputeRootDescriptorTable(0,gpu); l->SetComputeRootUnorderedAccessView(1,samples->GetGPUVirtualAddress());
     l->Dispatch(1,1,1);
     b.Transition={samples.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE};
     l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb.Get(),16,samples.Get(),0,24);
-    HR(l->Close()); q->ExecuteCommandLists(1,batch); HR(q->Signal(f.Get(),2));
-    HANDLE sampled=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(sampled);
-    HR(f->SetEventOnCompletion(2,sampled)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
+    HR(SLOT(pooled.Get(),0x48,Close)(pooled.Get()));CK(FAILED(xs_bind_pool_heaps(pooled.Get(),2,pair)));
+    ComPtr<IUnknown> gq,gate,done;HR(xs_direct_queue(d.Get(),gq.GetAddressOf()));HR(xs_shared_fence(d.Get(),gate.GetAddressOf()));HR(xs_shared_fence(d.Get(),done.GetAddressOf()));
+    using Submit=void(WINAPI*)(IUnknown*,UINT,IUnknown*const*,UINT64,UINT);using Signal=HRESULT(WINAPI*)(IUnknown*,IUnknown*,UINT64);
+    HR(xs_queue_wait(gq.Get(),gate.Get(),1));IUnknown *lists[]={pooled.Get()};SLOT(gq.Get(),0x118,Submit)(gq.Get(),1,lists,0,0);
+    HR(SLOT(gq.Get(),0x80,Signal)(gq.Get(),done.Get(),1));HANDLE sampled=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(sampled);
+    HR(xs_fence_event(done.Get(),1,sampled));CK(WaitForSingleObject(sampled,50)==WAIT_TIMEOUT);
+    // Reset on a different allocator before opening the gate. A new recording may bind a different sampler.
+    HR(SLOT(pooled.Get(),0x458,Reset)(pooled.Get(),alloc1.Get(),nullptr,0));ComPtr<IUnknown> otherSam;
+    HR(mkHeap(dev.Get(),shape,IID_ID3D12DescriptorHeap,(void**)otherSam.GetAddressOf()));pair[1]=otherSam.Get();
+    SLOT(pooled.Get(),0x100,Bind)(pooled.Get(),2,pair);HR(SLOT(pooled.Get(),0x48,Close)(pooled.Get()));
+    pooled.Reset();l.Reset();heap.Reset();visibleSam.Reset();
+    MEMORY_BASIC_INFORMATION m;CK(VirtualQuery(arena,&m,sizeof m) && m.State==MEM_COMMIT);
+    HR(xs_cpu_signal(gate.Get(),1)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
     HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff && pixel[6]==0xff008080);
     CK(pixel[7]==0xff00ff00 && pixel[8]==0xff0000ff && pixel[9]==0xff00ff00); rb->Unmap(0,nullptr);
     l.Reset(); a.Reset(); heap.Reset();
-    MEMORY_BASIC_INFORMATION m;
-    CK(VirtualQuery(arena,&m,sizeof m) && m.State==MEM_FREE);
+    ULONGLONG limit=GetTickCount64()+5000;
+    do { CK(VirtualQuery(arena,&m,sizeof m)); if(m.State==MEM_FREE)break;Sleep(1); } while(GetTickCount64()<limit);
+    CK(m.State==MEM_FREE);
+    printf("PASS edge SRV=%llu samplers=126,127 six checked native samples\n",(unsigned long long)(sampleSlot-base)/32);
+    puts("PASS pooled +100 bank 0 and sampler: real dispatch through guest bind, rejected foreign/CPU/reversed/small heaps, tail distinct, in-flight reset/rebind/release retired original pair");
     FreeLibrary(xm);
     puts("PASS +1e8/+c0: green/red centers, linear seam ff008080 vs point seam ff00ff00 after CPU heap release; rejected record and destination controls");
     puts("PASS public +a0: type-2 heap, overwritten slot and independent final slot retained two distinct +3f8 textures; real RTV clear/readback after title Release");

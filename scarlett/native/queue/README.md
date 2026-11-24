@@ -122,3 +122,17 @@ same thread, a previously closed pooled list reset at `2474cd4`, took a
 second reference to that allocator and released its old allocator. No
 allocator reset, callback invocation or queue submission preceded `4e4cac9`.
 This sequence does not establish thread affinity for a future callback.
+
+## Initial pooled-list heap binding
+
+Pooled Direct list `+0x100` binds bank 0 of the 1,245,184-entry resource heap
+and the 128-entry sampler heap from the same guest device. Bank 0 holds
+1,000,000 slots. The remaining 245,184 slots belong to a distinct bank;
+the initial bind does not switch to it.
+
+On RADV and RTX, `test-allocation-info.cpp` sampled resource slot 999,999
+with samplers 126 and 127. The red/green seam read `ff008080` with linear
+filtering and `ff00ff00` with point filtering. Resetting and rebinding the
+list while the submitted work was gated kept the original heaps alive until
+its fence completed. Both retail runs passed the bind and stopped at
+`+0x238`, title return `+0x4ed46aa`.
