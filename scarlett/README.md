@@ -18,6 +18,7 @@ Requires x86-64 MinGW GCC/G++, the [Windows SDK v0 input header](native/gameinpu
 The first committed retail graphics pool requires the fork's [x64 Wine memory patch and build steps](wine-patches/README.md). Installing the PE DLLs alone leaves this call unsupported.
 To reproduce the [experimental retail clear submission](native/queue/README.md#experimental-whole-queue-wait), set `SCARLETT_EXPERIMENTAL_TAGGED_BATCH=1` **when building** providers into a new directory. This builds the matched counter-wait, primary-release and tagged-submit paths together. It needs the same patched Wine and vkd3d-proton as the default build.
 The 2,199 MiB pool additionally requires the [paired Wine and vkd3d-proton patches](vkd3d-patches/README.md).
+For the startup `PresentX` path, also set `SCARLETT_EXPERIMENTAL_BRIDGE=1` at build time. Before running `install.sh`, put the matching `wineserver` and `win32u.so` from [Wine patch 0016](wine-patches/README.md) alongside `ntdll.so`, `kernelbase.dll`, `d3d12core.dll` and the provider DLLs in the runtime directory.
 Retail `G:` maps to the game directory. `T:` maps to `scarlett-title/scratch` under the shortcut's compatibility-data directory, where the game can save its crash reports. In the test harness both the reports and the prefix stay in the individual run directory.
 Run `./scarlett/tests/graphics-pools.sh` on the qualified RTX 3070 host to exercise all three pool sizes through the installed tool, including GPU completion after the title address is reused.
 
@@ -43,7 +44,7 @@ The runtime also includes an original [xmem.dll](native/xmem/README.md) supporti
 CPU pages and title allocation hooks. The other providers cover [DSP registration](native/chad/README.md),
 [audio device discovery](native/xapu/README.md), [APU memory interfaces](native/acphal/README.md),
 [texture layout suggestions](native/xg/README.md), and [read-only storage files](native/xcrdapi/README.md).
-The console storage test opens a file through the title's interface and keeps reading from its handle after the COM object closes. Storage queue submission remains unsupported.
+The console storage test opens a file through the title's interface and keeps reading from its handle after the COM object closes. The file queue supports the uncompressed and zlib-compressed startup reads.
 The [Direct queue adapter test](native/queue/README.md) verifies that a GPU wait stays blocked until the full 64-bit fence value matches, and that the CPU word returned by fence `+0x60` changes after GPU completion.
 The [device bootstrap test](native/d3d12_device.md) verifies that a default Compute queue waits for a Direct queue's signal. The four observed indexed Compute descriptors each receive a distinct logical queue; tests verify fence ordering and independent progress, not physical engine affinity.
 On the RTX 3070 and RADV 26.3.0, the test also submits Direct and Compute lists, waits for their fences, then resets and reuses each allocator. The four [synchronization requests observed in the startup lists](native/d3d12_device.md#what-the-two-pre-close-calls-consume) record conservative global GPU barriers. Other masks are rejected at Close.

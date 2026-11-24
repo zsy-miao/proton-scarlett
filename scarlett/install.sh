@@ -14,11 +14,19 @@ test -f "$base/files/bin/wine" && test -f "$base/toolmanifest.vdf" || exit 1
 printf '%s  %s\n' a4f94c208355639c87877ba63e8faf1f26d8c0731db04f722dee66cdfcfbf478 "$base/proton" | sha256sum --check --status ||
     { echo "The Valve runtime does not match this fork (expected Proton 11.0-2e)." >&2; exit 1; }
 [[ ! -e $dest && ! -L $dest && $dest != "$base/"* ]] || { echo "Choose a new destination outside the Valve depot." >&2; exit 1; }
+if [[ -e "$runtime/requires-wine-0016" || -e "$runtime/wineserver" ]]; then
+    for part in wineserver win32u.so ntdll.so kernelbase.dll d3d12core.dll; do
+        [[ -s "$runtime/$part" ]] || { echo "PresentX requires the matching $part in the runtime directory." >&2; exit 1; }
+    done
+fi
 mkdir -p "$(dirname "$dest")"
 stage=$(mktemp -d "$(dirname "$dest")/.scarlett.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 cp -a --reflink=auto "$base/." "$stage/"
 install -m755 "$src/proton" "$stage/proton"
+if [[ -f "$runtime/wineserver" ]]; then
+    install -m755 "$runtime/wineserver" "$stage/files/bin/wineserver"
+fi
 if [[ -f "$runtime/ntdll.so" ]]; then
     install -m755 "$runtime/ntdll.so" "$stage/files/lib/wine/x86_64-unix/ntdll.so"
 fi

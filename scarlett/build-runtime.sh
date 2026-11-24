@@ -44,3 +44,4 @@ ln -s "$sdk" "$inc/GameInput.h"
 x86_64-w64-mingw32-g++ -std=c++20 -Os -s -Wall -Wextra -Werror -Wno-unknown-pragmas \
     -I"$inc" -shared "$here/native/gameinput/gameinput.cpp" "$here/native/gameinput/gameinput.def" \
     -Wl,--no-insert-timestamp -luuid -static-libgcc -static-libstdc++ -o "$out/GameInput.dll"
+if [[ ${SCARLETT_EXPERIMENTAL_BRIDGE:-0} == 1 ]]; then touch "$out/requires-wine-0016"; fi
