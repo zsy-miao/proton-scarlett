@@ -11,7 +11,7 @@ On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and pass
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 
-The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
+The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. All three host-visible Vulkan memory types tested on driver 595.112.07 were GPU-cacheable. CUDA supplied pages with the requested cache policy, but Vulkan reported no compatible memory type for their exported DMA-BUF. The allocator still rejects the request.
 
 **AMD (`1002:164e`, RADV 26.3.0):** Retail creates both 3840×2160 primary display textures in the title's own 64 MiB allocation and passes the display-ring size check. Its ray-tracing builder completes 53 pipeline creations for 52 distinct shaders, including all four [decompression stages](scarlett/native/bvh-decompress.md). The postbuild size query is created twice. Retail creates the occlusion query heap, its 19,680-byte readback buffer and the [CPU-only heap of 3,128 descriptors](scarlett/native/frame-descriptor-init.md).
 

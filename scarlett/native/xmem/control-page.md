@@ -41,6 +41,15 @@ store through the DMA-BUF mapping, both CPU mappings saw the GPU marker.
 This gives the wait and marker tests a shared backing. It does not establish
 uncached access for arbitrary title commands or exact-size Wine release.
 
+On driver 595.112.07, NVIDIA's resource manager reported GPU caching enabled
+for 64 KiB Vulkan buffers allocated with host-visible types 3, 4 and 5,
+including the BAR mapping. CUDA pinned write-combined host pages had the
+requested CPU and GPU cache policies. NVIDIA DRM exported them as a DMA-BUF,
+but `vkGetMemoryFdPropertiesKHR` returned a memory-type mask of zero. On the
+same device a Vulkan-created DMA-BUF returned `0x11` for a buffer allowing
+`0x1b`. Export alone therefore does not make the CUDA pages usable by this
+Vulkan buffer. CUDA host-NUMA memory was GPU-uncached but CPU-cached.
+
 A [combined wait and marker test](https://github.com/rcx2135/proton-scarlett/tree/3991f08a/scarlett/tests/control-translation)
 also exercises exact-size release followed by immediate address reuse. A CPU
 store to the replacement page did not satisfy the original wait. A store to
