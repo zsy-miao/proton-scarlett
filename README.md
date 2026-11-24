@@ -7,7 +7,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. A separate [device initialization test](scarlett/native/d3d12_device.md) verified heap queries and a Direct queue signaling a shared fence. The title also reads a field inside the console device object; the retail interface layout is still incomplete.
 
-Retail build `1.0.2.1` initializes the fork's [Gaming Runtime provider](scarlett/native/gameruntime/README.md), opens `G:\appdata0.rpf`, passes the worker's 710 MiB physical-page allocation, and obtains its [Xbox graphics device](scarlett/native/d3d12_device.md). The next observed failure is a 64 KiB `XMemVirtualAlloc` call during graphics setup (protection `0x42404`, breakpoint `+0x24786d1`). No native retail frame has been presented.
+**NVIDIA (RTX 3070):** Retail build `1.0.2.1` initializes the fork's [Gaming Runtime provider](scarlett/native/gameruntime/README.md), opens `G:\appdata0.rpf`, passes the worker's 710 MiB physical-page allocation, and obtains its [Xbox graphics device](scarlett/native/d3d12_device.md). The last verified stop on this adapter is the 64 KiB `XMemVirtualAlloc` call during graphics setup (protection `0x42404`, breakpoint `+0x24786d1`).
 
 The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on an RTX 3070 with driver 595.112.07. In a synthetic test, ordinary `VirtualFree` released the title mapping, its address was reused, and a fenced GPU write changed only the original backing.
 
