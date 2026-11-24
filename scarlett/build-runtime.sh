@@ -16,14 +16,16 @@ build_dll() {
     x86_64-w64-mingw32-gcc -std=c11 -shared -Os -s -Wall -Wextra -Werror \
         -Wl,--no-insert-timestamp "$here/native/$source/$source.c" "$@" -o "$out/$output.dll"
 }
-build_dll xmem xmem
+inc=$(mktemp -d)
+trap 'rm -rf -- "$inc"' EXIT
+x86_64-w64-mingw32-gcc -std=c11 -Os -Wall -Wextra -Werror -c "$here/native/xmem/xmem.c" -o "$inc/xmem.o"
+x86_64-w64-mingw32-g++ -std=c++17 -Os -s -Wall -Wextra -Werror -shared -static \
+    "$inc/xmem.o" "$here/native/xmem/graphics.cpp" -lntdll -Wl,--no-insert-timestamp -o "$out/xmem.dll"
 build_dll chad chad
 build_dll xapu xapu
 build_dll acphal AcpHal
 build_dll xg xg_xs
 build_dll xcrdapi XCRDAPI -luuid
-inc=$(mktemp -d)
-trap 'rm -rf -- "$inc"' EXIT
 ln -s "$sdk" "$inc/GameInput.h"
 x86_64-w64-mingw32-g++ -std=c++20 -Os -s -Wall -Wextra -Werror -Wno-unknown-pragmas \
     -I"$inc" -shared "$here/native/gameinput/gameinput.cpp" "$here/native/gameinput/gameinput.def" \

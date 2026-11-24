@@ -1,7 +1,8 @@
-// Private desktop-D3D12 prototype, not an xmem.dll ABI or an Xbox heap.
+// Private desktop-D3D12 binding, not an xmem.dll ABI or an Xbox heap.
 #pragma once
 #include <windows.h>
 #include <d3d12.h>
+#include "marked_section.h"
 
 using Alloc2 = void *(WINAPI *)(HANDLE, void *, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 using Map3 = void *(WINAPI *)(HANDLE, HANDLE, void *, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
@@ -33,12 +34,7 @@ public:
     ImportedBuffer() = default;
     ImportedBuffer(const ImportedBuffer &) = delete;
     ImportedBuffer &operator=(const ImportedBuffer &) = delete;
-    ~ImportedBuffer() {
-        // The owner must retire GPU work and release any other views first.
-        if (buffer) buffer->Release();
-        if (heap) heap->Release();
-        if (base) UnmapViewOfFile(base);
-    }
+    ~ImportedBuffer() { reset(); } // The owner must first retire every consuming queue.
 
     HRESULT create(ID3D12Device3 *device, HANDLE section, SIZE_T size) {
         const SIZE_T alignment = 2u << 20;
@@ -46,7 +42,7 @@ public:
         base = map_aligned_section(section, size);
         if (!base) return HRESULT_FROM_WIN32(GetLastError());
         HRESULT hr = device->OpenExistingHeapFromAddress(base, IID_PPV_ARGS(&heap));
-        if (FAILED(hr)) return hr;
+        if (FAILED(hr)) { reset(); return hr; }
         D3D12_RESOURCE_DESC desc = {};
         desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         desc.Width = size;
@@ -55,9 +51,22 @@ public:
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
         hr = device->CreatePlacedResource(heap, 0, &desc, D3D12_RESOURCE_STATE_COMMON,
                                           nullptr, IID_PPV_ARGS(&buffer));
-        if (FAILED(hr)) return hr;
+        if (FAILED(hr)) { reset(); return hr; }
+        if (!buffer->GetGPUVirtualAddress()) { reset(); return E_FAIL; }
         length = size;
         return S_OK;
+    }
+
+    HRESULT acquire(ID3D12Device3 *device, const void *address, SIZE_T bytes, SIZE_T *offset) {
+        if (!offset) return E_POINTER;
+        *offset = 0;
+        scarlett_section_info info;
+        HRESULT hr = scarlett_acquire_section(address, bytes, &info);
+        if (FAILED(hr)) return hr;
+        hr = create(device, info.section, info.view_size);
+        CloseHandle(info.section);
+        if (SUCCEEDED(hr)) *offset = info.offset;
+        return hr;
     }
 
     void *cpu() const { return buffer ? base : nullptr; }
@@ -70,6 +79,11 @@ public:
     }
 
 private:
+    void reset() {
+        if (buffer) { buffer->Release(); buffer = nullptr; }
+        if (heap) { heap->Release(); heap = nullptr; }
+        if (base) { UnmapViewOfFile(base); base = nullptr; }
+    }
     void *base = nullptr;
     ID3D12Heap *heap = nullptr;
     ID3D12Resource *buffer = nullptr;

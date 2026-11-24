@@ -7,7 +7,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 
 On an RTX 3070, a synthetic executable loaded the fork's `d3d12_xs.dll` and passed GPU queue/fence synchronization. The memory tests cover CPU page reservation, commitment, release and executable allocation callbacks.
 
-Retail build `1.0.2.1` executes startup code, configures the graphics address table, and passes both initial address-space reservations. Its next `XMemVirtualAlloc` request for 1,172 MiB of graphics memory fails, triggering a breakpoint at `+0x1e1d3a7`. A [synthetic GPU copy test](scarlett/native/xmem/README.md) successfully shares a buffer of that size with the RTX 3070. The retail path still needs address translation and safe handling of frees while GPU work is in flight. No native retail frame has been presented.
+Retail build `1.0.2.1` passes both initial address-space reservations and the 1,172 MiB graphics allocation on [patched Wine](scarlett/wine-patches/README.md). Startup now stops at `+0x1e1d4e0`: `XMemVirtualAlloc` rejects a different 2,199 MiB pool (`0x89700000` bytes, flags `0x283`, protection `0x2404`). A [GPU copy test](scarlett/native/xmem/README.md) verified that queued work completes against the original backing even after the title frees and reuses its address. No native retail frame has been presented.
 
 Proton 11.0-2e's builtin `GameInputCreate` (ordinal 1) returns `E_NOTIMPL`. Our [GameInput provider](scarlett/native/gameinput/README.md) passed an isolated synthetic test: a 400 ms Space press produced neutral → A → neutral on its virtual gamepad. Retail input has not yet been exercised.
 

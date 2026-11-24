@@ -7,6 +7,7 @@
 #endif
 
 #define XMEM_CPU 0x00000001ULL
+void *xmem_graphics_alloc(void *base, SIZE_T size);
 
 typedef struct {
     PVOID (WINAPI *alloc)(SIZE_T, ULONGLONG);
@@ -102,6 +103,8 @@ __declspec(dllexport) BOOL WINAPI XMemIsToolsMemAvailable(void)
 __declspec(dllexport) PVOID WINAPI XMemVirtualAlloc(PVOID base, SIZE_T size,
         DWORD type, ULONGLONG flags, DWORD protect)
 {
+    if (type == 0x20003000 && flags == 0x183 && protect == 0x22004)
+        return xmem_graphics_alloc(base, size);
     if (type == (0x20400000u | MEM_RESERVE) &&
         ((flags == (XMEM_CPU | 0x20) && protect == PAGE_READWRITE) ||
          (flags == 3 && protect == 0x801))) {
