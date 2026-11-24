@@ -895,3 +895,10 @@ technique-96 shader also multiplies sampled RGB by vertex colour, so
 sampling an unchanged black clear would still produce black RGB.
 Identifying the intended primary or advancing a presentation counter is
 therefore insufficient to establish a visibly different retail frame.
+
+The colour rectangle after #4 did have white vertex colours: the packed
+colour at byte 12 of each of its three 24-byte records was `ffffffff`.
+In the same AMD trace the four colour multipliers at `b27+32` were zero,
+so the translated shader would have produced zero RGB. A separate AMD
+diagnostic observed the game skip that draw. No captured retail draw
+has yet joined a nonblack source to a visibly changed primary image.
