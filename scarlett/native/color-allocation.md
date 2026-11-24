@@ -85,6 +85,38 @@ After releasing the source heap, the fixture resolves the checked destination,
 samples the green and red texel centers and samples the wrap boundary. Fenced
 readback returns `ff00ff00`, `ff0000ff`, and the red/green midpoint `ff008080`.
 
+**Post-clear sampler.** After the clear PSO, `5804569..580459f` sets up
+the same 36-byte compact record, looks up filter `0x15`, then changes only
+the WORD at `+0xa` to `0` and calls again (return `58045a4`). The latter
+goes through `12b95a6` to the expander `12b96b0`; `12b9818` calls device
+`+1e8` with RDX pointing to its zero-initialized 92-byte record and R8 =
+`[75e7428] + index * [75e7438]`. These are title RVAs.
+
+| Expanded byte offset | Compact input and observed value |
+|---|---|
+| `00` | zero |
+| `04,08` | mag/min: 1 when compact filter bits `4,10` (hex masks) respectively are set, otherwise 2 on this path |
+| `0c,10` | mip/mag: 2 when masks `1,4` are set, otherwise 1 |
+| `14` | table at `6172fa0` indexed by `filter >> 7`: 0 |
+| `18,1c,20` | zero-extended address mode bytes `+1,+2,+3`: wrap (1) |
+| `24,28` | floats from `+1c,+20`: min/max LOD 0 and 12 |
+| `2c,30,34` | zero; float bias from `+4` (0); low five bits of `+8` (anisotropy 1) |
+| `38,3c,40` | zero, zero, comparison func NEVER (1) |
+| `44..53,54..5b` | border RGBA from `+c` (zero); zero tail |
+
+Linear's four filter words are `1,1,2,2`; point's are `2,2,1,1`.
+No other filter/address combination is qualified. A retail trace saw
+linear at `1ea20000`, point at `1ea20010`: slots 0 and 1 of the same
+128-entry CPU sampler heap. `12b982b` jumps to `4ecc830`, which calls
+`+c0` for one type-1 descriptor. Trace destinations `1ea10000` and
+`1ea10010` are the corresponding slots in the shader-visible heap.
+
+The fixture binds both copied samplers after releasing the source heap.
+At the same seam `u=1`, point selects wrapped green `ff00ff00` while
+linear blends red and green. Both sample centers still return green/red.
+Single-word mutations across the point record, unreadable input, misaligned,
+past-end and visible write destinations must all fail.
+
 ### Primary texture RTV (`+0xa0`)
 
 `cc297a`–`cc2981` save a title RTV slot in the view wrapper. `cc29d8`

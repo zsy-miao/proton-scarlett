@@ -468,15 +468,18 @@ HRESULT xs_resolve_sampler(IUnknown *iface,SIZE_T slot,ID3D12DescriptorHeap **ba
     ReleaseSRWLockShared(&h->owner->descriptor_lock);
     return hr;
 }
-static void WINAPI sampler_write(IUnknown *iface,const void *desc,SIZE_T dest)
+HRESULT xs_write_sampler(IUnknown *iface,const void *desc,SIZE_T dest)
 {
-    /* +1818e06 supplies filter 0x15, wrap UVW, LOD [0,12]; +12b96b0 expands it. */
-    static const DWORD retail[23]={0,1,1,2,2,0,1,1,1,0,0x41400000,0,0,1,0,0,1};
+    /* +12b96b0 expands compact filter 0x15 or 0. Match the whole 92-byte record. */
+    static const DWORD linear[23]={0,1,1,2,2,0,1,1,1,0,0x41400000,0,0,1,0,0,1};
+    static const DWORD point[23] ={0,2,2,1,1,0,1,1,1,0,0x41400000,0,0,1,0,0,1};
     DWORD w[23];
-    if (!copy_in(w,desc,sizeof w) || memcmp(w,retail,sizeof w)) xs_stop();
+    if (!iface || !copy_in(w,desc,sizeof w)) return E_POINTER;
     D3D12_SAMPLER_DESC s={.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR,.AddressU=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .AddressV=D3D12_TEXTURE_ADDRESS_MODE_WRAP,.AddressW=D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         .MaxAnisotropy=1,.ComparisonFunc=D3D12_COMPARISON_FUNC_NEVER,.MaxLOD=12.0f};
+    if (!memcmp(w,point,sizeof w)) s.Filter=D3D12_FILTER_MIN_MAG_MIP_POINT;
+    else if (memcmp(w,linear,sizeof w)) return E_NOTIMPL;
     struct xbox_device *d=CONTAINING_RECORD(iface,struct xbox_device,iface);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     AcquireSRWLockExclusive(&d->descriptor_lock);
@@ -488,7 +491,11 @@ static void WINAPI sampler_write(IUnknown *iface,const void *desc,SIZE_T dest)
         *serial=tag[0];
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
-    if (!ok) xs_stop();
+    return ok ? S_OK : E_INVALIDARG;
+}
+static void WINAPI sampler_write(IUnknown *iface,const void *desc,SIZE_T dest)
+{
+    if (FAILED(xs_write_sampler(iface,desc,dest))) xs_stop();
 }
 static void WINAPI sampler_copy(IUnknown *iface,UINT count,SIZE_T dest,SIZE_T src,UINT type)
 {
