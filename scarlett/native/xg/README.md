@@ -358,3 +358,21 @@ Build the fixture and shader with `STRIDE=180` and `ELEMENTS=3`.
 The shader checks all 135 words across the three records, plus 45 zero
 reads from the fourth record. On AMD, `TEST_NATIVE_POOL` independently checks
 that the adjacent 180-byte range actually contains nonzero data.
+
+After the 640×360 R8_UINT placement the title writes a structured SRV
+directly to a visible slot (`+230`, return `+4ecc821`). Both adapters
+retained 192 bytes at offset `0xe5c6f00` in the original `0x89700000` WC
+pool: a marked section on RTX, the native buffer on RADV. For this view
+only, word 9 is `0x800100`; the remaining view words are
+`0 1 1688 0 0 0 6 20 0 [word9] vaLo vaHi 0 0 0 0` (hex). Require a
+256-byte-aligned VA and pool offset for that variant. No general meaning
+is inferred for word 9. The ordinary zero-word structured ABI is unchanged.
+
+Both retail runs published one record and reached `+c8` at `+344188` for
+2560×1440 R8_UNORM, one mip, layout/alignment zero, flags `0x300005`,
+before a copy or refresh of the six-record view. To exercise shader use,
+compile the existing structured fixture with `STRIDE=32`, `ELEMENTS=6`,
+`TEST_STRUCT192`, `TEST_WC_OFFSET=0xe5c6f00`, and on RADV `TEST_NATIVE_POOL`;
+use the same stride and element count for the shader. It checks 48 words
+from the late-written original range, eight OOB zeros, count and stride
+after VA reuse, as well as tagged field, alignment and destination failures.

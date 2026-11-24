@@ -90,13 +90,14 @@ static HRESULT write_wc_address_view(IUnknown *device,UINT kind,const DWORD *w,S
 {
     static const DWORD raw[]={39,1,0x1688,0,0,0,38,0,1,0};
     UINT elements=kind==STRUCT_VIEW?w[6]:0,stride=kind==STRUCT_VIEW?w[7]:0;
-    const DWORD structured[]={0,1,0x1688,0,0,0,elements,stride,0,0};
+    BOOL six_records=elements==6 && stride==32 && w[9]==0x800100;
+    const DWORD structured[]={0,1,0x1688,0,0,0,elements,stride,0,six_records?0x800100u:0u};
     BOOL tex=refresh_format(kind)!=DXGI_FORMAT_UNKNOWN;
     D3D12_SHADER_RESOURCE_VIEW_DESC srv=address_srv_desc(kind,elements,stride);
     DWORD texture[]={srv.Format,srv.ViewDimension,0x1688,0,0,1,0,kind==CUBE_PAIR_VIEW?2:array_view_layers(kind),0,0};
     if (memcmp(w,tex?texture:stride?structured:raw,sizeof texture) || w[12] || w[13] || w[14] || w[15]!=(tex?3u:0u)) return E_NOTIMPL;
     SIZE_T va; memcpy(&va,w+10,sizeof va);
-    UINT alignment=tex ? R8_ALIGNMENT : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
+    UINT alignment=tex ? R8_ALIGNMENT : six_records ? 256 : D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;
     if (!va || va%alignment) return E_INVALIDARG;
     ID3D12Resource *buffer;
     UINT offset;

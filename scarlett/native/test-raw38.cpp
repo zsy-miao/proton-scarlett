@@ -61,13 +61,32 @@ int main(){
     auto from=SLOT(src.Get(),0x48,Start)(src.Get()), to=SLOT(dst.Get(),0x48,Start)(dst.Get())+32;
 #ifdef STRIDE
     DWORD w[16]={0,1,0x1688,0,0,0,ELEMENTS,STRIDE};
+#ifdef TEST_STRUCT192
+    static_assert(STRIDE==32 && ELEMENTS==6 && !(offset%256));
+    w[9]=0x800100;
+#endif
 #else
     DWORD w[16]={39,1,0x1688,0,0,0,38,0,1};
 #endif
     auto address=[&](BYTE *p){memcpy(w+10,&p,sizeof p);};
+#ifdef TEST_STRUCT192
+    address(b+span-256); HR(xs_write_address_srv(guest.Get(),desc,w,from));
+#else
     address(b+span-((width+15)&~15u)); HR(xs_write_address_srv(guest.Get(),desc,w,from));
+#endif
     SLOT(guest.Get(),0xc0,DescriptorCopy)(guest.Get(),1,to,from,0);
     UINT64 serial=*(UINT64*)from;
+#ifdef TEST_STRUCT192
+    address(b+offset+16);CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
+    address(b+offset+128);CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
+    address(b+offset);w[6]=3;w[7]=64;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
+    w[6]=ELEMENTS;w[7]=STRIDE;w[9]=0x800000;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
+    w[9]=0x800100;CK(*(UINT64*)from==serial);
+    // The retail write goes straight into a visible heap. The untagged ABI still permits 16-byte alignment.
+    HR(xs_write_address_srv(guest.Get(),desc,w,to));
+    w[9]=0;address(b+offset+16);HR(xs_write_address_srv(guest.Get(),desc,w,to+32));w[9]=0x800100;
+    address(b+offset);
+#endif
 #ifdef STRIDE
     for (DWORD invalid:{0u,3u,2049u,2052u,0xfffffffcU}) {
         desc[4]=w[7]=invalid;CK(FAILED(xs_write_address_srv(guest.Get(),desc,w,from)));
