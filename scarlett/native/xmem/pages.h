@@ -1,7 +1,7 @@
 /* Private physical-page implementation included by xmem.c. */
 #define XMEM_PAGE ((SIZE_T)65536)
 HANDLE xmem_wc_backing(SIZE_T size);
-BOOL xmem_wc_slot(PVOID addr, HANDLE backing, SIZE_T offset);
+BOOL xmem_wc_slot(PVOID addr, SIZE_T size, HANDLE backing, SIZE_T offset);
 static PVOID (WINAPI *reserve2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 static PVOID (WINAPI *map3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
 static BOOL (WINAPI *unmap2)(HANDLE, PVOID, ULONG);
@@ -36,7 +36,7 @@ typedef struct Arena {
     PVOID base;
     SIZE_T size;
     ULONG_PTR views;
-    BOOL split, wc;
+    BOOL split, wc, descriptor;
 } Arena;
 
 static SRWLOCK page_lock = SRWLOCK_INIT;
@@ -45,6 +45,21 @@ static PageView *views;
 static Arena *arenas;
 static ULONG_PTR next_page = 1;
 
+/* Preserve the distinction from a later ordinary reservation at the same VA. */
+static BOOL descriptor_marker(PVOID base)
+{
+    PVOID hit;
+    ULONG_PTR count = 1;
+    ULONG grain;
+    return !GetWriteWatch(0, base, 1, &hit, &count, &grain);
+}
+
+static PVOID occupy_descriptor(PVOID base, SIZE_T size)
+{
+    return reserve2(NULL, base, size, MEM_RESERVE | MEM_REPLACE_PLACEHOLDER | MEM_WRITE_WATCH,
+                    PAGE_NOACCESS, NULL, 0);
+}
+
 static void discard_released_arenas(void)
 {
     /* VirtualFree releases the VA directly; discard its bookkeeping on next reservation. */
@@ -52,7 +67,8 @@ static void discard_released_arenas(void)
         Arena *old = *p;
         MEMORY_BASIC_INFORMATION m;
         if (!old->views && VirtualQuery(old->base, &m, sizeof m) &&
-            (m.State != MEM_RESERVE || m.AllocationBase != old->base || m.RegionSize != old->size)) {
+            (m.State != MEM_RESERVE || m.AllocationBase != old->base || m.RegionSize != old->size ||
+             (old->descriptor && !descriptor_marker(old->base)))) {
             *p = old->next;
             HeapFree(GetProcessHeap(), 0, old);
         } else p = &old->next;
@@ -80,8 +96,7 @@ static PVOID reserve_arena(PVOID base, SIZE_T size, BOOL wc)
     return result;
 }
 
-/* VA only. Never enroll a descriptor span in the physical-page mapper. */
-static PVOID descriptor_va(PVOID base, SIZE_T size, BOOL replace)
+static PVOID descriptor_va(PVOID base, SIZE_T size, BOOL replace, BOOL wc_rw)
 {
     if (!!base != replace || !size || ((size | (UINT_PTR)base) % XMEM_PAGE) ||
         size > UINTPTR_MAX - (UINT_PTR)base) {
@@ -92,8 +107,8 @@ static PVOID descriptor_va(PVOID base, SIZE_T size, BOOL replace)
     AcquireSRWLockExclusive(&page_lock);
     PVOID result = NULL;
     DWORD err = ERROR_INVALID_ADDRESS;
+    discard_released_arenas();
     if (!replace) {
-        discard_released_arenas();
         base = reserve2(NULL, NULL, size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
         if (!base) { err = GetLastError(); goto done; }
     }
@@ -104,8 +119,18 @@ static PVOID descriptor_va(PVOID base, SIZE_T size, BOOL replace)
             goto done;
         }
     }
-    result = replace ? reserve2(NULL, base, size, MEM_RESERVE | MEM_REPLACE_PLACEHOLDER,
-                                PAGE_NOACCESS, NULL, 0) : base;
+    if (wc_rw) {
+        Arena *a = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *a);
+        if (!a) { err = ERROR_NOT_ENOUGH_MEMORY; goto done; }
+        if (!(result = occupy_descriptor(base, size))) {
+            err = GetLastError();
+            HeapFree(GetProcessHeap(), 0, a);
+            goto done;
+        }
+        *a = (Arena){.next = arenas, .base = base, .size = size, .wc = TRUE, .descriptor = TRUE};
+        arenas = a;
+    } else result = replace ? reserve2(NULL, base, size, MEM_RESERVE | MEM_REPLACE_PLACEHOLDER,
+                                       PAGE_NOACCESS, NULL, 0) : base;
     if (!result) err = GetLastError();
 done:
     ReleaseSRWLockExclusive(&page_lock);
@@ -202,13 +227,14 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
     if (*slot) {
         PageView *v = *slot;
         if (pages || size != v->size) err = ERROR_NOT_SUPPORTED;
-        else if (!(v->run->wc ? xmem_wc_slot(addr, NULL, 0) :
+        else if (!(v->run->wc ? xmem_wc_slot(addr, size, NULL, 0) :
                    unmap2(GetCurrentProcess(), addr, MEM_PRESERVE_PLACEHOLDER))) err = GetLastError();
         else {
             *slot = v->next;
             --v->run->views;
             err = ERROR_SUCCESS;
             Arena *a = v->arena;
+            if (a->descriptor && !occupy_descriptor(addr, size)) err = GetLastError();
             if (!--a->views && a->split) {
                 if (VirtualFree(a->base, a->size, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS))
                     a->split = FALSE;
@@ -221,6 +247,8 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
         while (arena && (UINT_PTR)addr - (UINT_PTR)arena->base >= arena->size)
             arena = arena->next;
         if (!arena || size > arena->size - ((UINT_PTR)addr - (UINT_PTR)arena->base)) goto done;
+        if (arena->descriptor && (addr != arena->base || size != arena->size ||
+                                  !descriptor_marker(addr))) goto done;
         MEMORY_BASIC_INFORMATION m;
         if (VirtualQuery(addr, &m, sizeof m) && m.State == MEM_RESERVE &&
             (UINT_PTR)addr - (UINT_PTR)m.AllocationBase <= SIZE_MAX - size &&
@@ -234,20 +262,21 @@ __declspec(dllexport) PVOID WINAPI XMemMapPhysicalPages(PVOID addr, ULONG_PTR n,
             for (PageRun *r = runs; r; r = r->next) {
                 ULONG_PTR offset = pages[0] - r->first;
                 if (offset >= r->count || n > r->count - offset) continue;
-                if (r->wc != arena->wc || (r->wc && n != 1)) { err = ERROR_NOT_SUPPORTED; break; }
+                if (r->wc != arena->wc || (r->wc && !arena->descriptor && n != 1)) { err = ERROR_NOT_SUPPORTED; break; }
                 if (!consecutive(pages, n)) { err = ERROR_NOT_SUPPORTED; break; }
                 PageView *v = HeapAlloc(GetProcessHeap(), 0, sizeof *v);
                 if (!v) { err = ERROR_NOT_ENOUGH_MEMORY; break; }
-                if (split && !VirtualFree(addr, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
+                if ((split || arena->descriptor) && !VirtualFree(addr, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
                     err = GetLastError();
                     HeapFree(GetProcessHeap(), 0, v);
                     break;
                 }
-                BOOL mapped = r->wc ? xmem_wc_slot(addr, r->section, offset * XMEM_PAGE) :
+                BOOL mapped = r->wc ? xmem_wc_slot(addr, size, r->section, offset * XMEM_PAGE) :
                     map3(r->section, GetCurrentProcess(), addr, offset * XMEM_PAGE, size,
                          MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0) != NULL;
                 if (!mapped) {
                     err = GetLastError();
+                    if (arena->descriptor && !occupy_descriptor(addr, size)) err = GetLastError();
                     if (split)
                         VirtualFree(start.AllocationBase, start.RegionSize,
                                     MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS);

@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** Retail gets through the four indexed Compute queues, command-list pools, and frame-event registration. It reserves all five extents of a 185 MiB descriptor arena and allocates 2,960 physical pages. Mapping the first 752 pages (47 MiB) into the write-combined extent fails with `ERROR_INVALID_ADDRESS`. The caller stops at `+0x19f4f58`. **No retail frame has been presented.**
+**AMD (`1002:164e`, RADV 26.3.0):** Retail gets through the four indexed Compute queues, command-list pools, and frame-event registration. It reserves a 185 MiB descriptor arena, allocates 2,960 physical pages and maps the first 752 pages (47 MiB) with write-combining. The next map requests 1,600 pages (100 MiB) with a different CPU cache policy (`0x2004`). It fails with `ERROR_INVALID_ADDRESS`, and the caller stops at `+0x19f4f58`. **No retail frame has been presented.**
 
 The [scheduler test](scarlett/native/frame-descriptor-init.md) verified that an unpresented token times out and a real DXGI present wakes the waiter for that token. The private recorder also captured synthetic red and green frames on RADV using headless Sway and Xwayland.
 

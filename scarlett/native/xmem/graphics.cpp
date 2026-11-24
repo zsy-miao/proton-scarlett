@@ -44,9 +44,9 @@ static void set_graphics_error(HRESULT hr)
     SetLastError(error);
 }
 
-extern "C" BOOL xmem_wc_slot(void *addr, HANDLE backing, SIZE_T offset)
+extern "C" BOOL xmem_wc_slot(void *addr, SIZE_T size, HANDLE backing, SIZE_T offset)
 {
-    scarlett_section_info info = {65536, nullptr, 0, offset, backing};
+    scarlett_section_info info = {size, nullptr, 0, offset, backing};
     HRESULT hr = scarlett_section_call(backing ? 0x53430006 : 0x53430007, addr, &info);
     if (FAILED(hr)) set_graphics_error(hr);
     return SUCCEEDED(hr);

@@ -32,9 +32,41 @@ inaccessible reservations. Wine checks base and size atomically; there is no
 free-and-reallocate window. A replacement can be released directly or restored
 as a placeholder and coalesced. Registered page arenas are excluded.
 
-These calls provide CPU VA only. No protection modifier is applied to backing,
-no GPU address is promised and no CPU/WC page maps into these spans. Supplying
-the later physical views and their cache/GPU protections is separate work.
+Replacement itself is VA only. Of these spans, only the `0x2404` (CPU WC,
+GPU RW) replacement accepts `XMemMapPhysicalPages`: the address and size must
+match the entire replacement and all IDs must be consecutive in a single
+`0x280` run. Wine maps that byte range of the exported heap directly at the
+title VA. A mapped subrange can be acquired with `ImportedBuffer::acquire`,
+returning the whole heap and its backing-relative offset. The CPU pointer
+is not a host GPU virtual address. Unmap via XMem before using `VirtualFree`;
+as with the other page arenas do not race raw VA edits with map/unmap.
+
+`0x1e866e4` allocates all five extent sizes together, in 64 KiB pages. The
+parent's `Yr3SfKt7` log confirms 2,960 IDs (`0xb900000` bytes), the five
+reservations, and the *first* map attempt. Later calls below are static
+caller evidence, not observations that retail reached them:
+
+| Map RVA | VA extent (1-based) | Page IDs relative to first | Protection | Mapping support |
+|---|---:|---|---|---|
+| `1e86738` | 4 | `[0,752)` | `0x2404` | WC CPU and GPU read/write |
+| `1e86760` | 5 | `[752,2352)` | `0x2004` | unsupported: CPU RW without WC; GPU RW |
+| `1e86784` | 1 | `[2352,2512)` | `0x1004` | unsupported: CPU RW without WC; GPU read-only |
+| `1e867ac` | 2 | `[2512,2528)` | `0x1404` | unsupported: CPU WC; GPU read-only |
+| `1e867d1` | 3 | `[2528,2960)` | `0x8404` | unsupported: CPU WC; GPU execute/read |
+
+The slices are disjoint, not five aliases of the same pages. The current
+`PageRun` owns **one** CPU-WC graphics allocation. Mapping part of its DMA-BUF
+with the same ABI cannot make that part CPU cached. Conversely the separate WB
+allocator does not give a WB view of existing WC pages. Supporting the later
+maps requires cache-compatible backing for the distinct IDs and a GPU binding
+path respecting the requested access. Never create an independent CPU copy.
+See the [GDK physical-page mapping rules](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages).
+
+`test-descriptor-pages.cpp` (build like `test_wc_pages.cpp`) recreates the
+actual extent sizes, tests the unsupported maps using real IDs, aliases the last
+page through a second VA, and checks a copy queue's fenced round trip through
+the last word of the mapped extent. It also checks a nonzero backing offset,
+map bounds, release, exact VA reuse and GPU resource lifetime.
 
 The separate 20 MiB CPU allocation at RVA `+0x5ba6c30` saves its result at
 `+0x78cb800` and branches to `+0x5ba6c65` on null. On success, `+0x28b7b09`
