@@ -124,10 +124,10 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav={0};
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv={0};
     DWORD words[10]={0};
-    SIZE_T size=kind==CBV || (object && kind==UAV)?16:40;
+    SIZE_T size=kind==CBV || (object && kind==UAV)?16:(object && kind==SRV)?32:40;
     if (kind!=CBV && kind!=SRV && kind!=UAV) return E_INVALIDARG;
     if (!copy_in(words,input,size)) return E_POINTER;
-    if (kind==UAV && object && words[1]!=D3D12_UAV_DIMENSION_TEXTURE2D &&
+    if (object && (kind==UAV || kind==SRV) && words[1]!=D3D12_SRV_DIMENSION_TEXTURE2D &&
         !copy_in(words,input,sizeof words)) return E_POINTER;
 #ifdef SCARLETT_STAGED_PLACED
     IUnknown *old_placed=NULL;
@@ -158,6 +158,13 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
                words[1]==D3D12_UAV_DIMENSION_TEXTURE2D && !words[2] && !words[3]) {
         uav.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
         uav.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
+    } else if (kind==SRV && words[0]==DXGI_FORMAT_R8G8B8A8_UNORM &&
+               words[1]==D3D12_SRV_DIMENSION_TEXTURE2D && words[2]==0x1688 &&
+               !words[4] && words[5]==1 && !words[6] && !words[7]) {
+        srv.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Shader4ComponentMapping=words[2];
+        srv.Texture2D.MipLevels=1;
     } else {
         if (kind!=SRV || words[0]!=DXGI_FORMAT_R32_TYPELESS || words[1]!=1 || words[2]!=0x1688 ||
             !words[6] || words[7] || words[8]!=D3D12_BUFFER_SRV_FLAG_RAW) return E_NOTIMPL;
@@ -168,7 +175,7 @@ HRESULT xs_write_view(IUnknown *device,UINT kind,IUnknown *object,const void *in
     HRESULT hr=E_INVALIDARG;
     ID3D12Resource *resource=NULL,*old=NULL;
     AcquireSRWLockExclusive(&d->descriptor_lock);
-    if (object && kind==UAV) {
+    if (object && (kind==UAV || srv.ViewDimension==D3D12_SRV_DIMENSION_TEXTURE2D)) {
         for (struct color_resource *c=d->colors;c;c=c->next)
             if (&c->iface==object) { resource=c->host; break; }
         if (!resource) goto done;

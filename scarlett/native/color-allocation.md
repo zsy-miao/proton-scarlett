@@ -51,3 +51,27 @@ it to render-target state, and clears only its last pixel red. Fenced
 readback checks the two colors. This qualifies offscreen rendering, not
 presentation. PresentX needs a synchronized copy to the actual swapchain
 buffer, after identifying the producing queue, state and output.
+
+### Primary texture SRV (`+0x90`)
+
+`501f753` loads the committed interface from `texture+0x20`; `501f75f`
+calls the SRV writer. The captured words at `scarlett-run.M28vpkMY`,
+`steam-999001.log:3834`, are `{28,4,0x1688,0,0,1,0,0,0,0}`: RGBA8
+UNORM Texture2D, default component mapping, mip 0/count 1, plane 0,
+minimum LOD 0. Only the 32-byte prefix through the active Texture2D
+fields is needed. The device matches the exact wrapper identity and the
+descriptor record owns the underlying texture until overwritten or freed.
+
+Build the sampling fixture next to `test-allocation-info.cpp`'s executable:
+
+```sh
+dxc -WX -T cs_6_0 -E main -Qstrip_debug -Fo "$game/test-color-sample.dxil" \
+    "$src/test-color-sample.hlsl"
+```
+
+The public-slot test creates two color wrappers, writes the SRV for the
+first, releases both, renders different colors into adjacent texels, and
+retires that work. It then removes the UAV descriptor and direct resource
+reference. The checked SRV resolves to its own bank; a point-sampling
+dispatch reads back the green and red texels with only the SRV retaining
+the source.

@@ -76,7 +76,15 @@ int main()
     CK(FAILED(xs_write_view(dev.Get(),0x98,(IUnknown *)1,view,slot)));
     view[3]=1; CK(FAILED(xs_write_view(dev.Get(),0x98,surface,view,slot))); view[3]=0;
     SLOT(dev.Get(),0x98,UAV)(dev.Get(),surface,nullptr,view,slot);
-    CK(surface->Release()==0); // slot owns the actual image
+    using SRV=void(WINAPI *)(IUnknown *,IUnknown *,const void *,SIZE_T);
+    const SIZE_T sampleSlot=slot-32;
+    DWORD sw[]={28,4,0x1688,0,0,1,0,0};
+    // The head of the device's live color list is deliberately a different texture.
+    IUnknown *other; HR(create(&other,8,3,0,IID_ID3D12Resource));
+    sw[5]=2; CK(FAILED(xs_write_view(dev.Get(),0x90,surface,sw,sampleSlot))); sw[5]=1;
+    CK(FAILED(xs_write_view(dev.Get(),0x90,(IUnknown *)1,sw,sampleSlot)));
+    SLOT(dev.Get(),0x90,SRV)(dev.Get(),surface,sw,sampleSlot);
+    CK(other->Release()==0 && surface->Release()==0);
     D3D12_DESCRIPTOR_HEAP_DESC vd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
     ComPtr<ID3D12DescriptorHeap> views; HR(d->CreateDescriptorHeap(&vd,IID_PPV_ARGS(&views)));
     auto rtv=views->GetCPUDescriptorHandleForHeapStart();
@@ -113,7 +121,46 @@ int main()
     HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(event);
     HR(f->SetEventOnCompletion(1,event)); CK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0); CloseHandle(event);
     DWORD *pixel; HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[0]==0xff00ff00 && pixel[1]==0xff0000ff); rb->Unmap(0,nullptr);
+    // Transition before dropping the last direct reference. Only the SRV record
+    // will retain this texture when the sampling dispatch is submitted.
+    HR(a->Reset()); HR(l->Reset(a.Get(),nullptr));
+    b.Transition={rt.Get(),0,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+    l->ResourceBarrier(1,&b);
+    DWORD nullUav[10]={42,1};
+    SLOT(dev.Get(),0x98,UAV)(dev.Get(),nullptr,nullptr,nullUav,slot);
+    rt.Reset(); views.Reset(); cpuHeap.Reset();
+    *(UINT64 *)sampleSlot^=1;
+    CK(FAILED(xs_resolve_view(heap.Get(),sampleSlot,0x90,&bank,&gpu)) && !bank && !gpu.ptr);
+    *(UINT64 *)sampleSlot^=1;
+    HR(xs_resolve_view(heap.Get(),sampleSlot,0x90,&bank,&gpu));
+    D3D12_DESCRIPTOR_RANGE range={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};
+    D3D12_ROOT_PARAMETER rp[2]={}; rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rp[0].DescriptorTable={1,&range}; rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;
+    D3D12_STATIC_SAMPLER_DESC sampler={}; sampler.Filter=D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxAnisotropy=1; sampler.ComparisonFunc=D3D12_COMPARISON_FUNC_ALWAYS;
+    D3D12_ROOT_SIGNATURE_DESC rs={2,rp,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    ComPtr<ID3DBlob> blob; ComPtr<ID3D12RootSignature> root;
+    HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&blob,nullptr));
+    HR(d->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root)));
+    BYTE code[8192]; FILE *file=fopen("test-color-sample.dxil","rb"); CK(file);
+    size_t size=fread(code,1,sizeof code,file); CK(size && size<sizeof code && feof(file)); fclose(file);
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd={}; pd.pRootSignature=root.Get(); pd.CS={code,size};
+    ComPtr<ID3D12PipelineState> ps; HR(d->CreateComputePipelineState(&pd,IID_PPV_ARGS(&ps)));
+    hp.Type=D3D12_HEAP_TYPE_DEFAULT; buf.Width=8; buf.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ComPtr<ID3D12Resource> samples;
+    HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&buf,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&samples)));
+    l->SetDescriptorHeaps(1,&bank); l->SetComputeRootSignature(root.Get()); l->SetPipelineState(ps.Get());
+    l->SetComputeRootDescriptorTable(0,gpu); l->SetComputeRootUnorderedAccessView(1,samples->GetGPUVirtualAddress());
+    l->Dispatch(1,1,1);
+    b.Transition={samples.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE};
+    l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb.Get(),16,samples.Get(),0,8);
+    HR(l->Close()); q->ExecuteCommandLists(1,batch); HR(q->Signal(f.Get(),2));
+    HANDLE sampled=CreateEventW(nullptr,FALSE,FALSE,nullptr); CK(sampled);
+    HR(f->SetEventOnCompletion(2,sampled)); CK(WaitForSingleObject(sampled,10000)==WAIT_OBJECT_0); CloseHandle(sampled);
+    HR(rb->Map(0,nullptr,(void **)&pixel)); CK(pixel[4]==0xff00ff00 && pixel[5]==0xff0000ff); rb->Unmap(0,nullptr);
     heap.Reset(); FreeLibrary(xm);
+    puts("PASS public +90 color SRV: checked slot, two live primary identities, point-sampled green/red after both wrappers and UAV view released");
     std::printf("PASS +c8 size=%llu alignment=%llu; +3f8 committed identity -> +98 UAV -> checked RTV; fenced last pixels ff00ff00 ff0000ff after wrapper release\n",
             (unsigned long long)ref.SizeInBytes,(unsigned long long)ref.Alignment);
 }
