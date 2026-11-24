@@ -112,18 +112,25 @@ static HRESULT WINAPI bootstrap_list(IUnknown *iface, const void *desc, IUnknown
     static const IID list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
     UINT words[4];
     SIZE_T copied;
-    (void)iface;
-    (void)initial_state;
     if (!out) return E_POINTER;
     *out = NULL;
     if (!desc || !allocator || !iid) return E_INVALIDARG;
-    if (!IsEqualIID(iid, &list_id)) return E_NOINTERFACE;
     if (!ReadProcessMemory(GetCurrentProcess(), desc, words, sizeof(words), &copied) || copied != sizeof(words))
         return E_POINTER;
+    if (!IsEqualIID(iid, &list_id)) {
+        char msg[144];
+        snprintf(msg, sizeof(msg), "scarlett: device+0x248 unsupported list IID Data1=%08lx desc=(%u,%u,%u,%u)\n",
+                 iid->Data1, words[0], words[1], words[2], words[3]);
+        OutputDebugStringA(msg);
+        return E_NOINTERFACE;
+    }
     if (!xs_allocator_host(allocator, words[0])) return E_INVALIDARG;
-    /* Even with a null PSO the first consumer requires +0x420 and +0x418 before Close. */
-    OutputDebugStringA("scarlett: device+0x248 Xbox command list unsupported (E_NOTIMPL)\n");
-    return E_NOTIMPL;
+    if (initial_state || words[1] != 2 || words[2] != 1 || words[3]) return E_NOTIMPL;
+    IUnknown *list = NULL;
+    HRESULT hr = xs_startup_list(CONTAINING_RECORD(iface, struct xbox_device, iface)->host,
+            words[0], allocator, &list);
+    *out = list;
+    return hr;
 }
 
 static D3D12_HEAP_PROPERTIES *WINAPI bootstrap_heap(D3D12_HEAP_PROPERTIES *out, IUnknown *iface,

@@ -20,7 +20,8 @@ struct adapter {
 
 struct qtable {
     struct xs_queue_prefix prefix;
-    void *other[17]; /* Through observed +0x118. */
+    void *other[16];
+    void (WINAPI *execute)(IUnknown *, UINT, IUnknown *const *, UINT64, UINT);
 };
 struct ftable {
     IUnknownVtbl prefix;
@@ -28,6 +29,7 @@ struct ftable {
 };
 static const struct qtable qt;
 static const struct ftable ft;
+_Static_assert(offsetof(struct qtable, execute) == 0x118, "x64 queue submit");
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
 struct atable {
     IUnknownVtbl prefix;
@@ -199,6 +201,10 @@ static HRESULT WINAPI frequency(IUnknown *queue, UINT64 *out)
     return q ? ID3D12CommandQueue_GetTimestampFrequency(q, out) : E_INVALIDARG;
 }
 
+#ifdef SCARLETT_DEVICE_BOOTSTRAP
+#include "startup_list.h"
+#endif
+
 static const struct qtable qt = {
     .prefix = {
         .unknown = {query, addref, release}, .signal = queue_signal, .frequency = frequency,
@@ -207,7 +213,7 @@ static const struct qtable qt = {
 #endif
     },
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
-    .other = { [0 ... 16] = (void *)xs_stop },
+    .other = { [0 ... 15] = (void *)xs_stop }, .execute = startup_submit,
 #endif
 };
 static const struct ftable ft = {

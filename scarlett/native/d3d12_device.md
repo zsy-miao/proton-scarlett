@@ -124,9 +124,9 @@ address and a context; they are not Reset. The adapter guards this slot.
 The `+0x248` constructor takes `(device, desc, allocator, initialState,
 riid, out)`; the last two arguments are on the stack. The first descriptions
 are `(0,2,1,0)` and `(2,2,1,0)` with null initial state. The method checks
-the retail list IID and allocator type, clears the output and returns
-`E_NOTIMPL`. Returning a host list or implementing Close alone would expose
-unverified `+0x420` and `+0x418` before Close (`+0x48`). A separate helper
+the retail list IID, descriptor, allocator type/device and host enhanced
+barrier support before creating a recording list with its own COM identity.
+A separate helper
 at `0x17f6d34` uses `(type,6,1,0)`, requests a different list IID
 `{5b160d0f-ac1b-4185-8ba8-b3ae42a5a455}`, and closes the result at
 `0x17f6d48`. Neither description establishes the semantics of words 1–3.
@@ -175,13 +175,25 @@ semantic analogy, not a slot map. The two integers, zero and large aligned
 constant look like masks plus an address/range. No call passes a GUID, a
 data buffer or a size pointer as the public private-data APIs would require.
 
-No authoritative slot order, flag values, or mapping of the control bits
-to host synchronization was found. In particular, an ignored return is
-not proof of `void`, and a global UAV barrier is not evidence of coverage
-for every cache or pipeline stage in these masks. Keep `+0x248` returning
-`E_NOTIMPL` with null output for these requests. The most useful next
-evidence would be a named, publicly redistributable Scarlett call compiled
-for the same interface, with known nonzero controls and address/range.
+The adapter recognizes only the four rows above, for their respective list
+types. Each records an enhanced **global** `ALL/COMMON -> ALL/COMMON` barrier.
+The [enhanced barriers spec](https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html)
+defines COMMON-before as including all writes and COMMON-after as making data
+available for all layout-compatible accesses. Pinned [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton/blob/212991fc2c266bc0d59f4c4ce8f80f7126508d71/libs/vkd3d/command.c#L20426-L20477)
+maps ALL to Vulkan `ALL_COMMANDS` and COMMON to `MEMORY_READ|MEMORY_WRITE`
+on both sides of the dependency. This intentionally over-synchronizes
+same-queue work. It does not transition texture layouts, establish cross-queue
+ordering, or establish the meaning of individual Xbox control bits. A new
+range, mask or control poisons recording: Close reports `E_NOTIMPL`; the
+queue refuses submission. There is no weaker fallback if OPTIONS12 is false.
+
+Submission supports `+0x118` only for one closed list on a matching queue,
+zero token and zero flags. RVA `248266e` actually loads the token from
+`75e0e88`; it is not necessarily zero. Nonzero tokens, the batch path's flags
+`3`, and unknown slots stop explicitly. `+0x458` follows the null-state,
+zero-extra-argument reset shape at `2474cce`; a reset retains the replacement
+allocator only after host Reset succeeds. Recycling a submitted allocator
+still requires retirement on its queue.
 
 The prior trace stops at `0x19f4f58` with ECX=`0x80004002`, before any
 success-path calls. `+0x188` **is not needed with this runtime/prefix**:
@@ -238,10 +250,14 @@ grep -F 'PASS bootstrap:' "$work"/scarlett-run.*/logs/steam-999001.log
 
 Both tests passed on an RTX 3070 (595.112.7) and AMD `1002:164e` (RADV
 26.3.0). No private test symbol is exported by the DLL.
-For both allocator types the linked test also records and closes a host list,
-submits it behind a gate, observes the completion fence, calls Xbox allocator
-`+0x40`, then resets and closes the list on the same allocator. The public PE
-checks allocator and list factory HRESULTs, COM identity and release.
+The linked test copies 4 KiB of distinct words to a default buffer on Direct,
+default Compute and each indexed Compute queue. It records the exact startup
+barriers and a dependent copy from that buffer to readback on the wrapped
+list. After submission behind a gate it observes timeout, releases the gate,
+waits for completion, checks all 1024 words, and resets the allocator and list.
+An unknown barrier then fails at Close. Run with `SCARLETT_TEST_GPU=radv` or
+`nvidia`. This validates ordered result and queue progress, not every bit's
+Xbox microarchitectural behavior.
 
 ## Scratch GPU test
 

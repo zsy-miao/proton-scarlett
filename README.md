@@ -13,7 +13,7 @@ The [write-combined allocator](scarlett/vkd3d-patches/README.md) was verified on
 
 The 64 KiB [graphics control page](scarlett/native/xmem/control-page.md) additionally requires uncached GPU access. The [allocation probe](scarlett/native/xmem/README.md) found that the existing heap was CPU write-combined but GPU-cacheable. Wine also rejected the title's exact-size `VirtualFree` call with error 87. The allocator continues to reject that combination.
 
-**AMD (`1002:164e`, RADV 26.3.0):** The installed fork passes the 596 MiB write-back allocation, uses [same-adapter backing](https://github.com/rcx2135/proton-scarlett/tree/d0a22471/scarlett/tests/amd-control-memory) for the 64 KiB control page, and creates all four indexed Compute queues. Retail stops at `+0x2478b7b` when its first extended command-list request returns `E_NOTIMPL`.
+**AMD (`1002:164e`, RADV 26.3.0):** The installed fork passes the 596 MiB write-back allocation, uses [same-adapter backing](https://github.com/rcx2135/proton-scarlett/tree/d0a22471/scarlett/tests/amd-control-memory) for the 64 KiB control page, and creates all four indexed Compute queues. Retail creates and closes the initial Direct and Compute command lists. It then requests a pooled list with a different interface (`5b160d0f-ac1b-4185-8ba8-b3ae42a5a455`) and descriptor `(0,6,1,0)`. That request returns `E_NOINTERFACE`, and the caller stops at `+0x19f4f58`.
 
 Our [GameInput provider](scarlett/native/gameinput/README.md) passed isolated input tests: a 400 ms Space press produced neutral → A → neutral; holding W and Left together produced forward movement and a leftward camera-stick reading, then both axes returned to neutral on release. Retail input has not yet been exercised.
 
