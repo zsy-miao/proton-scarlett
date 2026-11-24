@@ -75,6 +75,10 @@ This uses `steam-run`'s filesystem, Xvfb, a fresh prefix and no network. It prin
 test directory containing `logs/steam-999001.log` and the XCL report. It returns the process
 status, or 124 if the 90-second test window expires.
 
+`./scarlett/tests/input-frame.sh` launches a synthetic window in the private Xvfb harness.
+It sends one Space press/release to the focused window and checks that the screen pixel
+changes from dark gray to white. This checks Win32 input delivery, not GameInput mapping.
+
 `./scarlett/tests/queue-fence.sh` runs the hardware synchronization test without retail files.
 On the RTX 3070, the console title's CPU signal, GPU queue wait/signal, and completion event
 passed. The broader XCL test title also creates fallback graphics pipelines for two console
