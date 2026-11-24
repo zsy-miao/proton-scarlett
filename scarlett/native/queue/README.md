@@ -839,3 +839,18 @@ the composite. The same list requested a new 4,080-byte vertex range
 at `0x1143df10` while its first range at `0x1143ef30` was still pinned.
 The recorder rejected that replacement. Neither the composite's output
 generation nor a rendering submission for token 2 has been observed.
+
+### Ordered-batch display control (synthetic)
+
+On both GPUs the same fixture executable presented a red/blue primary
+for token 1. For token 2 it submitted two lists: the first filled an
+intermediate image, the second copied it to a different primary and
+released that primary. A completed but unrelated fence was rejected.
+With the actual producer fence complete, `PresentX(2)` succeeded on the
+original window generation and the count advanced from 1 to 2.
+
+Independent decoding of the private recordings found red/blue followed
+by green/magenta on both adapters (capture frames 26→50 on RADV, 42→65
+on RTX). These are capture sample numbers, not frame tokens. This checks
+the route from a known rendering batch through presentation to visible
+pixels; the corresponding retail batch has yet to be observed.
