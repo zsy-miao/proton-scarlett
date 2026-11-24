@@ -7,7 +7,13 @@ sdk=$(realpath "${SCARLETT_GAMEINPUT_HEADER:?Set SCARLETT_GAMEINPUT_HEADER to Wi
 [[ ${sdk##*/} == GameInput.h ]] && printf '%s  %s\n' c77b8621d3d503f5ddcb2a45f76f024f3e6f881e568133e7bf1a4fc05985d539 "$sdk" | sha256sum -c --status ||
     { echo "Expected the v0 GameInput.h listed in scarlett/native/gameinput/README.md" >&2; exit 1; }
 mkdir "$out"
-x86_64-w64-mingw32-gcc -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED -shared -Os -s -Wall -Wextra -Werror -Wl,--no-insert-timestamp \
+queue_flags=()
+case ${SCARLETT_EXPERIMENTAL_TAGGED_BATCH:-0} in
+    0) ;;
+    1) queue_flags=(-DSCARLETT_EXPERIMENTAL_TAGGED_BATCH -DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE -DSCARLETT_EXPERIMENTAL_DIRECT_WAIT) ;;
+    *) echo "SCARLETT_EXPERIMENTAL_TAGGED_BATCH must be 0 or 1" >&2; exit 2 ;;
+esac
+x86_64-w64-mingw32-gcc -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED "${queue_flags[@]}" -shared -Os -s -Wall -Wextra -Werror -Wl,--no-insert-timestamp \
     "$here/native/d3d12_device.c" "$here/native/queue/queue.c" "$here/native/d3d12_vm.c" "$here/native/d3d12_xs.def" \
     -ld3d12 -o "$out/d3d12_xs.dll"
 build_dll() {

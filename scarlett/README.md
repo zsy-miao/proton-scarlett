@@ -16,6 +16,7 @@ steam="$HOME/.local/share/Steam"
 Requires x86-64 MinGW GCC/G++, the [Windows SDK v0 input header](native/gameinput/README.md), and the matching Proton 11.0-2e depot. Move any previous installation aside before installing. For a full SDK build, stage the DLLs in `scarlett/runtime/`, initialize Valve's submodules and use the [upstream build instructions](../README.md). In Steam, select **scarlett-proton** in the shortcut's compatibility properties.
 
 The first committed retail graphics pool requires the fork's [x64 Wine memory patch and build steps](wine-patches/README.md). Installing the PE DLLs alone leaves this call unsupported.
+To reproduce the [experimental retail clear submission](native/queue/README.md#experimental-whole-queue-wait), set `SCARLETT_EXPERIMENTAL_TAGGED_BATCH=1` **when building** providers into a new directory. This builds the matched counter-wait, primary-release and tagged-submit paths together. It needs the same patched Wine and vkd3d-proton as the default build.
 The 2,199 MiB pool additionally requires the [paired Wine and vkd3d-proton patches](vkd3d-patches/README.md).
 Retail `G:` maps to the game directory. `T:` maps to `scarlett-title/scratch` under the shortcut's compatibility-data directory, where the game can save its crash reports. In the test harness both the reports and the prefix stay in the individual run directory.
 Run `./scarlett/tests/graphics-pools.sh` on the qualified RTX 3070 host to exercise all three pool sizes through the installed tool, including GPU completion after the title address is reused.
