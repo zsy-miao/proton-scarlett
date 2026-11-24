@@ -107,13 +107,16 @@ __declspec(dllexport) PVOID WINAPI XMemVirtualAlloc(PVOID base, SIZE_T size,
         return xmem_graphics_alloc(base, size, FALSE);
     if (!base && size == 0x89700000 && type == 0x20003000 && flags == 0x283 && protect == 0x2404)
         return xmem_graphics_alloc(NULL, size, TRUE);
-    if (type == (0x20400000u | MEM_RESERVE) &&
+    BOOL cpu_commit64 = type == 0x20403000 && flags == 0x181 && protect == PAGE_READWRITE;
+    if (cpu_commit64 || (type == (0x20400000u | MEM_RESERVE) &&
         ((flags == (XMEM_CPU | 0x20) && protect == PAGE_READWRITE) ||
-         (flags == 3 && protect == 0x801))) {
+         (flags == 3 && protect == 0x801)))) {
         if (!size || ((size | (UINT_PTR)base) & (XMEM_PAGE - 1))) {
             SetLastError(ERROR_INVALID_PARAMETER);
             return NULL;
         }
+        if (cpu_commit64)
+            return VirtualAlloc(base, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         /* The GPU form is VA only. It must never accept a section view. */
         if (flags == 3)
             return VirtualAlloc(base, size, MEM_RESERVE, PAGE_NOACCESS);

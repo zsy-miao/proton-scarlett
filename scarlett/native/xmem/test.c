@@ -33,6 +33,29 @@ int main(int argc, char **argv)
     CHECK(VirtualQuery(base, &info, sizeof(info)) == sizeof(info) && info.Protect == PAGE_READONLY);
     CHECK(VirtualFree(base, 0, MEM_RELEASE));
 
+    const SIZE_T pool = 0x1400000, page64 = 65536;
+    base = XMemVirtualAlloc(NULL, pool, 0x20403000, 0x181, PAGE_READWRITE);
+    CHECK(base && !((UINT_PTR)base % page64));
+    CHECK(VirtualQuery(base, &info, sizeof(info)) == sizeof(info));
+    CHECK(info.State == MEM_COMMIT && info.Type == MEM_PRIVATE && info.Protect == PAGE_READWRITE &&
+          info.AllocationBase == base && info.RegionSize == pool);
+    CHECK(!base[0] && !base[pool - 1]);
+    base[0] = 1;
+    base[pool - 1] = 2;
+    CHECK(!XMemVirtualAlloc(base, pool, 0x20403000, 0x181, PAGE_READWRITE));
+    CHECK(GetLastError() == ERROR_INVALID_ADDRESS && base[0] == 1 && base[pool - 1] == 2);
+    CHECK(VirtualFree(base, 0, MEM_RELEASE));
+    CHECK(XMemVirtualAlloc(base, page64, 0x20403000, 0x181, PAGE_READWRITE) == base);
+    CHECK(!*base && VirtualFree(base, 0, MEM_RELEASE));
+    CHECK(!XMemVirtualAlloc(base + 1, page64, 0x20403000, 0x181, PAGE_READWRITE));
+    CHECK(GetLastError() == ERROR_INVALID_PARAMETER);
+    CHECK(!XMemVirtualAlloc(NULL, page64 - 1, 0x20403000, 0x181, PAGE_READWRITE));
+    CHECK(GetLastError() == ERROR_INVALID_PARAMETER);
+    CHECK(!XMemVirtualAlloc(NULL, pool, 0x20403000, 0x183, PAGE_READWRITE));
+    CHECK(GetLastError() == ERROR_NOT_SUPPORTED);
+    CHECK(!XMemVirtualAlloc(NULL, pool, 0x20403000, 0x181, PAGE_READONLY));
+    CHECK(GetLastError() == ERROR_NOT_SUPPORTED);
+
     /* A high tag bit must not disappear through a 32-bit flags parameter. */
     CHECK(!XMemVirtualAlloc(NULL, 4096, MEM_COMMIT, cpu | (1ULL << 63), PAGE_READWRITE));
     CHECK(GetLastError() == ERROR_NOT_SUPPORTED);

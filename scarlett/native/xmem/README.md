@@ -10,6 +10,7 @@ console SDK, external compatibility runtime, or ordinal compatibility contract.
 | [`XMemIsToolsMemAvailable`](https://docs.xbox.com/reference/system/xmem/functions/xmemistoolsmemavailable) | Returns `FALSE`: there is no profiling-mode tools partition. |
 | [`XMemVirtualAlloc`](https://docs.xbox.com/reference/system/xmem/functions/xmemvirtualalloc) | Untagged `XMEM_CPU` (`0x00000001`), ordinary 4 KiB pages, `MEM_RESERVE`, `MEM_COMMIT`, or both, with `PAGE_READWRITE` or `PAGE_READONLY`. Uses Win32 `VirtualAlloc` with the caller's base, size and protection; release with `VirtualFree`. |
 | `XMemVirtualAlloc`, 64 KiB reservations | Two supported `0x20402000` forms: CPU mappable (`0x21`, `PAGE_READWRITE`) and graphics VA only (`3`, `0x801`). Size and any specified base must be multiples of 64 KiB. |
+| `XMemVirtualAlloc`, 64 KiB CPU reserve+commit | Type `0x20403000`, flags exactly `0x181`, protection `PAGE_READWRITE` (`4`). Returns zero-initialized private committed CPU memory. Size must be a positive multiple of 64 KiB; an explicit base must be free and 64 KiB-aligned. Release with ordinary `VirtualFree(base, 0, MEM_RELEASE)`. |
 | `XMemVirtualAlloc`, graphics reserve+commit | Type `0x20003000`, flags `0x183`, protection `0x22004`: a live GPU-importable shared section on patched Wine. Size must be a positive multiple of 2 MiB; a requested base must also be aligned to 2 MiB and free. Release with `VirtualFree(base, 0, MEM_RELEASE)`. |
 | [`XMemAllocatePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemallocatephysicalpages), [`XMemMapPhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemmapphysicalpages), [`XMemFreePhysicalPages`](https://docs.xbox.com/reference/system/xmem/functions/xmemfreephysicalpages) | CPU mappings of 64 KiB page runs, with shared backing. See limits below. |
 
@@ -20,6 +21,14 @@ Errors from supported calls pass through from Win32. There is no console
 budget accounting.
 
 ### Reservation and mapping milestone
+
+The separate 20 MiB CPU allocation at RVA `+0x5ba6c30` saves its result at
+`+0x78cb800` and branches to `+0x5ba6c65` on null. On success, `+0x28b7b09`
+passes the pointer and `0x1400000` size to heap initialization; `+0x1f67809`
+writes block metadata into that memory. Teardown at `+0x28b7ace` releases the
+saved base with `VirtualFree`. For this flags tuple, Win32 `VirtualAlloc`
+provides 64 KiB **VA alignment** and ordinary host pages. No physical page size,
+pool placement, or GPU visibility is guaranteed.
 
 The two startup reservations consume process **address space only**. The CPU
 arena uses a Win32 placeholder. The graphics form reserves inaccessible VA:
