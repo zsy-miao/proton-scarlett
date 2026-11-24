@@ -1,0 +1,7 @@
+# 994×624 BGRA startup owners
+
+On the matched RTX run, +c8 (title return +344188) receives node/count 1/1, a B8G8R8A8_UNORM 2D target, depth/mips/samples 1, alignment/layout/quality 0. The first two title factory calls return at +1da825d and +1da8298, writing group +0 and +0x28. Their opts are 0xa8 and 0x28; the wire flags are 0xc00005 and 0x300001. Each returned object points at its own owner through object +8. Retail linked each owner at the list tail, with count 0xa0000, stride 4 and null resource at owner +0x20. The very next query on that thread is 994×624 format 19, flags 0x800002.
+
+A diagnostic-only run answered that intervening depth size query, and saw a third BGRA factory return at +1da83f0 (group +0x30, ctor 0x28, wire flags 0xc00001). All three resource pointers remained null through the subsequent 3840×2160 BGRA +c8 (flags 0xc00005). No guest +360, committed/placed factory, resource VA, clear value or native view for the small images was captured. The high flag bits are part of exact shape matching; they are not desktop resource flags. Only +c8 is qualified.
+
+`test-bgra994.cpp` compares the three public queries against the host, then places three native images side-by-side and reads every BGRA pixel: full/corner RTV clears and a typed BGRA UAV clear on the RT+UAV form. This is a reference heap independent of title allocation. RTX reports 0x280000 bytes; RADV 0x290000; both aligned to 0x10000. The copy pitch is 4096, not the packed width of 3976 bytes.

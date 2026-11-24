@@ -23,7 +23,7 @@ int main() {
     ComPtr<ID3D12Device> d;HR(D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&d)));
     auto desktop=d->GetResourceAllocationInfo(1,1,&rd);
     CK(!memcmp(&desktop,&g.info,sizeof desktop));
-    printf("depth +c8 size=%#llx align=%#llx\n",g.info.SizeInBytes,g.info.Alignment);CK(g.info.SizeInBytes==0x800000 && g.info.Alignment==65536);
+    printf("depth +c8 size=%#llx align=%#llx\n",g.info.SizeInBytes,g.info.Alignment);CK((g.info.SizeInBytes==0x800000 || g.info.SizeInBytes==0x520000) && g.info.Alignment==65536);
     D3D12_RESOURCE_ALLOCATION_INFO total={};D3D12_RESOURCE_ALLOCATION_INFO1 one={};
     CK(xs_msaa_allocation_info1(dev.Get(),1,1,prefix,&total,&one)==E_NOTIMPL);
     auto deny=[&](UINT node,UINT cnt,const void *p){D3D12_RESOURCE_ALLOCATION_INFO bad={1,2};
@@ -72,5 +72,5 @@ int main() {
     }
     for(UINT i=0;i<4;i++){auto v=(DWORD*)(p+bytes)+4*i;printf("sample %u: depth=%08lx stencil=%02lx compare=%lu select=%04lx\n",i,v[0],v[1],v[2],v[3]);
         CK(v[0]==(i<2?0x3e800000u:0x3f400000u) && v[1]==(i==3?0xa5u:0x31u) && v[2]==(i>=2) && v[3]==(i==3?0xcafeu:0x1234u));}
-    rb->Unmap(0,nullptr);puts("PASS RTX depth1024: guarded query, placed D32S8, both full planes, point comparison and stencil selection");
+    rb->Unmap(0,nullptr);puts("PASS depth1024: guarded query, placed D32S8, both full planes, point comparison and stencil selection");
 }

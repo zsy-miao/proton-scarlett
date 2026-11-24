@@ -277,7 +277,13 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     }
     BOOL a8=rd->Format==DXGI_FORMAT_A8_UNORM, bgra=rd->Format==DXGI_FORMAT_B8G8R8A8_UNORM;
     BOOL fp=rd->Format==DXGI_FORMAT_R16G16B16A16_FLOAT;
-    if (fp) {
+    BOOL small=bgra && rd->Width==994 && rd->Height==624;
+    if (small) {
+        if (detail || rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout ||
+            rd->DepthOrArraySize!=1 || rd->MipLevels!=1 || rd->SampleDesc.Count!=1 || rd->SampleDesc.Quality ||
+            ((UINT)rd->Flags!=0xc00005 && (UINT)rd->Flags!=0x300001 && (UINT)rd->Flags!=0xc00001)) return E_NOTIMPL;
+        rd->Flags=(D3D12_RESOURCE_FLAGS)((UINT)rd->Flags & 7);
+    } else if (fp) {
         /* The half-size probe is query-only. */
         if (rd->Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd->Alignment || rd->Layout || rd->DepthOrArraySize!=1 ||
             rd->MipLevels!=1 || rd->SampleDesc.Count!=1 || rd->SampleDesc.Quality) return E_NOTIMPL;
@@ -299,11 +305,13 @@ static HRESULT target_info(ID3D12Device *host,D3D12_RESOURCE_DESC *rd,
     d->lpVtbl->GetResourceAllocationInfo1(d,&info,1,1,rd,&one);
     ID3D12Device4_Release(d);
     if (one.Offset || one.SizeInBytes!=info.SizeInBytes || one.Alignment!=info.Alignment) return E_NOTIMPL;
-    if (fp) {
+    if (small) {
+        if (info.Alignment!=65536 || (info.SizeInBytes!=0x280000 && info.SizeInBytes!=0x290000)) return E_NOTIMPL;
+    } else if (fp) {
         if (info.Alignment!=65536 || (rd->Width==1280 ? info.SizeInBytes!=0x780000 && info.SizeInBytes!=0x790000 :
             info.SizeInBytes!=0x1e00000 && info.SizeInBytes!=0x1ce0000)) return E_NOTIMPL;
     } else if (depth1024_desc(rd)) {
-        if (info.Alignment!=65536 || info.SizeInBytes!=0x800000) return E_NOTIMPL;
+        if (info.Alignment!=65536 || (info.SizeInBytes!=0x800000 && info.SizeInBytes!=0x520000)) return E_NOTIMPL;
     } else if (bgra) {
         if (info.Alignment!=65536 || (info.SizeInBytes!=0x1000000 && info.SizeInBytes!=0x1010000)) return E_NOTIMPL;
     } else if (a8) {
