@@ -30,7 +30,7 @@ HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12Desc
 struct xs_attachment_pin {IUnknown *identity; ID3D12Resource *host; SIZE_T slot; UINT64 serial;};
 /* The wrapper pins both its XMem module and the original generation. */
 struct xs_clear_source {IUnknown *placed;ID3D12Resource *buffer;};
-HRESULT xs_b27_slot(IUnknown*,IUnknown*,UINT64,UINT*);
+HRESULT xs_active_table_slot(IUnknown*,IUnknown*,UINT64,UINT,UINT*);
 HRESULT xs_copy_colour_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,BOOL,IUnknown*,struct xs_clear_source*);
 HRESULT xs_copy_clear_source(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList7 *,UINT64,struct xs_clear_source *);
 struct om_views;

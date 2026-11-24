@@ -26,7 +26,9 @@ struct startup_list {
     struct om_views om;
     struct xs_clear_source previous_vb,vb,source;
     /* Borrow the recording's strong heap and root references. Only root parameter 0 is admitted. */
-    struct {IUnknown *heap,*root;UINT slot;} b27;
+    struct {IUnknown *heap,*root;UINT slot,cells;} table0;
+    UINT prior_b27_slot; /* Same pinned heap/root as table0; history only while cells==3. */
+    UINT64 table_epoch; /* Setter generation, never a descriptor-content generation. */
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     enum batch_phase phase;
     IUnknown *sync_owner;
@@ -133,7 +135,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
         ID3D12GraphicsCommandList7_Release(s->host);
         IUnknown_Release(s->allocator);
-        memset(&s->b27,0,sizeof s->b27);drop_source(&s->previous_vb);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
+        drop_source(&s->previous_vb);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
         drop_split(s); drop_timestamp(s->stamp);
         drop_marker(s->marker);
         if (s->primary) ID3D12Resource_Release(s->primary);
@@ -237,7 +239,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     drop_heaps(s->heaps);
     drop_marker(s->marker); s->marker=NULL;
     drop_split(s); drop_timestamp(s->stamp); s->stamp=NULL;
-    memset(&s->b27,0,sizeof s->b27);drop_source(&s->previous_vb);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
+    s->prior_b27_slot=0;memset(&s->table0,0,sizeof s->table0);drop_source(&s->previous_vb);drop_source(&s->vb);drop_source(&s->source);drop_om(&s->om);drop_attachments(s->attachments);
     AcquireSRWLockExclusive(&s->borrow_lock);
     if(s->prior_pso){IUnknown_Release(s->prior_pso);s->prior_pso=NULL;}
     if(s->prior_root){IUnknown_Release(s->prior_root);s->prior_root=NULL;}
@@ -286,7 +288,7 @@ static HRESULT bind_initial_heaps(struct startup_list *s,UINT count,IUnknown *co
     if (s->heaps[0] && memcmp(s->heaps,pair,sizeof pair)) return E_NOTIMPL;
     HRESULT hr=xs_initial_heap_banks(s->pool_owner,pair,banks);
     if (FAILED(hr)) return hr;
-    if(s->b27.heap && s->b27.heap!=pair[0])memset(&s->b27,0,sizeof s->b27);
+    if(s->table0.heap && s->table0.heap!=pair[0])memset(&s->table0,0,sizeof s->table0);
     if (!s->heaps[0]) for (unsigned i=0;i<2;i++) { IUnknown_AddRef(pair[i]); s->heaps[i]=pair[i]; }
     ID3D12GraphicsCommandList7_SetDescriptorHeaps(s->host,2,banks);
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
@@ -626,7 +628,7 @@ static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER
 /* shortcut: first full transparent-black clear after this recording's primary transition. */
 static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
 {
-    if (s->b27.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
+    if (s->table0.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     if (!s->primary || s->closed || FAILED(s->error) || s->host_exposed || s->primary_cleared || count || rects) return E_NOTIMPL;
     UINT bits[4]; SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),color,bits,sizeof bits,&n) || n!=sizeof bits) return E_POINTER;
@@ -741,7 +743,7 @@ static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
         if(!s->graphics_root)return E_INVALIDARG;
         s->graphics_identity=identity;
     }
-    if(s->b27.heap && s->b27.root!=identity)memset(&s->b27,0,sizeof s->b27);
+    if(s->table0.heap && s->table0.root!=identity)memset(&s->table0,0,sizeof s->table0);
     ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,s->graphics_root);
     if(!s->prior_pso && s->source.buffer)bind_source(s->host,&s->source);
     recorded_direct_state(s);return S_OK;
@@ -816,8 +818,8 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
     if(s->offscreen_sr){
         if(ds || s->output_heap || !s->previous_vb.buffer || !s->vb.buffer || !s->rt_roundtripped ||
            !s->clear4_drew || !s->depth_zero_pending || !s->om.heap[0] || !s->om.heap[1] ||
-           s->guest_topology!=XS_RECTLIST || !s->prior_pso || !s->b27.heap || s->b27.heap!=s->heaps[0] ||
-           s->b27.root!=s->graphics_identity || s->bound || s->pipeline ||
+           s->guest_topology!=XS_RECTLIST || !s->prior_pso || s->table0.cells!=1 || s->table0.heap!=s->heaps[0] ||
+           s->table0.root!=s->graphics_identity || s->bound || s->pipeline ||
            !s->primary_pin || (UINT_PTR)s->primary_pin!=s->primary_key ||
            s->primary_pin==s->attachments[0].identity || s->primary==s->attachments[0].host ||
            s->primary==s->attachments[1].host)return E_NOTIMPL;
@@ -916,8 +918,8 @@ static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,cons
 {
     BOOL replacement=s->vb.buffer!=NULL;
     if(!pending_colour_inputs(s)||slot||count!=1)return E_NOTIMPL;
-    if(replacement && (!s->rt_roundtripped || !s->b27.heap || s->b27.heap!=s->heaps[0] ||
-        s->b27.slot!=368504 || s->b27.root!=s->graphics_identity || s->vb.placed!=s->source.placed))return E_NOTIMPL;
+    if(replacement && (!s->rt_roundtripped || s->table0.cells!=1 || s->table0.heap!=s->heaps[0] ||
+        s->table0.slot!=368504 || s->table0.root!=s->graphics_identity || s->vb.placed!=s->source.placed))return E_NOTIMPL;
     D3D12_VERTEX_BUFFER_VIEW v;SIZE_T got;if(!ReadProcessMemory(GetCurrentProcess(),input,&v,sizeof v,&got)||got!=sizeof v)return E_POINTER;
     if(v.SizeInBytes!=4080 || v.StrideInBytes!=24)return E_NOTIMPL;
     struct xs_clear_source next={0};
@@ -930,20 +932,31 @@ static void WINAPI pool_colour_vb(IUnknown *i,UINT slot,UINT count,const D3D12_V
 {
     if(FAILED(record_colour_vb(sl(i),slot,count,v)))xs_stop();
 }
-static HRESULT record_b27(struct startup_list *s,UINT index,UINT64 handle)
+static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
 {
-    if(!pending_colour_inputs(s) || !s->rt_roundtripped || index ||
-        !s->vb.buffer || s->vb.placed!=s->source.placed || !s->heaps[0])return E_NOTIMPL;
-    UINT slot;HRESULT hr=xs_b27_slot(s->pool_owner,s->heaps[0],handle,&slot);
+    if(index || !s->rt_roundtripped || !s->vb.buffer || s->vb.placed!=s->source.placed ||
+       !s->heaps[0] || s->table_epoch==UINT64_MAX)return E_NOTIMPL;
+    UINT cells=1;
+    if(s->previous_vb.buffer){
+        /* shortcut: the observed pending three-cell flush after the primary-only OM bind. */
+        if(!open_direct_state(s) || !s->output_heap || !s->offscreen_sr ||
+           s->guest_topology!=XS_RECTLIST || s->pipeline || s->bound || !s->prior_pso ||
+           s->table0.heap!=s->heaps[0] || s->table0.root!=s->graphics_identity ||
+           s->graphics_identity!=s->required_root)return E_NOTIMPL;
+        cells=3;
+    }else if(!pending_colour_inputs(s))return E_NOTIMPL;
+    UINT slot;HRESULT hr=xs_active_table_slot(s->pool_owner,s->heaps[0],handle,cells,&slot);
     if(SUCCEEDED(hr)){
-        s->b27.heap=s->heaps[0];s->b27.root=s->graphics_identity;s->b27.slot=slot;
+        if(cells==3 && s->table0.cells==1)s->prior_b27_slot=s->table0.slot;
+        s->table0=(__typeof__(s->table0)){s->heaps[0],s->graphics_identity,slot,cells};
+        ++s->table_epoch;
         recorded_direct_state(s);
     }
     return hr;
 }
 static void WINAPI pool_b27(IUnknown *i,UINT index,UINT64 handle)
 {
-    if(FAILED(record_b27(sl(i),index,handle)))xs_stop();
+    if(FAILED(record_table0(sl(i),index,handle)))xs_stop();
 }
 /* Only these slots have been traced on the pool's returned pointer. */
 static void WINAPI pool_470(IUnknown *,UINT64);
@@ -1214,7 +1227,7 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
     if (s->single_use) return E_ACCESSDENIED;
 #endif
     if (!s->closed || FAILED(s->error)) return E_INVALIDARG;
-    if (s->b27.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
+    if (s->table0.heap || s->prior_pso || s->pending_470) return E_ACCESSDENIED;
     D3D12_COMMAND_QUEUE_DESC desc;
     q->lpVtbl->GetDesc(q, &desc);
     ID3D12Device *device;

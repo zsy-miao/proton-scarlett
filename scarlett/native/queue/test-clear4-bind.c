@@ -249,16 +249,16 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #ifdef TEST_INLINE_B27
     UINT64 *slot=(UINT64*)(va-0x1080);UINT64 handle=(SIZE_T)slot;
     memset(slot,0,32);MemoryBarrier();
-    REQUIRE(FAILED(record_b27(s,0,handle)));pool_vtbl.bind(l,2,inline_pair);
+    REQUIRE(FAILED(record_table0(s,0,handle)));pool_vtbl.bind(l,2,inline_pair);
     ID3D12DescriptorHeap *orig[2];memcpy(orig,bank_pair,sizeof orig);
-    REQUIRE(FAILED(record_b27(s,0,handle)));
+    REQUIRE(FAILED(record_table0(s,0,handle)));
 #endif
     REQUIRE(test_rt_roundtrip(s,ids[0],siblings[0],images[0],TRUE));
 #ifdef TEST_INLINE_B27
-    REQUIRE(FAILED(record_b27(s,1,handle)) && FAILED(record_b27(s,0,handle+1)) && FAILED(record_b27(s,0,UINT64_MAX)));
-    pool_vtbl.b27(l,0,handle+32);REQUIRE(s->b27.slot==368505);
-    pool_vtbl.b27(l,0,handle);REQUIRE(s->b27.slot==368504 && s->b27.heap==inline_pair[0] && s->b27.root==colour && !tables);
-    REQUIRE(FAILED(record_b27(s,0,0)) && s->b27.slot==368504 && !s->bound);
+    REQUIRE(FAILED(record_table0(s,1,handle)) && FAILED(record_table0(s,0,handle+1)) && FAILED(record_table0(s,0,UINT64_MAX)));
+    pool_vtbl.b27(l,0,handle+32);REQUIRE(s->table0.slot==368505);
+    pool_vtbl.b27(l,0,handle);REQUIRE(s->table0.slot==368504 && s->table0.heap==inline_pair[0] && s->table0.root==colour && !tables);
+    REQUIRE(FAILED(record_table0(s,0,0)) && s->table0.slot==368504 && !s->bound);
     memset(slot,0xa5,32);MemoryBarrier(); // a volatile rewrite must not leave a materialized CBV
 #ifdef TEST_SECOND_VB
     struct xs_clear_source first_vb=s->vb;
@@ -276,6 +276,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(FAILED(record_primary_barrier(s,1,&sg))); // too early, even after the round trip
     pool_vtbl.vb(l,0,1,&second);
     REQUIRE(vb_calls==2 && !memcmp(&s->previous_vb,&first_vb,sizeof first_vb) && s->vb.placed==first_vb.placed && s->vb.buffer!=first_vb.buffer);
+    REQUIRE(FAILED(record_table0(s,0,handle)) && s->table0.cells==1);
     REQUIRE(FAILED(record_colour_vb(s,0,1,&second)) && vb_calls==2);
     extern IUnknown *test_texture(IUnknown*,ID3D12Resource*,BOOL);
     IUnknown *alias=test_texture(owner,images[0],FALSE);REQUIRE(alias && alias!=ids[0]);
@@ -301,6 +302,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #ifdef TEST_DISTINCT_PRIMARY
     REQUIRE(s->phase==phase && s->primary==primary && s->primary_key==(UINT_PTR)pk && s->primary_cleared && !s->primary_released);
     UINT pre_om=om_calls;
+    REQUIRE(FAILED(record_table0(s,0,handle)) && s->table0.cells==1);
     SIZE_T other_slot=ps+32;
     IUnknown *same_host=test_texture(owner,primary,FALSE);REQUIRE(same_host && same_host!=pk);
     REQUIRE(xs_write_view(owner,0xa0,same_host,rt,other_slot)==S_OK && FAILED(record_om(s,1,&other_slot,FALSE,NULL)));
@@ -317,6 +319,22 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     pool_vtbl.om(l,1,&other_slot,FALSE,NULL);
     UINT64 output_gen=*(UINT64*)other_slot;SIZE_T private_rtv=s->output_cpu.ptr;
     REQUIRE(s->output_heap && output_gen==s->output_serial && om_calls==pre_om+1 && last_rt==private_rtv && !last_ds);
+    UINT64 base=handle-32ull*s->table0.slot;
+    UINT64 end=base+32ull*D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1;
+    UINT64 epoch=s->table_epoch,composite=handle-131*32;
+    REQUIRE(FAILED(record_table0(s,0,end-32)) && s->table0.slot==368504 &&
+            s->table0.cells==1 && s->table_epoch==epoch);
+    REQUIRE(record_table0(s,0,end-96)==S_OK);
+    REQUIRE(FAILED(record_table0(s,0,end-64)) && FAILED(record_table0(s,0,end-32)) &&
+            FAILED(record_table0(s,0,end)) && FAILED(record_table0(s,1,composite)) &&
+            FAILED(record_table0(s,0,composite+1)) && FAILED(record_table0(s,0,UINT64_MAX)) &&
+            s->table_epoch==epoch+1 && s->table0.slot==D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1-3);
+    pool_vtbl.b27(l,0,composite);
+    memset((void*)(SIZE_T)composite,0x5a,96);MemoryBarrier();
+    REQUIRE(s->table_epoch==epoch+2 && s->table0.slot==368373 && !tables);
+    pool_vtbl.b27(l,0,composite);
+    REQUIRE(s->table_epoch==epoch+3 && s->table0.cells==3 && s->table0.slot==368373 &&
+            s->table0.root==colour && s->table0.heap==inline_pair[0] && !s->bound && !s->pipeline && !tables);
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],rt,other_slot)==S_OK && *(UINT64*)other_slot!=output_gen);
     REQUIRE(IUnknown_Release(pk)==1 && FAILED(record_om(s,1,&other_slot,FALSE,NULL)) && om_calls==pre_om+1);
 #endif
@@ -391,7 +409,13 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #endif
     REQUIRE(vb_calls==expected_vb_calls && vb_rec==s->host && last_vb.BufferLocation==ID3D12Resource_GetGPUVirtualAddress(s->vb.buffer) && last_vb.BufferLocation!=v.BufferLocation && last_vb.SizeInBytes==4080 && last_vb.StrideInBytes==24);
 #ifdef TEST_INLINE_B27
-    REQUIRE(!tables && s->b27.slot==368504 && s->b27.heap==inline_pair[0] && s->b27.root==colour &&
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(s->table0.cells==3 && s->table0.slot==368373 && s->prior_b27_slot==368504 && s->table_epoch==epoch+3 &&
+            *(BYTE*)(SIZE_T)composite==0x5a && s->output_serial==output_gen);
+#else
+    REQUIRE(s->table0.cells==1 && s->table0.slot==368504);
+#endif
+    REQUIRE(!tables && s->table0.heap==inline_pair[0] && s->table0.root==colour &&
         bank_pair[0]==orig[0] && bank_pair[1]==orig[1] && slot[0]==0xa5a5a5a5a5a5a5a5ull);
 #endif
     puts("PASS +180 exact VB: placed owner, guarded view/extent, private host address replayed on tail");
@@ -401,7 +425,11 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     IUnknown *ready=publish_late();REQUIRE(ready && !s->pipeline && !s->bound && !xs_list_host(l));
 #ifdef TEST_SECOND_VB
     REQUIRE(FAILED(record_clear4(s,ready)) && !s->bound && !s->pipeline && psos==old_psos);
-    REQUIRE(FAILED(record_b27(s,0,handle)) && !tables && FAILED(record_clear4_draw(s,3,1,0,0)));
+#ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(s->table_epoch==epoch+3 && s->table0.cells==3 && !tables && FAILED(record_clear4_draw(s,3,1,0,0)));
+#else
+    REQUIRE(FAILED(record_table0(s,0,handle)) && !tables && FAILED(record_clear4_draw(s,3,1,0,0)));
+#endif
     ID3D12Resource *buffers[]={s->previous_vb.buffer,s->vb.buffer};
     for(UINT j=0;j<2;j++){
         D3D12_RESOURCE_BARRIER b={.Transition={buffers[j],0,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,D3D12_RESOURCE_STATE_COPY_SOURCE}};
@@ -413,7 +441,7 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
 #else
     pool_vtbl.pipeline(l,ready);REQUIRE(s->bound==ready && psos==old_psos+1 && seen_rec==s->host && s->required_root==colour && FAILED(record_graphics_root(s,root)));
 #ifdef TEST_INLINE_B27
-    REQUIRE(!tables && s->b27.heap==inline_pair[0] && s->b27.root==colour && s->b27.slot==368504 && FAILED(record_b27(s,0,handle)));
+    REQUIRE(!tables && s->table0.heap==inline_pair[0] && s->table0.root==colour && s->table0.slot==368504 && FAILED(record_table0(s,0,handle)));
     puts("PASS logical b27: empty descriptor accepted with NULL PSO, rebind/rewrite, original heaps on split, explicit PSO leaves table unresolved");
 #endif
     REQUIRE(s->pipeline!=diag && s->pipeline!=full && FAILED(record_470(l,UINT64_MAX)) && FAILED(record_clear4_draw(s,3,1,0,0)) &&
@@ -448,12 +476,14 @@ BOOL test_pair_record(ID3D12Device *hd,IUnknown *owner,IUnknown *pso,IUnknown *r
     REQUIRE(FAILED(sl_reset(l,a,NULL,1)) && s->guest_topology==17 && !can_set_topology(s,17));
     REQUIRE(FAILED(record_bounds(s,0,1)) && FAILED(sl_reset(l,a,NULL,1)) && s->full_bounds && s->om.heap[1] && s->attachments[0].identity && sl_reset(l,a,NULL,0)==S_OK && !s->om.heap[0] && !s->om.heap[1] && !s->attachments[0].identity && !s->attachments[1].identity && !s->full_bounds && !s->full_rect && !s->full_vp);
 #ifdef TEST_LATE_COLOUR
-    REQUIRE(!s->previous_vb.placed && !s->previous_vb.buffer && !s->b27.heap && !s->vb.placed && !s->vb.buffer);
+    REQUIRE(!s->previous_vb.placed && !s->previous_vb.buffer && !s->table0.heap && !s->vb.placed && !s->vb.buffer);
     REQUIRE(!s->prior_pso && !s->prior_root && !s->graphics_identity && !s->pipeline && !s->bound);puts("PASS controlled late worker: root on current and split recorder, source not rebound under CBV table, publication alone ineffective, explicit PSO on tail, denied submit and reset");
 #endif
     REQUIRE(!s->source.buffer && !s->source.placed);puts("PASS +160: real wrapper, order and ambiguity guards, identical head/tail root VA, reset and pending-submit refusal");
     REQUIRE(!s->offscreen_sr && !s->rt_roundtripped && !s->guest_topology && !s->clear4_drew && !can_set_topology(s,17));
 #ifdef TEST_DISTINCT_PRIMARY
+    REQUIRE(!s->table0.cells && !s->table0.root && !s->prior_b27_slot && s->table_epoch==epoch+3 && FAILED(record_table0(s,0,composite)));
+    puts("PASS logical composite +120: whole bank span, later slot rewrite and rebind, null PSO on split, stale +c8/draw/submit refused, reset");
     REQUIRE(!s->primary_pin && !s->output_heap && !xs_retain_primary(owner,pk));
     puts("PASS ordinary composite +190: unique live primary RTV, no DSV, generation/alias rejects, original cyan output after slot rewrite and split, reset retired key");
 #endif

@@ -6,7 +6,7 @@ static HRESULT ordered_ready(struct startup_list *s)
     if (!s->single_use || !s->closed || s->error!=S_OK || !s->reservation ||
         s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT || !s->host) return E_INVALIDARG;
     /* This control has no consumer lifetime contract for the colour VB/table. */
-    if (s->previous_vb.buffer || s->previous_vb.placed || s->vb.buffer || s->vb.placed || s->b27.heap || s->host_exposed ||
+    if (s->previous_vb.buffer || s->previous_vb.placed || s->vb.buffer || s->vb.placed || s->table0.heap || s->host_exposed ||
         s->prior_pso || s->pending_470 || s->depth_zero_pending) return E_ACCESSDENIED;
     if (!s->cache_page || memcmp(s->cache_page,cache_template,sizeof cache_template)) return E_INVALIDARG;
     /* Split recordings have queue-side operations between segments. Never flatten them. */

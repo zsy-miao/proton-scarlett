@@ -1129,14 +1129,14 @@ HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommand
     return copy_pass_span(owner,hd,list,va,replacement?0x3df10:0x3ef30,4080,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,expected,out);
 }
 /* The active heap is pinned by this recording; no title descriptor memory is read. */
-HRESULT xs_b27_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT *slot)
+HRESULT xs_active_table_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT cells,UINT *slot)
 {
     if(!active || active->lpVtbl!=&desc_vtbl.unknown)return E_INVALIDARG;
     struct desc_heap *h=CONTAINING_RECORD(active,struct desc_heap,iface);
     if(!h->owner || owner!=&h->owner->iface || !h->visible || !h->tail || h->stride!=32 ||
         h->count!=DESC_STARTUP_COUNT || handle<h->start)return E_INVALIDARG;
     UINT64 offset=handle-h->start;
-    if(offset%32 || offset/32>=DESC_BANK)return E_INVALIDARG;
+    if(offset%32 || !cells || cells>DESC_BANK || offset/32>DESC_BANK-cells)return E_INVALIDARG;
     *slot=(UINT)(offset/32);return S_OK;
 }
 ID3D12Resource *xs_acquire_primary(IUnknown *owner,const void *identity,IUnknown **key)

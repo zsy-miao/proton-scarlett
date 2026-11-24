@@ -969,3 +969,19 @@ All 32 bytes of each entry matched its source at the setter. The three
 destination slots still had no registered serial or kind. The pipeline
 was pending, and the rejected setter left the prior colour table
 selected. No shader read or token-2 presentation followed.
+
+### Successor-list primary release
+
+The three-cell bind passed its fixtures on AMD and RTX, then both ordinary
+runs first stopped at list `+490`, return `+32113`, under `+24847a8`.
+Each issued tokens 1 and 2, queued only synchronization for token 2,
+and presented only token 1 (display count 0→1). The paired runs used
+provider `a87fcadb8331d0effa643c21a3192e8016c2453346870dcc5ef759780f021981`.
+
+The AMD diagnostic saw the composite input bind succeed. The pipeline
+was still pending and the game skipped the composite draw. It closed the
+list, opened a successor and requested a whole-image `2→1f` release.
+The ring key and RTV slot matched the predecessor, but the successor
+held neither the primary registration nor its RTV serial. The release
+was rejected before a rendering batch was observed. Closing one list
+does not establish GPU execution order between it and the next.
