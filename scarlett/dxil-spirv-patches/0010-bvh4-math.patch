@@ -1,0 +1,67 @@
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -241,6 +241,7 @@
+ 	DXIL_SPV_SHADER_QUIRK_ROBUST_COMPUTE_QUAD_BROADCAST = 12,
+ 	DXIL_SPV_SHADER_QUIRK_PRECISE_FMA = 13,
+ 	DXIL_SPV_SHADER_QUIRK_XBOX_RADIX_COUNT = 14,
++	DXIL_SPV_SHADER_QUIRK_XBOX_BVH4_MATH = 15,
+ 	DXIL_SPV_SHADER_QUIRK_INT_MAX = 0x7fffffff
+ } dxil_spv_shader_quirk;
+ 
+diff --git a/dxil_converter.hpp b/dxil_converter.hpp
+--- a/dxil_converter.hpp
++++ b/dxil_converter.hpp
+@@ -772,7 +772,8 @@
+ 	IgnorePrimitiveShadingRate,
+ 	RobustComputeQuadBroadcast,
+ 	PreciseFMA,
+-	XboxRadixCount
++	XboxRadixCount,
++	XboxBVH4Math
+ };
+ 
+ struct OptionShaderQuirk : OptionBase
+diff --git a/opcodes/converter_impl.hpp b/opcodes/converter_impl.hpp
+--- a/opcodes/converter_impl.hpp
++++ b/opcodes/converter_impl.hpp
+@@ -477,6 +477,7 @@
+ 	bool xbox_load_pass = false, xbox_read_only = false, xbox_morton = false, xbox_bitonic = false;
+ 	bool root_constant_arrayed = false;
+ 	bool xbox_scalar_read = false;
++	bool xbox_bvh4_math = false;
+ 	unsigned patch_location_offset = ~0u;
+ 	unsigned descriptor_qa_counter = 0;
+ 	spv::Id primitive_index_array_id = 0;
+diff --git a/dxil_converter.cpp b/dxil_converter.cpp
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -6436,7 +6436,7 @@
+ 	{
+ 		const bool u32 = opnum >= 14;
+ 		auto matches = [&](const llvm::Type *t) { return u32 ? t->isIntegerTy() && t->getIntegerBitWidth() == 32 : t->getTypeID() == f32; };
+-		if ((u32 ? !impl.xbox_morton : impl.xbox_atomic_descriptor >= impl.root_descriptor_count) ||
++		if ((u32 ? !impl.xbox_morton : !impl.xbox_bvh4_math && impl.xbox_atomic_descriptor >= impl.root_descriptor_count) ||
+ 		    call.getNumOperands() != 4 || !matches(call.getType())) return false;
+ 		auto *num = llvm::dyn_cast<llvm::ConstantInt>(call.getOperand(0));
+ 		if (!num || num->getType()->getIntegerBitWidth() != 32 || num->getUniqueInteger().getZExtValue() != opnum) return false;
+@@ -6619,7 +6619,7 @@
+ 		}
+ 		else if (strncmp(called_function->getName().data(), "llvm.", 5) == 0)
+ 		{
+-			if (called_function->getName() == "llvm.copysign.f32" && xbox_atomic_descriptor < root_descriptor_count)
++			if (called_function->getName() == "llvm.copysign.f32" && (xbox_bvh4_math || xbox_atomic_descriptor < root_descriptor_count))
+ 			{
+ 				auto f32 = llvm::Type::TypeID::FloatTyID;
+ 				if (called_function->begin() != called_function->end() || call_inst->getNumOperands() != 2 ||
+@@ -9838,6 +9838,10 @@
+ 			options.quirks.robust_compute_quad_broadcast = true;
+ 			break;
+ 
++		case ShaderQuirk::XboxBVH4Math:
++			xbox_bvh4_math = true;
++			break;
++
+ 		case ShaderQuirk::XboxRadixCount:
+ 			xbox_radix_count = true;
+ 			break;

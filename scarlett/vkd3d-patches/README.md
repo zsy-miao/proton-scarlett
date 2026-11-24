@@ -1,5 +1,7 @@
 # Write-combined graphics pool
 
+For the [BVH4 construction stages](../native/bvh4.md), apply `0016-bvh4.patch` after `0015` with dxil-spirv through `0010`. Run `scarlett/tests/bvh4.sh` with the rebuilt core and adapter.
+
 For the [four LoadPrimitivesPass PSOs](../native/bvh-load-primitives.md), apply `0015-bounded-load-primitives.patch` after `0014` with dxil-spirv through `0009`. Rebuild the adapter and core together; run `scarlett/tests/load-primitives.sh` against the pinned builder and staged tool.
 
 For [SplitInstancesPass](../native/bvh-split-pass.md), apply `0014-bounded-split-pass.patch` after `0013`; it reuses dxil-spirv `0008`. Rebuild core and adapter together and run `scarlett/tests/split-pass.sh` with the pinned builder and staged tool.
