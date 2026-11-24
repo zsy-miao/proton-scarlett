@@ -1,6 +1,7 @@
 #include "gpu_buffer.hpp"
 #include "code_store.hpp"
 #include <cstdio>
+#include <cstdint>
 #include <initializer_list>
 
 extern "C" {
@@ -12,7 +13,23 @@ __declspec(dllimport) void *WINAPI XMemVirtualAlloc(void *,SIZE_T,DWORD,ULONGLON
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s (error %lu)\n",__LINE__,#x,GetLastError()); return 1; } } while (0)
 #define HR(x) CHECK(SUCCEEDED(x))
 
-static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, ULONG_PTR *ids)
+// Test only: the caller already owns both data heaps from the same live run.
+// Consume one 12-byte Dispatch record; no operation exposes the code extent.
+static HRESULT dispatch_record(ID3D12GraphicsCommandList *l, ID3D12CommandSignature *sig,
+        const ImportedBuffer &wc, const ImportedBuffer &wb, UINT64 at)
+{
+    constexpr UINT64 data = 27ull << 20, cached = 74ull << 20;
+    if ((at & 3) || at < data) return E_INVALIDARG;
+    auto resource = (at < cached ? wc : wb).resource();
+    UINT64 offset = at - (at < cached ? data : cached);
+    UINT64 size = resource->GetDesc().Width;
+    if (offset > size || sizeof(D3D12_DISPATCH_ARGUMENTS) > size-offset) return E_INVALIDARG;
+    l->ExecuteIndirect(sig,1,resource,offset,nullptr,0);
+    return S_OK;
+}
+
+static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, ULONG_PTR *ids,
+        const ImportedBuffer &wc, const ImportedBuffer &wb)
 {
     D3D12_ROOT_PARAMETER rp = {};
     rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
@@ -72,11 +89,34 @@ static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, 
     h.Type=D3D12_HEAP_TYPE_READBACK; r.Flags=D3D12_RESOURCE_FLAG_NONE;
     HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&r,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&rb)));
     l->SetComputeRootSignature(root); l->SetComputeRootUnorderedAccessView(0,dst->GetGPUVirtualAddress());
-    l->Dispatch(1,1,1); l->SetPipelineState(ps[1]); l->Dispatch(1,1,1);
+    constexpr UINT64 mib = 1ull << 20, end = 174*mib, boundary = 74*mib;
+    CHECK(size == 27*mib && wc.resource()->GetDesc().Width==47*mib && wb.resource()->GetDesc().Width==100*mib);
+    D3D12_INDIRECT_ARGUMENT_DESC arg={}; arg.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+    D3D12_COMMAND_SIGNATURE_DESC sd={sizeof(D3D12_DISPATCH_ARGUMENTS),1,&arg,0};
+    ID3D12CommandSignature *sig;
+    HR(d->CreateCommandSignature(&sd,nullptr,IID_PPV_ARGS(&sig)));
+    for (UINT64 at : {UINT64(0),size-4,boundary-8,boundary+1,end-8,end,UINT64_MAX-3})
+        CHECK(dispatch_record(l,sig,wc,wb,at)==E_INVALIDARG);
+    UINT64 pos[2]={boundary-12,end-16}; // preserve the WB marker at end-4
+    for (unsigned i=0;i<2;i++) {
+        D3D12_DISPATCH_ARGUMENTS counts={1,1,1};
+        memcpy((void *)((UINT_PTR)base+pos[i]),&counts,sizeof counts);
+        l->SetPipelineState(ps[i]);
+        HR(dispatch_record(l,sig,wc,wb,pos[i]));
+    }
+    MemoryBarrier();
     D3D12_RESOURCE_BARRIER b={}; b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b.Transition.pResource=dst; b.Transition.StateBefore=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     b.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;
     l->ResourceBarrier(1,&b); l->CopyBufferRegion(rb,0,dst,0,8); HR(l->Close());
+    // Recycle both data VAs as zero-filled private RAM before executing. A VA
+    // lookup at submit time would now produce zero groups (or fail import).
+    for (UINT64 off : {UINT64(size),boundary}) {
+        auto extent=(void *)((UINT_PTR)base+off);
+        SIZE_T bytes=(off==size?47:100)*mib;
+        CHECK(XMemMapPhysicalPages(extent,bytes/65536,nullptr)==extent && VirtualFree(extent,0,MEM_RELEASE));
+        CHECK(VirtualAlloc(extent,bytes,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==extent);
+    }
     ID3D12CommandList *batch[]={l}; q->ExecuteCommandLists(1,batch);
     ID3D12Fence *f; HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));
     HR(q->Signal(f,1)); HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr); CHECK(e);
@@ -84,6 +124,8 @@ static int test_code(ID3D12Device3 *d, BYTE *base, SIZE_T size, BYTE *ordinary, 
     UINT *data; HR(rb->Map(0,nullptr,(void **)&data));
     CHECK(data[0]==0xc0de8404 && data[1]==0x8404beef);
     rb->Unmap(0,nullptr);
+    sig->Release();
+    puts("PASS segmented placed Dispatch: WC/WB operands survived exact VA reuse; code, crossing and out-of-range operands rejected");
     CloseHandle(e); f->Release(); l->Release(); a->Release(); q->Release(); dst->Release(); rb->Release();
     ps[0]->Release(); ps[1]->Release(); root->Release();
     puts("PASS code store: two immutable PSOs from the same last-byte-aligned slot, post-reuse fenced GPU results c0de8404/8404beef; imports and unknown code denied");
@@ -204,11 +246,15 @@ int main()
     CHECK(!XMemMapPhysicalPages(alias,1,ids+fourth)); // WC alias of a WB ID denied
     CHECK(!XMemMapPhysicalPages(alias,1,ids+2512)); // cannot get RW alias via this worker arena
     CHECK(!XMemMapPhysicalPages(alias,1,ids+2528));
-    CHECK(!test_code(d,at[2],counts[2]*pg,at[1],ids+2528));
+    ImportedBuffer impossible;
+    SIZE_T deniedOffset;
+    CHECK(FAILED(impossible.acquire(d,at[2],174ull<<20,&deniedOffset)) && !impossible.resource());
+    CHECK(FAILED(impossible.acquire(d,at[3]+counts[3]*pg-4,8,&deniedOffset)) && !impossible.resource());
     CHECK(XMemMapPhysicalPages(at[3],fourth,nullptr)==at[3]);
     CHECK(!XMemMapPhysicalPages(at[3],fourth,ids+fourth)); // no WC map covering WB IDs
     CHECK(XMemMapPhysicalPages(at[3],fourth,ids)==at[3] && *last==0x839ab7c1);
-    for (unsigned i: {3u,4u,0u,1u}) CHECK(XMemMapPhysicalPages(at[i],counts[i],nullptr)==at[i]);
+    CHECK(!test_code(d,at[2],counts[2]*pg,at[1],ids+2528,held,wb));
+    for (unsigned i: {0u,1u}) CHECK(XMemMapPhysicalPages(at[i],counts[i],nullptr)==at[i]);
     CHECK(VirtualFree(alias,0,MEM_RELEASE));
     for (auto a:at) CHECK(VirtualFree(a,0,MEM_RELEASE));
     CHECK(VirtualAlloc(at[3],fourth*pg,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==at[3]);

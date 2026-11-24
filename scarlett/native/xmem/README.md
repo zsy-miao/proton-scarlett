@@ -82,6 +82,8 @@ This tests the translated store and host shader consumer, not an equivalence
 between retail console shader ISA and DXIL. No retail consumer or trusted
 translation for an unknown title shader is supplied.
 
+After mapping, retail requests a [174 MiB placed buffer](../placed-arena.md) spanning the code store and the two read/write regions. The code store also serves as a source for ordinary GPU data copies.
+
 The separate 20 MiB CPU allocation at RVA `+0x5ba6c30` saves its result at
 `+0x78cb800` and branches to `+0x5ba6c65` on null. On success, `+0x28b7b09`
 passes the pointer and `0x1400000` size to heap initialization; `+0x1f67809`
