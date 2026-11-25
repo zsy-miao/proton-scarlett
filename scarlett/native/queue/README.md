@@ -1422,6 +1422,21 @@ One subsequent AMD diagnostic took the first-VB path without the explicit
 `+120` above. Its original end sampled 0 and the display count stopped at 1.
 The vertex-buffer operands after the explicit #42 bind remain unmeasured.
 
+The staged production provider `c2cc52b9` then passed the corrected RTX
+fixture `b6208d70`: `+120` selected `[372469,372472)` at epoch 2 on the
+same recording and end as `+190`. The primary stayed black across selection
+and turned blue on the explicit clear. The vertex-buffer and depth/stencil
+readbacks passed.
+
+Ordinary retail ran once on AMD and then RTX with that same build. Both
+stopped at `+120`, return `+32206` from `+3346d`, and exited 2. RTX logged
+the returned `+190` bind but no `+120` commit. Both submitted token 2
+(ends `f55cd20` and `77b95eb0` respectively) and accepted guest `Signal(3)`.
+Only `PresentX(1)` returned `S_OK`: the display count advanced 0→1 and
+neither run logged the return of `PresentX(2)` or sampled end retirement.
+Private review found only blank black/white frames on AMD and the same
+with a cursor on RTX. The rejecting condition in retail is still unknown.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
