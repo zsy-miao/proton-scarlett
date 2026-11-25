@@ -1199,6 +1199,28 @@ reached the vertex-buffer setter (`+180`, return `+32966`). The original
 token-2 end still read 0 at refusal on both. The later buffer's address
 and extent were not established by those traces.
 
+### Reusing the first vertex buffer
+
+On `796d96a1` a separate RTX trace measured the first vertex view on the
+new list: slot 0, 4,080 bytes, stride 24. It fit at offset `0x1ef30` of
+the same original recycler chunk as the clear input. The fenced `+180`
+fixture on `c87cbe6c` retained all 4,080 bytes and the surrounding guards
+after address reuse. The ordinary RTX run then reached two transitions
+of the same color target: render target → shader resource → render target.
+
+On `2004bc54` the RTX fixture passed both transitions. Ordinary AMD
+stopped at the bank-3 timestamp (`+240`, return `+2482b37`); ordinary
+RTX reached the next color/depth bind (`+190`, return `+33317`). Both
+entered `PresentX(2)` but only token 1 returned successfully. Each
+display count stopped at 1 and both client captures were blank.
+
+A separate AMD diagnostic identified why the timestamp sometimes passed:
+the original bank-3 owner and index were unchanged, but this run's array
+was at `+0x419f6d0` and the requested qword at `+0x419f6d8`. The original
+WB section and full array extent matched. On RTX the new bind named the
+original color and depth descriptors again. Neither observation establishes
+the next vertex view or submission of this list.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
