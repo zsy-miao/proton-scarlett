@@ -1913,6 +1913,23 @@ committed the three-cell range once, at epoch 2 with the original fence at
 of a stale render-target bind. The assertion did not report which clause
 failed. The ordinary AMD/RTX runs for this build were withheld.
 
+The corrected fixture (`eff9822d`, same `f3646156` provider) passed. With
+five live holds and the original end pending, the stale bind returned
+`E_NOTIMPL`. After restoring three holds and observing the end retire, it
+returned `E_ACCESSDENIED`. Neither call created an output or changed the
+bind count. The one logical table selection and all pixel/VB/depth checks
+passed. In the subsequent ordinary pair, AMD stopped at the serial-17
+successor timestamp before pair submission. RTX reached the three-cell
+selection and stopped at the serial-14 successor timestamp. Only token 1
+presented on either adapter.
+
+The RTX diagnostic `c35bb77e` identified the alternate timestamp's first
+refusal: the recorder expected head offset `0x419f6d8` but received
+`0x419f258`. The adjacent tail was at offset `0x419f250`; both shared the
+original held CPU section. Bank 3/index 1 selected that head, and both the
+owner's array and its mirror pointed to the tail. This run stopped before
+token-3 submission.
+
 The queued-fence RTX fixture (`45c41e82`) passed on `4998adf0`: the original
 queue had signaled 4 while the CPU still saw 3. The new serial-14 end
 retired with the recycler at 4; a separate gate then allowed signal 5.
