@@ -47,6 +47,7 @@ HRESULT xs_copy_colour_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UI
 HRESULT xs_copy_clear_source(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList7 *,UINT64,struct xs_clear_source *);
 #ifdef SCARLETT_PAIR_SUBMIT
 HRESULT xs_copy_restored_clear(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList7 *,UINT64,struct xs_clear_source *);
+HRESULT xs_copy_restored_first_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,const struct xs_clear_source*,struct xs_clear_source*);
 #endif
 struct om_views;
 HRESULT xs_freeze_om(IUnknown *,const struct xs_attachment_pin [2],const SIZE_T [2],struct om_views *);

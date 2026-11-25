@@ -1156,6 +1156,25 @@ HRESULT xs_copy_restored_clear(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCo
     if(SUCCEEDED(hr)){out->span=v;out->needs_publication=TRUE;}
     return hr;
 }
+HRESULT xs_copy_restored_first_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,
+        UINT64 va,const struct xs_clear_source *clear,struct xs_clear_source *out)
+{
+#ifdef SCARLETT_STAGED_PLACED
+    const struct lease_span *c=&clear->span;struct lease_span v;
+    if(!clear->needs_publication || !clear->placed || clear->placed->lpVtbl!=&placed_vtbl.unknown || !clear->capture ||
+       CONTAINING_RECORD(clear->placed,struct placed_identity,iface)->private->capture!=clear->capture ||
+       c->bytes!=100 || c->holds!=2 || c->stamp!=~1ull ||
+       !lease_span_read(c->arena.base,va,4080,&v) || memcmp(&c->arena,&v.arena,sizeof v.arena) ||
+       v.node!=c->node || v.data!=c->data || v.gen!=c->gen || v.holds!=3 || v.stamp!=c->stamp ||
+       va-v.data!=0x1ef30 || va>c->va || c->va-va<v.bytes)return E_INVALIDARG;
+    HRESULT hr=copy_pass_span(owner,hd,list,va,(UINT)(va-v.arena.base),v.bytes,
+            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,clear->placed,out);
+    if(SUCCEEDED(hr)){out->span=v;out->needs_publication=TRUE;}
+    return hr;
+#else
+    (void)owner;(void)hd;(void)list;(void)va;(void)clear;(void)out;return E_NOTIMPL;
+#endif
+}
 #endif
 HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,BOOL replacement,IUnknown *expected,struct xs_clear_source *out)
 {

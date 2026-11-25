@@ -1,8 +1,4 @@
-/* Shared by the C recorder and the C++ fixture; the native and carried modes
- * differ in setup and checks, never in argument layout. */
-#if defined(TEST_NATIVE160) && defined(TEST_CARRIED_60)
-#error choose one restored-clear fixture mode
-#endif
+/* Both TUs use this signature, including the native source + carried draw fixture. */
 #ifdef __cplusplus
 extern "C"
 #endif
