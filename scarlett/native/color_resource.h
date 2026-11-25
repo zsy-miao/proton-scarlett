@@ -62,6 +62,11 @@ struct color_resource {
     HANDLE tile_section;
     ID3D12Heap *tile_heap;
     UINT_PTR tile_va,tile_offset;
+#ifdef SCARLETT_PAIR_SUBMIT
+    ID3D12Fence *sr_end;
+    SIZE_T sr_slot;
+    UINT64 sr_serial;
+#endif
 };
 static ULONG WINAPI color_addref(IUnknown *i)
 {
@@ -81,6 +86,9 @@ static ULONG WINAPI color_release(IUnknown *i)
     ReleaseSRWLockExclusive(&d->descriptor_lock);
     if (!refs) {
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
+#ifdef SCARLETT_PAIR_SUBMIT
+        if(r->sr_end)ID3D12Fence_Release(r->sr_end);
+#endif
         if(r->writer) ID3D12CommandQueue_Release(r->writer);
 #endif
         if (r->xfree) r->xfree(r->slice,XS_DISPLAY_ATTR); /* hook runs now, irrespective of host refs */

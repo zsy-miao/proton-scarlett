@@ -63,6 +63,11 @@ void xs_finish_flip(IUnknown *);
 #ifdef SCARLETT_PAIR_SUBMIT
 void xs_returned_common(IUnknown *,SIZE_T,UINT64);
 HRESULT xs_reuse_common(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *);
+struct xs_sr_ticket {struct xs_attachment_pin rt;ID3D12Fence *end;};
+BOOL xs_sr_submitted(IUnknown *,const struct xs_attachment_pin *,ID3D12CommandQueue *,ID3D12Fence *);
+HRESULT xs_sr_snapshot(IUnknown *,const void *,struct xs_sr_ticket *);
+HRESULT xs_sr_view(IUnknown *,const struct xs_sr_ticket *,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *);
+HRESULT xs_reuse_with_sr(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *,const struct xs_sr_ticket *);
 #endif
 #endif
 HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary,UINT64 *serial);

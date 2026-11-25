@@ -9,7 +9,8 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     struct startup_list *old=sl(source);IUnknown *owner=old->pool_owner;ID3D12Device *d=old->device;
     UINT64 epoch=0;
     if(!presented)return FAILED(xs_reuse_common(owner,keys[0],old->primary,NULL,&epoch))?S_OK:E_FAIL;
-    if(!xs_is_rtx3070(d))return E_NOTIMPL;
+    BOOL native=xs_is_adapter(d,0x1002,0x164e);
+    if(!native && !xs_is_rtx3070(d))return E_NOTIMPL;
     IUnknown *a,*l,*foreign,*done;
 #define RCK(e) do{if(!(e)){fprintf(stderr,"FAIL primary reacquire line=%d: %s\n",__LINE__,#e);return E_FAIL;}}while(0)
     RCK(SUCCEEDED(xs_allocator(d,0,&a)) && SUCCEEDED(xs_device_list(d,0,a,TRUE,owner,&l)) &&
@@ -17,8 +18,22 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     struct startup_list *s=sl(l);
     UINT64 base=(UINT_PTR)ctrl,ref=3;
     RCK(SUCCEEDED(xs_bind_pool_heaps(l,2,old->heaps)));pool_vtbl.marker(l,base+0x98,2,0,0);
-    RCK(SUCCEEDED(xs_bind_pool_heaps(l,2,old->heaps)));pool_vtbl.timestamp(l,old->stamp->tail_addr+8,0,0,1);
-    pool_vtbl.marker(l,base+0x9c,0x29a5ee15,0,0);
+    RCK(SUCCEEDED(xs_bind_pool_heaps(l,2,old->heaps)));
+    volatile UINT64 *tick=NULL;
+    if(native){
+        RCK(old->stamp->retained && old->stamp->tail_offset==0x4196210);
+        BYTE *sys=(BYTE*)(old->stamp->tail_addr-old->stamp->tail_offset);
+        UINT64 array=(UINT_PTR)(sys+0x419f250),used=array+0x4010;DWORD *rec=(DWORD*)(sys+0x3fb30c0);
+        fixture_wb_inputs.active=3;fixture_wb_inputs.index=1;fixture_wb_inputs.slots[3]=(UINT_PTR)rec;
+        rec[2]=2048;rec[3]=8;rec[14]=2<<16;
+        memcpy(rec+18,&used,8);memcpy(rec+20,&array,8);memcpy(rec+22,&array,8);
+        tick=(volatile UINT64*)(array+8);*tick=0;ctrl[0x98/4]=ctrl[0x9c/4]=~0u;MemoryBarrier();
+        pool_vtbl.timestamp(l,array+8,0,0,1);pair_op(s,0x238);
+        RCK(SUCCEEDED(native_post_at(s,base+0x9c,0x29a5ee15,0,0,0x4ed46aa)));batch_step(s,B_POST);
+    }else{
+        pool_vtbl.timestamp(l,old->stamp->tail_addr+8,0,0,1);
+        pool_vtbl.marker(l,base+0x9c,0x29a5ee15,0,0);
+    }
     RCK(SUCCEEDED(wait64_at(s,base,7,ref,1,0x2484b12)));pair_op(s,0x490);
     D3D12_TEXTURE_BARRIER b={.SyncBefore=D3D12_BARRIER_SYNC_NONE,.SyncAfter=D3D12_BARRIER_SYNC_RENDER_TARGET,
         .AccessBefore=D3D12_BARRIER_ACCESS_NO_ACCESS,.AccessAfter=D3D12_BARRIER_ACCESS_RENDER_TARGET,
@@ -27,6 +42,11 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
 #define TRY() record_primary_barrier_at(s,1,&g,0x32113)
     b.pResource=(ID3D12Resource*)keys[1];RCK(FAILED(TRY()));
     b.pResource=old->primary;RCK(FAILED(TRY()));b.pResource=(ID3D12Resource*)keys[0];
+    if(native){
+        RCK(s->split_at==6 && s->post->parent==s->marker && s->post->counter && s->stamp->third_wb);
+        s->split_at=5;RCK(FAILED(TRY()));s->split_at=6;
+        s->marker->native_post=0;RCK(FAILED(TRY()));s->marker->native_post=0x29a5ee15;
+    }
     b.AccessBefore=0;RCK(FAILED(TRY()));b.AccessBefore=D3D12_BARRIER_ACCESS_NO_ACCESS;
     b.Subresources.NumPlanes=1;RCK(FAILED(TRY()));b.Subresources.NumPlanes=0;
     RCK(FAILED(record_primary_barrier_at(s,1,&g,0x32114)) && !s->primary);
@@ -50,17 +70,77 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     D3D12_BOX box={0,0,0,1,1,1};ID3D12GraphicsCommandList7_CopyTextureRegion(s->host,&dst,0,0,0,&src,&box);
     copy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;copy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&copy);
+#ifdef TEST_SR_REUSE
+    extern IUnknown *test_sr_image(IUnknown *);
+    IUnknown *key=test_sr_image(owner),*prior=NULL;
+    SIZE_T rt_slot=slot+64,empty=0;RCK(key && SUCCEEDED(xs_write_view(owner,0xa0,key,view,rt_slot)));
+    /* The fixture builds a separate producer; the ordinary path uses pair_execute's end signal. */
+    extern ID3D12Resource *test_sr_host(IUnknown *);
+    ID3D12Resource *img=test_sr_host(key);
+    ID3D12CommandAllocator *pa=NULL;ID3D12GraphicsCommandList7 *pl=NULL;
+    RCK(SUCCEEDED(ID3D12Device_CreateCommandAllocator(d,D3D12_COMMAND_LIST_TYPE_DIRECT,&IID_ID3D12CommandAllocator,(void**)&pa)) &&
+        SUCCEEDED(ID3D12Device_CreateCommandList(d,0,D3D12_COMMAND_LIST_TYPE_DIRECT,pa,NULL,&IID_ID3D12GraphicsCommandList7,(void**)&pl)) &&
+        SUCCEEDED(xs_shared_fence(d,&prior)));
+    D3D12_TEXTURE_BARRIER rev={.SyncBefore=0x40,.SyncAfter=0x1000,.AccessBefore=8,.AccessAfter=0x80,.LayoutBefore=2,.LayoutAfter=6,.pResource=img,.Subresources.IndexOrFirstMipLevel=UINT_MAX};
+    g.pTextureBarriers=&rev;ID3D12GraphicsCommandList7_Barrier(pl,1,&g);RCK(SUCCEEDED(ID3D12GraphicsCommandList7_Close(pl)));
+    ID3D12CommandList *batch=(ID3D12CommandList*)pl;
+    ID3D12CommandQueue_ExecuteCommandLists(as_queue(q),1,&batch);
+    RCK(SUCCEEDED(queue_signal(q,prior,1)));
+    b=(D3D12_TEXTURE_BARRIER){.SyncBefore=0x1000,.SyncAfter=0x40,.AccessBefore=0x80,.AccessAfter=8,.LayoutBefore=6,.LayoutAfter=2,
+        .pResource=(ID3D12Resource*)key,.Subresources.IndexOrFirstMipLevel=UINT_MAX};g.pTextureBarriers=&b;
+    /* Only the consumer prefix's unrelated pipeline setters are synthesized. */
+    memcpy(s->ops,"\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92",18);
+    s->nops=18;s->phase=B_INELIGIBLE;s->pending_470=s->depth_zero_pending=TRUE;
+    RCK(FAILED(TRY()));
+    struct xs_attachment_pin written={key,img,rt_slot,*(UINT64*)rt_slot};
+    xs_sr_submitted(owner,&written,as_queue(q),as_fence(prior));
+    b.pResource=(ID3D12Resource*)keys[0];RCK(FAILED(TRY()));b.pResource=(ID3D12Resource*)key;
+    ++*(UINT64*)rt_slot;RCK(FAILED(TRY()));--*(UINT64*)rt_slot;
+    RCK(SUCCEEDED(TRY()) && s->sr.rt.host==img && img!=s->primary);pair_op(s,0x190);
+    RCK(FAILED(record_om(s,1,&slot,FALSE,NULL)) && FAILED(record_om(s,1,&rt_slot,FALSE,&slot)) &&
+        SUCCEEDED(record_om(s,1,&rt_slot,FALSE,&empty)));
+    const FLOAT red[]={1,0,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,s->sr_cpu,red,0,NULL);
+    /* Put a second pixel next to the primary witness at an aligned footprint offset. */
+    ID3D12Resource *color_rb=NULL;UINT *color_pixel=NULL;
+    RCK(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&color_rb)) &&
+        SUCCEEDED(ID3D12Resource_Map(color_rb,0,NULL,(void**)&color_pixel)));*color_pixel=0xdeadbeef;
+    copy.Transition=(D3D12_RESOURCE_TRANSITION_BARRIER){img,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&copy);dst.pResource=color_rb;src.pResource=img;
+    ID3D12GraphicsCommandList7_CopyTextureRegion(s->host,&dst,0,0,0,&src,&box);
+    copy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;copy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&copy);
+    rev.pResource=(ID3D12Resource*)key;g.pTextureBarriers=&rev;pair_op(s,0x490);RCK(SUCCEEDED(TRY()) && FAILED(TRY()));
+    s->pending_470=FALSE; /* fixture contains no draw; allow submission of its standalone tail */
+#endif
     RCK(SUCCEEDED(sl_close(l)) && FAILED(checked_startup_submit(foreign,1,&l,0,0)));
     UINT64 stale=s->reuse_epoch;
     RCK(FAILED(xs_reuse_common(owner,keys[0],old->primary,as_queue(foreign),&stale)));
     RCK(SUCCEEDED(checked_startup_submit(q,1,&l,0,0)) && SUCCEEDED(queue_signal(q,done,1)));
     RCK(FAILED(checked_startup_submit(q,1,&l,0,0)));
+#ifdef TEST_SR_REUSE
+    IUnknown_Release(key);IUnknown_Release(l);l=NULL; /* in-flight retirement now owns the consumer's refs */
+#endif
     HANDLE event=CreateEventW(NULL,FALSE,FALSE,NULL);RCK(event && SUCCEEDED(xs_fence_event(done,1,event)) &&
         WaitForSingleObject(event,150)==WAIT_TIMEOUT && *pixel==0xdeadbeef);
+    if(native){
+        ULONGLONG until=GetTickCount64()+10000;
+        while(ctrl[0x9c/4]!=0x29a5ee15 && GetTickCount64()<until)Sleep(1);
+        RCK(*tick && ctrl[0x98/4]==2 && ctrl[0x9c/4]==0x29a5ee15 && *pixel==0xdeadbeef &&
+            WaitForSingleObject(event,0)==WAIT_TIMEOUT);
+    }
     InterlockedExchange64((volatile LONG64*)ctrl,ref);
     RCK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0 && *pixel==0 && ID3D12Device_GetDeviceRemovedReason(d)==S_OK);
+#ifdef TEST_SR_REUSE
+    RCK(*color_pixel==0xff0000ff);
+    ID3D12Resource_Unmap(color_rb,0,NULL);ID3D12Resource_Release(color_rb);
+    ID3D12GraphicsCommandList7_Release(pl);ID3D12CommandAllocator_Release(pa);IUnknown_Release(prior);
+    puts("PASS offscreen SR reuse: same-queue producer, private RTV, reverse, red offscreen and black primary after fenced retirement");
+#endif
     ID3D12Resource_Unmap(rb,0,NULL);ID3D12Resource_Release(rb);
-    CloseHandle(event);IUnknown_Release(done);IUnknown_Release(foreign);IUnknown_Release(l);IUnknown_Release(a);
+    CloseHandle(event);IUnknown_Release(done);IUnknown_Release(foreign);if(l)IUnknown_Release(l);IUnknown_Release(a);
+    if(native){
+        puts("PASS RADV native +490: original +9c before held split-6 tail; returned COMMON primary cleared on late counter");
+    }
     return S_OK;
 #undef TRY
 #undef RCK

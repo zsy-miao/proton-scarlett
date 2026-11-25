@@ -24,6 +24,10 @@ struct startup_list {
     ID3D12CommandAllocator *after_alloc;
     UINT64 alloc_generation;
     UINT64 reuse_epoch;
+    struct xs_sr_ticket sr;
+    ID3D12DescriptorHeap *sr_view;
+    D3D12_CPU_DESCRIPTOR_HANDLE sr_cpu;
+    BOOL sr_reversed;
     UINT nops,split_at;
     BYTE ops[128]; /* Guest vtable slots; overflow is ineligible. */
 #endif
@@ -97,6 +101,12 @@ const IID xs_pool_list_id = {0x5b160d0f,0xac1b,0x4185,{0x8b,0xa8,0xb3,0xae,0x42,
 
 #ifdef SCARLETT_PAIR_SUBMIT
 static void pair_seal(struct startup_list *,IUnknown *);
+static void drop_sr(struct startup_list *s){
+    if(s->sr_view)ID3D12DescriptorHeap_Release(s->sr_view);
+    if(s->sr.end)ID3D12Fence_Release(s->sr.end);
+    if(s->sr.rt.identity)IUnknown_Release(s->sr.rt.identity);
+    s->sr=(struct xs_sr_ticket){0};s->sr_view=NULL;s->sr_reversed=FALSE;
+}
 static void pair_unseal(struct startup_list *);
 static void pair_op(struct startup_list *s,UINT slot){if(s->nops<sizeof s->ops)s->ops[s->nops++]=slot/8;else s->nops=sizeof s->ops+1;}
 #else
@@ -170,6 +180,7 @@ static ULONG WINAPI sl_release(IUnknown *i)
     if (!refs) {
 #ifdef SCARLETT_PAIR_SUBMIT
         pair_unseal(s);
+        drop_sr(s);
         drop_om(&s->first_om);
         if(s->pre_release)ID3D12GraphicsCommandList7_Release(s->pre_release);
         if(s->after_alloc)ID3D12CommandAllocator_Release(s->after_alloc);
@@ -292,6 +303,7 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     if(s->pre_release){ID3D12GraphicsCommandList7_Release(s->pre_release);s->pre_release=NULL;}
     if(s->after_alloc){ID3D12CommandAllocator_Release(s->after_alloc);s->after_alloc=NULL;}
     s->nops=s->split_at=0;s->reuse_epoch=0;
+    drop_sr(s);
     s->alloc_generation=InterlockedCompareExchange64(&CONTAINING_RECORD(alloc,struct command_allocator,a.iface)->generation,0,0);
 #endif
     forget_receipt(s);s->output_slot=0;
@@ -743,6 +755,16 @@ static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER
 }
 /* shortcut: one observed whole-primary UAV-to-RT transition per recording. */
 #ifdef SCARLETT_PAIR_SUBMIT
+static BOOL returned_primary_wait(const struct startup_list *s)
+{
+    const struct prefix_marker *m=s->marker,*p=s->post;
+    if (!m || m->value!=2 || !p || p->parent!=m || !p->counter || s->post_boundary ||
+        !s->head || s->head==s->host || !s->stamp) return FALSE;
+    if (!m->buffer) return s->split_at==5 && m->alias && p->counter==m->alias;
+    /* record_counter_wait mapped this parent's buffer and split after its native +9c write. */
+    return s->split_at==6 && m->heap && m->control_section && !m->alias && !m->word &&
+        m->native_post==0x29a5ee15 && !p->word && s->stamp->third_wb && s->stamp->retained;
+}
 static HRESULT record_primary_barrier_at(struct startup_list *s,UINT count,const D3D12_BARRIER_GROUP *groups,UINT_PTR issuer)
 #else
 static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3D12_BARRIER_GROUP *groups)
@@ -761,6 +783,25 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
     if (!ReadProcessMemory(GetCurrentProcess(),g.pTextureBarriers,&b,bytes,&n) || n!=bytes) return E_POINTER;
     const D3D12_BARRIER_SUBRESOURCE_RANGE all={.IndexOrFirstMipLevel=UINT_MAX};
     if (b.Flags || memcmp(&b.Subresources,&all,sizeof all)) return E_NOTIMPL;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->reuse_epoch && issuer==0x32113 && s->primary_cleared && !s->host_exposed &&
+       !s->attachments[0].identity && !s->deferred && s->pending_470 && s->depth_zero_pending){
+        if(!s->sr.end && s->nops==18 && !memcmp(s->ops,"\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92",18) &&
+           s->split_at==5 && s->marker && s->marker->alias && rt_shader_edge(&b,TRUE)){
+            if((UINT_PTR)b.pResource==s->primary_key)return E_INVALIDARG;
+            HRESULT hr=xs_sr_snapshot(s->pool_owner,b.pResource,&s->sr);
+            if(FAILED(hr))return hr;
+            if(s->sr.rt.host==s->primary){drop_sr(s);return E_INVALIDARG;}
+        }else if(s->sr.end && b.pResource==(ID3D12Resource*)s->sr.rt.identity){
+            if(!s->sr_view || s->sr_reversed || !rt_shader_edge(&b,FALSE) ||
+               b.pResource!=(ID3D12Resource*)s->sr.rt.identity)return E_NOTIMPL;
+            s->sr_reversed=TRUE;
+        }else goto original_edge;
+        b.pResource=s->sr.rt.host;g.pTextureBarriers=&b;ID3D12GraphicsCommandList7_Barrier(s->host,1,&g);
+        recorded_direct_state(s);return S_OK;
+    }
+original_edge:
+#endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     if(s->deferred)return E_ACCESSDENIED;
     if(!s->primary && b.LayoutAfter==(D3D12_BARRIER_LAYOUT)0x1f)return defer_release(s,&b);
@@ -799,9 +840,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
         if(issuer!=0x32113 || b.LayoutAfter!=D3D12_BARRIER_LAYOUT_RENDER_TARGET || b.SyncBefore!=D3D12_BARRIER_SYNC_NONE ||
            b.SyncAfter!=D3D12_BARRIER_SYNC_RENDER_TARGET || b.AccessBefore!=D3D12_BARRIER_ACCESS_NO_ACCESS ||
            b.AccessAfter!=D3D12_BARRIER_ACCESS_RENDER_TARGET || s->phase!=B_WAIT || s->alloc_generation ||
-           !s->marker || s->marker->value!=2 || !s->marker->alias || !s->post || s->post->parent!=s->marker ||
-           s->post->counter!=s->marker->alias || s->post_boundary || !s->head || !s->stamp ||
-           s->offered || s->host_exposed || s->split_at!=5 || s->nops!=7 ||
+           !returned_primary_wait(s) || s->offered || s->host_exposed || s->nops!=7 ||
            memcmp(s->ops,"\x20\x47\x20\x48\x47\x4a\x92",7))return E_NOTIMPL;
         IUnknown *pin=NULL;
         ID3D12Resource *src=xs_acquire_primary(s->pool_owner,b.pResource,&pin);
@@ -1051,6 +1090,19 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
 }
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->sr.end){
+        SIZE_T at,n,depth=0;
+        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || s->sr_reversed || count!=1 || range ||
+           s->nops!=19 || s->ops[18]!=0x190/8)return E_NOTIMPL;
+        if(!ReadProcessMemory(GetCurrentProcess(),rt,&at,sizeof at,&n) || n!=sizeof at ||
+           (ds && (!ReadProcessMemory(GetCurrentProcess(),ds,&depth,sizeof depth,&n) || n!=sizeof depth)))return E_POINTER;
+        if(at!=s->sr.rt.slot || depth)return E_INVALIDARG;
+        HRESULT hr=xs_sr_view(s->pool_owner,&s->sr,&s->sr_view,&s->sr_cpu);
+        if(SUCCEEDED(hr)){ID3D12GraphicsCommandList7_OMSetRenderTargets(s->host,1,&s->sr_cpu,FALSE,NULL);recorded_direct_state(s);}
+        return hr;
+    }
+#endif
     if(!open_direct_state(s) || !s->pending_470 || !s->attachments[0].identity ||
         !s->attachments[1].identity || count!=1 || range)return E_NOTIMPL;
     SIZE_T slots[2],got;
@@ -1087,7 +1139,19 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
 static void WINAPI pool_om(IUnknown *i,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
     pair_op(sl(i),0x190);
-    if(FAILED(record_om(sl(i),count,rt,range,ds)))xs_stop();
+    HRESULT hr=record_om(sl(i),count,rt,range,ds);
+    if(FAILED(hr)){
+#ifdef SCARLETT_PAIR_SUBMIT
+        if(sl(i)->sr.end){
+            SIZE_T r=0,d=0,n=0;
+            BOOL ok=count && ReadProcessMemory(GetCurrentProcess(),rt,&r,sizeof r,&n) && n==sizeof r;
+            BOOL dok=!ds || (ReadProcessMemory(GetCurrentProcess(),ds,&d,sizeof d,&n) && n==sizeof d);
+            fprintf(stderr,"SR190 refused issuer=%zx list=%p count=%u range=%u rt=%d:%zx ds=%p/%d:%zx expected=%zx/%llu hr=%lx\n",
+                (UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL),i,count,range,ok,r,ds,dok,d,sl(i)->sr.rt.slot,sl(i)->sr.rt.serial,hr);
+        }
+#endif
+        xs_stop();
+    }
 }
 static HRESULT record_bounds(struct startup_list *s,FLOAT lo,FLOAT hi)
 {
@@ -1391,6 +1455,8 @@ struct heap_retirement { struct xs_clear_source previous_vb,vb,source; IUnknown 
     ID3D12DescriptorHeap *output_heap;IUnknown *output_key;
 #ifdef SCARLETT_PAIR_SUBMIT
     BOOL reuse_guard;
+    struct xs_sr_ticket sr;
+    ID3D12DescriptorHeap *sr_view;
 #endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     ID3D12GraphicsCommandList7 *tag_head,*tag_tail;
@@ -1406,6 +1472,9 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
     CloseThreadpoolWait(wait);
 #ifdef SCARLETT_PAIR_SUBMIT
     if(r->reuse_guard)InterlockedDecrement(&pair_inflight);
+    if(r->sr.end)ID3D12Fence_Release(r->sr.end);
+    if(r->sr.rt.identity)IUnknown_Release(r->sr.rt.identity);
+    if(r->sr_view)ID3D12DescriptorHeap_Release(r->sr_view);
 #endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     if (r->tag_tail) {
@@ -1439,6 +1508,10 @@ static struct xs_clear_source retain_source(struct xs_clear_source p)
 }
 static void retain_recording(struct heap_retirement *r,struct startup_list *s)
 {
+#ifdef SCARLETT_PAIR_SUBMIT
+    if((r->sr=s->sr).end){ID3D12Fence_AddRef(r->sr.end);IUnknown_AddRef(r->sr.rt.identity);}
+    if((r->sr_view=s->sr_view))ID3D12DescriptorHeap_AddRef(r->sr_view);
+#endif
     if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
     r->source=retain_source(s->source);r->vb=retain_source(s->vb);r->previous_vb=retain_source(s->previous_vb);
     if ((r->bound=s->bound))IUnknown_AddRef(r->bound);
@@ -1533,7 +1606,7 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
         HRESULT hr=E_ACCESSDENIED;
         if(!s->host_exposed && CONTAINING_RECORD(iface,struct adapter,iface)->display.owner==s->pool_owner &&
            TryAcquireSRWLockExclusive(&escape_lock)){
-            if(!bridge_escaped)hr=xs_reuse_common(s->pool_owner,s->primary_pin,s->primary,q,&s->reuse_epoch);
+            if(!bridge_escaped)hr=xs_reuse_with_sr(s->pool_owner,s->primary_pin,s->primary,q,&s->reuse_epoch,s->sr.end?&s->sr:NULL);
             if(SUCCEEDED(hr)){InterlockedIncrement(&pair_inflight);r->reuse_guard=TRUE;}
             ReleaseSRWLockExclusive(&escape_lock);
         }
@@ -1542,6 +1615,11 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
 #endif
     if(s->primary && FAILED(xs_primary_writer(s->pool_owner,s->primary,q)))xs_stop();
     forget_release(CONTAINING_RECORD(iface,struct adapter,iface));
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(!xs_sr_submitted(s->pool_owner,&s->attachments[0],q,NULL)){
+        ReleaseSRWLockExclusive(lock);retire_heaps(NULL,r,wait,WAIT_OBJECT_0);return E_ACCESSDENIED;
+    }
+#endif
 #endif
     execute_recording(q,s,r);
     if (r) SetThreadpoolWait(wait,r->event,NULL);

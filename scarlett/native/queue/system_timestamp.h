@@ -77,13 +77,23 @@ static BOOL wb_record(UINT64 head,const struct scarlett_section_info *dst,UINT_P
     return w[2]==2048 && w[3]==8 && (w[14]>>16)==2 && array==head-8 &&
         mirror==array && used==array+0x4010;
 }
+#ifdef TEST_REACQUIRE
+static struct { DWORD active,index; UINT_PTR slots[4]; } fixture_wb_inputs;
+#endif
 static BOOL live_wb_head(UINT64 addr,const struct scarlett_section_info *dst,UINT bank,SIZE_T head_off,SIZE_T record_off)
 {
-    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),record;DWORD active,index;SIZE_T n;
+    UINT_PTR record;DWORD active,index;SIZE_T n;
+#ifdef TEST_REACQUIRE
+    if(bank>=ARRAYSIZE(fixture_wb_inputs.slots))return FALSE;
+    const void *bp=&fixture_wb_inputs.active,*ip=&fixture_wb_inputs.index,*rp=&fixture_wb_inputs.slots[bank];
+#else
+    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL);
+    const void *bp=(void*)(exe+0xa943a0c),*ip=(void*)(exe+0x75dedb0),*rp=(void*)(exe+0xa943a18+bank*8);
+#endif
     return dst->section && dst->offset==head_off && dst->view_size==0x49400000 && addr-(UINT_PTR)dst->base==head_off &&
-        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a0c),&active,4,&n) && n==4 && active==bank &&
-        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0x75dedb0),&index,4,&n) && n==4 && index==1 &&
-        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a18+bank*8),&record,sizeof record,&n) && n==sizeof record &&
+        ReadProcessMemory(GetCurrentProcess(),bp,&active,4,&n) && n==4 && active==bank &&
+        ReadProcessMemory(GetCurrentProcess(),ip,&index,4,&n) && n==4 && index==1 &&
+        ReadProcessMemory(GetCurrentProcess(),rp,&record,sizeof record,&n) && n==sizeof record &&
         wb_record(addr,dst,record,record_off);
 }
 static BOOL third_wb_target(UINT64 addr,const struct scarlett_section_info *dst)
