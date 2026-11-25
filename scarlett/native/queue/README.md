@@ -1302,6 +1302,14 @@ advanced 0→1 and the decoded clients stayed blank.
 Each diagnostic sampled its own original token-2 end at 0 at refusal.
 The RTX target selection is a request; it does not show a draw into the primary.
 
+In the ordinary AMD log the factory for the textured composite pipeline
+(#96) returned `S_OK` and a non-null wrapper. That line appeared after the
+producer list closed. The log does not tie the wrapper to the request
+the renderer selected, or show the renderer binding it. In an earlier,
+separate AMD trace the renderer selected the request while its pipeline
+was still null. That list contained the offscreen clear draw but no
+composite draw into the primary.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
