@@ -1533,6 +1533,17 @@ were not captured. AMD stopped at `+120`, return `+32206` from `+3346d`.
 Both runs exited 2; both entered `PresentX(2)` without a logged return,
 the display count stayed at 1, and neither capture showed game content.
 
+A single locked RTX diagnostic captured `+490/+32113` after the
+three-cell selection. One texture barrier covered all subresources of
+the returned primary (RTV serial 14). Sync was `0x40→0`, access
+`0x8→0x80000000`, layout `0x2→0x1f` (guest release), flags 0.
+The resource matched neither offscreen attachment nor token 2's
+serial-17 primary. The refusing list had a different face and segment
+from the `+120` recorder, no original end of its own in the trace,
+and returned `E_ACCESSDENIED`. Its face pointer matched the earlier
+submitted successor, which does not establish ownership of this release.
+Only token 1 returned; the count stayed at 1.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
