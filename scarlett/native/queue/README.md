@@ -1565,6 +1565,15 @@ cc -std=c11 -O2 -Wall -Wextra -Werror scarlett/tests/pair-publication-reuse.c -o
 /tmp/opencode/pair-publication-reuse
 ```
 
+RTX fixture `3a2a39db` retained the serial-14 producer at `Close` with
+no token assigned. After the fixture issued token 3 and registered its
+queue, the exact producer and successor matched once. The already-claimed
+serial-17 receipt, token 2, wrong queue, wrong list order and replay all
+refused. Reset invalidated the saved identity even when the same list
+face closed again. Matching issued no queue work (`execDelta=0`) and
+checked submissions remained denied. This fixture did not observe a
+later retail token or establish release ownership in the game.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
