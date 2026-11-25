@@ -13,7 +13,7 @@ static BOOL pair_profile(struct startup_list *s)
     struct system_timestamp *t=s->stamp;
     struct release_receipt *r=s->offered?s->offered:s->deferred;
     ID3D12DescriptorHeap *banks[2];
-    if(!r || r->owner!=s->pool_owner || r->token!=2 || r->table_epoch!=2 ||
+    if(s->source.needs_publication || !r || r->owner!=s->pool_owner || r->token!=2 || r->table_epoch!=2 ||
        !t || !t->dst || !t->query || t->tail_recorded || !s->heaps[0] || !s->heaps[1] ||
        FAILED(xs_initial_heap_banks(s->pool_owner,s->heaps,banks)))return FALSE;
     if(!s->offered){

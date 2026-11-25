@@ -788,11 +788,13 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
     if(s->reuse_epoch && issuer==0x32113 && s->primary_cleared && !s->host_exposed &&
        !s->attachments[0].identity && !s->deferred && s->pending_470 && s->depth_zero_pending){
         if(!s->sr.end && s->nops==18 && !memcmp(s->ops,"\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92",18) &&
-           s->split_at==5 && s->marker && s->marker->alias && rt_shader_edge(&b,TRUE)){
+           returned_primary_wait(s) && rt_shader_edge(&b,TRUE)){
             if((UINT_PTR)b.pResource==s->primary_key)return E_INVALIDARG;
             HRESULT hr=xs_sr_snapshot(s->pool_owner,b.pResource,&s->sr);
             if(FAILED(hr))return hr;
-            if(s->sr.rt.host==s->primary){drop_sr(s);return E_INVALIDARG;}
+            if(s->sr.rt.host==s->primary || (s->marker->buffer && !s->sr.ds.identity)){
+                drop_sr(s);return E_INVALIDARG;
+            }
         }else if(s->sr.end && b.pResource==(ID3D12Resource*)s->sr.rt.identity){
             if((!s->sr_view && !s->om.heap[0]) || s->sr_reversed || !rt_shader_edge(&b,FALSE) ||
                b.pResource!=(ID3D12Resource*)s->sr.rt.identity)return E_NOTIMPL;
@@ -1208,7 +1210,18 @@ static HRESULT record_source(struct startup_list *s,UINT index,UINT64 va)
 {
     if(!open_direct_state(s) || s->prior_pso || index || !s->full_vp || !s->pending_470 || !s->depth_zero_pending ||
         !s->om.heap[1] || !s->bound || !s->required_root || s->graphics_identity!=s->required_root || s->source.buffer)return E_NOTIMPL;
-    HRESULT hr=xs_copy_clear_source(s->pool_owner,s->device,s->host,va,&s->source);
+    HRESULT hr;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->sr.end){
+        if(!s->reuse_epoch || !s->sr.ds.identity || s->sr_reversed || !s->om.heap[0] ||
+           (s->marker && s->marker->buffer ? (s->split_at!=6 || !returned_primary_wait(s) || s->post->threshold!=1) : s->split_at!=5) ||
+           s->nops!=23 || memcmp(s->ops+18,"\x32\x46\x16\x15\x2c",5))return E_NOTIMPL;
+        hr=xs_copy_restored_clear(s->pool_owner,s->device,s->host,va,&s->source);
+        if(SUCCEEDED(hr))fprintf(stderr,"scarlett: restored +160 recorded host=%p placed=%p capture=%p node=%zx gen=%u bytes=%u pending publication\n",
+            s->host,s->source.placed,s->source.capture,s->source.span.node,s->source.span.gen,s->source.span.bytes);
+    }else
+#endif
+    hr=xs_copy_clear_source(s->pool_owner,s->device,s->host,va,&s->source);
     if(SUCCEEDED(hr)){bind_source(s->host,&s->source);recorded_direct_state(s);}return hr;
 }
 static void WINAPI pool_source(IUnknown *i,UINT index,UINT64 va)
@@ -1220,9 +1233,23 @@ static void WINAPI pool_source(IUnknown *i,UINT index,UINT64 va)
  * depth/bounds/stencil, no PS memory effects, and no depth or stencil output. */
 static HRESULT record_clear4_draw(struct startup_list *s,UINT n,UINT instances,UINT first,UINT base)
 {
+    const struct xs_attachment_pin *rt=&s->attachments[0],*ds=&s->attachments[1];
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->source.needs_publication){
+        const struct lease_span *v=&s->source.span;
+        if(!s->sr.end || s->sr_reversed || !s->reuse_epoch || rt->identity || ds->identity ||
+           !s->source.capture || v->bytes!=100 || !v->gen || v->va-v->arena.base!=0x5ff80 ||
+           v->va-v->data!=0x1ff80 || v->holds!=2 || v->stamp!=~1ull ||
+           s->clear4_lanes!=UINT64_MAX || s->clear4_drew || s->split_at!=5 || s->nops!=24 ||
+           memcmp(s->ops+18,"\x32\x46\x16\x15\x2c\x0c",6))return E_NOTIMPL;
+        rt=&s->sr.rt;ds=&s->sr.ds;
+        if(!rt->host || !ds->host || rt->host==ds->host || !rt->serial || !ds->serial ||
+           !s->om.cpu[0].ptr || !s->om.cpu[1].ptr)return E_INVALIDARG;
+    }
+#endif
     if(n!=3 || instances!=1 || first || base || s->prior_pso || !open_direct_state(s) || !s->depth_zero_pending ||
        !s->pending_470 || s->guest_topology!=D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST || !s->source.buffer || !s->source.placed ||
-       !s->om.heap[0] || !s->om.heap[1] || !s->attachments[0].identity || !s->attachments[1].identity ||
+       !s->om.heap[0] || !s->om.heap[1] || !rt->identity || !ds->identity ||
        !s->full_bounds || !s->full_rect || !s->full_vp || !s->stencil_zero || !s->blend_ones ||
        !s->graphics_root || !s->required_root || s->graphics_identity!=s->required_root)return E_NOTIMPL;
     IUnknown *root=NULL;
@@ -1234,13 +1261,17 @@ static HRESULT record_clear4_draw(struct startup_list *s,UINT n,UINT instances,U
     s->clear4_drew=TRUE;
     recorded_direct_state(s);
     fprintf(stderr,"scarlett: recorded #4 DrawInstanced(3,1,0,0) recorder=%p host=%p lanes=%016llx RTV/DSV=%llu/%llu\n",
-            s,s->host,s->clear4_lanes,s->attachments[0].serial,s->attachments[1].serial);
+            s,s->host,s->clear4_lanes,rt->serial,ds->serial);
     return S_OK;
 }
 static void WINAPI pool_clear4_draw(IUnknown *i,UINT n,UINT instances,UINT first,UINT base)
 {
     pair_op(sl(i),0x60);
-    if(FAILED(record_clear4_draw(sl(i),n,instances,first,base)))xs_stop();
+    struct startup_list *s=sl(i);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->source.needs_publication && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0xbff06)xs_stop();
+#endif
+    if(FAILED(record_clear4_draw(s,n,instances,first,base)))xs_stop();
 }
 /* Initial mode-15 inputs are flushed with the previous draw pinned, before explicit +c8. */
 static BOOL pending_colour_inputs(struct startup_list *s)
@@ -1251,6 +1282,9 @@ static BOOL pending_colour_inputs(struct startup_list *s)
 }
 static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *input)
 {
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->source.needs_publication)return E_NOTIMPL;
+#endif
     BOOL replacement=s->vb.buffer!=NULL;
     if(!pending_colour_inputs(s)||slot||count!=1)return E_NOTIMPL;
     if(replacement && (!s->rt_roundtripped || s->table0.cells!=1 || s->table0.heap!=s->heaps[0] ||
@@ -1451,6 +1485,9 @@ ID3D12GraphicsCommandList7 *xs_list_host(IUnknown *i)
     ID3D12GraphicsCommandList7 *host=NULL;
     AcquireSRWLockExclusive(&s->borrow_lock);
     if (!s->prior_pso && !s->primary_released && !s->depth_zero_pending && !s->pending_470 && !s->bound
+#ifdef SCARLETT_PAIR_SUBMIT
+        && !s->source.needs_publication
+#endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
         && !s->deferred
 #endif
@@ -1596,6 +1633,9 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
         !ReadProcessMemory(GetCurrentProcess(),list,&vt,sizeof vt,&n) || n!=sizeof vt ||
         (vt!=&sl_vtbl.prefix && vt!=&pool_vtbl.prefix)) return E_INVALIDARG;
     struct startup_list *s = sl(list);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->source.needs_publication)return E_ACCESSDENIED;
+#endif
 #ifdef XS_TEST_ORDERED_QUEUE
     if (s->single_use) return E_ACCESSDENIED;
 #endif

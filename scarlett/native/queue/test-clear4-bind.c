@@ -92,6 +92,116 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
 #include "test-quad-read.h"
 #include "test-rt-roundtrip.h"
+#ifdef TEST_RESTORED_CLEAR
+#include "test-restored-abi.h"
+/* Original mapping, capture, list and fence are real. Only the prior list prefix
+ * and title recycler are synthetic. Raw execute below is fixture-owned. */
+extern ID3D12RootSignature *xs_bvh_root_host(IUnknown*,IUnknown*);
+BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown *root,IUnknown **ids,ID3D12Resource **images,SIZE_T *slots,IUnknown **siblings,UINT64 old,
+        IUnknown *placed,IUnknown *duplicate,void (*recycle)(void*),void *arg)
+{
+    IUnknown *a,*b,*l,*q,*gate,*done;
+    REQUIRE(xs_allocator(d,0,&a)==S_OK && xs_allocator(d,0,&b)==S_OK && xs_device_list(d,0,a,TRUE,owner,&l)==S_OK &&
+        xs_direct_queue(d,&q)==S_OK && xs_shared_fence(d,&gate)==S_OK && xs_shared_fence(d,&done)==S_OK);
+    struct startup_list *s=sl(l),pass=*s;
+    struct lease_arena *arena=(void*)((UINT_PTR)GetModuleHandleW(NULL)+0x75df1b8);
+    _Alignas(8) BYTE nodes[216*0x58]={0};
+    UINT_PTR base=old-0x3ff80,va=old+0x20000;BYTE expected[100];memcpy(expected,(void*)old,100);
+    memset((void*)va,0x11,100);memset((void*)old,0x55,100);MemoryBarrier();
+    *arena=(struct lease_arena){base,(UINT_PTR)nodes,216,0x20000,27ull<<20};
+    struct lease_node *v=(void*)(nodes+2*0x58);*v=(struct lease_node){.data=base+0x40000,.gen=17,.holds=2,.stamp=~1ull};
+#ifdef TEST_CARRIED_60
+    pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);pool_vtbl.pipeline(l,pso);pool_vtbl.root(l,root);
+    pool_vtbl.depth_order(l,0);pool_vtbl.stencil(l,0);pool_vtbl.state470(l,UINT64_MAX);pool_vtbl.blend(l,ones_factor);
+    pass=*s;
+    struct xs_attachment_pin pins[2];
+    for(UINT k=0;k<2;k++)pins[k]=(struct xs_attachment_pin){ids[k],images[k],slots[k],*(UINT64*)slots[k]};
+    /* OM/source mechanics use the real pins; the previous submission is independently exercised by the DSV fixture. */
+    pass.sr=(struct xs_sr_ticket){pins[0],pins[1],as_fence(gate)};pass.reuse_epoch=1;pass.nops=19;pass.split_at=5;
+    memcpy(pass.ops+18,"\x32\x46\x16\x15\x2c\x0c",6);
+    REQUIRE(record_om(&pass,1,slots,FALSE,slots+1)==S_OK && pass.om.heap[0] && pass.om.heap[1]);
+    REQUIRE(record_bounds(&pass,0,1)==S_OK && record_clear_raster(&pass,1,&clear_rect,FALSE)==S_OK &&
+        record_clear_raster(&pass,1,&clear_viewport,TRUE)==S_OK);
+    pass.nops=23;
+    const FLOAT magenta[]={1,0,1,1};
+    ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,pass.om.cpu[0],magenta,0,NULL);
+    ID3D12GraphicsCommandList7_ClearDepthStencilView(s->host,pass.om.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
+    REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
+        xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
+#else
+    (void)images;(void)slots;(void)siblings;
+    pass.full_vp=pass.depth_zero_pending=pass.pending_470=TRUE;pass.bound=pso;pass.required_root=pass.graphics_identity=root;
+    pass.sr.end=as_fence(gate);pass.sr.ds.identity=ids[1];pass.reuse_epoch=1;pass.nops=23;pass.split_at=5;
+    pass.om.heap[0]=pass.om.heap[1]=(void*)1; /* presence-only in record_source; never dispatched */
+    memcpy(pass.ops+18,"\x32\x46\x16\x15\x2c",5);
+#ifdef TEST_NATIVE160
+    /* Presence/lineage fields only; neither the marker nor the timestamp is executed here. */
+    UINT64 counter=0;
+    struct prefix_marker m={.value=2,.buffer=(void*)1,.heap=(void*)1,.control_section=(HANDLE)1,.native_post=0x29a5ee15};
+    struct prefix_marker post={.parent=&m,.counter=&counter,.threshold=1};
+    struct system_timestamp stamp={.third_wb=TRUE,.retained=(void*)1};
+    pass.head=(void*)1;pass.split_at=6;pass.marker=&m;pass.post=&post;pass.stamp=&stamp;
+#endif
+    ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,xs_bvh_root_host(owner,root));
+#endif
+    REQUIRE(FAILED(record_source(&pass,0,va)) && IUnknown_Release(duplicate)==0);
+#ifdef TEST_NATIVE160
+    stamp.third_wb=FALSE;REQUIRE(FAILED(record_source(&pass,0,va)));stamp.third_wb=TRUE;
+    post.parent=NULL;REQUIRE(FAILED(record_source(&pass,0,va)));post.parent=&m;
+    post.counter=NULL;REQUIRE(FAILED(record_source(&pass,0,va)));post.counter=&counter;
+    m.native_post=0;REQUIRE(FAILED(record_source(&pass,0,va)));m.native_post=0x29a5ee15;
+    pass.split_at=5;REQUIRE(FAILED(record_source(&pass,0,va)));pass.split_at=6;
+#endif
+    pass.sr_reversed=TRUE;REQUIRE(FAILED(record_source(&pass,0,va)));pass.sr_reversed=FALSE;
+    REQUIRE(FAILED(record_source(&pass,1,va)) && FAILED(record_source(&pass,0,old)) && FAILED(record_source(&pass,0,va+16)));
+    v->holds++;REQUIRE(FAILED(record_source(&pass,0,va)));v->holds--;
+    v->gen=0;REQUIRE(FAILED(record_source(&pass,0,va)));v->gen=17;
+    v->stamp=3;REQUIRE(FAILED(record_source(&pass,0,va)));v->stamp=~1ull;
+    REQUIRE(!pass.source.buffer && record_source(&pass,0,va)==S_OK && pass.source.placed==placed && pass.source.capture &&
+        pass.source.needs_publication && pass.source.span.node==(UINT_PTR)v && pass.source.span.gen==17 && pass.source.span.bytes==100 &&
+        src_host==s->host && last_va!=va && last_va==ID3D12Resource_GetGPUVirtualAddress(pass.source.buffer));
+#ifdef TEST_CARRIED_60
+    pass.nops=24;
+    REQUIRE(FAILED(record_clear4_draw(&pass,4,1,0,0)) && FAILED(record_clear4_draw(&pass,3,2,0,0)) &&
+        FAILED(record_clear4_draw(&pass,3,1,1,0)) && FAILED(record_clear4_draw(&pass,3,1,0,1)));
+    pass.sr_reversed=TRUE;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.sr_reversed=FALSE;
+    pass.clear4_lanes=0;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.clear4_lanes=UINT64_MAX;
+    pass.pipeline=NULL;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.pipeline=s->pipeline;
+    pass.graphics_identity=NULL;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.graphics_identity=root;
+    pass.sr.ds.identity=NULL;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.sr.ds.identity=ids[1];
+    REQUIRE(record_clear4_draw(&pass,3,1,0,0)==S_OK && FAILED(record_clear4_draw(&pass,3,1,0,0)));
+#endif
+    s->source=pass.source;
+    ID3D12Resource *dst=s->source.buffer,*rb;D3D12_RESOURCE_DESC rd;dst->lpVtbl->GetDesc(dst,&rd);REQUIRE(rd.Width==100);rd.Width=128;
+    D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
+    REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb)));
+    BYTE *p;REQUIRE(SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&p)));memset(p,0xe7,128);ID3D12Resource_Unmap(rb,0,NULL);
+    D3D12_RESOURCE_BARRIER bar={.Transition={dst,0,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&bar);ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,12,dst,0,100);
+    REQUIRE(sl_close(l)==S_OK && !s->seal && !xs_list_host(l));
+    UINT before=executions;
+    REQUIRE(checked_startup_submit(q,1,&l,0,0)==E_ACCESSDENIED && checked_tagged_submit(q,1,&l,3,3)==E_ACCESSDENIED && executions==before);
+    struct xs_clear_source held=retain_source(s->source);
+    REQUIRE(xs_queue_wait(q,gate,1)==S_OK);
+    ID3D12CommandList *batch[]={(ID3D12CommandList*)s->host};ID3D12CommandQueue_ExecuteCommandLists(as_queue(q),1,batch);
+    REQUIRE(ID3D12CommandQueue_Signal(as_queue(q),as_fence(done),1)==S_OK && !ID3D12Fence_GetCompletedValue(as_fence(done)));
+    REQUIRE(sl_reset(l,b,NULL,0)==S_OK && !s->source.placed && !s->source.needs_publication);
+    recycle(arg);REQUIRE(FAILED(xs_copy_restored_clear(owner,d,s->host,va,&s->source)) && IUnknown_Release(placed)==1);
+    HANDLE ev=CreateEventW(NULL,FALSE,FALSE,NULL);
+    REQUIRE(ev && xs_fence_event(done,1,ev)==S_OK && xs_cpu_signal(gate,1)==S_OK && WaitForSingleObject(ev,10000)==WAIT_OBJECT_0 &&
+        ID3D12Fence_GetCompletedValue(as_fence(done))==1 && SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&p)));
+    for(UINT j=0;j<128;j++)REQUIRE(p[j]==(j>=12 && j<112?expected[j-12]:0xe7));
+    ID3D12Resource_Unmap(rb,0,NULL);CloseHandle(ev);ID3D12Resource_Release(rb);drop_source(&held);
+#ifdef TEST_CARRIED_60
+    drop_om(&pass.om);
+#endif
+    IUnknown_Release(l);IUnknown_Release(a);IUnknown_Release(b);IUnknown_Release(gate);IUnknown_Release(done);IUnknown_Release(q);
+#ifdef TEST_NATIVE160
+    puts("PASS production native split-six +160: original bytes and recycler guards, missing WB/post/counter/parent rejected");
+#endif
+    puts("PASS restored +160: unique live chunk2, original 100 bytes and guards after recycle, unproved submits denied");return TRUE;
+}
+#endif
 #ifdef TEST_DEFER_RELEASE
 #include "test-deferred-release.h"
 #endif

@@ -1145,6 +1145,18 @@ HRESULT xs_copy_clear_source(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsComm
 {
     return copy_pass_span(owner,hd,list,va,0x3ff80,100,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,NULL,out);
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+/* This second node has a recording-time lease, but no measured release/publisher yet. */
+HRESULT xs_copy_restored_clear(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,struct xs_clear_source *out)
+{
+    struct lease_span v;
+    if(va<0x5ff80 || !lease_span_read(va-0x5ff80,va,100,&v) || v.arena.count!=216 ||
+       v.arena.stride!=0x20000 || va-v.data!=0x1ff80 || v.holds!=2 || v.stamp!=~1ull)return E_INVALIDARG;
+    HRESULT hr=copy_pass_span(owner,hd,list,va,0x5ff80,100,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,NULL,out);
+    if(SUCCEEDED(hr)){out->span=v;out->needs_publication=TRUE;}
+    return hr;
+}
+#endif
 HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,UINT64 va,BOOL replacement,IUnknown *expected,struct xs_clear_source *out)
 {
     if(!expected)return E_INVALIDARG;

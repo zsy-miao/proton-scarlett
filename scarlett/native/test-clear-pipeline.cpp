@@ -118,7 +118,10 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
     }
 }
 int main(){
-#ifdef TEST_PAIR_FIXTURE
+#if defined(TEST_RESTORED_CLEAR)
+    BYTE *page=(BYTE*)GetModuleHandleW(NULL)+0x75d0000;
+    CK(VirtualAlloc(page,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==page);
+#elif defined(TEST_PAIR_FIXTURE)
     /* Reserve the synthetic operand pages before large pool allocations. */
     for(SIZE_T off:{SIZE_T(0xa940000),SIZE_T(0x75d0000),SIZE_T(0x75e0000),SIZE_T(0x6890000)}){
         BYTE *addr=(BYTE*)GetModuleHandleW(nullptr)+off;
@@ -162,7 +165,7 @@ int main(){
     late_owner=d.Get();late_root=colour_root(d.Get());late_wrong=colour_root(other.Get());gate=CreateEventW(nullptr,TRUE,FALSE,nullptr);CK(gate);worker=CreateThread(nullptr,0,make_late,nullptr,0,nullptr);CK(worker);
 #endif
     test_pair(wc,hd.Get(),d.Get(),ds4.Get(),r.Get(),other.Get(),control);}
-#ifdef TEST_PAIR_FIXTURE
+#if defined(TEST_PAIR_FIXTURE) || defined(TEST_RESTORED_CLEAR)
     return 0;
 #else
 #line 155

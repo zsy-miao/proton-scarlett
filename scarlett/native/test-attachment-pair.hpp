@@ -16,6 +16,8 @@ IUnknown *inline_pair[2];
 extern "C" BOOL test_pair_record(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,ID3D12GraphicsCommandList7*,ID3D12Resource**,IUnknown**,UINT64,IUnknown*);
 #ifdef TEST_PAIR_FIXTURE
 extern "C" BOOL test_sealed_pair(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,UINT64);
+#elif defined(TEST_RESTORED_CLEAR)
+#include "queue/test-restored-abi.h"
 #else /* Preserve the original fixture's embedded diagnostic IDs. */
 #line 16
 #endif
@@ -54,7 +56,10 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
         b[k].AccessBefore=k?D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE:D3D12_BARRIER_ACCESS_RENDER_TARGET;b[k].AccessAfter=D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
         b[k].LayoutBefore=k?D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE:D3D12_BARRIER_LAYOUT_RENDER_TARGET;b[k].LayoutAfter=D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;
     }
-    D3D12_BARRIER_GROUP g={};g.Type=D3D12_BARRIER_TYPE_TEXTURE;g.NumBarriers=2;g.pTextureBarriers=b;l->Barrier(1,&g);
+    D3D12_BARRIER_GROUP g={};g.Type=D3D12_BARRIER_TYPE_TEXTURE;g.NumBarriers=2;g.pTextureBarriers=b;
+#ifndef TEST_CARRIED_60
+    l->Barrier(1,&g);
+#endif
     IUnknown *ids[]={obj[0].Get(),obj[1].Get()};ID3D12Resource *images[]={host[0].Get(),host[1].Get()};
     ComPtr<IUnknown> siblings[2];IUnknown *sid[2];
     for(UINT k=0;k<2;k++){auto rd=images[k]->GetDesc();D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
@@ -73,6 +78,27 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     inline_pair[0]=banks[0].Get();inline_pair[1]=banks[1].Get();
 #endif
     control.write({.125f,.375f,.625f,.875f});memcpy((void*)va,control.record(),100);MemoryBarrier();
+#ifdef TEST_RESTORED_CLEAR
+    auto recycle=[](void *arg){auto *c=(ClearSourceControl*)arg;auto *src=c->at[2]+0x5ff80;
+        memcpy(src,c->record(),100);MemoryBarrier();c->replace();memset(src,0xcd,100);MemoryBarrier();};
+    (void)other;
+#ifndef TEST_CARRIED_60
+    CK(test_restored_clear(d,owner,pso,root,ids,images,slots,sid,va,placed.Detach(),duplicate.Detach(),recycle,&control));return;
+#else
+    // The sibling view will replace the guest slot after private OM capture.
+    ComPtr<ID3D12Resource> guardImage;
+    DWORD guardDesc[]={28,4,0,0};((Writer)vt[0xa0/8])(owner,sid[0],guardDesc,slots[0]+32);
+    D3D12_CPU_DESCRIPTOR_HANDLE gh;HR(xs_resolve_color_rtv(heaps[0].Get(),slots[0]+32,&gh,guardImage.GetAddressOf()));
+    const float green[]={0,1,0,1};l->ClearRenderTargetView(gh,green,0,nullptr);
+    HR(l->Close());ID3D12CommandList *init[]={l.Get()};q->ExecuteCommandLists(1,init);
+    ComPtr<ID3D12Fence> ready;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&ready)));HR(q->Signal(ready.Get(),1));HR(ready->SetEventOnCompletion(1,nullptr));
+    CK(test_restored_clear(d,owner,pso,root,ids,images,slots,sid,va,placed.Detach(),duplicate.Detach(),recycle,&control));
+    HR(a->Reset());HR(l->Reset(a.Get(),nullptr));
+    for(UINT k=0;k<2;k++){b[k].SyncAfter=D3D12_BARRIER_SYNC_COPY;b[k].LayoutAfter=D3D12_BARRIER_LAYOUT_COPY_SOURCE;b[k].AccessAfter=D3D12_BARRIER_ACCESS_COPY_SOURCE;}
+    l->Barrier(1,&g);
+    D3D12_RESOURCE_BARRIER change={};change.Transition={guardImage.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&change);
+#endif
+#else
 #ifdef TEST_PAIR_FIXTURE
     (void)images;(void)sid;
     HR(l->Close());ID3D12CommandList *prep[]={l.Get()};q->ExecuteCommandLists(1,prep);
@@ -90,6 +116,7 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
         for(UINT k=0;k<100;k++){src[k]=(BYTE)(7+3*k);}MemoryBarrier();c->replace();memset(src,0xcd,100);MemoryBarrier();};
     CK(test_source_lifetime(d,owner,other,va,placed.Detach(),replace,&control));
     for(UINT k=0;k<2;k++){b[k].SyncAfter=D3D12_BARRIER_SYNC_COPY;b[k].LayoutAfter=D3D12_BARRIER_LAYOUT_COPY_SOURCE;b[k].AccessAfter=D3D12_BARRIER_ACCESS_COPY_SOURCE;}l->Barrier(1,&g);
+#endif
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=1536;rd.Height=rd.MipLevels=rd.DepthOrArraySize=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ComPtr<ID3D12Resource> read;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read)));
@@ -97,14 +124,27 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[2];UINT64 size;auto ds=host[1]->GetDesc();d->GetCopyableFootprints(&ds,0,2,0,fp,nullptr,nullptr,&size);
     rd.Width=size;ComPtr<ID3D12Resource> planes;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&planes)));
     D3D12_TEXTURE_COPY_LOCATION from={},to={};from.pResource=host[0].Get();to.pResource=read.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;to.PlacedFootprint.Footprint={DXGI_FORMAT_R8G8B8A8_UNORM,1,1,1,256};D3D12_BOX box={0,0,0,1,1,1};l->CopyTextureRegion(&to,0,0,0,&from,&box);
+#ifdef TEST_CARRIED_60
+    box={3839,2159,0,3840,2160,1};to.PlacedFootprint.Offset=512;l->CopyTextureRegion(&to,0,0,0,&from,&box);
+    from.pResource=guardImage.Get();to.PlacedFootprint.Offset=1024;l->CopyTextureRegion(&to,0,0,0,&from,&box);
+#endif
     from.pResource=host[1].Get();to.pResource=planes.Get();for(UINT k=0;k<2;k++){from.SubresourceIndex=k;to.PlacedFootprint=fp[k];l->CopyTextureRegion(&to,0,0,0,&from,nullptr);}
     HR(l->Close());ID3D12CommandList *batch[]={l.Get()};q->ExecuteCommandLists(1,batch);ComPtr<ID3D12Fence> f;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f)));HR(q->Signal(f.Get(),1));HR(f->SetEventOnCompletion(1,nullptr));HR(d->GetDeviceRemovedReason());
-    BYTE *map;HR(read->Map(0,nullptr,(void**)&map));CK(*(DWORD*)map==0xff00ff00);read->Unmap(0,nullptr);HR(planes->Map(0,nullptr,(void**)&map));
+    BYTE *map;HR(read->Map(0,nullptr,(void**)&map));
+#ifdef TEST_CARRIED_60
+    CK(*(DWORD*)map==0xdf9f6020 && *(DWORD*)(map+512)==0xdf9f6020 && *(DWORD*)(map+1024)==0xff00ff00);
+#else
+    CK(*(DWORD*)map==0xff00ff00);
+#endif
+    read->Unmap(0,nullptr);HR(planes->Map(0,nullptr,(void**)&map));
     CK(fp[0].Footprint.Format==DXGI_FORMAT_R32_TYPELESS && fp[1].Footprint.Format==DXGI_FORMAT_R8_TYPELESS);
     for(UINT y=0;y<ds.Height;y++)for(UINT x=0;x<ds.Width;x++){
         float z;memcpy(&z,map+fp[0].Offset+y*fp[0].Footprint.RowPitch+4*x,4);
         CK(z==.375f && map[fp[1].Offset+y*fp[1].Footprint.RowPitch+x]==0x69);
     }
     planes->Unmap(0,nullptr);puts("PASS original #4 recorder: both DSV planes unchanged over all 3840x2160 pixels");
+#ifdef TEST_CARRIED_60
+    puts("PASS carried +60: original RTV sampled at opposite corners, sibling green, original depth and stencil unchanged after gate");
+#endif
     CK(VirtualFree(base,0,MEM_RELEASE));puts("PASS +190/+490: private split descriptors survived both producer rewrites; original color/depth/stencil readback, pending submit blocked");
 }

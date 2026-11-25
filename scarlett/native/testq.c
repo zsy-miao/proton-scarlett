@@ -96,7 +96,14 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     RCK(FAILED(TRY()));
     struct xs_attachment_pin written={key,img,rt_slot,*(UINT64*)rt_slot};
     struct xs_attachment_pin ds={depth,test_sr_host(depth),dslot,*(UINT64*)dslot};
+    if(native){
+        RCK(xs_sr_submitted(owner,&written,NULL,as_queue(q),as_fence(prior)) && FAILED(TRY()) && !s->sr.end);
+    }
     RCK(xs_sr_submitted(owner,&written,&ds,as_queue(q),as_fence(prior)));
+    if(native){
+        s->split_at=5;RCK(FAILED(TRY()) && !s->sr.end);s->split_at=6;
+        s->stamp->third_wb=FALSE;RCK(FAILED(TRY()) && !s->sr.end);s->stamp->third_wb=TRUE;
+    }
     b.pResource=(ID3D12Resource*)keys[0];RCK(FAILED(TRY()));b.pResource=(ID3D12Resource*)key;
     ++*(UINT64*)rt_slot;RCK(FAILED(TRY()));--*(UINT64*)rt_slot;
     RCK(SUCCEEDED(TRY()) && s->sr.rt.host==img && img!=s->primary);pair_op(s,0x190);
@@ -164,6 +171,7 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     RCK(*(float*)raw==.375f && raw[fp[1].Offset]==0x69);
     ID3D12Resource_Unmap(dsrb,0,NULL);ID3D12Resource_Release(dsrb);
     puts("PASS carried OM190: original fenced depth .375/stencil 69, red RTV and black primary after list release");
+    if(native)puts("PASS RADV split-6 offscreen SR to RT: native post and WB stamp, original pair RTV/DSV survived consumer release");
     ID3D12Resource_Unmap(color_rb,0,NULL);ID3D12Resource_Release(color_rb);
     ID3D12GraphicsCommandList7_Release(pl);ID3D12CommandAllocator_Release(pa);IUnknown_Release(prior);
     puts("PASS offscreen SR reuse: same-queue producer, private RTV, reverse, red offscreen and black primary after fenced retirement");

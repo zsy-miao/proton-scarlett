@@ -1177,6 +1177,24 @@ its private views held the original attachments, but the clear path checked
 the empty list-local attachment slots. It issued no host draw. Both
 diagnostics sampled the submitted pair's original end at 0.
 
+### Recording the next clear
+
+On `6c6c93d0`, the AMD fixture copied the original 100-byte clear input
+and the RTX fixture drew into the original color surface while preserving
+depth and stencil. Both passed before ordinary retail ran.
+
+| Ordinary run | First stop | Display |
+| --- | --- | --- |
+| AMD | Release-side timestamp, `+240`, return `+2482b37` from `+a1c42c`. Token 2 issued; no pair end was recorded. | Token 1 returned successfully, count 0→1. |
+| RTX | Primary transition, `+490`, return `+32113` from `+50a624f`. The token-2 pair submitted and `Signal(3)` succeeded. | Token 1 returned `DXGI_ERROR_WAS_STILL_DRAWING` after 251 ms; count stayed at 0. |
+
+Neither ordinary run returned `PresentX(2)` successfully or showed a
+recognizable image. Separate diagnostics reached the next list: AMD
+requested the three-vertex clear; RTX recorded it to RTV/DSV 119/121 and
+reached the vertex-buffer setter (`+180`, return `+32966`). The original
+token-2 end still read 0 at refusal on both. The later buffer's address
+and extent were not established by those traces.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
