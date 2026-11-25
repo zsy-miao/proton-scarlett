@@ -2025,6 +2025,21 @@ targeted barrier. Its serial-17 end retired and the token-2 display lease
 was accepted, but the display count stayed at 1. Its successful pipeline
 factory return did not lead to an observed matching install or draw.
 
+On RTX, fixture `91e3473b` on `a306bf6f` exercised the actual value-2
+marker path with both measured timestamp layouts. The generic prefix and
+bank flag remained zero. The producer separately validated the bank-3
+owner and index while recording the head timestamp. Six malformed cases
+per layout failed to qualify; restoring the index later did not validate
+a stale head. Both valid batches retired on their own ends and passed
+the original-allocation timestamp and surface readbacks.
+
+AMD diagnostic `19874330` accepted the first 4,080-byte vertex buffer,
+the carried barrier and the fresh color/depth bind. It then refused the
+first one-cell `+120` setter, before the later three-cell selection or
+serial-14 Close. Its frame-2 GPU work retired, but `PresentX(2)` had no
+logged return. All 97 client frames were black. The setter's own fence
+sample and rejecting condition were not captured.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
