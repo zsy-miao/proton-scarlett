@@ -1163,6 +1163,20 @@ On RTX the original 100 bytes fit at chunk offset `0x1ff80` (arena
 offset `0x5ff80`); the old check required arena offset `0x3ff80`. This
 capture says nothing about either subsequent vertex buffer.
 
+On `eaf30add`, the AMD offscreen-restore and RTX clear-source fixtures
+passed first. Both ordinary runs bound the color and depth targets. AMD
+then stopped at `+160` (`+32327` from `+3346d`); RTX recorded the 100-byte
+clear input and stopped at `+60` (`+bff06` from `+122a71`). On both, the
+game entered `PresentX(2)` for the submitted primary after `Signal(3)`
+succeeded. Neither call returned successfully; display count stayed at 1
+and both captures remained blank.
+
+The separate AMD refusal showed the source setter still required a split
+at slot five rather than six. RTX requested `DrawInstanced(3,1,0,0)`;
+its private views held the original attachments, but the clear path checked
+the empty list-local attachment slots. It issued no host draw. Both
+diagnostics sampled the submitted pair's original end at 0.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
