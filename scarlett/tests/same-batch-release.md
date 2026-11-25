@@ -76,3 +76,30 @@ timestamps and guarded readback (serial 14 green; serial 17 still red).
 The test owns the query destinations and command lists. A pass therefore
 does not validate the game's timestamp address or authorize submission
 of unpublished retail lists.
+
+### Rebuild the measured RTX bank-3 recorder (opt-in)
+
+From the repository root, with x86-64 MinGW GCC (measured: 16.2.0):
+
+```sh
+bash scarlett/tests/s14-bank3/build.sh /path/to/amd-split6-vb.bh1zg4LK
+```
+
+This takes the retained **pre-combination** split-six replacement stage,
+including its `scarlett/native` sources and `inputs` directory. Main lacks
+the stage's attributed-five producer tracker, returned-table state and
+S14 release recorder. Applying only its timestamp hunk to main would
+omit the checks that identify the producer. The script verifies the
+[preimage hashes](s14-bank3/preimages.sha256), rebuilds the `72ab3eb4`
+control, and applies the [source patch](s14-bank3/recorder.patch) in a
+fresh directory. It checks the resulting provider (`becb01a3`) and
+XMem-preloading synthetic fixture (`a4792964`) byte-for-byte. No runtime
+installation or launch is part of the build. The matching fixture runtime
+is `xmem.dll` SHA-256 `8f74d6255dc72fe7cf31c4ffcc0898299a86fa561101adde53bec550b7fcc5e9`.
+
+The fixture seeds the closed producer and prior serial-17 key. The successor
+uses the recorder to release serial 14 and record the adjacent bank-3
+timestamp against the original CPU section. Its owned token-3 callback
+tests the original mapping after exact VA reuse; that callback is absent
+from the provider. An ordinary run may not reach this recorder. A matching
+build is evidence neither of retail publication nor of a token-3 submit.

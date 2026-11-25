@@ -1,0 +1,520 @@
+--- /dev/null
++++ b/scarlett/native/queue/fresh-publication.h
+@@ -0,0 +1,138 @@
++/* Weak Close-to-+118 observation only. Reset/Release unlink before dropping
++ * the wrapper's original capture. Never dispatch through a submitted ID. */
++_Static_assert(sizeof(struct startup_list)<=4096,"pooled list state page");
++static SRWLOCK fresh_lock=SRWLOCK_INIT;
++static struct startup_list *fresh_lists;
++static const char *const fresh_roles[]={"clear","first","replacement"};
++static const struct xs_clear_source *fresh_source(const struct startup_list *s,UINT i)
++{
++    /* The first VB moves into previous_vb only when the replacement records. */
++    if(!i)return &s->source;
++    if(s->previous_vb.buffer)return i==1?&s->previous_vb:&s->vb;
++    return i==1?&s->vb:NULL;
++}
++
++static void fresh_forget(struct startup_list *s)
++{
++    if(!s->trace_id)return;
++    AcquireSRWLockExclusive(&fresh_lock);
++    struct startup_list **p=&fresh_lists;
++    while(*p!=s)p=&(*p)->trace_next;
++    *p=s->trace_next;s->trace_id=0;s->trace_pub=(struct pub_seal){0};
++    ReleaseSRWLockExclusive(&fresh_lock);
++}
++
++static void fresh_close(struct startup_list *s,IUnknown *id,UINT_PTR caller)
++{
++    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL);
++    const struct lease_span *v=&s->source.span;
++    if(caller==exe+0x72a1 && s->allocator && s->allocator->lpVtbl==&at.prefix){
++        struct command_allocator *a=CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface);
++        AcquireSRWLockShared(&a->lock);
++        if((UINT_PTR)a->entry==exe+0x555df10 && s->alloc_generation==(UINT64)a->generation)
++            pub_close((UINT_PTR)a->context,(UINT_PTR)id,TRUE,v->node,v->gen,&s->trace_pub);
++        ReleaseSRWLockShared(&a->lock);
++    }
++    fprintf(stderr,"FRESHPUB close caller=+%zx list=%p alloc=%p/%llu hr=%lx placed=%p capture=%p base=%zx data=%zx va=%zx bytes=%u node=%zx gen=%u holds=%u stamp=%llx record=%zx arg=%zx pool=%zx\n",
++        caller-exe,id,s->allocator,s->alloc_generation,s->error,s->source.placed,s->source.capture,v->arena.base,v->data,
++        v->va,v->bytes,v->node,v->gen,v->holds,v->stamp,s->trace_pub.record,s->trace_pub.arg,s->trace_pub.pool);
++    for(UINT k=0;k<ARRAYSIZE(fresh_roles);k++){
++        const struct xs_clear_source *x=fresh_source(s,k);
++        if(!x || !x->buffer){
++            fprintf(stderr,"FRESHPUB close-span list=%p role=%s recorded=0\n",id,fresh_roles[k]);continue;
++        }
++        const struct lease_span *r=&x->span;
++        fprintf(stderr,"FRESHPUB close-span list=%p role=%s recorded=1 placed=%p capture=%p base=%zx data=%zx va=%zx bytes=%u node=%zx gen=%u holds=%u stamp=%llx\n",
++            id,fresh_roles[k],x->placed,x->capture,r->arena.base,r->data,r->va,r->bytes,r->node,r->gen,r->holds,r->stamp);
++    }
++    AcquireSRWLockExclusive(&fresh_lock);
++    s->trace_id=(UINT_PTR)id;s->trace_next=fresh_lists;fresh_lists=s;
++    ReleaseSRWLockExclusive(&fresh_lock);
++}
++
++/* Wire identity and release state are separate: a matching second record
++ * need not yet have relinquished its node. */
++static const char *fresh_successor(const struct pub_seal *p,UINT_PTR next_id,BOOL has_next,
++        UINT_PTR arg,UINT_PTR pool,BOOL arrays,UINT_PTR *next,UINT_PTR *rel)
++{
++    struct pub_wire w;UINT_PTR key;
++    if(!p->record || !pub_read(p->record,&w,sizeof w))return "unknown";
++    if(w.kind || w.list!=p->list || w.arg!=p->arg || w.pool!=p->pool || w.acq!=p->node || w.rel)
++        return "producer-mismatch";
++    *next=w.next;
++    if(!w.next)return has_next?"submitted-without-link":"absent";
++    if(!has_next)return "linked-not-submitted";
++    if(!arrays || !pub_read(w.next,&w,sizeof w))return "unknown";
++    *rel=w.rel;
++    if(!next_id || next_id==p->list || !arg || arg==p->arg || pool!=p->pool || w.kind ||
++       w.list!=next_id || w.arg!=arg || w.pool!=pool || w.acq || (w.rel && w.rel!=p->node))return "mismatch";
++    if(!pub_read(arg,&key,sizeof key))return "unknown";
++    if(key!=next_id)return "mismatch";
++    return w.rel?"matched":"matched-release-pending";
++}
++
++static BOOL fresh_book(IUnknown *iface,const struct startup_list *s,UINT_PTR lists,UINT64 *target)
++{
++    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),outer[3],book,b[7];
++    if(lists<0x100 || !pub_read(lists-0x100,outer,sizeof outer) ||
++       !pub_read(exe+0x68929d0,&book,sizeof book) || book!=exe+0x75e0e98 || !pub_read(book,b,sizeof b) ||
++       (BYTE)b[1] || b[0]!=(UINT_PTR)iface || outer[0]!=book+0x28 || !b[2] || b[2]!=outer[1]){
++        fprintf(stderr,"FRESHPUB fence list=%zx book=unverified\n",s->trace_id);return FALSE;
++    }
++    AcquireSRWLockShared(&publisher_lock);
++    struct monitored_fence *f=live_fences;
++    while(f && (UINT_PTR)&f->a.iface!=b[2])f=f->next;
++    if(f)fprintf(stderr,"FRESHPUB fence list=%zx fence=%zx target=%zu cached=%zu submitted=%zu high=%llu sampled=%llu publisher=%p sameQueue=%u sameDevice=%u mixed=%u protected=%u\n",
++        s->trace_id,b[2],outer[2],b[3],b[5],f->high,fence_completed(&f->a.iface),f->publisher,
++        f->publisher==as_queue(iface),f->device==s->device,f->mixed,f->protected_pair);
++    else fprintf(stderr,"FRESHPUB fence list=%zx fence=%zx target=%zu ledger=absent\n",s->trace_id,b[2],outer[2]);
++    ReleaseSRWLockShared(&publisher_lock);
++    *target=outer[2];return TRUE;
++}
++
++static void fresh_submit(IUnknown *iface,UINT count,UINT_PTR lists,UINT64 token,UINT flags,UINT_PTR caller)
++{
++    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),ids[256];
++    BOOL abi=caller==exe+0x24821e3 && lists<=UINTPTR_MAX-0x1800;
++    AcquireSRWLockShared(&fresh_lock);
++    if(!fresh_lists || !count || count>ARRAYSIZE(ids) || !pub_read(lists,ids,count*sizeof *ids))goto out;
++    for(struct startup_list *s=fresh_lists;s;s=s->trace_next)for(UINT j=0;j<count;j++){
++        if(ids[j]!=s->trace_id)continue;
++        const struct lease_span *v=&s->source.span;struct lease_span now={0};
++        BOOL live=lease_span_read(v->arena.base,v->va,v->bytes,&now);
++        BOOL same=live && v->node==now.node && v->gen==now.gen && !memcmp(&v->arena,&now.arena,sizeof v->arena);
++        UINT_PTR arg[2]={0},pool[2]={0},next=0,rel=0,owner=0;
++        BOOL second=j+1<count;SIZE_T n=(1+second)*sizeof *ids;
++        BOOL args=abi && pub_read(lists+0x1000+j*sizeof *ids,arg,n);
++        BOOL pools=abi && pub_read(lists+0x800+j*sizeof *ids,pool,n);
++        BOOL own=live && pub_read(now.node+0x40,&owner,sizeof owner);
++        const struct pub_seal *p=&s->trace_pub;
++        const char *status=!abi?"unknown":args && pools && p->record && (p->arg!=arg[0] || p->pool!=pool[0])?
++            "producer-mismatch":fresh_successor(p,second?ids[j+1]:0,second,arg[1],pool[1],args && pools,&next,&rel);
++        const char *ownership=!live?"unknown":!same?"span-mismatch":
++            now.holds || now.stamp==~1ull || (own && owner)?"pending":"see-fence";
++        fprintf(stderr,"FRESHPUB submit caller=+%zx queue=%p count=%u slot=%u token=%llu flags=%x ids=%zx/%zx argsRead=%u args=%zx/%zx poolsRead=%u pools=%zx/%zx member=%s successor=%s next=%zx rel=%zx ownership=%s live=%u sameSpan=%u node=%zx gen=%u stamp=%llx holds=%u ownerRead=%u owner=%zx\n",
++            caller-exe,iface,count,j,token,flags,ids[j],second?ids[j+1]:0,args,arg[0],arg[1],pools,pool[0],pool[1],
++            second?"present":"absent",status,next,rel,ownership,live,same,now.node,now.gen,now.stamp,now.holds,own,owner);
++        UINT64 target=0;BOOL target_read=abi && fresh_book(iface,s,lists,&target);
++        for(UINT k=0;k<ARRAYSIZE(fresh_roles);k++){
++            const struct xs_clear_source *x=fresh_source(s,k);
++            if(!x || !x->buffer){
++                fprintf(stderr,"FRESHPUB submit-span list=%zx role=%s recorded=0\n",s->trace_id,fresh_roles[k]);continue;
++            }
++            const struct lease_span *r=&x->span;
++            struct lease_span current=now;
++            BOOL read=live;
++            if(k){current=(struct lease_span){0};read=lease_span_read(r->arena.base,r->va,r->bytes,&current);}
++            BOOL identity=read && !memcmp(&r->arena,&current.arena,sizeof r->arena) && r->node==current.node &&
++                r->gen==current.gen && r->data==current.data;
++            const char *comparison=!read?"unreadable":!identity?"stale-span":!target_read?"unknown-target":
++                current.stamp>=~1ull?"no-release-stamp":current.stamp==target?"equal":"different";
++            fprintf(stderr,"FRESHPUB submit-span list=%zx role=%s recorded=1 placed=%p capture=%p va=%zx bytes=%u recordedNode=%zx recordedGen=%u live=%u sameSpan=%u node=%zx gen=%u holds=%u stamp=%llx targetRead=%u target=%llu compare=%s sameSeal=%u\n",
++                s->trace_id,fresh_roles[k],x->placed,x->capture,r->va,r->bytes,r->node,r->gen,read,identity,current.node,current.gen,
++                current.holds,current.stamp,target_read,target,comparison,identity && p->record && p->node==current.node && p->gen==current.gen);
++        }
++    }
++out:
++    ReleaseSRWLockShared(&fresh_lock);
++}
+--- a/scarlett/native/queue/pair-publication.h
++++ b/scarlett/native/queue/pair-publication.h
+@@ -1,3 +1,4 @@
++#pragma once
+ /* Pinned title's type-zero CPU records. All borrowed addresses are integers,
+  * never a COM dispatch. Only use for +72a1 close and +24821e3 pair admission. */
+ struct pub_wire {
+@@ -21,7 +22,7 @@
+        (producer ? w.acq!=kn || w.rel : w.acq || (w.rel && w.rel!=kn)))return FALSE;
+     *out=(struct pub_seal){active[2]-0x70,id,w.arg,w.pool,kn,g};return TRUE;
+ }
+-static BOOL pub_pair(const struct pub_seal *p,const struct pub_seal *s,UINT_PTR lists,UINT64 stamp)
++static inline BOOL pub_pair(const struct pub_seal *p,const struct pub_seal *s,UINT_PTR lists,UINT64 stamp)
+ {
+     struct pub_wire w[2];UINT_PTR ids[2],args[2],pools[2],links[2],owner;
+     struct {UINT64 stamp;UINT holds,gen;} node;
+--- a/scarlett/native/queue/s14-record.h
++++ b/scarlett/native/queue/s14-record.h
+@@ -51,6 +51,7 @@
+         struct xs_attachment_pin pin={found->primary_pin,found->primary,found->output_slot,found->output_serial};
+         if((hr=s14_emit(s->pool_owner,&pin,s->host,b))==S_OK){
+             found->s14_used=TRUE;s->s14_head=found->stamp;InterlockedIncrement(&s->s14_head->refs);
++            s->s14_slot=pin.slot;s->s14_tid=found->s14_tid;
+             s->primary_pin=pin.identity;IUnknown_AddRef(s->primary_pin);
+             s->primary=pin.host;ID3D12Resource_AddRef(s->primary);s->primary_released=TRUE;
+             fprintf(stderr,"S14 GPU barrier p=%p head=%p tail=%p successor=%p key=%p host=%p slot=%zx/14 oldEnd=%p\n",
+@@ -61,34 +62,40 @@
+     ReleaseSRWLockExclusive(&s14_lock);ReleaseSRWLockExclusive(&s->borrow_lock);
+     return hr;
+ }
+-/* Stop here until the title's indexed destination is qualified for this producer.
+- * Read the section identity, never open a GPU heap or write the proposed address. */
++static BOOL s14_successor(struct startup_list *s)
++{
++    return s->s14_head && s->s14_old_key && s->primary_released && s->primary_pin && s->primary &&
++        s->s14_tid==GetCurrentThreadId() && (UINT_PTR)s->primary_pin!=s->s14_old_key &&
++        !s->alloc_generation && !s->head && !s->post && !s->marker && !s->deferred && !s->offered &&
++        !s->pre_release && !s->after_alloc && !s->host_exposed && !s->successor_query && !s->seal &&
++        s->nops==3 && !memcmp(s->ops,"\x20\x92\x48",3) &&
++        xs_live_output(s->pool_owner,s->primary_pin,s->primary,s->s14_slot,14);
++}
+ static HRESULT s14_timestamp_gate(struct startup_list *s,UINT64 addr)
+ {
+-    struct system_timestamp *h=s->s14_head;
+-    struct scarlett_section_info dst={0},own={0};
+-    HRESULT hr=scarlett_acquire_section((void*)addr,8,&dst);
+-    BOOL wb=FAILED(hr);
+-    if(wb)hr=scarlett_query_section(0x5343000c,(void*)addr,8,&dst);
++    struct system_timestamp *h=s->s14_head,*tail=NULL;
+     UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),records[4]={0};
+-    UINT bank=UINT_MAX;UINT64 indices=UINT64_MAX;
+-    BOOL regs=lease_read(exe+0xa943a0c,&bank,4) && bank<4 && lease_read(exe+0x75dedb0,&indices,8) &&
+-        lease_read(exe+0xa943a18+8*bank,records+bank,8);
+-    HRESULT oh=regs?(wb?scarlett_query_section(0x5343000c,(void*)records[bank],96,&own):
+-        scarlett_acquire_section((void*)records[bank],96,&own)):E_INVALIDARG;
++    UINT bank;UINT64 indices;SIZE_T off;
++    if(s->stamp || !s14_successor(s) || !h->cpu_section || !h->mapping || !h->dst || !h->query ||
++       h->retained || h->section || h->tail_recorded || h->cpu_offset!=0x419f6d8 || h->cpu_addr!=addr+8 ||
++       !lease_read(exe+0xa943a0c,&bank,4) || bank!=3 || !lease_read(exe+0x75dedb0,&indices,8) || indices!=1 ||
++       !lease_read(exe+0xa943a18+3*8,records+3,8))return E_ACCESSDENIED;
++    struct scarlett_section_info owner;
++    HRESULT hr=scarlett_acquire_section((void*)records[3],96,&owner);
++    if(FAILED(hr))return hr;
+     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+-    HANDLE section=h->cpu_section?h->cpu_section:h->section;
+-    UINT64 head=h->cpu_section?h->cpu_addr:h->section?h->tail_addr+8:0;
+-    UINT64 array[3]={0};
+-    BOOL fields=SUCCEEDED(oh) && records[bank]<=UINTPTR_MAX-96 && lease_read(records[bank]+72,array,sizeof array);
+-    fprintf(stderr,"S14 owner fields=%d used=%llx mirror=%llx array=%llx headMap=%p retained=%p headDst=%p headQuery=%p\n",
+-        fields,array[0],array[1],array[2],h->mapping,h->retained,h->dst,h->query);
+-    fprintf(stderr,"S14 timestamp gate host=%p addr=%llx hr=%08lx wb=%d base=%p size=%zx off=%zx head=%llx headOff=%zx adjacent=%d sameHead=%d bank=%u indices=%llx record=%p ownerHr=%08lx ownerOff=%zx sameOwner=%d indexed=%d\n",
+-        s->host,addr,(DWORD)hr,wb,dst.base,dst.view_size,dst.offset,head,h->cpu_section?h->cpu_offset:h->section?h->tail_offset+8:0,
+-        head && head-8==addr,same && section && dst.section && same(section,dst.section),bank,indices,
+-        regs?(void*)records[bank]:NULL,(DWORD)oh,own.offset,same && dst.section && own.section && same(dst.section,own.section),
+-        SUCCEEDED(hr) && regs && indices==1 && indexed_stamp(head,&dst,bank,1,records));
+-    if(SUCCEEDED(hr) && dst.section)CloseHandle(dst.section);
+-    if(SUCCEEDED(oh) && own.section)CloseHandle(own.section);
+-    return E_ACCESSDENIED;
++    BOOL valid=owner.section && same && same(h->cpu_section,owner.section) && owner.offset==0x3fb30c0 &&
++        records[3]-(UINT_PTR)owner.base==owner.offset && addr-(UINT_PTR)owner.base==0x419f6d0 &&
++        indexed_stamp(h->cpu_addr,&owner,bank,1,records);
++    if(owner.section)CloseHandle(owner.section);
++    if(!valid)return E_ACCESSDENIED;
++    hr=prepare_timestamp(s->device,addr,0,&tail,&off);
++    if(FAILED(hr))return hr;
++    if(!tail->cpu_section || !same(h->cpu_section,tail->cpu_section) || tail->cpu_offset!=0x419f6d0 ||
++       tail->cpu_addr!=addr || off!=0xf6d0 || !tail->mapping || tail->retained || tail->section ||
++       tail->mapping==h->mapping || tail->dst==h->dst || tail->query==h->query){drop_timestamp(tail);return E_ACCESSDENIED;}
++    emit_q0(tail,s->host,off);s->stamp=tail;
++    fprintf(stderr,"S14 recorded CPU timestamp host=%p tail=%llx off=%zx headOff=%zx bank=%u ownerOff=%zx\n",
++        s->host,addr,tail->cpu_offset,h->cpu_offset,bank,owner.offset);
++    return S_OK;
+ }
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -1,6 +1,9 @@
+ /* Private to queue.c: only the recording and submission shapes used by the startup lists. */
+ #include "prefix_marker.h"
+ #include "system_timestamp.h"
++#ifdef XS_TRACE_FRESH_PUBLICATION
++#include "pair-publication.h"
++#endif
+ #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+ enum batch_phase { B_EMPTY,B_BOUND,B_PREFIX,B_REBOUND,B_HEAD_STAMP,B_POST,B_WAIT,
+     B_ACQUIRED,B_CLEARED,B_RELEASED,B_TAIL_STAMP,B_CLOSED,B_INELIGIBLE };
+@@ -17,6 +20,11 @@
+         sizeof(struct direct_prefix)==0x38,"Direct inline capacity check");
+ #include "../om-views.h"
+ struct startup_list {
++#ifdef XS_TRACE_FRESH_PUBLICATION
++    struct startup_list *trace_next;
++    UINT_PTR trace_id;
++    struct pub_seal trace_pub;
++#endif
+ #ifdef SCARLETT_PAIR_SUBMIT
+     struct pair_gen *seal;
+     struct om_views first_om;
+@@ -27,6 +35,7 @@
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+     struct startup_list *s14_next;
+     struct system_timestamp *s14_head;
++    SIZE_T s14_slot;
+     DWORD s14_tid;
+     BOOL s14_used;
+     UINT_PTR s14_old_key; /* comparison only; reset from a used S17 successor */
+@@ -126,6 +135,9 @@
+     else HeapFree(GetProcessHeap(), 0, s);
+ }
+ static struct startup_list *sl(IUnknown *i) { return CONTAINING_RECORD(i, struct list_face, iface)->state; }
++#ifdef XS_TRACE_FRESH_PUBLICATION
++#include "fresh-publication.h"
++#endif
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+ #include "s14-record.h"
+ static BOOL s14_from_submitted17(struct startup_list *);
+@@ -190,6 +202,9 @@
+     }
+ #endif
+     if (!refs) {
++#ifdef XS_TRACE_FRESH_PUBLICATION
++        fresh_forget(s);
++#endif
+         #ifdef SCARLETT_PAIR_SUBMIT
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+         s14_remove(s);drop_timestamp(s->s14_head);
+@@ -268,14 +283,20 @@
+     if (s->closed) return E_FAIL;
+     if(s->cache_page && memcmp(s->cache_page,cache_template,sizeof cache_template))return E_NOTIMPL;
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+-    if(s->s14_head)s->error=E_ACCESSDENIED; /* No publishable successor until its timestamp is evidenced. */
++    if(s->s14_head && (caller!=(UINT_PTR)GetModuleHandleW(NULL)+0x72a1 || !s->stamp || !s14_successor(s)))
++        s->error=E_ACCESSDENIED;
+ #endif
+     HRESULT hr = ID3D12GraphicsCommandList7_Close(s->host);
+     s->closed = TRUE;
+     batch_step(s,B_CLOSED);
+     if (FAILED(hr)) s->error = hr;
++#ifdef XS_TRACE_FRESH_PUBLICATION
++    if(s->source.needs_publication)fresh_close(s,i,caller);
++#endif
+     if(SUCCEEDED(s->error))offer_release(s,i);
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
++    if(s->s14_head)fprintf(stderr,"S14 successor close site=%zx face=%p host=%p hr=%08lx ops=%u head=%p stamp=%p\n",
++        caller-(UINT_PTR)GetModuleHandleW(NULL),i,s->host,(DWORD)s->error,s->nops,s->s14_head,s->stamp);
+     if(s->output_serial==14 && s->sr.end && s->source.needs_publication){
+         if(caller==(UINT_PTR)GetModuleHandleW(NULL)+0x72a1)s14_closed(s);
+         fprintf(stderr,"S14 producer close site=%zx face=%p host=%p alloc=%p gen=%llu ops=%u stamp=%p eligible=%d\n",
+@@ -322,9 +343,12 @@
+ #endif
+     hr = ID3D12GraphicsCommandList7_Reset(s->host, a, NULL);
+     if (FAILED(hr)) return hr;
++#ifdef XS_TRACE_FRESH_PUBLICATION
++    fresh_forget(s);
++#endif
+ #ifdef SCARLETT_PAIR_SUBMIT
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+-    drop_timestamp(s->s14_head);s->s14_head=NULL;s->s14_old_key=old17;s->s14_tid=0;
++    drop_timestamp(s->s14_head);s->s14_head=NULL;s->s14_slot=0;s->s14_old_key=old17;s->s14_tid=0;
+ #endif
+     drop_om(&s->first_om);
+     if(s->pre_release){ID3D12GraphicsCommandList7_Release(s->pre_release);s->pre_release=NULL;}
+@@ -661,7 +685,12 @@
+ static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+ {
+     pair_op(sl(i),0x240);
+-    HRESULT hr=pool_timestamp(sl(i),addr,x,y,flags);
++    HRESULT hr=
++#ifdef XS_RTX_ATTRIBUTED_FIVE
++        sl(i)->s14_head && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x2482b37?
++        E_ACCESSDENIED:
++#endif
++        pool_timestamp(sl(i),addr,x,y,flags);
+     if (FAILED(hr)) {
+ #ifdef SCARLETT_PAIR_SUBMIT
+         struct startup_list *s=sl(i);
+@@ -2004,6 +2033,9 @@
+         !ReadProcessMemory(GetCurrentProcess(),list,&vt,sizeof vt,&n) || n!=sizeof vt ||
+         (vt!=&sl_vtbl.prefix && vt!=&pool_vtbl.prefix)) return E_INVALIDARG;
+     struct startup_list *s = sl(list);
++#ifdef XS_RTX_ATTRIBUTED_FIVE
++    if(s->s14_head)return E_ACCESSDENIED; /* A recorded release grants no singleton submission. */
++#endif
+ #ifdef SCARLETT_PAIR_SUBMIT
+     if(s->source.needs_publication)return E_ACCESSDENIED;
+ #endif
+@@ -2066,6 +2098,9 @@
+ static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
+ {
+ #ifdef SCARLETT_PAIR_SUBMIT
++#ifdef XS_TRACE_FRESH_PUBLICATION
++    fresh_submit(iface,count,(UINT_PTR)lists,token,flags,(UINT_PTR)__builtin_return_address(0));
++#endif
+     if(count==2 && token==2 && flags==3 && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x24821e3)xs_stop();
+ #endif
+     if (checked_startup_submit(iface,count,lists,token,flags)!=S_OK) xs_stop();
+--- /dev/null
++++ b/scarlett/native/queue/test-s14-bank3.c
+@@ -0,0 +1,82 @@
++/* Fixture boundary: seed only the already qualified producer and prior S17 key.
++ * The S14 bind, release, stamp, Close and checked submit use queue.c unchanged. */
++#include "queue.c"
++#define CK(x) do{if(!(x)){fprintf(stderr,"S14 bank3 FAIL %d: %s\n",__LINE__,#x);exit(1);}}while(0)
++#define OK(x) do{HRESULT h_=(x);if(h_!=S_OK){fprintf(stderr,"S14 bank3 FAIL %d: %s hr=%08lx\n",__LINE__,#x,(DWORD)h_);exit(1);}}while(0)
++enum { poolbytes=0x49400000, ro=0x3fb30c0, win=0x4190000, delta=0xf6d0 };
++static BYTE *pool,*original,*reuse,*exe;
++static struct system_timestamp *producer_stamp;
++static IUnknown *list14;
++static HMODULE xmem;
++static UINT64 addr;
++static const UINT64 empty=0xadadadadadadadadull;
++void bank3_setup(void)
++{
++    /* Resource-heap creation looks up XMem in an already loaded module. */
++    xmem=LoadLibraryW(L"xmem.dll");
++    CK(xmem && GetProcAddress(xmem,"XMemAlloc") && GetProcAddress(xmem,"XMemFree"));
++    exe=(BYTE*)GetModuleHandleW(NULL);
++    CK(VirtualAlloc(exe+0xa940000,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==exe+0xa940000 &&
++       VirtualAlloc(exe+0x75d0000,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==exe+0x75d0000);
++}
++void bank3_head(ID3D12Device *dev,ID3D12GraphicsCommandList7 *host)
++{
++    void *(WINAPI *alloc)(void*,SIZE_T,DWORD,UINT64,DWORD)=(void*)GetProcAddress(xmem,"XMemVirtualAlloc");
++    CK(alloc);pool=alloc(NULL,poolbytes,0x20003000,0x183,0x22004);CK(pool);
++    addr=(UINT_PTR)(pool+win+delta);DWORD *w=(DWORD*)(pool+ro);UINT64 used=addr+0x4010;
++    w[2]=0x800;w[3]=8;w[14]=2<<16;memcpy(w+18,&used,8);memcpy(w+20,&addr,8);memcpy(w+22,&addr,8);
++    *(UINT*)(exe+0xa943a0c)=3;*(UINT64*)(exe+0x75dedb0)=1;*(UINT_PTR*)(exe+0xa943a18+24)=(UINT_PTR)w;
++    struct scarlett_section_info orig;OK(scarlett_acquire_section((void*)addr,8,&orig));
++    CK(orig.base==pool && orig.view_size==poolbytes && orig.offset==win+delta);
++    original=MapViewOfFile(orig.section,FILE_MAP_READ|FILE_MAP_WRITE,0,win,65536);CK(original && CloseHandle(orig.section));
++    memset(original,0xad,65536);OK(record_timestamp(dev,host,addr+8,1,&producer_stamp));
++    CK(producer_stamp->cpu_section && producer_stamp->second_bank && !producer_stamp->retained);
++}
++void bank3_tail(ID3D12Device *dev,IUnknown *owner,IUnknown **banks,const struct xs_attachment_pin *pins,
++        ID3D12GraphicsCommandList7 *producer,ID3D12GraphicsCommandList7 **out,D3D12_TEXTURE_BARRIER wire)
++{
++    IUnknown *alloc,*wrapped_q;OK(xs_allocator(dev,0,&alloc));OK(xs_device_list(dev,0,alloc,TRUE,owner,&list14));
++    struct startup_list *s=sl(list14),p={.host=producer,.pool_owner=owner,.stamp=producer_stamp,.primary=pins[0].host,
++        .primary_pin=pins[0].identity,.output_slot=pins[0].slot,.output_serial=pins[0].serial,.s14_tid=GetCurrentThreadId()};
++    s->s14_old_key=(UINT_PTR)pins[1].identity;CK(!s14_records);s14_records=&p;
++    OK(xs_bind_pool_heaps(list14,2,banks));pair_op(s,0x490);
++    D3D12_BARRIER_GROUP group={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&wire};
++    OK(record_primary_barrier_at(s,1,&group,0x32113));batch_step(s,B_RELEASED);
++    CK(s->s14_head==producer_stamp && p.s14_used && s->primary_released && s->primary_pin==pins[0].identity && !s->deferred);
++    s14_remove(&p);drop_timestamp(producer_stamp);producer_stamp=NULL; /* successor alone owns original head */
++    pair_op(s,0x240);
++#define DENY() CK(FAILED(pool_timestamp(s,addr,0,0,1)) && !s->stamp)
++    ++s->s14_slot;DENY();--s->s14_slot;
++    ++s->s14_tid;DENY();--s->s14_tid;
++    *(UINT*)(exe+0xa943a0c)=2;DENY();*(UINT*)(exe+0xa943a0c)=3;
++    *(UINT64*)(exe+0x75dedb0)|=1ull<<32;DENY();*(UINT64*)(exe+0x75dedb0)=1;
++    DWORD *w=(DWORD*)(pool+ro);memcpy(w+32,w,96);
++    *(UINT_PTR*)(exe+0xa943a18+24)=(UINT_PTR)(w+32);DENY();*(UINT_PTR*)(exe+0xa943a18+24)=(UINT_PTR)w;
++    for(UINT j=0;j<6;j++){DWORD *v=w+((UINT[]){2,3,14,18,20,22})[j],mask=j==2?1u<<16:1u;*v^=mask;DENY();*v^=mask;}
++    HANDLE old=s->s14_head->cpu_section,other=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,65536,NULL);CK(other);
++    s->s14_head->cpu_section=other;DENY();s->s14_head->cpu_section=old;CloseHandle(other);
++    CK(FAILED(pool_timestamp(s,addr+8,0,0,1)) && FAILED(pool_timestamp(s,addr,0,1,1)) && FAILED(pool_timestamp(s,addr,0,0,0)) && !s->stamp);
++    OK(pool_timestamp(s,addr,0,0,1));batch_step(s,B_TAIL_STAMP);
++    CK(FAILED(pool_timestamp(s,addr,0,0,1)) && s->stamp!=s->s14_head && !xs_list_host(list14));
++    OK(close_at(list14,(UINT_PTR)exe+0x72a1));CK(!s->seal && !s->offered && !s->deferred);
++    OK(xs_direct_queue(dev,&wrapped_q));CK(checked_startup_submit(wrapped_q,1,&list14,0,0)==E_ACCESSDENIED &&
++        FAILED(checked_startup_submit(wrapped_q,1,&list14,3,3)) && checked_startup_submit(wrapped_q,2,&list14,3,3)==E_NOTIMPL);
++    IUnknown_Release(wrapped_q);IUnknown_Release(alloc);
++    ID3D12GraphicsCommandList7_Release(*out);*out=s->host;ID3D12GraphicsCommandList7_AddRef(*out);
++}
++void bank3_recycle(void)
++{
++    volatile UINT64 *ticks=(volatile UINT64*)(original+delta);
++    CK(ticks[0]==empty && ticks[1]==empty && VirtualFree(pool,0,MEM_RELEASE));
++    reuse=VirtualAlloc((void*)(addr-delta),65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);CK(reuse==(void*)(addr-delta));
++    memset(reuse,0x49,65536);MemoryBarrier();CK(ticks[0]==empty && ticks[1]==empty);
++}
++void bank3_done(UINT64 old,UINT64 low,UINT64 high,UINT64 *head,UINT64 *tail)
++{
++    volatile UINT64 *ticks=(volatile UINT64*)(original+delta);*head=ticks[1];*tail=ticks[0];
++    CK(*head && *head!=empty && *tail!=empty && *head>=old && *head>=low && *tail>=*head && *tail<=high);
++    for(UINT i=0;i<65536;i++)CK(reuse[i]==0x49 && ((i>=delta && i<delta+16) || original[i]==0xad));
++    CK(UnmapViewOfFile(original) && VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(exe+0xa940000,0,MEM_RELEASE) && VirtualFree(exe+0x75d0000,0,MEM_RELEASE));
++    IUnknown_Release(list14);
++    puts("PASS S14 bank3 CPU timestamp: original +419f6d0 after exact VA reuse at token 3; head +419f6d8, guards and rejected guest submits");
++}
+--- a/scarlett/native/test-s14-release.c
++++ b/scarlett/native/test-s14-release.c
+@@ -32,8 +32,14 @@
+     D3D12_RESOURCE_BARRIER b={.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,from,to}};
+     ID3D12GraphicsCommandList7_ResourceBarrier(l,1,&b);
+ }
++void bank3_setup(void);
++void bank3_head(ID3D12Device*,ID3D12GraphicsCommandList7*);
++void bank3_tail(ID3D12Device*,IUnknown*,IUnknown**,const struct xs_attachment_pin*,ID3D12GraphicsCommandList7*,ID3D12GraphicsCommandList7**,D3D12_TEXTURE_BARRIER);
++void bank3_recycle(void);
++void bank3_done(UINT64,UINT64,UINT64,UINT64*,UINT64*);
+ int main(void)
+ {
++    bank3_setup();
+     const DWORD params[20]={[0]=0x20004,[2]=0x100000,[10]=1,[15]=0x20};
+     IUnknown *owner;OK(D3D12XboxCreateDevice(NULL,params,&bootstrap_iid,(void**)&owner));
+     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+@@ -51,6 +57,8 @@
+         CHECK(pin[i].host && pin[i].serial==(i?17u:14u));
+     }
+     CHECK(pin[0].host!=pin[1].host);
++    IUnknown *banks[2];D3D12_DESCRIPTOR_HEAP_DESC bd[2]={{0,0x130000,1,1},{1,128,1,1}};
++    for(UINT i=0;i<2;i++)OK(descriptor_heap(owner,bd+i,&IID_ID3D12DescriptorHeap,(void**)(banks+i)));
+     ID3D12Device *dev=d->host;ID3D12CommandQueue *q,*foreign;
+     D3D12_COMMAND_QUEUE_DESC qd={0};
+     OK(ID3D12Device_CreateCommandQueue(dev,&qd,&IID_ID3D12CommandQueue,(void**)&q));
+@@ -78,8 +86,11 @@
+         const FLOAT fill[4]={(FLOAT)!k,(FLOAT)k,0,1};
+         ID3D12GraphicsCommandList7_ClearRenderTargetView(p,cpu[i],fill,0,NULL);
+         if(!k)edge14(p,pin[i].host,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COMMON);
+-        ID3D12GraphicsCommandList7_EndQuery(p,query,D3D12_QUERY_TYPE_TIMESTAMP,k);
+-        ID3D12GraphicsCommandList7_ResolveQueryData(p,query,D3D12_QUERY_TYPE_TIMESTAMP,k,1,rb,k?80:32);
++        if(k)bank3_head(dev,p);
++        else{
++            ID3D12GraphicsCommandList7_EndQuery(p,query,D3D12_QUERY_TYPE_TIMESTAMP,0);
++            ID3D12GraphicsCommandList7_ResolveQueryData(p,query,D3D12_QUERY_TYPE_TIMESTAMP,0,1,rb,32);
++        }
+         OK(ID3D12GraphicsCommandList7_Close(p));
+     }
+     D3D12_TEXTURE_BARRIER wire={.SyncBefore=D3D12_BARRIER_SYNC_RENDER_TARGET,.AccessBefore=D3D12_BARRIER_ACCESS_RENDER_TARGET,
+@@ -87,10 +98,7 @@
+         .LayoutAfter=(D3D12_BARRIER_LAYOUT)31,.Subresources={.IndexOrFirstMipLevel=UINT_MAX},.pResource=(ID3D12Resource*)key[1]};
+     CHECK(FAILED(s14_emit(owner,pin+1,l[4],wire)) && FAILED(s14_emit(owner,pin,l[4],wire)));
+     wire.pResource=(ID3D12Resource*)key[0];wire.Flags=1;CHECK(FAILED(s14_emit(owner,pin,l[4],wire)));wire.Flags=0;
+-    OK(s14_emit(owner,pin,l[4],wire));
+-    ID3D12GraphicsCommandList7_EndQuery(l[4],query,D3D12_QUERY_TYPE_TIMESTAMP,2);
+-    ID3D12GraphicsCommandList7_ResolveQueryData(l[4],query,D3D12_QUERY_TYPE_TIMESTAMP,2,1,rb,72);
+-    OK(ID3D12GraphicsCommandList7_Close(l[4]));
++    bank3_tail(dev,owner,banks,pin,l[3],l+4,wire);
+     for(UINT i=0;i<2;i++){
+         D3D12_TEXTURE_COPY_LOCATION src={.pResource=pin[i].host},dst={.pResource=rb,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+             .PlacedFootprint={512+512*i,{DXGI_FORMAT_R8G8B8A8_UNORM,1,1,1,256}}};
+@@ -124,15 +132,17 @@
+     CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)) && jobs[3].calls==1 &&
+         frame_find(&d->clock,2)->batch_end==f[1] && frame_find(&d->clock,3)->batch_end==f[3] &&
+         xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0);
++    UINT64 low,high,cpu_tick;bank3_recycle();OK(ID3D12CommandQueue_GetClockCalibration(q,&low,&cpu_tick));
+     OK(ID3D12Fence_Signal(f[4],1));wait14(f[3]);OK(xs_frame_submission_query(owner,3,q,TRUE));
++    OK(ID3D12CommandQueue_GetClockCalibration(q,&high,&cpu_tick));
+     ID3D12CommandList *oracle=(ID3D12CommandList*)l[5];
+     ID3D12CommandQueue_ExecuteCommandLists(q,1,&oracle);OK(ID3D12CommandQueue_Signal(q,f[5],1));wait14(f[5]);
+     OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));
+     UINT64 old,head,tail,sentinel=0xa5a5a5a5a5a5a5a5ull;
+-    memcpy(&old,map+32,8);memcpy(&head,map+80,8);memcpy(&tail,map+72,8);
++    memcpy(&old,map+32,8);bank3_done(old,low,high,&head,&tail);
+     CHECK(old && old!=sentinel && head!=sentinel && tail!=sentinel && old<=head && head<=tail);
+     CHECK(!memcmp(map+512,"\0\xff\0\xff",4) && !memcmp(map+1024,"\xff\0\0\xff",4));
+-    for(UINT i=0;i<4096;i++)if(!(i>=32 && i<40) && !(i>=72 && i<88) &&
++    for(UINT i=0;i<4096;i++)if(!(i>=32 && i<40) &&
+         !(i>=512 && i<516) && !(i>=1024 && i<1028))CHECK(map[i]==0xa5);
+     ID3D12Resource_Unmap(rb,0,NULL);OK(ID3D12Device_GetDeviceRemovedReason(dev));
+     printf("PASS S14 fresh submit token=3: ordered native pair, batchEnd=%p old17End=%p; queries %llu <= %llu <= %llu, green14/red17 and guards\n",
+@@ -141,5 +151,6 @@
+     for(UINT i=0;i<6;i++){ID3D12GraphicsCommandList7_Release(l[i]);ID3D12CommandAllocator_Release(a[i]);ID3D12Fence_Release(f[i]);}
+     ID3D12QueryHeap_Release(query);ID3D12Resource_Release(rb);ID3D12CommandQueue_Release(q);ID3D12CommandQueue_Release(foreign);
+     for(UINT i=0;i<2;i++){IUnknown_Release(key[i]);ID3D12Resource_Release(pin[i].host);}
++    IUnknown_Release(banks[0]);IUnknown_Release(banks[1]);
+     IUnknown_Release(views);IUnknown_Release(owner);return 0;
+ }
