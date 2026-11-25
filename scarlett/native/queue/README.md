@@ -1281,6 +1281,27 @@ token-2 return or a display count above 1.
   shared the first view's backing and generation but named different bytes
   (first view at `0x1ef30`). The diagnostic did not read the table payload.
 
+### Binding the returned display target
+
+On staged `320a5879` with backend `0045`, the AMD fixture switched from
+clear pipeline #4 to color pipeline #42 and installed its root only at
+the following explicit setter. The RTX fixture bound the replacement
+vertex buffer and verified the original source bytes after reuse and
+fence completion. Both fixtures exited 0.
+
+Both ordinary runs submitted the token-2 pair, queued `Signal(3)`
+successfully and entered `PresentX(2)`. Neither logged a return or pair
+retirement. Both exited 2; token 1 returned `S_OK`, the same-window count
+advanced 0→1 and the decoded clients stayed blank.
+
+| Adapter | First ordinary stop | Operands measured in a separate diagnostic |
+| --- | --- | --- |
+| AMD | First vertex buffer (`+180`, return `+32966`). | Slot 0, 4,080 bytes, stride 24. The full view fit at `0x1ef30` in the original live allocation. No prior VB was bound; the retail #42 bind was not observed. |
+| RTX 3070 | Output target (`+190`, return `+33317`). | One color target, no depth target. Its key, slot, serial 14 and writer queue matched the returned primary, distinct from offscreen color/depth serials 119/121. Both vertex buffers were present. |
+
+Each diagnostic sampled its own original token-2 end at 0 at refusal.
+The RTX target selection is a request; it does not show a draw into the primary.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
