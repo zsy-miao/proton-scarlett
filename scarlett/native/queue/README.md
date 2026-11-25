@@ -1898,6 +1898,15 @@ cells at slot 372469, epoch 2, then first refused the alternate timestamp
 at `0x799f250` (`+2482b37` from `+a1c42c`). Both runs returned success for
 token 1 only; neither capture showed game content.
 
+An AMD diagnostic (`3b519ab7`) measured the refused selection after the
+serial-14 bind. On op 37, setter index 0 resolved to three cells starting
+at slot 372469. The existing selection stayed at slot 372600, one cell,
+epoch 1. The clear and both vertex buffers shared one allocation generation;
+the observer traced its live reference count from 3 through the RAW32 write
+at 4 to validation at 5. The first refusal was the split-at-5 check (actual
+split: 6). No three-cell selection was committed, and the descriptor contents
+were not sampled. All 175 decoded frames were black; only token 1 returned.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
