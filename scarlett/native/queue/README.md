@@ -1764,6 +1764,19 @@ of the replacement itself was not sampled. This was the pending-color
 path, with no explicit #42 bind. Only token 1 returned; all 91 decoded
 frames were blank black or white.
 
+In the paired RTX diagnostic (`0d3ad2bd`), the `+490/+32113` refusal
+from `+50a624f` did not recur. Its resource and failing predicate remain
+unidentified. Serial 14 instead qualified at producer Close, and its
+successor recorded the whole-surface release. The next call, timestamp
+`+240/+2482b37` from `+a1c42c`, requested `0x799f6d0`, eight bytes
+before the producer head. The bank-3 CPU section check returned `S_OK`:
+head/tail offsets `0x419f6d8/0x419f6d0`, index 1, owner record offset
+`0x3fb30c0`, matching section and indexed head. The operation itself
+returned `E_ACCESSDENIED` at the serial-14 timestamp gate; no timestamp
+resolve or serial-14 batch submission was established. Serial 17's own
+end reached 1. Token 1 presented, token 2 entered without a logged
+return, and all 223 captured frames showed only black, white or a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
