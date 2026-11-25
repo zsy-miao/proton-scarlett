@@ -1391,6 +1391,25 @@ it failed to start Explorer. Its log contains no frame-token, presentation
 or display-count event. Its recording was black. This attempt supplies
 no evidence about where the retail renderer stops on AMD.
 
+One AMD retry used the identical stage with 22,751,040 KiB available
+under the launcher lock. The renderer switched to color pipeline #42,
+installed its matching root, then stopped at the vertex-buffer setter
+(`+180`, return `+32966`); the view operands were not captured. The
+token-2 pair submitted, `Signal(3)` succeeded, and `PresentX(2)` entered
+without a logged return or pair-end retirement. The run exited 2. Only
+token 1 returned `S_OK`, the count advanced 0→1 and the client stayed blank.
+
+Separate diagnostics measured two different shader-table requests:
+
+| Adapter | State at `+120`, return `+32206` | Checked range in the active heap |
+| --- | --- | --- |
+| AMD | After the offscreen color/depth rebind, root index 0, setter epoch 0 | Handle `0x1145ef00`, one cell `[372600,372601)` |
+| RTX | After binding the returned primary (serial 14), root index 0, prior slot 372600 at setter epoch 1 | Handle `0xa5f5dea0`, three cells `[372469,372472)` |
+
+Neither setter succeeded. The range checks establish which slots fit,
+not their descriptor contents or a draw. Both diagnostics sampled their
+own original token-2 end at 0 when recording stopped.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
