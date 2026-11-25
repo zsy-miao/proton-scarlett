@@ -923,6 +923,23 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
 {
     HRESULT hr=E_NOTIMPL;
     AcquireSRWLockExclusive(&s->borrow_lock);
+#ifdef XS_IM96_FACTORY
+    /* This helper is reached through the explicit +c8 setter. Publication alone never changes the list.
+     * Keep the guest alias pinned; private host root and PSO are borrowed from the pinned wrapper. */
+    if(open_direct_state(s) && s->cache_page && !memcmp(s->cache_page,cache_template,sizeof cache_template) &&
+       s->prior_pso && s->guest_topology==XS_RECTLIST && s->required_root &&
+       s->graphics_identity==s->required_root && (!s->bound || s->bound==identity)){
+        ID3D12RootSignature *private_root=NULL;
+        ID3D12PipelineState *p=xs_pin_im96_pso(s->pool_owner,s->device,identity,s->graphics_identity,&private_root);
+        if(p){
+            if(!s->bound)s->bound=identity;else IUnknown_Release(identity);
+            s->pipeline=p;s->graphics_root=private_root;
+            ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,private_root);
+            ID3D12GraphicsCommandList7_SetPipelineState(s->host,p);recorded_direct_state(s);
+            ReleaseSRWLockExclusive(&s->borrow_lock);return S_OK;
+        }
+    }
+#endif
     if(open_direct_state(s) && !s->previous_vb.buffer && s->cache_page && !memcmp(s->cache_page,cache_template,sizeof cache_template) &&
         (!s->bound || s->bound==identity)){
         IUnknown *root=NULL;

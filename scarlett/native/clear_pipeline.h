@@ -8,7 +8,11 @@ static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
     (void)i; (void)name;
     return E_NOTIMPL;
 }
-struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next; ID3D12PipelineState *diagonal; BOOL colour;};
+struct clear_wrapper {struct bvh_pipeline pso; IUnknown *root; struct clear_wrapper *next; ID3D12PipelineState *diagonal; BOOL colour;
+#ifdef XS_IM96_FACTORY
+    BOOL im96;
+#endif
+};
 static ULONG WINAPI clear_release(IUnknown *i)
 {
     struct clear_wrapper *p=CONTAINING_RECORD(i,struct clear_wrapper,pso.iface);
@@ -16,7 +20,11 @@ static ULONG WINAPI clear_release(IUnknown *i)
     AcquireSRWLockExclusive(&d->descriptor_lock);
     ULONG refs=InterlockedDecrement(&p->pso.refs);
     if(!refs && p->root){
-        struct clear_wrapper **link=p->colour?&d->colour_psos:&d->clear4;while(*link!=p)link=&(*link)->next;
+        struct clear_wrapper **link=
+#ifdef XS_IM96_FACTORY
+            p->im96?&d->im96_psos:
+#endif
+            p->colour?&d->colour_psos:&d->clear4;while(*link!=p)link=&(*link)->next;
         *link=p->next;
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);
@@ -57,6 +65,9 @@ static HRESULT blit_colour_pipeline(IUnknown *dev,UINT_PTR *q,IUnknown *root,con
     q[0x268/8]=(UINT_PTR)ia;q[0x278/8]=(UINT)q[0x278/8]|((UINT64)D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE<<32);
     return S_OK;
 }
+#ifdef XS_IM96_FACTORY
+#include "im96_pipeline.h"
+#endif
 static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE_STREAM_DESC *desc,
         REFIID iid,void **out)
 {
@@ -90,6 +101,14 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     UINT_PTR dsv_word=q[0x2a8/8];
     struct xbox_device *d=CONTAINING_RECORD(device,struct xbox_device,iface);
     BOOL colour=q[4]==1100 && q[7]==1180;ID3D12RootSignature *host;
+    BOOL im96=FALSE;
+#ifdef XS_IM96_FACTORY
+    im96=q[4]==1712 && q[7]==1588;
+    if(im96){
+        HRESULT hr=im96_prepare(device,q,guest_root,v,s);if(FAILED(hr))return hr;
+        host=(ID3D12RootSignature*)q[1];
+    }else
+#endif
     if(colour){
         HRESULT hr=blit_colour_pipeline(device,q,guest_root,v,s);if(FAILED(hr))return hr;
         host=(ID3D12RootSignature*)q[1];
@@ -112,7 +131,7 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     sd.pPipelineStateSubobjectStream=q;
     ID3D12Device2 *d2=NULL;
     ID3D12PipelineState *pso=NULL,*diag=NULL;
-    BOOL clear4=!colour && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+    BOOL clear4=!im96 && !colour && (UINT)(dsv_word>>32)==DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     HRESULT hr=ID3D12Device_QueryInterface(d->host,&IID_ID3D12Device2,(void **)&d2);
     if (SUCCEEDED(hr)) {
         hr=ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void **)&pso);
@@ -122,28 +141,39 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
         }
         ID3D12Device2_Release(d2);
     }
-    if (FAILED(hr)) { if(pso)ID3D12PipelineState_Release(pso);IUnknown_Release(guest_root); return hr; }
+    if (FAILED(hr)) { if(pso)ID3D12PipelineState_Release(pso);if(im96)ID3D12RootSignature_Release(host);IUnknown_Release(guest_root); return hr; }
     struct clear_wrapper *wrap=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *wrap);
     if (!wrap) {
         if(diag)ID3D12PipelineState_Release(diag);
         ID3D12PipelineState_Release(pso);
+        if(im96)ID3D12RootSignature_Release(host);
         IUnknown_Release(guest_root);
         return E_OUTOFMEMORY;
     }
     struct bvh_pipeline *p=&wrap->pso;
-    ID3D12RootSignature_AddRef(host);
+    if(!im96)ID3D12RootSignature_AddRef(host);
     p->iface.lpVtbl=&clear_methods.unknown; p->refs=1;
     p->owner=d; IUnknown_AddRef(device);
     p->root=host; p->host=pso;
-    if (colour || clear4){
+    if (colour || clear4 || im96){
+#ifdef XS_IM96_FACTORY
+        wrap->im96=im96;
+#endif
         wrap->colour=colour;
         wrap->diagonal=diag;
         wrap->root=guest_root;
         AcquireSRWLockExclusive(&d->descriptor_lock);
-        struct clear_wrapper **list=colour?&d->colour_psos:&d->clear4;wrap->next=*list;*list=wrap;
+        struct clear_wrapper **list=
+#ifdef XS_IM96_FACTORY
+            im96?&d->im96_psos:
+#endif
+            colour?&d->colour_psos:&d->clear4;wrap->next=*list;*list=wrap;
         ReleaseSRWLockExclusive(&d->descriptor_lock);
     }else IUnknown_Release(guest_root);
     *out=&p->iface;
+#ifdef XS_IM96_FACTORY
+    if(im96)return S_OK;
+#endif
     OutputDebugStringA(colour?"scarlett: created qualified colour PSO\n":"scarlett: created qualified clear-pair graphics PSO\n");
     return S_OK;
 }

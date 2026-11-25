@@ -71,6 +71,9 @@ struct xbox_device {
     struct xs_buffer_binding *buffers;
     struct row_buffer *rows;
     struct clear_wrapper *clear4,*colour_psos;
+#ifdef XS_IM96_FACTORY
+    struct clear_wrapper *im96_psos;
+#endif
     struct bvh_root *bvh_roots; /* live identities under descriptor_lock */
     struct color_resource *colors; /* weak registry under descriptor_lock */
 #ifdef SCARLETT_STAGED_PLACED
@@ -1365,6 +1368,22 @@ ID3D12PipelineState *xs_pin_colour_pso(IUnknown *owner,ID3D12Device *device,IUnk
     }
     ReleaseSRWLockShared(&d->descriptor_lock);return host;
 }
+#ifdef XS_IM96_FACTORY
+ID3D12PipelineState *xs_pin_im96_pso(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown *root,ID3D12RootSignature **private_root)
+{
+    if(!private_root)return NULL;
+    *private_root=NULL;
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    if(d->host!=device)return NULL;
+    ID3D12PipelineState *host=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(struct clear_wrapper *p=d->im96_psos;p;p=p->next)if(&p->pso.iface==identity && p->root==root){
+        *private_root=p->pso.root;bp_addref(identity);host=p->pso.host;break;
+    }
+    ReleaseSRWLockShared(&d->descriptor_lock);return host;
+}
+#endif
 /* Only registered #4 wrappers on this exact guest and host device qualify. */
 ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown **root)
 {

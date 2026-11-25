@@ -24,6 +24,9 @@ HRESULT xs_device_list(ID3D12Device *host,D3D12_COMMAND_LIST_TYPE type,IUnknown 
 ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *host,IUnknown *identity,IUnknown **root);
 ID3D12RootSignature *xs_retain_colour_root(IUnknown *,IUnknown *);
 ID3D12PipelineState *xs_pin_colour_pso(IUnknown *,ID3D12Device *,IUnknown *,IUnknown *);
+#ifdef XS_IM96_FACTORY
+ID3D12PipelineState *xs_pin_im96_pso(IUnknown *,ID3D12Device *,IUnknown *,IUnknown *,ID3D12RootSignature **);
+#endif
 ID3D12PipelineState *xs_clear4_effective(IUnknown *pinned,UINT64 lanes);
 ID3D12RootSignature *xs_retain_graphics_root(IUnknown *owner,IUnknown *identity);
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);

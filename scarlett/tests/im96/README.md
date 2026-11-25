@@ -128,6 +128,47 @@ and [RectList API](https://github.com/GPUOpen-Drivers/pal/blob/c5e800072a32f68b6
 (GPL-2.0-only; post-VS equal-W smooth outputs, other orders possible).
 No upstream implementation copied.
 
+### F96 factory and explicit bind
+
+`XS_IM96_FACTORY` is a build-time opt-in. The 688-byte stream must match
+the normalized fixed-state digest, both entire guest stages, the three
+IA elements and a live b27 alias on the same device. The factory owns
+the private host root and PSO through the returned wrapper. Only an
+explicit `+c8` can install them on the recorder. This path does not
+admit a draw, bind the used table or qualify a CBV lifetime.
+
+From the project root, with a local DXC and the six previously qualified
+private files listed by `factory/inputs.sha256`:
+
+```sh
+export DXC=/path/to/dxc
+python3 -IB scarlett/tests/im96/test-factory-cpu.py "$PRIVATE_F96"
+python3 -IB scarlett/tests/im96/factory/test-install.py
+bash scarlett/tests/im96/factory/build.sh "$PRIVATE_F96" "$NEW_OUTPUT"
+```
+
+The generator compiles only this project's VS/PS and rect3 GS, verifies
+each SHA-256 and emits the header in the build directory. The existing
+private fixture directory supplies the inputs; they are not distributed.
+`game/` contains the hardware fixture; the sibling `d3d12_xs.dll` is
+the opt-in paired provider built from the same device source. The fixture
+links the recorder directly. It exercises real device creation, checked
+factory inputs, an explicit bind on a synthetic post-clear list, repeated
+alias selection and wrapper retirement. The CPU installer test separately
+checks root-before-PSO ordering. A successful hardware run exits zero
+and prints `PASS F96 factory, explicit +c8 and wrapper retirement`.
+It issues no draw or queue submission. The same fixture (`d082991f`)
+passed on RADV and RTX: creation and publication succeeded, the explicit
+bind selected the private root and PSO, and closing and releasing the list
+retired the wrapper.
+
+Tool pin: DXC `1.9(dev;4950-b106a961)`; `LICENSE-LLVM.txt` (UI/NCSA)
+and `LICENSE-MS.txt` (Microsoft DirectX Shader Compiler terms) accompany
+the separately installed compiler. Source and behavioral attribution for
+VS71/PS86 and rect3 follows the pinned Leonida, PAL, VIctory and XCL
+revisions in this README. No compiler, private inputs or comparison code
+are bundled here.
+
 ### Attribution
 
 Selector/disassembly tools: [Leonida](https://github.com/ItsNotRexed/Leonida/tree/7b7d73f890f9fbbf5967bbb694390bbc99e33ba6/tools), GPL-3.0-or-later. Sampler field definitions cross-checked against Leonida `14b2e4462`, `runtime/src/gfx10_descriptors.h`. See also the existing `../im-transfer/README.md` references: [XCL](https://github.com/ivall/XCL), GPL-2.0-only (sampler bits), and [VIctory](https://github.com/Marvisak/VIctory/tree/ffe310eb2098e52169f4c44db5ffdabf43a72622), GPL-3.0-or-later (explicit host views). Their code and license files remain upstream; none is vendored here. Fixture setup follows the project's `im-transfer/draw.cpp` and CPU DX-op test approach. The patch contains project source, tests and metadata only.
