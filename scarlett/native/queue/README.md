@@ -1648,6 +1648,16 @@ Serial 17's original end completed, but `PresentX(2)` had no logged return,
 the count stayed at 1, and all 217 decoded frames were blank apart from
 the cursor.
 
+The single `f70ace2c` RTX follow-up logged 46 calls at the same `+230`
+return site (`+4ecc821`), all `S_OK`. None followed a seven-mip placement
+or `+58` return. This leaves the target descriptor, destination, failed
+check and HRESULT unmeasured. The run stopped at successor timestamp
+`+240` (`+2482b37` from `+a1c42c`): address `0x799acc0`, flags 1,
+`E_INVALIDARG`. The claimed receipt's owner, thread and key matched.
+Token 2 had a completed sync fence but no submitted rendering batch or
+`PresentX(2)` entry. The count stayed at 1; private review found only
+blank frames and a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
