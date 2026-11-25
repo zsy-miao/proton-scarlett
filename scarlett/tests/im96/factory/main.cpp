@@ -29,6 +29,9 @@ int main(){
     load("fixed96.bin",q,sizeof q);load("vs96.bin",v,sizeof v);load("ps96.bin",p,sizeof p);
     q[1]=(UINT_PTR)alias.Get();q[3]=(UINT_PTR)v;q[6]=(UINT_PTR)p;q[77]=(UINT_PTR)ia;
     IUnknown *bad=r.Get();q[61]^=1;CK(publish(&bad)==E_NOTIMPL && !bad);q[61]^=1;
+    v[sizeof v-1]^=1;CK(publish(&bad)==E_NOTIMPL && !bad);v[sizeof v-1]^=1;
+    p[sizeof p-1]^=1;CK(publish(&bad)==E_NOTIMPL && !bad);p[sizeof p-1]^=1;
+    q[3]=0;CK(publish(&bad)==E_POINTER && !bad);q[3]=(UINT_PTR)v;
     q[1]=(UINT_PTR)r.Get();CK(publish(&bad)==E_INVALIDARG && !bad);
     auto other=device(),foreign_alias=colour_root(other.Get());
     ComPtr<IUnknown> exact,foreign;

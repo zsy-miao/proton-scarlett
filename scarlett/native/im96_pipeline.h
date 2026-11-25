@@ -1,5 +1,10 @@
 /* Only included by the opt-in factory. q is an owned 688-byte snapshot. */
 #include "im96_host_dxil.h"
+#ifdef XS_IM96_ONESHOT
+#include "im96_digest.h"
+#else
+#define im96_digest_matches shader_digest_matches
+#endif
 static HRESULT im96_pipeline_root(IUnknown*,IUnknown*,ID3D12RootSignature**);
 
 static const BYTE im96_fixed[]={0x6a,0x1a,0x91,0xfc,0x96,0x6f,0x57,0x9f,0x3e,0x7e,0x5c,0xf9,0xf0,0xf4,0x05,0xcf,0xa3,0xee,0x4c,0x5b,0x9d,0x31,0x3c,0x28,0x77,0x8b,0xd0,0x9f,0xd9,0x5a,0x21,0xf4};
@@ -16,10 +21,10 @@ static HRESULT im96_prepare(IUnknown *device,UINT_PTR *q,IUnknown *alias,const v
        q[8]!=3 || q[9] || q[10] || q[11]!=4 || q[12] || q[13] || q[14]!=5 || q[15] || q[16] ||
        q[76]!=12 || q[78]!=3 || q[79]!=(((UINT64)19<<32)|14) ||
        q[80]!=(((UINT64)DXGI_FORMAT_R8G8B8A8_UNORM<<32)|15) || q[84]>>32!=1 || q[85]!=16 ||
-       !shader_digest_matches((BYTE*)q,688,im96_fixed))return E_NOTIMPL;
+       !im96_digest_matches((BYTE*)q,688,im96_fixed))return E_NOTIMPL;
     BYTE v[1712],p[1588];D3D12_INPUT_ELEMENT_DESC elements[3];
     if(!copy_in(v,vs,sizeof v)||!copy_in(p,ps,sizeof p)||!copy_in(elements,layout,sizeof elements))return E_POINTER;
-    if(!shader_digest_matches(v,sizeof v,vh)||!shader_digest_matches(p,sizeof p,ph))return E_NOTIMPL;
+    if(!im96_digest_matches(v,sizeof v,vh)||!im96_digest_matches(p,sizeof p,ph))return E_NOTIMPL;
     for(UINT k=0;k<3;k++){
         char name[9];SIZE_T n=strlen(ia[k].SemanticName)+1;
         if(!copy_in(name,elements[k].SemanticName,n))return E_POINTER;

@@ -182,6 +182,13 @@ path also installed the pipeline on explicit `+c8`. The measured retail
 request used b27; this canonical-root result does not explain why the
 pipeline was unavailable when the game selected the pass.
 
+The factory fixture also passes on both GPUs with `XS_IM96_ONESHOT`, which
+uses `BCryptHash` for the same three SHA-256 checks. Mutated inputs were
+rejected. In one AMD retail timing comparison, worker entry to the host
+dispatch point fell from 2.116 ms to 0.386 ms. The game still sampled a
+null pipeline on two recordings; neither installed or drew with this
+pipeline. The second run did not log the host call's return.
+
 Tool pin: DXC `1.9(dev;4950-b106a961)`; `LICENSE-LLVM.txt` (UI/NCSA)
 and `LICENSE-MS.txt` (Microsoft DirectX Shader Compiler terms) accompany
 the separately installed compiler. Source and behavioral attribution for
