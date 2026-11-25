@@ -189,6 +189,17 @@ dispatch point fell from 2.116 ms to 0.386 ms. The game still sampled a
 null pipeline on two recordings; neither installed or drew with this
 pipeline. The second run did not log the host call's return.
 
+### Composite draw to a returned primary
+
+Fixture `d0661006` passed on RADV and RTX. It explicitly installed the
+pipeline, selected the matching root, bound one table, and recorded
+`DrawInstanced(3,1,0,0)`. After both fences retired, exactly 36 pixels in
+the 3840×2160 target were opaque green; all other pixels stayed transparent.
+The magenta/green source remained intact, as did the 64 object bytes, 480
+camera bytes and 32 guard bytes after address reuse. This measures the
+first-vertex-0 draw with fixture-owned inputs. Retail has not yet shown
+that draw with its own selected pipeline and inputs.
+
 Tool pin: DXC `1.9(dev;4950-b106a961)`; `LICENSE-LLVM.txt` (UI/NCSA)
 and `LICENSE-MS.txt` (Microsoft DirectX Shader Compiler terms) accompany
 the separately installed compiler. Source and behavioral attribution for
