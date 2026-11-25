@@ -1670,6 +1670,29 @@ used. The refused run did not log tail preparation or the live record, so
 the offsets identify a definite mismatch, not the first returning branch
 or proof that the successor used the same backing.
 
+### RTX second presentation
+
+One locked RTX diagnostic (`a7cbc6fe`, 26,333,120 KiB available at
+admission) accepted serial 17's token-2 timestamp. Head/tail addresses
+`0x799aeb8/0x799aeb0` had offsets `0x419aeb8/0x419aeb0` in the same
+live section. Bank 2, index 1 and owner record offset `0x3fb3050`
+matched; resolve offset was `0xaeb0`. The previous `0x419acc8/0x419acc0`
+pair did not recur. Timestamp acceptance is unchanged.
+
+Serial 17 submitted; its original end `0x77b653b0` was sampled at 1.
+`PresentX(2)` returned `S_OK` and the window's count advanced 1→2.
+Private review of 241 decoded frames found four black/white/cursor
+variants. No visible change in game content could be attributed to token 2.
+
+The first refusal occurred on the texture thread while presentation was
+in progress. `+58` returned the original seven-mip guest VA `0xd675eb000`;
+on that thread the subsequent `+230` requested a 128×72 `R32_FLOAT`
+texture view starting at that VA, with seven levels, in aligned visible
+heap slot 135. The buffer-dimension check returned `E_NOTIMPL` at
+`+4ecc821` from `+501f703`. Separately, the token-3 submission offered
+serial 14's closed producer and successor in order on the eligible queue.
+The diagnostic matched and stopped the offer before host execution. Exit 2.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at

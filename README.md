@@ -8,9 +8,9 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
-| How far does it get? | Both GPUs have reached the game's request to show frame 2. Only the first, blank frame has reached the display. |
-| What's blocking it? | In the [latest RTX trace](scarlett/native/queue/README.md#after-the-raw-buffer-view), the list writing the returned display surface closed, but the provider had no matching record to authorize its release. AMD still stopped at shader-input selection. |
-| What did the latest test show? | An RTX diagnostic returned the seven-level texture's address, then stopped at a shader-view request. The follow-up stopped earlier, while recording a timestamp for frame 2. Neither displayed frame 2. |
+| How far does it get? | Both ordinary runs reached the request to show frame 2 and stayed at display count 1. In one RTX diagnostic the game completed its second presentation and the display count reached 2. The capture still showed no game content. |
+| What's blocking it? | Ordinary AMD stopped at shader-input selection. Ordinary RTX stopped trying to release a display surface. In the [RTX diagnostic](scarlett/native/queue/README.md#rtx-second-presentation), the game also requested a texture view from a provider routine that only handles buffers. |
+| What did the latest test show? | The RTX diagnostic accepted the game's frame-2 timestamps and the submitted work completed. All 241 captured frames showed only black, white or a cursor. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress
