@@ -75,6 +75,8 @@ struct xs_sr_ticket {struct xs_attachment_pin rt,ds;ID3D12Fence *end;};
 BOOL xs_sr_submitted(IUnknown *,const struct xs_attachment_pin *,const struct xs_attachment_pin *,ID3D12CommandQueue *,ID3D12Fence *);
 HRESULT xs_sr_snapshot(IUnknown *,const void *,struct xs_sr_ticket *);
 HRESULT xs_sr_view(IUnknown *,const struct xs_sr_ticket *,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *);
+BOOL xs_check_returned_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,UINT64,
+        const struct xs_sr_ticket *,D3D12_CPU_DESCRIPTOR_HANDLE);
 HRESULT xs_freeze_returned_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,UINT64,
         const struct xs_sr_ticket *,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *);
 HRESULT xs_reuse_with_sr(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *,const struct xs_sr_ticket *);

@@ -719,6 +719,7 @@ static BOOL rt_shader_edge(const D3D12_TEXTURE_BARRIER *b,BOOL returning)
         b->LayoutAfter==(returning?D3D12_BARRIER_LAYOUT_RENDER_TARGET:D3D12_BARRIER_LAYOUT_SHADER_RESOURCE);
 }
 #ifdef SCARLETT_PAIR_SUBMIT
+static BOOL carried_clear_split(const struct startup_list *s);
 static BOOL same_carried_views(struct startup_list *s)
 {
     struct xs_sr_ticket now={0};
@@ -746,9 +747,12 @@ static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER
            !c->needs_publication || !v->needs_publication || !c->capture || c->capture!=v->capture ||
            !c->placed || v->placed!=c->placed || !v->span.gen || v->span.gen!=c->span.gen ||
            v->span.node!=c->span.node || v->span.bytes!=4080 || c->span.bytes!=100 ||
-           s->split_at!=5 || s->alloc_generation || s->table_epoch || s->nops!=28 ||
+           !carried_clear_split(s) ||
+           s->alloc_generation || s->table_epoch || s->nops!=28 ||
            memcmp(s->ops,"\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92\x32\x46\x16\x15\x2c\x0c\x14\x22\x30\x92",28) ||
-           !same_carried_views(s))return E_NOTIMPL;
+           (s->split_at==6 ? (!s->primary_cleared || !xs_held_table_inputs(c,v) ||
+             !xs_check_returned_output(s->pool_owner,s->primary_pin,s->primary,s->clear_slot,s->clear_serial,
+                 s->reuse_epoch,&s->sr,(D3D12_CPU_DESCRIPTOR_HANDLE){0})) : !same_carried_views(s)))return E_NOTIMPL;
         rt=&s->sr.rt;
     }
 #endif
@@ -762,6 +766,10 @@ static HRESULT record_attachment_pair(struct startup_list *s,const D3D12_BARRIER
         b[0].pResource=b[1].pResource=rt->host;
         D3D12_BARRIER_GROUP host={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=2,.pTextureBarriers=b};
         ID3D12GraphicsCommandList7_Barrier(s->host,1,&host);
+#ifdef SCARLETT_PAIR_SUBMIT
+        if(s->sr.end && s->split_at==6)fprintf(stderr,"scarlett: native carried +490 recorded segment=%p rt=%p/%llu ds=%p/%llu end=%p\n",
+                s->host,rt->identity,rt->serial,s->sr.ds.identity,s->sr.ds.serial,s->sr.end);
+#endif
         s->rt_roundtripped=TRUE;recorded_direct_state(s);return S_OK;
     }
     if(!s->blend_ones || !s->stencil_zero || !s->bound || !s->required_root ||

@@ -26,6 +26,12 @@ da4829b14afdf3d0f6dc8d44c8fdbf3cfb8b84bcd7b8dacdf403c0d456a811ea  colour-PS.bin
 HASH
 )
 if [[ $game == returned ]]; then
+    # Compile the hardware-tested sources even when the surrounding checkout is newer.
+    pinned=$(mktemp -d)
+    trap 'rm -rf -- "$pinned"' EXIT
+    git -C "$n/../.." archive b35465b8c39b1319014cbd3a45826820605c6e7e scarlett/native scarlett/tests |
+        tar -x -C "$pinned"
+    n=$pinned/scarlett/native
     mkdir provider amd-first
     cp -- "$xmem" returned/xmem.dll
     sha256sum --check --strict <<< 'c58c784b78930268a26498a3af1148adfbbb1c3cea97bb66d26763999323cfa0  returned/xmem.dll'

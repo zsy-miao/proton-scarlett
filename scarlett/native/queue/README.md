@@ -1284,8 +1284,8 @@ token-2 return or a display count above 1.
 ### Rebuild the RTX returned-target and RADV first-vertex fixtures
 
 The qualified provider and fixtures use the native and fixture sources from
-`b35465b8`. Run this from the root of the checkout containing this recipe;
-the script builds the sources beside it:
+`b35465b8`. Run this from a Git checkout containing this recipe and that
+commit; `--qualified` builds from a temporary archive of the pinned commit:
 
 ```bash
 scarlett/tests/build-colour-recorder.sh --qualified "$INPUTS" "$XMEM" "$OUT"

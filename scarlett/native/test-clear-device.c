@@ -182,7 +182,7 @@ static IUnknown *make_test_primary(IUnknown *owner,ID3D12Device *hd,BOOL returne
     return id;
 }
 IUnknown *test_primary_image(IUnknown *owner,ID3D12Device *hd){return make_test_primary(owner,hd,FALSE);}
-#ifdef TEST_CARRIED_TARGET
+#if defined(TEST_CARRIED_TARGET) || defined(TEST_NATIVE_TRIP)
 IUnknown *test_returned_image(IUnknown *owner,ID3D12Device *hd){return make_test_primary(owner,hd,TRUE);}
 IUnknown *test_primary_alias(IUnknown *owner,ID3D12Resource *image)
 {

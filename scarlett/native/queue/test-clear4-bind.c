@@ -108,7 +108,7 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
 #include "test-quad-read.h"
 #include "test-rt-roundtrip.h"
-#ifdef TEST_CARRIED_TARGET
+#if defined(TEST_CARRIED_TARGET) || defined(TEST_NATIVE_TRIP)
 #include "test-carried-target.h"
 #endif
 #ifdef TEST_NATIVE_FIRST180
@@ -130,7 +130,7 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     REQUIRE(xs_allocator(d,0,&a)==S_OK && xs_allocator(d,0,&b)==S_OK && xs_device_list(d,0,a,TRUE,owner,&l)==S_OK &&
         xs_direct_queue(d,&q)==S_OK && xs_shared_fence(d,&gate)==S_OK && xs_shared_fence(d,&done)==S_OK);
     struct startup_list *s=sl(l),pass=*s;
-#ifdef TEST_CARRIED_TARGET
+#if defined(TEST_CARRIED_TARGET) || defined(TEST_NATIVE_TRIP)
     SIZE_T ps=slots[0]+64;REQUIRE(prepare_returned_target(s,as_queue(q),ps));
 #endif
     struct lease_arena *arena=(void*)((UINT_PTR)GetModuleHandleW(NULL)+0x75df1b8);
@@ -162,8 +162,16 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     for(UINT j=0;j<2;j++){pair[j].pResource=images[0];pair[j].Subresources.IndexOrFirstMipLevel=UINT_MAX;}
     D3D12_BARRIER_GROUP g={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=pair};
     ID3D12GraphicsCommandList7_Barrier(prior,1,&g);REQUIRE(SUCCEEDED(ID3D12GraphicsCommandList7_Close(prior)));
+#ifdef TEST_NATIVE_TRIP
+    IUnknown *hold_end;REQUIRE(xs_shared_fence(d,&hold_end)==S_OK && xs_queue_wait(q,hold_end,1)==S_OK);
+#endif
     ID3D12CommandList *pb=(ID3D12CommandList*)prior;ID3D12CommandQueue_ExecuteCommandLists(as_queue(q),1,&pb);
     REQUIRE(queue_signal(q,end,1)==S_OK && xs_sr_submitted(owner,pins,pins+1,as_queue(q),as_fence(end)));
+#ifdef TEST_NATIVE_TRIP
+    IUnknown *foreign_q;
+    REQUIRE(xs_direct_queue(d,&foreign_q)==S_OK && as_queue(foreign_q)!=as_queue(q) &&
+        !xs_sr_submitted(owner,pins,pins+1,as_queue(foreign_q),as_fence(end)));
+#endif
     pass.sr.end=as_fence(end);g.pTextureBarriers=pair+1;ID3D12GraphicsCommandList7_Barrier(pass.host,1,&g);
     memcpy(pass.ops,"\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92",18);
 #endif
@@ -286,7 +294,23 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     pair_op(&pass,0x490);g.NumBarriers=2;g.pTextureBarriers=pair;pair[0].pResource=pair[1].pResource=(ID3D12Resource*)ids[0];
     UINT before_trip=barrier_total;
 #define TRIP() record_primary_barrier_at(&pass,1,&g,0x32113)
-    REQUIRE(FAILED(record_primary_barrier_at(&pass,1,&g,0x32114)));pass.split_at=6;REQUIRE(FAILED(TRIP()));pass.split_at=5;
+    REQUIRE(FAILED(record_primary_barrier_at(&pass,1,&g,0x32114)));
+#ifdef TEST_NATIVE_TRIP
+    REQUIRE(pass.split_at==6 && post.parent==&m && pass.vb.span.va==vb.BufferLocation && pass.sr.end==as_fence(end));
+    REQUIRE(FAILED(TRIP()) && test_target_frame(owner,as_queue(foreign_q),as_fence(end)) && FAILED(TRIP()));
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(gate)) && FAILED(TRIP()));
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(end)));
+    IUnknown_Release(foreign_q);
+    pass.clear_serial++;REQUIRE(FAILED(TRIP()));pass.clear_serial--;
+    post.parent=NULL;REQUIRE(FAILED(TRIP()));post.parent=&m;
+    post.threshold++;REQUIRE(FAILED(TRIP()));post.threshold--;
+    stamp.third_wb=FALSE;REQUIRE(FAILED(TRIP()));stamp.third_wb=TRUE;
+    pass.sr.end=as_fence(gate);REQUIRE(FAILED(TRIP()));pass.sr.end=as_fence(end);
+    pass.sr.ds.serial++;REQUIRE(FAILED(TRIP()));pass.sr.ds.serial--;
+    pair[1].pResource=(ID3D12Resource*)ids[1];REQUIRE(FAILED(TRIP()));pair[1].pResource=pair[0].pResource;
+#else
+    pass.split_at=6;REQUIRE(FAILED(TRIP()));pass.split_at=5;
+#endif
     pass.vb.span.gen++;REQUIRE(FAILED(TRIP()));pass.vb.span.gen--;
     pass.ops[0]^=1;REQUIRE(FAILED(TRIP()));pass.ops[0]^=1;
     (*(UINT64*)slots[0])++;REQUIRE(FAILED(TRIP()));(*(UINT64*)slots[0])--;
@@ -294,6 +318,20 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     pair[1].AccessAfter=0;REQUIRE(FAILED(TRIP()));pair[1].AccessAfter=8;
     REQUIRE(barrier_total==before_trip && !pass.rt_roundtripped && TRIP()==S_OK && pass.rt_roundtripped &&
         FAILED(TRIP()) && barrier_total==before_trip+1 && seen[0].pResource==images[0] && seen[1].pResource==images[0]);
+#ifdef TEST_NATIVE_TRIP
+    REQUIRE(barrier_host==pass.host && same_carried_views(&pass));
+    for(UINT k=0;k<2;k++){
+        D3D12_TEXTURE_BARRIER want=pair[k];want.pResource=images[0];
+        REQUIRE(!memcmp(&want,&seen[k],offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof want.Flags));
+    }
+    HANDLE retired=CreateEventW(NULL,FALSE,FALSE,NULL);
+    REQUIRE(retired && xs_fence_event(end,1,retired)==S_OK && xs_cpu_signal(hold_end,1)==S_OK &&
+        WaitForSingleObject(retired,10000)==WAIT_OBJECT_0 &&
+        !xs_check_returned_output(owner,pass.primary_pin,pass.primary,ps,pass.clear_serial,pass.reuse_epoch,&pass.sr,(D3D12_CPU_DESCRIPTOR_HANDLE){0}));
+    CloseHandle(retired);IUnknown_Release(hold_end);
+    REQUIRE(test_target_frame(owner,NULL,NULL));
+    puts("PASS native +490: single original RT pair; wrong queue/frame/end/serial and retired time refused");
+#endif
     REQUIRE(pass.source.needs_publication && pass.vb.needs_publication &&
         FAILED(record_om(&pass,1,slots,FALSE,slots+1)) && FAILED(record_colour_vb(&pass,0,1,&vb)) && FAILED(record_table0(&pass,0,0)));
 #ifdef TEST_FRESH190
