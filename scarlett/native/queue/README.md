@@ -1281,6 +1281,25 @@ token-2 return or a display count above 1.
   shared the first view's backing and generation but named different bytes
   (first view at `0x1ef30`). The diagnostic did not read the table payload.
 
+### Rebuild the RTX returned-target and RADV first-vertex fixtures
+
+The qualified provider and fixtures use the native and fixture sources from
+`b35465b8`. Run this from the root of the checkout containing this recipe;
+the script builds the sources beside it:
+
+```bash
+scarlett/tests/build-colour-recorder.sh --qualified "$INPUTS" "$XMEM" "$OUT"
+```
+
+`INPUTS` holds the seven private fixture files listed in the script; `XMEM`
+names the matched `xmem.dll`, and `OUT` must be a new directory. The exact
+build used x86-64 MinGW GCC/G++ 16.2.0, GNU binutils 2.46 and DXC
+`1.9(dev;4950-b106a961)`. Put `dxc` on `PATH` or export `DXC` with its
+absolute path. Python 3 compiles the project #96 shaders via DXC and checks
+their hashes before writing the provider header. The script checks the
+qualified SHA-256 of the shared `provider/d3d12_xs.dll`, the RTX `returned/`
+executable and the RADV `amd-first/` executable. It does not launch them.
+
 ### Binding the returned display target
 
 On staged `320a5879` with backend `0045`, the AMD fixture switched from
