@@ -1371,6 +1371,26 @@ RTX gate-satisfaction message came later. These samples do not establish
 a permanent stall. In the AMD fixture the two transitions named only the
 original color target; both depth and stencil were unchanged after the fence.
 
+### After the raw buffer view
+
+Both affected fixtures passed on `5590dfb3` with XMem `8f74d625` and
+backend `0045`. On AMD, the game-supplied color and depth slots could be
+rebound while preserving the earlier views. On RTX the fenced shader test
+read all 32 late-written words from the 128-byte view after replacement
+and address reuse. The next 32 out-of-range reads returned zero.
+
+Ordinary RTX then submitted the token-2 pair and queued guest `Signal(3)`.
+`PresentX(2)` entered but logged no return or original-end retirement.
+The recorder bound the returned primary (RTV serial 14) and reached the
+shader-table setter (`+120`, title return `+32206`) before exiting 2.
+Only `PresentX(1)` returned `S_OK`; the same-window count advanced from
+0 to 1. Decoded black/white client frames and a cursor showed no game screen.
+
+The first ordinary AMD attempt timed out (124) after Wine reported that
+it failed to start Explorer. Its log contains no frame-token, presentation
+or display-count event. Its recording was black. This attempt supplies
+no evidence about where the retail renderer stops on AMD.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
