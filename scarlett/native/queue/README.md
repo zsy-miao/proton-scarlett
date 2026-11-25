@@ -1310,6 +1310,29 @@ separate AMD trace the renderer selected the request while its pipeline
 was still null. That list contained the offscreen clear draw but no
 composite draw into the primary.
 
+### After the returned display target
+
+On `34f3d0dd` with backend `0045`, both ordinary runs presented token 1
+successfully and advanced the same-window count from 0 to 1. Both exited 2.
+
+| Adapter | First ordinary stop | Token 2 |
+| --- | --- | --- |
+| AMD | Release-side timestamp (`+240`, return `+2482b37` from `+a1c42c`). | Issued; no rendering pair submission or `PresentX(2)` entry logged. |
+| RTX | Resource barrier (`+490`, return `+32113` from `+332e1`). | Pair submitted and guest `Signal(3)` succeeded. `PresentX(2)` entered; no return or original pair-end retirement logged. |
+
+Neither decoded client showed a recognizable image. A separate AMD
+diagnostic recorded the first vertex view, then requested two whole-resource
+transitions on the same offscreen color target: render target → shader
+resource → render target. Neither transition named depth. The RTX diagnostic
+rebound the returned primary (serial 14) as the sole render target, then
+stopped at `+4d9f369` before a new table range was measured. In each
+diagnostic the original token-2 end still read 0 at refusal.
+
+The affected fixtures passed before the ordinary runs. Both exact fixtures
+also passed on the reconciled source: AMD retained all 4,080 original
+vertex bytes after address reuse, and RTX wrote through the private primary
+view after reset with both offscreen depth/stencil planes unchanged.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
