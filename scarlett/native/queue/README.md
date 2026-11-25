@@ -1960,6 +1960,19 @@ or indices for the successor's requested address. Zero section fields in
 that refusal describe the absent pin; they do not establish whether the
 requested address had live backing.
 
+The subsequent AMD diagnostic (`c63c44f7`) observed that missing pin at
+the actual refusal. Independent lookups found the head and requested tail
+in the same live write-back allocation at offsets `0x419acc8/0x419acc0`.
+Bank 2/index 1 selected the owner at `0x3fb3050`; its array and mirror
+pointed to the tail. The successor did not record the query or submit a
+pair, and all 360 decoded frames were black.
+
+The first two-layout RTX fixture (`ccc684b5`) recorded and retired the
+alternate `0x419f258/0x419f250` pair and passed its readback after address
+reuse. Its second setup expected token 1 but received token 4, before
+testing the other layout. The fixture exited 1; the ordinary pair for
+`a694bc9d` was withheld.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
