@@ -1484,6 +1484,15 @@ Using its non-null destination mode at 1 would actually copy a descriptor.
 The logical setter needs a validation-only test for the completed pair
 and evidence for both new allocations.
 
+The RTX baseline fixture `32f0ac27` reproduced this combination on
+unchanged provider `c2cc52b9`. The RAW32 rewrite advanced its descriptor
+serial from 5 to 6, the fixture published the 480-byte constant buffer,
+and the matching earlier end fence read 1. The setter refused without
+changing the prior selection. The unrelated-fifth-allocation control
+also refused with the RAW32 record still live. Checked submissions
+remained denied; the primary stayed black until the fixture cleared it
+blue. Exit 0 confirms the baseline refusal, not acceptance of five holds.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
