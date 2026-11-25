@@ -1469,9 +1469,11 @@ and observed allocation ranges were:
 
 Neither range overlapped the clear or either vertex buffer. The trace
 ended at `+120` after exactly two writes, and the existing three-hold
-check refused the call. Token 2 entered `PresentX` without a logged
-return; the count stayed at 1. This identifies the allocations, but does
-not establish their publication or use by a draw.
+check refused the call. The original token-2 pair's end fence was
+sampled at 1 before the watch armed. Despite that completion,
+`PresentX(2)` had no logged return and the display count stayed at 1.
+The earlier pair's completion does not establish that the later
+recording released either allocation or that a draw consumed it.
 
 ### Cross-build the guarded token-2 checkpoint
 
