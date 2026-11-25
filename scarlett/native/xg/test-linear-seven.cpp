@@ -15,6 +15,9 @@ extern "C" UINT64 test_seven_guest_va(IUnknown*,UINT_PTR);
 extern "C" UINT64 fixture_row_va(IUnknown*);
 extern "C" char fixture_row_return;
 #endif
+#ifdef TEST_SEVEN_SRV
+#include "test-seven-srv.hpp"
+#endif
 static int exercise(bool line){
     const UINT pool=0x89700000,off=line?0xe6cf800:0x1c3eb000,span=line?256:0xd900,guard=256,total=span+2*guard;
     auto xm=LoadLibraryA("xmem.dll"),xg=LoadLibraryA("xg_xs.dll");CK(xm && xg);
@@ -48,12 +51,16 @@ static int exercise(bool line){
         memcpy(expect.data()+guard,stack,128);memset(stack,0,128);CK(!memcmp(dst-guard,expect.data(),total));
     }
     UINT end=span;
+    const UINT starts[]={0x4900,0x2500,0x1300,0xa00,0x500,0x200,0};
     for(UINT m=0;!line && m<7;m++){
         UINT row=512>>m,hgt=72>>m,bytes=row*hgt,stride=m?256:512;
         // Reference spans include internal blank rows at mip 3/4/5/6.
-        const UINT starts[]={0x4900,0x2500,0x1300,0xa00,0x500,0x200,0};
         CK(starts[m]+(hgt-1)*stride+row<=end);end=starts[m];
+#ifdef TEST_SEVEN_SRV
+        for(UINT y=0;y<hgt;y++)for(UINT x=0;x<row/4;x++)((DWORD*)src)[y*row/4+x]=seven_bits(m,x,y);
+#else
         for(UINT j=0;j<bytes;j++)src[j]=BYTE(17*m+j*73+(j>>8));
+#endif
         CK(copy(c,dst,0,m,src,row,bytes)==S_OK);
         for(UINT y=0;y<hgt;y++)memcpy(expect.data()+guard+starts[m]+y*stride,src+y*row,row);
         CK(!memcmp(dst-guard,expect.data(),total));
@@ -93,45 +100,109 @@ static int exercise(bool line){
     CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
     using Make=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);using Start=SIZE_T(WINAPI*)(IUnknown*);
     UINT hd[]={0,4,1,1};ComPtr<IUnknown> slots;
+#ifdef TEST_SEVEN_SRV
+    hd[1]=0x130000;
+#endif
     CK(SUCCEEDED(((Make)dv[0x70/8])(device.Get(),hd,IID_ID3D12DescriptorHeap,(void**)slots.GetAddressOf())));
     SIZE_T slot=((Start)((*(void***)slots.Get())[0x48/8]))(slots.Get());
     DWORD view[]={41,4,0x1688,0,0,7,0,0,0,0};BYTE before[64];memcpy(before,(void*)slot,sizeof before);
     CK(FAILED(xs_write_view(device.Get(),0x90,title.Get(),view,slot)) && !memcmp(before,(void*)slot,sizeof before));
+#ifdef TEST_SEVEN_SRV
+    slot+=135*32;
+    DWORD addr[]={41,4,0x1688,0,0,7,0,0,0,0,0,0,0,0,0,3};memcpy(addr+10,&live,sizeof live);
+    BYTE window[96];
+    auto guard_slots=[&]{
+        memset((void*)(slot-32),0xba,32);memset((void*)(slot+32),0xcd,32);
+        memcpy(window,(void*)(slot-32),sizeof window);
+    };
+    auto denied=[&](SIZE_T target){
+        return FAILED(xs_write_address_srv(device.Get(),desc,addr,target)) &&
+                !memcmp(window,(void*)(slot-32),sizeof window);
+    };
+    guard_slots();
+    for(UINT i=0;i<13;i++)if(i!=1){desc[i]^=1;CK(denied(slot));desc[i]^=1;}
+    for(UINT i=0;i<16;i++){addr[i]^=1;CK(denied(slot));addr[i]^=1;}
+    for(UINT64 va:{(UINT64)0,live+256,placed->GetGPUVirtualAddress()}){
+        memcpy(addr+10,&va,sizeof va);CK(denied(slot));
+    }
+    memcpy(addr+10,&live,sizeof live);
+    CK(denied(slot+1) && FAILED(test_seven_wrong_site(device.Get(),desc,addr,slot)) &&
+            !memcmp(window,(void*)(slot-32),sizeof window));
+    CK((UINT_PTR)&fixture_srv_return-(UINT_PTR)GetModuleHandleW(nullptr)==srv_site);
+    fixture_seven_srv(device.Get(),desc,addr,slot);
+    CK(*(UINT64*)slot && !memcmp(window,(void*)(slot-32),32) && !memcmp(window+64,(void*)(slot+32),32));
+    puts("PASS seven230 dispatch: site=4ecc821 slot=135, wire negatives and adjacent descriptors intact");
+#endif
 #ifndef TEST_SEVEN_VA
     title.Reset();CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
 #endif
 #endif
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=total;rd.Height=rd.DepthOrArraySize=rd.MipLevels=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+#ifdef TEST_SEVEN_SRV
+    rd.Width+=srv_bytes;
+#endif
     ComPtr<ID3D12Resource> read;CK(SUCCEEDED(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&read))));
     D3D12_COMMAND_QUEUE_DESC qd={};ComPtr<ID3D12CommandQueue> q;ComPtr<ID3D12CommandAllocator>a;ComPtr<ID3D12GraphicsCommandList>l;
     CK(SUCCEEDED(d->CreateCommandQueue(&qd,IID_PPV_ARGS(&q))) && SUCCEEDED(d->CreateCommandAllocator(qd.Type,IID_PPV_ARGS(&a))) && SUCCEEDED(d->CreateCommandList(0,qd.Type,a.Get(),nullptr,IID_PPV_ARGS(&l))));
 #ifdef TEST_SEVEN_PLACE
+#ifdef TEST_SEVEN_SRV
+    SevenLoad load;
+    CK(!load.record(d.Get(),l.Get(),slots.Get(),slot,read.Get(),total));
+    // Keep the recording, but test stale writes on a fresh slot 135 (never occupied).
+    slots.Reset();
+    CK(SUCCEEDED(((Make)dv[0x70/8])(device.Get(),hd,IID_ID3D12DescriptorHeap,(void**)slots.GetAddressOf())));
+    slot=((Start)((*(void***)slots.Get())[0x48/8]))(slots.Get())+135*32;guard_slots();
+#endif
     l->CopyBufferRegion(read.Get(),guard,placed.Get(),0,span);
     D3D12_RESOURCE_BARRIER barrier={};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
     barrier.Aliasing={placed.Get(),raw};l->ResourceBarrier(1,&barrier);
     l->CopyBufferRegion(read.Get(),0,raw,off-guard,guard);
     l->CopyBufferRegion(read.Get(),guard+span,raw,off+span,guard);
+#ifdef TEST_SEVEN_SRV
+    ComPtr<ID3D12Fence> gate;CK(SUCCEEDED(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate))));
+    CK(SUCCEEDED(l->Close()) && SUCCEEDED(q->Wait(gate.Get(),1)));
+    ID3D12CommandList *batch[]={l.Get()};q->ExecuteCommandLists(1,batch);
+#endif
     // Late writes distinguish the original WC range from a detached copy.
-    dst[0]^=0x57;expect[guard]^=0x57;MemoryBarrier();
+#ifdef TEST_SEVEN_SRV
+    for(UINT at:starts){dst[at]^=0x57;expect[guard+at]^=0x57;}
+#else
+    dst[0]^=0x57;expect[guard]^=0x57;
+#endif
+    MemoryBarrier();
     CK(VirtualFree(b,0,MEM_RELEASE));
 #ifdef TEST_SEVEN_VA
     CK(!test_seven_guest_va(title.Get(),caller));
+#ifdef TEST_SEVEN_SRV
+    CK(denied(slot));
+#endif
     puts("PASS seven-va58 helper: freed VA");
 #endif
     CK(VirtualAlloc(b,pool,MEM_RESERVE,PAGE_NOACCESS)==b);
     CK(VirtualAlloc(dst-guard,total,MEM_COMMIT,PAGE_READWRITE));memset(dst-guard,0x8d,total);
 #ifdef TEST_SEVEN_VA
     CK(!test_seven_guest_va(title.Get(),caller));
+#ifdef TEST_SEVEN_SRV
+    CK(denied(slot));
+#endif
     puts("PASS seven-va58 helper: same VA private reuse");
 #endif
     CK(FAILED(place(off)) && !obj);
 #else
     l->CopyBufferRegion(read.Get(),0,raw,off-guard,total);
 #endif
+#ifdef TEST_SEVEN_SRV
+    CK(SUCCEEDED(gate->Signal(1)));
+#else
     CK(SUCCEEDED(l->Close()));ID3D12CommandList *ls[]={l.Get()};q->ExecuteCommandLists(1,ls);
+#endif
     ComPtr<ID3D12Fence> f;HANDLE ev=CreateEventW(nullptr,FALSE,FALSE,nullptr);CK(ev && SUCCEEDED(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&f))) && SUCCEEDED(q->Signal(f.Get(),1)) && SUCCEEDED(f->SetEventOnCompletion(1,ev)) && WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);
-    void *mapped;CK(SUCCEEDED(read->Map(0,nullptr,&mapped))&&!memcmp(mapped,expect.data(),total));read->Unmap(0,nullptr);CloseHandle(ev);
+    void *mapped;CK(SUCCEEDED(read->Map(0,nullptr,&mapped))&&!memcmp(mapped,expect.data(),total));
+#ifdef TEST_SEVEN_SRV
+    CK(!load.verify((const DWORD*)((BYTE*)mapped+total)));
+#endif
+    read->Unmap(0,nullptr);CloseHandle(ev);
 #ifdef TEST_SEVEN_PLACE
     for(UINT i=0;i<total;i++)CK(dst[(ptrdiff_t)i-guard]==0x8d);
     CK(SUCCEEDED(d->GetDeviceRemovedReason()));
@@ -154,10 +225,16 @@ static int exercise(bool line){
            now.generation && now.generation!=orig.generation && CloseHandle(now.info.section));
         if(original) CK(!memcmp(dst-guard,expect.data(),total));
         CK(!test_seven_guest_va(title.Get(),caller));
+#ifdef TEST_SEVEN_SRV
+        CK(denied(slot));
+#endif
         printf("PASS seven-va58 helper: same VA %s section generation=%llu original=%llu\n",
                original?"original":"different",now.generation,orig.generation);
         if(!original){CK(VirtualFree(b,0,MEM_RELEASE) && CloseHandle(other));otherHeap.Reset();}
     }
+#ifdef TEST_SEVEN_SRV
+    puts("PASS seven230 stale: freed, private, different section, original section/new generation; slot and neighbors intact");
+#endif
     title.Reset();CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
     CK(CloseHandle(orig.info.section));
 #endif

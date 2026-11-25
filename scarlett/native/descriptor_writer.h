@@ -76,6 +76,8 @@ static BOOL store_slot_tag(SIZE_T slot,const UINT64 tag[2])
 
 #ifdef SCARLETT_STAGED_PLACED
 static HRESULT write_atlas_srv(struct xbox_device*,IUnknown*,SIZE_T);
+static UINT linear_small_size(const D3D12_RESOURCE_DESC*,BOOL);
+static HRESULT write_seven_srv(struct xbox_device*,UINT_PTR,SIZE_T);
 static ID3D12Resource *row_host_locked(struct xbox_device*,IUnknown*,UINT);
 static HRESULT write_tile_record(struct xbox_device *,IUnknown *,UINT,UINT_PTR,SIZE_T,UINT,UINT);
 /* S_FALSE means this is not a placed identity. Never install a dummy host view. */
@@ -574,12 +576,19 @@ done:
 }
 
 /* 5bdba51..5bdba67: SRV by title VA, not by COM identity or desktop GPU VA. */
-HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *view,SIZE_T dest)
+static HRESULT write_address_srv_at(IUnknown *device,const void *resource,const void *view,SIZE_T dest,BOOL seven_caller)
 {
     D3D12_RESOURCE_DESC rd;
     DWORD w[16];
     if (!copy_in(&rd,resource,offsetof(D3D12_RESOURCE_DESC,Flags)+sizeof rd.Flags) ||
         !copy_in(w,view,sizeof w)) return E_POINTER;
+    if (!rd.Alignment && linear_small_size(&rd,TRUE)==0xd900) {
+        const DWORD shape[]={41,4,0x1688,0,0,7,0,0,0,0,w[10],w[11],0,0,0,3};
+        UINT_PTR va; memcpy(&va,w+10,sizeof va);
+        if (!seven_caller || memcmp(w,shape,sizeof shape)) return E_NOTIMPL;
+        if (!device || !va) return E_INVALIDARG;
+        return write_seven_srv(CONTAINING_RECORD(device,struct xbox_device,iface),va,dest);
+    }
     if (rd.Format==DXGI_FORMAT_R9G9B9E5_SHAREDEXP && (UINT)rd.Layout==0x102) {
         UINT_PTR va; memcpy(&va,w+10,sizeof va);
         const DWORD shape[]={67,4,0x1688,0,0,1,0,0,0,0,w[10],w[11],0,0,0,3};
@@ -640,9 +649,14 @@ HRESULT xs_write_address_srv(IUnknown *device,const void *resource,const void *v
     IUnknown_Release(id);
     return hr==S_FALSE ? E_INVALIDARG : hr;
 }
+HRESULT xs_write_address_srv(IUnknown *d,const void *rd,const void *desc,SIZE_T dest)
+{
+    return write_address_srv_at(d,rd,desc,dest,TRUE);
+}
 static void WINAPI write_address_srv(IUnknown *d,const void *rd,const void *desc,SIZE_T dest)
 {
-    if (FAILED(xs_write_address_srv(d,rd,desc,dest))) xs_stop();
+    BOOL seven_caller=(UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL)==0x4ecc821;
+    if (FAILED(write_address_srv_at(d,rd,desc,dest,seven_caller))) xs_stop();
 }
 #endif
 static void WINAPI write_uav(IUnknown *d,IUnknown *r,IUnknown *counter,const void *desc,SIZE_T dest)

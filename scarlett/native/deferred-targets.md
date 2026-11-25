@@ -416,6 +416,37 @@ puts the test's public `+58` return site at `+4ecc936`. The negative cases
 call the same validation helper because the public method stops on refusal.
 Use Wine patch `0020` and backend `0045` for this RTX test.
 
+The later [RTX diagnostic](queue/README.md#rtx-second-presentation)
+placed the resource and passed its original guest VA from `+58` to
+device `+230` on the same thread. The view requests `Texture2D<R32_FLOAT>`,
+first mip 0, seven levels, in visible slot 135. Backend `0045` exposes
+the underlying WC bytes as a buffer. A buffer descriptor would not
+implement the texture loads the view describes.
+
+The address writer retains those bytes. `xs_refresh_wc_texture` records
+copies into seven subresources on the consuming command list, so the
+shader can see writes made after descriptor creation. Four XG mip starts
+are 256 bytes past a [512-byte footprint boundary](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_placed_subresource_footprint);
+those copies read from a scratch buffer shifted by 256 bytes. The other
+three read directly from the import. Writing the descriptor does not
+establish that a retail command list bound it or that a pixel changed.
+
+To extend the `TEST_SEVEN_VA` fixture above, generate its project-owned
+compute shader in the fixture build directory:
+
+```sh
+dxc -T cs_6_0 -E main -O3 -Vn seven_dxil -Fh "$build/test-seven-srv-dxil.h" \
+    scarlett/native/xg/test-seven-srv.hlsl
+```
+
+Add `-DTEST_SEVEN_SRV` to the test device, C++ fixture and assembly stub,
+and `-I"$build"` to the C++ compile. The added public call returns to
+`+4ecc821` in the synthetic executable. It writes the view to slot 135,
+records a shader load for each of 12,282 texels, then changes the first
+texel of **each** mip while the submitted queue is waiting on a fence.
+The shader must see the changed data in the original backing after the
+guest address is reused.
+
 Four retail launches: one RTX diagnostic, two matched staged ordinary
 runs and a separate RTX run through the installed `bdc4efab` baseline.
 The two fixtures ran before ordinary verification. AMD stopped at

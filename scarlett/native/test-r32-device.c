@@ -1,4 +1,10 @@
 #include "d3d12_device.c"
+#ifdef TEST_SEVEN_SRV
+HRESULT test_seven_wrong_site(IUnknown *d,const void *rd,const void *desc,SIZE_T dest)
+{
+    return write_address_srv_at(d,rd,desc,dest,FALSE);
+}
+#endif
 #ifdef TEST_SEVEN_VA
 UINT64 test_seven_guest_va(IUnknown *id,UINT_PTR caller)
 {

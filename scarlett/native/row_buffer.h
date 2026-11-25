@@ -34,10 +34,9 @@ static HRESULT WINAPI row_query(IUnknown *iface,REFIID iid,void **out)
     if (!iid || (!IsEqualIID(iid,&IID_IUnknown) && !IsEqualIID(iid,&IID_ID3D12Resource))) return E_NOINTERFACE;
     row_addref(iface); *out=iface; return S_OK;
 }
-static UINT64 seven_guest_va(IUnknown *id,UINT_PTR caller)
+static BOOL seven_row_live(const struct row_buffer *r)
 {
-    const struct row_buffer *r=CONTAINING_RECORD(id,struct row_buffer,iface);
-    if(caller!=0x4ecc936 || r->bytes!=0xd900 || !r->section || !r->generation)return 0;
+    if(r->bytes!=0xd900 || !r->section || !r->generation)return FALSE;
     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
     struct scarlett_wc_view_info view;
     if(!same || scarlett_acquire_wc_view(r->va,r->bytes,&view)!=S_OK)return 0;
@@ -46,7 +45,26 @@ static UINT64 seven_guest_va(IUnknown *id,UINT_PTR caller)
         live.offset<=live.view_size-r->bytes && (UINT_PTR)r->va>=live.offset &&
         (UINT_PTR)live.base==(UINT_PTR)r->va-live.offset && same(live.section,r->section);
     if(live.section)CloseHandle(live.section);
-    return match?(UINT_PTR)r->va:0;
+    return match;
+}
+static UINT64 seven_guest_va(IUnknown *id,UINT_PTR caller)
+{
+    const struct row_buffer *r=CONTAINING_RECORD(id,struct row_buffer,iface);
+    return caller==0x4ecc936 && seven_row_live(r)?(UINT_PTR)r->va:0;
+}
+static HRESULT write_seven_srv(struct xbox_device *d,UINT_PTR va,SIZE_T dest)
+{
+    struct descriptor_record old={0};
+    HRESULT hr=E_INVALIDARG;
+    const struct row_buffer *row=NULL;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    for (struct row_buffer *r=d->rows;r;r=r->next) if ((UINT_PTR)r->va==va && seven_row_live(r)) {
+        if (row) goto done;
+        row=r;
+    }
+    if (row) hr=store_address_view(d,SEVEN_R32_VIEW,dest,row->host,0,0,0,TRUE,&old);
+done:
+    ReleaseSRWLockExclusive(&d->descriptor_lock);drop_record(old);return hr;
 }
 static UINT64 WINAPI row_va(IUnknown *id)
 {

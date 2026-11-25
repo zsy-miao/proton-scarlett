@@ -34,7 +34,7 @@ static D3D12_SHADER_RESOURCE_VIEW_DESC address_srv_desc(UINT kind,UINT elements,
     else if (array_view_layers(kind)) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY; v.Texture2DArray.MipLevels=1; v.Texture2DArray.ArraySize=array_view_layers(kind); }
     else if (kind==SRGB_ROW_VIEW || kind==A8_LINE_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE1D; v.Texture1D.MipLevels=1; }
     else if (kind==VOLUME1_VIEW) { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; v.Texture3D.MipLevels=1; }
-    else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=1; }
+    else { v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; v.Texture2D.MipLevels=kind==SEVEN_R32_VIEW?7:1; }
     return v;
 }
 /* A copy takes a new serial and owns its own reference to the original import. */
@@ -191,8 +191,10 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=R8_BYTES,.Height=1,.MipLevels=1,
         .DepthOrArraySize=1,.SampleDesc={1,0},.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
     BOOL rebase=kind==A8_LINE_VIEW && offset%D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
-    if (kind==R8_VIEW || rebase) {
+    BOOL seven=kind==SEVEN_R32_VIEW;
+    if (kind==R8_VIEW || rebase || seven) {
         if (rebase) rd.Width=D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+        if (seven) rd.Width=0xd900+256;
         hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->rows);
         if (FAILED(hr)) goto fail;
     }
@@ -200,6 +202,7 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
     else {
         rd.Dimension=(row || kind==A8_LINE_VIEW)?D3D12_RESOURCE_DIMENSION_TEXTURE1D:kind==VOLUME1_VIEW?D3D12_RESOURCE_DIMENSION_TEXTURE3D:D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width=atlas?atlas:texel32?1:kind==A8_LINE_VIEW?128:256; rd.Height=atlas?atlas:(row || texel32 || kind==A8_LINE_VIEW)?1:128;
         rd.DepthOrArraySize=view_layers(kind); rd.Format=format; rd.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        if (seven) { rd.Width=128; rd.Height=72; rd.MipLevels=7; }
     }
     hr=ID3D12Device_CreateCommittedResource(d->host,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&u->texture);
     if (FAILED(hr)) goto fail;
@@ -214,7 +217,9 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
      * on the consuming queue, including writes ordered after list submission. */
     r8_transition(l,u->source,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
     if (u->rows) {
-        if (rebase) ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,0,u->source,offset,rd.Width);
+        /* Four XG mip starts are 256 mod 512; a shifted copy makes those footprints legal. */
+        if (seven) ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,256,u->source,0,0xd900);
+        else if (rebase) ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,0,u->source,offset,rd.Width);
         else for (UINT y=0;y<128;y++) for (UINT x=0;x<256;x+=16) {
             UINT tiled=((y/64)*4+x/64)*4096+(y%32)*16+(x&16)*32+(y&32)*32+(x&32)*64;
             ID3D12GraphicsCommandList_CopyBufferRegion(l,u->rows,y*256+x,u->source,(UINT64)offset+tiled,16);
@@ -228,7 +233,17 @@ HRESULT xs_refresh_wc_texture(IUnknown *heap,SIZE_T slot,ID3D12GraphicsCommandLi
         D3D12_TEXTURE_COPY_LOCATION from={.pResource=u->rows?u->rows:u->source,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             .PlacedFootprint={u->rows?0:offset,{rd.Format,(UINT)rd.Width,rd.Height,1,atlas?atlas:row?SRGB_ROW_BYTES:256}}};
         D3D12_TEXTURE_COPY_LOCATION to={.pResource=u->texture,.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-        for (UINT layer=0;layer<rd.DepthOrArraySize;layer++) {
+        if (seven) {
+            static const UINT starts[]={0x4900,0x2500,0x1300,0xa00,0x500,0x200,0};
+            for (UINT mip=0;mip<ARRAYSIZE(starts);mip++) {
+                UINT shift=starts[mip]%D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+                from.pResource=shift?u->rows:u->source;
+                from.PlacedFootprint=(D3D12_PLACED_SUBRESOURCE_FOOTPRINT){starts[mip]+shift,
+                    {rd.Format,128u>>mip,72u>>mip,1,mip?256:512}};
+                to.SubresourceIndex=mip;
+                ID3D12GraphicsCommandList_CopyTextureRegion(l,&to,0,0,0,&from,NULL);
+            }
+        } else for (UINT layer=0;layer<rd.DepthOrArraySize;layer++) {
             to.SubresourceIndex=layer;
             ID3D12GraphicsCommandList_CopyTextureRegion(l,&to,0,0,0,&from,NULL);
             from.PlacedFootprint.Offset+=R8_ALIGNMENT;
