@@ -1352,6 +1352,25 @@ also passed on the reconciled source: AMD retained all 4,080 original
 vertex bytes after address reuse, and RTX wrote through the private primary
 view after reset with both offscreen depth/stencil planes unchanged.
 
+### Rebinding the offscreen target and describing the next buffer
+
+On staged `7e8929a6` and backend `0045`, both ordinary retail runs
+submitted the token-2 rendering pair, queued guest `Signal(3)` and entered
+`PresentX(2)`. Neither logged its return or the original batch end retiring.
+Both exited 2. Only token 1 returned `S_OK`; the same-window counts advanced
+from 0 to 1 and the decoded clients remained blank.
+
+| Adapter | First ordinary stop | What the separate diagnostic measured |
+| --- | --- | --- |
+| AMD | Offscreen target bind (`+190`, return `+33317`) after recording both color transitions. | One RTV and one DSV, matching the original slots and serials 119/121. |
+| RTX 3070 | Raw-buffer shader view (`device +230`, return `+4d9f369`) after binding the returned primary, serial 14. | The writer rejected a 128-byte, 32-element raw view with `E_INVALIDARG`. The full range fit one live backing at chunk offset `0x1de20`; the destination was aligned CPU descriptor slot 690. No shader read was observed. |
+
+At refusal each diagnostic sampled its own token-2 end at 0 and public
+recycler at 2. The private post fence read 2 on AMD and 0 on RTX; the
+RTX gate-satisfaction message came later. These samples do not establish
+a permanent stall. In the AMD fixture the two transitions named only the
+original color target; both depth and stencil were unchanged after the fence.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
