@@ -166,17 +166,41 @@ IUnknown *test_texture(IUnknown *owner,ID3D12Resource *image,BOOL depth)
 }
 #ifdef TEST_DISTINCT_PRIMARY
 /* A registered stand-in with its own RTV/storage. No display allocator or flip in this fixture. */
-IUnknown *test_primary_image(IUnknown *owner,ID3D12Device *hd)
+static IUnknown *make_test_primary(IUnknown *owner,ID3D12Device *hd,BOOL returned)
 {
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=16,.Height=16,
         .DepthOrArraySize=1,.MipLevels=1,.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.SampleDesc.Count=1,
         .Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
     D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
     ID3D12Resource *image=NULL;
-    if(FAILED(ID3D12Device_CreateCommittedResource(hd,&hp,0,&rd,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,NULL,
+    D3D12_RESOURCE_STATES initial=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    if(returned){rd.Width=3840;rd.Height=2160;initial=D3D12_RESOURCE_STATE_COMMON;}
+    if(FAILED(ID3D12Device_CreateCommittedResource(hd,&hp,0,&rd,initial,NULL,
         &IID_ID3D12Resource,(void**)&image)))return NULL;
     IUnknown *id=test_texture(owner,image,FALSE);ID3D12Resource_Release(image);
     if(id)CONTAINING_RECORD(id,struct color_resource,iface)->slice=id;
     return id;
 }
+IUnknown *test_primary_image(IUnknown *owner,ID3D12Device *hd){return make_test_primary(owner,hd,FALSE);}
+#ifdef TEST_CARRIED_TARGET
+IUnknown *test_returned_image(IUnknown *owner,ID3D12Device *hd){return make_test_primary(owner,hd,TRUE);}
+IUnknown *test_primary_alias(IUnknown *owner,ID3D12Resource *image)
+{
+    IUnknown *id=test_texture(owner,image,FALSE);
+    if(id)CONTAINING_RECORD(id,struct color_resource,iface)->slice=id;
+    return id;
+}
+/* Sole fixture publisher in this otherwise empty clock. Hold the original queue/end like frame submit. */
+BOOL test_target_frame(IUnknown *owner,ID3D12CommandQueue *q,ID3D12Fence *end)
+{
+    struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;
+    AcquireSRWLockExclusive(&f->lock);
+    struct frame_record *r=&f->history[0];
+    if(r->token && (r->token!=2 || r->chain || r->sync_end)){ReleaseSRWLockExclusive(&f->lock);return FALSE;}
+    if(q)ID3D12CommandQueue_AddRef(q);
+    if(end)ID3D12Fence_AddRef(end);
+    drop_submissions(r);*r=(struct frame_record){.token=q?2:0,.status=S_FALSE,.queue=q,.batch_end=end};
+    ReleaseSRWLockExclusive(&f->lock);return TRUE;
+}
+#endif
 #endif

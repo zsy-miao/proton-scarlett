@@ -10,17 +10,33 @@ static void counted_execute(ID3D12CommandQueue *q,UINT n,ID3D12CommandList *cons
 #undef ID3D12CommandQueue_ExecuteCommandLists
 #define ID3D12CommandQueue_ExecuteCommandLists counted_execute
 static D3D12_TEXTURE_BARRIER seen[2];static UINT calls,barrier_total;
+#ifdef TEST_CARRIED_TARGET
+static UINT group_count,edge_count;
+#endif
 static ID3D12GraphicsCommandList7 *barrier_host;
 static void checked_barrier(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_BARRIER_GROUP *g){
     ++barrier_total;barrier_host=l;
+#ifdef TEST_CARRIED_TARGET
+    group_count=n;edge_count=n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE?g->NumBarriers:0;
+#endif
     if(n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE && g->NumBarriers==2){memcpy(seen,g->pTextureBarriers,sizeof seen);++calls;}
     if(n==1 && g->Type==D3D12_BARRIER_TYPE_TEXTURE && g->NumBarriers==1)seen[0]=g->pTextureBarriers[0];
     ID3D12GraphicsCommandList7_Barrier(l,n,g);
 }
 #undef ID3D12GraphicsCommandList7_Barrier
 #define ID3D12GraphicsCommandList7_Barrier checked_barrier
+#ifdef TEST_CARRIED_TARGET
+static UINT legacy_calls,om_count;static BOOL om_range;static ID3D12GraphicsCommandList7 *om_host;
+static void count_legacy(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_RESOURCE_BARRIER *b)
+{++legacy_calls;ID3D12GraphicsCommandList7_ResourceBarrier(l,n,b);}
+#undef ID3D12GraphicsCommandList7_ResourceBarrier
+#define ID3D12GraphicsCommandList7_ResourceBarrier count_legacy
+#endif
 static UINT om_calls;static SIZE_T last_rt,last_ds;
 static void count_om(ID3D12GraphicsCommandList7 *l,UINT n,const D3D12_CPU_DESCRIPTOR_HANDLE *rt,BOOL range,const D3D12_CPU_DESCRIPTOR_HANDLE *ds){
+#ifdef TEST_CARRIED_TARGET
+    om_count=n;om_range=range;om_host=l;
+#endif
     ++om_calls;last_rt=rt->ptr;last_ds=ds?ds->ptr:0;ID3D12GraphicsCommandList7_OMSetRenderTargets(l,n,rt,range,ds);
 }
 #undef ID3D12GraphicsCommandList7_OMSetRenderTargets
@@ -92,6 +108,12 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
 #include "test-quad-read.h"
 #include "test-rt-roundtrip.h"
+#ifdef TEST_CARRIED_TARGET
+#include "test-carried-target.h"
+#endif
+#ifdef TEST_NATIVE_FIRST180
+#define TEST_NATIVE160 1
+#endif
 #ifdef TEST_CARRIED_REPLACEMENT
 IUnknown *test_duplicate_registration(IUnknown*,UINT_PTR);
 BOOL test_reused_registration(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,struct xs_clear_source*,struct xs_clear_source*,struct xs_clear_source*);
@@ -108,6 +130,9 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     REQUIRE(xs_allocator(d,0,&a)==S_OK && xs_allocator(d,0,&b)==S_OK && xs_device_list(d,0,a,TRUE,owner,&l)==S_OK &&
         xs_direct_queue(d,&q)==S_OK && xs_shared_fence(d,&gate)==S_OK && xs_shared_fence(d,&done)==S_OK);
     struct startup_list *s=sl(l),pass=*s;
+#ifdef TEST_CARRIED_TARGET
+    SIZE_T ps=slots[0]+64;REQUIRE(prepare_returned_target(s,as_queue(q),ps));
+#endif
     struct lease_arena *arena=(void*)((UINT_PTR)GetModuleHandleW(NULL)+0x75df1b8);
     _Alignas(8) BYTE nodes[216*0x58]={0};
     UINT_PTR base=old-0x3ff80,va=old+0x20000;BYTE expected[100];memcpy(expected,(void*)old,100);
@@ -121,7 +146,11 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     struct xs_attachment_pin pins[2];
     for(UINT k=0;k<2;k++)pins[k]=(struct xs_attachment_pin){ids[k],images[k],slots[k],*(UINT64*)slots[k]};
     /* OM/source mechanics use the real pins; the previous submission is independently exercised by the DSV fixture. */
-    pass.sr=(struct xs_sr_ticket){pins[0],pins[1],as_fence(gate)};pass.reuse_epoch=1;pass.nops=19;pass.split_at=5;
+    pass.sr=(struct xs_sr_ticket){pins[0],pins[1],as_fence(gate)};
+#ifndef TEST_CARRIED_TARGET
+    pass.reuse_epoch=1;
+#endif
+    pass.nops=19;pass.split_at=5;
 #ifdef TEST_RTX_TRIP
     ID3D12CommandAllocator *pa;ID3D12GraphicsCommandList7 *prior;IUnknown *end;
     REQUIRE(SUCCEEDED(ID3D12Device_CreateCommandAllocator(d,D3D12_COMMAND_LIST_TYPE_DIRECT,&IID_ID3D12CommandAllocator,(void**)&pa)) &&
@@ -226,6 +255,21 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     pair_op(&pass,0x180);D3D12_VERTEX_BUFFER_VIEW vb={v->data+0x1ef30,4080,24};UINT before_vb=vb_calls;
     memset((void*)vb.BufferLocation,0x11,4080);
     REQUIRE(FAILED(record_colour_vb(&pass,0,1,&vb)));v->holds=3;
+#ifdef TEST_NATIVE_FIRST180
+#define NO_VB() REQUIRE(FAILED(record_colour_vb(&pass,0,1,&vb)) && !pass.vb.buffer && vb_calls==before_vb)
+    post.parent=NULL;NO_VB();post.parent=&m;
+    post.counter=NULL;NO_VB();post.counter=&counter;
+    m.native_post^=1;NO_VB();m.native_post^=1;
+    post.threshold++;NO_VB();post.threshold--;
+    stamp.third_wb=FALSE;NO_VB();stamp.third_wb=TRUE;
+    stamp.retained=NULL;NO_VB();stamp.retained=(void*)1;
+    pass.split_at=5;NO_VB();pass.split_at=6;
+    pass.bound=pso;NO_VB();pass.bound=NULL;
+    pass.pipeline=s->pipeline;NO_VB();pass.pipeline=NULL;
+    pass.nops++;NO_VB();pass.nops--;
+    pass.ops[25]^=1;NO_VB();pass.ops[25]^=1;
+#undef NO_VB
+#endif
     v->gen++;REQUIRE(FAILED(record_colour_vb(&pass,0,1,&vb)));v->gen--;
     const void *cap=pass.source.capture;pass.source.capture=owner;
     REQUIRE(FAILED(record_colour_vb(&pass,0,1,&vb)));pass.source.capture=cap;
@@ -318,8 +362,10 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
 #endif
 #endif
 #endif
+#ifndef TEST_CARRIED_TARGET
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
         xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
+#endif
 #undef TRIP
 #endif
     s->vb=pass.vb;struct xs_clear_source held_vb=retain_source(s->previous_vb.buffer?s->previous_vb:s->vb);
@@ -335,6 +381,9 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     rd.Width=5632;
 #ifdef TEST_CARRIED_REPLACEMENT
     rd.Width+=4096;
+#ifdef TEST_CARRIED_TARGET
+    rd.Width+=1024;
+#endif
 #endif
 #endif
     REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb)));
@@ -350,7 +399,67 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     }
     /* Exercise the same hold used by queue retirement, across guest slot rewrite and reset. */
     struct heap_retirement views={0};
-    retain_recording(&views,&(struct startup_list){.sr=pass.sr,.first_om=pass.first_om,.om=pass.om});
+    struct startup_list keep_views={.sr=pass.sr,.first_om=pass.first_om,.om=pass.om};
+#ifdef TEST_CARRIED_TARGET
+    struct om_views frozen[]={pass.first_om,pass.om};
+    struct xs_clear_source sources[]={pass.source,pass.previous_vb,pass.vb};
+    REQUIRE(sources[0].needs_publication && sources[1].needs_publication && sources[2].needs_publication);
+    const UINT bc=barrier_total,lc=legacy_calls,oc=om_calls;
+#define TRIP() record_primary_barrier_at(&pass,1,&g,0x32113)
+    g.NumBarriers=1;g.pTextureBarriers=pair;
+    pair_op(&pass,0x490);
+    REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+    pair[0].pResource=(ID3D12Resource*)pass.primary_pin;REQUIRE(FAILED(TRIP()));
+    pair[0].pResource=(ID3D12Resource*)pass.sr.ds.identity;REQUIRE(FAILED(TRIP()));
+    pair[0].pResource=(ID3D12Resource*)pass.sr.rt.identity;
+    pair[0].Flags=1;REQUIRE(FAILED(TRIP()));pair[0].Flags=0;
+    pair[0].AccessAfter=0;REQUIRE(FAILED(TRIP()));pair[0].AccessAfter=0x80;
+    REQUIRE(barrier_total==bc && !pass.sr_reversed && TRIP()==S_OK && pass.sr_reversed && FAILED(TRIP()));
+#undef TRIP
+    D3D12_TEXTURE_BARRIER expected_edge=pair[0];expected_edge.pResource=images[0];
+    pair_op(&pass,0x190);
+    REQUIRE(group_count==1 && edge_count==1 && barrier_host==pass.host && !memcmp(seen,&expected_edge,
+        offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof expected_edge.Flags));
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(end)));
+    REQUIRE(FAILED(record_om(&pass,0,&ps,FALSE,NULL)) && FAILED(record_om(&pass,1,&ps,TRUE,NULL)) &&
+        FAILED(record_om(&pass,1,&ps,FALSE,slots+1)) && FAILED(record_om(&pass,1,slots,FALSE,NULL)));
+    ++pass.clear_serial;REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));--pass.clear_serial;
+    ++*(UINT64*)ps;REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));--*(UINT64*)ps;
+    extern IUnknown *test_primary_alias(IUnknown*,ID3D12Resource*);
+    IUnknown *alias=test_primary_alias(owner,pass.primary);REQUIRE(alias && alias!=s->primary_pin);
+    pass.primary_pin=alias;pass.primary_key=(UINT_PTR)alias;REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+    pass.primary_pin=s->primary_pin;pass.primary_key=s->primary_key;IUnknown_Release(alias);
+    pass.sr.end=as_fence(gate);REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));pass.sr.end=as_fence(end);
+    IUnknown *otherq;REQUIRE(xs_direct_queue(d,&otherq)==S_OK);
+    REQUIRE(test_target_frame(owner,as_queue(otherq),as_fence(end)) && FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(gate)) && FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(end)));IUnknown_Release(otherq);
+    ++*(UINT64*)slots[1];REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));--*(UINT64*)slots[1];
+    pass.table_epoch++;REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));pass.table_epoch--;
+    pass.reuse_epoch++;REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));pass.reuse_epoch--;
+    REQUIRE(om_calls==oc && !pass.output_heap && record_om(&pass,1,&ps,FALSE,NULL)==S_OK &&
+        om_calls==oc+1 && om_count==1 && !om_range && om_host==pass.host && last_rt==pass.output_cpu.ptr && !last_ds &&
+        pass.output_slot==ps && pass.output_serial==pass.clear_serial && pass.output_serial==*(UINT64*)ps &&
+        FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+    REQUIRE(FAILED(record_table0(&pass,0,start+213*32)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) &&
+        pass.table_epoch==1 && pass.table0.cells==1 && pass.table0.slot==372600 && tables==prior_tables);
+    REQUIRE(barrier_total==bc+1 && legacy_calls==lc && om_calls==oc+1 &&
+        !memcmp(frozen,&pass.first_om,sizeof pass.om) && !memcmp(frozen+1,&pass.om,sizeof pass.om) &&
+        !memcmp(sources,&pass.source,sizeof pass.source) && !memcmp(sources+1,&pass.previous_vb,sizeof pass.vb) &&
+        !memcmp(sources+2,&pass.vb,sizeof pass.vb));
+    REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},ps)==S_OK && *(UINT64*)ps!=pass.output_serial);
+    REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
+        xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
+    sample_quad(pass.host,pass.primary,rb,19);
+    const FLOAT blue[]={0,0,1,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(pass.host,pass.output_cpu,blue,1,&region);
+    sample_quad(pass.host,pass.primary,rb,20);
+    keep_views.primary_pin=pass.primary_pin;keep_views.output_heap=pass.output_heap;
+#endif
+    retain_recording(&views,&keep_views);
+#ifdef TEST_CARRIED_TARGET
+    REQUIRE(views.output_key==s->primary_pin && views.output_heap==pass.output_heap);
+    ID3D12DescriptorHeap_Release(pass.output_heap);pass.output_heap=NULL;
+#endif
     drop_om(&pass.om);drop_om(&pass.first_om);
 #endif
     D3D12_RESOURCE_BARRIER bar={.Transition={dst,0,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE}};
@@ -378,6 +487,12 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     for(UINT k=0;k<4080;k++)((BYTE*)second.BufferLocation)[k]=(BYTE)(0x41+3*k);
 #endif
     MemoryBarrier();recycle(arg);memset((void*)vb.BufferLocation,0xcd,4080);MemoryBarrier();
+#ifdef TEST_NATIVE_FIRST180
+    ++v->gen;
+    struct xs_clear_source stale={0};
+    REQUIRE(held.span.gen==17 && held_vb.span.gen==17 && held_vb.capture==held.capture &&
+        FAILED(xs_copy_restored_first_vb(owner,d,s->host,vb.BufferLocation,&held,&stale)) && !stale.buffer);
+#endif
 #ifdef TEST_CARRIED_REPLACEMENT
     memset((void*)second.BufferLocation,0xcd,4080);MemoryBarrier();
     REQUIRE(test_reused_registration(owner,d,s->host,&held,&held_vb,&replacement) &&
@@ -412,6 +527,14 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
         REQUIRE(rgba==(k?0xff0000ffu:0xff00ff00u));
     }
     drop_om(&views.sr_first_om);drop_om(&views.sr_om);
+#ifdef TEST_CARRIED_TARGET
+    for(UINT k=0;k<2;k++)for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++){
+        UINT rgba;memcpy(&rgba,p+(19+k)*512+y*256+x*4,4);REQUIRE(rgba==(k?0xffff0000u:0));
+    }
+    ID3D12DescriptorHeap_Release(views.output_heap);IUnknown_Release(views.output_key);
+    puts("PASS returned +190: original frame queue and epoch, one private primary RTV survived reset, black then blue; table/draw/submit denied");
+    REQUIRE(test_target_frame(owner,NULL,NULL));
+#endif
     ID3D12Fence_Release(views.sr.end);IUnknown_Release(views.sr.rt.identity);IUnknown_Release(views.sr.ds.identity);
     puts("PASS fresh +190: both original-queue private RTV/DSV pairs survived rewrite and reset; green then red, source publication still denied");
 #else
@@ -420,6 +543,9 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     IUnknown_Release(end);ID3D12GraphicsCommandList7_Release(prior);ID3D12CommandAllocator_Release(pa);
 #endif
     puts("PASS measured first +180: original 4080 bytes after recycle/fence, guard bytes intact, later bindings and submits denied");
+#ifdef TEST_NATIVE_FIRST180
+    puts("PASS RADV native first +180: measured range retained across recycler generation and fence; #42 active and broken native lineage refused");
+#endif
 #endif
     ID3D12Resource_Unmap(rb,0,NULL);CloseHandle(ev);ID3D12Resource_Release(rb);drop_source(&held);
 #ifdef TEST_CARRIED_60

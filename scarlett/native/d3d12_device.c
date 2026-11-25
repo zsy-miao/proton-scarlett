@@ -1115,7 +1115,7 @@ static HRESULT copy_pass_span(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCom
     AcquireSRWLockShared(&d->descriptor_lock);
     for(struct placed_backing *it=d->placed;it;it=it->next){
 #ifdef SCARLETT_PAIR_SUBMIT
-        /* The carried replacement is resolved by containment, before testing the held identity. */
+        /* Resolve a supplied carried view by containment before testing the held identity. */
         if(offset==UINT_MAX){if(va-it->guest_va>=PLACED_WIDTH)continue;}
         else
 #endif
@@ -1179,7 +1179,7 @@ HRESULT xs_copy_restored_first_vb(IUnknown *owner,ID3D12Device *hd,ID3D12Graphic
        !lease_span_read(c->arena.base,va,4080,&v) || memcmp(&c->arena,&v.arena,sizeof v.arena) ||
        v.node!=c->node || v.data!=c->data || v.gen!=c->gen || v.holds!=3 || v.stamp!=c->stamp ||
        va-v.data!=0x1ef30 || va>c->va || c->va-va<v.bytes)return E_INVALIDARG;
-    HRESULT hr=copy_pass_span(owner,hd,list,va,(UINT)(va-v.arena.base),v.bytes,
+    HRESULT hr=copy_pass_span(owner,hd,list,va,UINT_MAX,v.bytes,
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,clear->placed,out);
     if(SUCCEEDED(hr)){out->span=v;out->needs_publication=TRUE;}
     return hr;
@@ -1525,18 +1525,14 @@ HRESULT xs_sr_view(IUnknown *owner,const struct xs_sr_ticket *t,ID3D12Descriptor
     }else hr=E_ACCESSDENIED;
     ReleaseSRWLockShared(&d->descriptor_lock);if(FAILED(hr))ID3D12DescriptorHeap_Release(h);return hr;
 }
-HRESULT xs_reuse_with_sr(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch,const struct xs_sr_ticket *ticket)
+/* Caller holds descriptor_lock. The returned handle names the unique original RTV. */
+static struct color_resource *returned_view_locked(struct xbox_device *d,IUnknown *pin,ID3D12Resource *src,D3D12_CPU_DESCRIPTOR_HANDLE *cpu)
 {
-    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !pin || !src)return E_INVALIDARG;
-    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
-    HRESULT hr=E_ACCESSDENIED;
-    AcquireSRWLockExclusive(&d->descriptor_lock);
     struct color_resource *r=d->colors;while(r && &r->iface!=pin)r=r->next;
     if(!r || r->owner!=d || r->host!=src || r->msaa || !r->slice || !r->claimed || !r->writer ||
-       r->multi_writer || r->flipping || !r->common_epoch || r->common_epoch!=r->writer_epoch ||
-       (commit && (commit!=r->writer || *epoch!=r->common_epoch)))goto out;
+       r->multi_writer || r->flipping || !r->common_epoch || r->common_epoch!=r->writer_epoch)return NULL;
     for(struct color_resource *it=d->colors;it;it=it->next)
-        if(it!=r && (it->host==src || it->slice==r->slice))goto out;
+        if(it!=r && (it->host==src || it->slice==r->slice))return NULL;
     UINT hits=0,claims=0;
     for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){
         D3D12_CPU_DESCRIPTOR_HANDLE at;
@@ -1544,11 +1540,46 @@ HRESULT xs_reuse_with_sr(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D1
         for(UINT j=0;h->records && j<h->count;j++)if(h->records[j].resource==src){
             SIZE_T slot=h->start+(SIZE_T)j*h->stride;
             if(slot!=r->common_slot || !r->common_serial || h->records[j].serial!=r->common_serial ||
-               h->records[j].rtv_key!=(UINT_PTR)pin || attachment_locked(h,slot,RTV,&at)!=src)goto out;
-            hits++;
+               h->records[j].rtv_key!=(UINT_PTR)pin || attachment_locked(h,slot,RTV,&at)!=src)return NULL;
+            *cpu=at;hits++;
         }
     }
-    if(hits==1 && claims==1){
+    return hits==1 && claims==1?r:NULL;
+}
+HRESULT xs_freeze_returned_output(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,SIZE_T slot,UINT64 serial,UINT64 epoch,
+        const struct xs_sr_ticket *ticket,ID3D12DescriptorHeap **out,D3D12_CPU_DESCRIPTOR_HANDLE *cpu)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !pin || !src || !slot || !serial || !epoch || *out)return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_RTV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
+    ID3D12DescriptorHeap *heap;D3D12_CPU_DESCRIPTOR_HANDLE dst,at,check;
+    HRESULT hr=ID3D12Device_CreateDescriptorHeap(d->host,&hd,&IID_ID3D12DescriptorHeap,(void**)&heap);
+    if(FAILED(hr))return hr;
+    heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap,&dst);
+    /* Frame submit takes these locks in the same order. Neither epoch is consumed. */
+    AcquireSRWLockShared(&d->clock.lock);
+    struct frame_record *frame=frame_find(&d->clock,2);
+    AcquireSRWLockShared(&d->descriptor_lock);
+    struct color_resource *p=returned_view_locked(d,pin,src,&at),*rt=sr_image(d,ticket->rt.identity);
+    if(p && p->common_slot==slot && p->common_serial==serial && p->common_epoch==epoch &&
+       frame && frame->queue==p->writer && frame->batch_end==ticket->end && ticket->ds.identity &&
+       src!=ticket->rt.host && src!=ticket->ds.host && sr_live(d,rt,ticket,&check) && rt->writer==p->writer &&
+       ID3D12Fence_GetCompletedValue(ticket->end)!=UINT64_MAX){
+        ID3D12Device_CopyDescriptorsSimple(d->host,1,dst,at,hd.Type);*out=heap;*cpu=dst;
+    }else hr=E_ACCESSDENIED;
+    ReleaseSRWLockShared(&d->descriptor_lock);ReleaseSRWLockShared(&d->clock.lock);
+    if(FAILED(hr))ID3D12DescriptorHeap_Release(heap);
+    return hr;
+}
+HRESULT xs_reuse_with_sr(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch,const struct xs_sr_ticket *ticket)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !pin || !src)return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    HRESULT hr=E_ACCESSDENIED;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    struct color_resource *r=returned_view_locked(d,pin,src,&cpu);
+    if(r && (!commit || (commit==r->writer && *epoch==r->common_epoch))){
         if(ticket){
             struct color_resource *rt=sr_image(d,ticket->rt.identity);
             D3D12_CPU_DESCRIPTOR_HANDLE at;

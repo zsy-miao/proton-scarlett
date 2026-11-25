@@ -94,6 +94,10 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     ComPtr<ID3D12Fence> ready;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&ready)));HR(q->Signal(ready.Get(),1));HR(ready->SetEventOnCompletion(1,nullptr));
     CK(test_restored_clear(d,owner,pso,root,ids,images,slots,sid,va,placed.Detach(),duplicate.Detach(),recycle,&control));
     HR(a->Reset());HR(l->Reset(a.Get(),nullptr));
+#ifdef TEST_CARRIED_TARGET
+    b[0].SyncBefore=D3D12_BARRIER_SYNC_ALL_SHADING;b[0].LayoutBefore=D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;
+    b[0].AccessBefore=D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
+#endif
     for(UINT k=0;k<2;k++){b[k].SyncAfter=D3D12_BARRIER_SYNC_COPY;b[k].LayoutAfter=D3D12_BARRIER_LAYOUT_COPY_SOURCE;b[k].AccessAfter=D3D12_BARRIER_ACCESS_COPY_SOURCE;}
     l->Barrier(1,&g);
     D3D12_RESOURCE_BARRIER change={};change.Transition={guardImage.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};l->ResourceBarrier(1,&change);

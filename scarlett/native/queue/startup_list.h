@@ -1152,7 +1152,31 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->sr.end){
         SIZE_T at,n,depth=0;
-        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || s->sr_reversed || count!=1 || range)return E_NOTIMPL;
+        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || count!=1 || range)return E_NOTIMPL;
+        if(s->sr_reversed){
+            const struct xs_clear_source *first=&s->previous_vb,*vb=&s->vb;
+            if(ds || !s->primary_cleared || !s->primary_pin || s->primary_key!=(UINT_PTR)s->primary_pin || s->output_heap ||
+               !s->rt_roundtripped || s->offscreen_sr || s->reuse_epoch!=1 || s->split_at!=5 || s->nops!=35 ||
+               s->ops[30]!=0x120/8 || s->ops[32]!=0x180/8 || s->ops[34]!=0x190/8 || !xs_is_rtx3070(s->device) ||
+               !s->heaps[0] || s->table_epoch!=1 || s->table0.cells!=1 || s->table0.slot!=372600 ||
+               s->table0.heap!=s->heaps[0] || s->table0.root!=s->graphics_identity || s->bound || s->pipeline ||
+               !s->clear4_drew || !vb->needs_publication || !vb->buffer || vb->buffer==first->buffer ||
+               vb->placed!=first->placed || vb->capture!=first->capture || vb->span.gen!=first->span.gen ||
+               vb->span.node!=first->span.node || vb->span.data!=first->span.data || vb->span.bytes!=4080 ||
+               vb->span.va-vb->span.data!=0x1df10 || !xs_held_table_inputs(&s->source,first))return E_NOTIMPL;
+            for(UINT j=0;j<2;j++)if(!s->om.heap[j] || !s->first_om.heap[j] || s->om.heap[j]==s->first_om.heap[j])return E_NOTIMPL;
+            if(!ReadProcessMemory(GetCurrentProcess(),rt,&at,sizeof at,&n) || n!=sizeof at)return E_POINTER;
+            if(at!=s->clear_slot)return E_INVALIDARG;
+            HRESULT hr=xs_freeze_returned_output(s->pool_owner,s->primary_pin,s->primary,at,s->clear_serial,s->reuse_epoch,
+                &s->sr,&s->output_heap,&s->output_cpu);
+            if(SUCCEEDED(hr)){
+                s->output_slot=at;s->output_serial=s->clear_serial;
+                ID3D12GraphicsCommandList7_OMSetRenderTargets(s->host,1,&s->output_cpu,FALSE,NULL);recorded_direct_state(s);
+                fprintf(stderr,"scarlett: returned +190 recorder=%p key=%p slot=%zx serial=%llu epoch=%llu originalEnd=%p\n",
+                    s->host,s->primary_pin,at,s->output_serial,s->reuse_epoch,s->sr.end);
+            }
+            return hr;
+        }
         BOOL fresh=s->rt_roundtripped;
         if(fresh){
             if(s->split_at!=5 || s->nops!=29 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 ||
@@ -1356,7 +1380,9 @@ static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,cons
     UINT table_slot=368504;
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->source.needs_publication){
-        if(!s->sr.end || s->sr_reversed || !s->sr.ds.identity || s->reuse_epoch!=1 || s->split_at!=5)return E_NOTIMPL;
+        if(!s->sr.end || s->sr_reversed || !s->sr.ds.identity || s->reuse_epoch!=1 || !carried_clear_split(s))return E_NOTIMPL;
+        if(s->split_at==6 && (replacement || s->table0.heap || s->table0.cells || !s->sr.rt.identity ||
+           !s->om.heap[0] || !s->om.heap[1] || !s->source.buffer))return E_NOTIMPL;
         if(replacement){
             table_slot=372600;
             if(s->nops!=33 || s->ops[30]!=0x120/8 || s->ops[32]!=0x180/8 || s->table_epoch!=1 ||
@@ -1382,7 +1408,13 @@ static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,cons
         hr=xs_copy_colour_vb(s->pool_owner,s->device,s->host,v.BufferLocation,replacement,s->source.placed,&next);
     if(FAILED(hr))return hr;
     s->previous_vb=s->vb;s->vb=next;
-    bind_colour_vb(s->host,&s->vb);recorded_direct_state(s);return S_OK;
+    bind_colour_vb(s->host,&s->vb);recorded_direct_state(s);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->source.needs_publication && s->split_at==6)
+        fprintf(stderr,"scarlett: native first +180 recorded segment=%p placed=%p capture=%p node=%zx gen=%u bytes=%u pending publication\n",
+                s->host,next.placed,next.capture,next.span.node,next.span.gen,next.span.bytes);
+#endif
+    return S_OK;
 }
 static void WINAPI pool_colour_vb(IUnknown *i,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *v)
 {
