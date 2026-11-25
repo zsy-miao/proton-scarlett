@@ -1055,9 +1055,10 @@ neither capture showed recognizable title content.
 
 With staged provider `cf68be0e` and backend `c77099d1`, both ordinary
 runs submitted the two command lists for token 2. The game's subsequent
-signal of value 3 succeeded on its original fence. Neither log recorded
-completion of the batch-end fence or a token-2 `PresentX`. The display
-count advanced only from 0 to 1. All six focused tests had passed before
+signal of value 3 succeeded on its original fence. Both games entered
+`PresentX` for token 2, naming the submitted primary. Neither log recorded
+completion of the batch-end fence or a successful return from that present.
+The display count advanced only from 0 to 1. All six focused tests had passed before
 the ordinary runs.
 
 AMD's first stop was list `+240`, return `+2482b37` from `+a1c36c`.
