@@ -10,7 +10,7 @@ struct pair_gen {
     struct startup_list segments; /* Only the five fields consumed by execute_recording. */
     ID3D12GraphicsCommandList7 *pre;
     struct system_timestamp *stamp;
-    struct xs_attachment_pin final_sr; /* identity already held in pins[] */
+    struct xs_attachment_pin final_sr[2]; /* identities already held in pins[] */
     struct pub_seal publication;
     struct lease_span spans[3];
     BOOL producer,used,allocator_unpinned;
@@ -91,7 +91,7 @@ static void pair_seal(struct startup_list *s,IUnknown *id)
     g->receipt=g->producer?s->offered:s->deferred;InterlockedIncrement(&g->receipt->refs);
     struct startup_list *v=&g->segments;
     v->device=s->device;v->head=s->head;v->host=s->host;g->pre=s->pre_release;
-    if(producer && s->offscreen_sr)g->final_sr=s->attachments[0];
+    if(producer && s->offscreen_sr)memcpy(g->final_sr,s->attachments,sizeof g->final_sr);
     if((v->marker=s->marker))InterlockedIncrement(&v->marker->refs);
     if((v->post=s->post))InterlockedIncrement(&v->post->refs);
     if((g->stamp=s->stamp))InterlockedIncrement(&g->stamp->refs);
@@ -176,7 +176,7 @@ static HRESULT pair_execute(void *ctx)
     HRESULT hr=E_ACCESSDENIED;
     AcquireSRWLockExclusive(&publisher_lock);
     struct monitored_fence *f=bridge_escaped?NULL:pair_book(w);
-    if(f && xs_sr_submitted(r->owner,&p->final_sr,q,NULL))hr=xs_pair_writer(r->owner,r->key,r->host,r->slot,r->serial,q,&r->writer_epoch,TRUE);
+    if(f && xs_sr_submitted(r->owner,p->final_sr,p->final_sr+1,q,NULL))hr=xs_pair_writer(r->owner,r->key,r->host,r->slot,r->serial,q,&r->writer_epoch,TRUE);
     if(hr==S_OK){
         f->protected_pair=TRUE;w->book_fence=f;IUnknown_AddRef(&f->a.iface);InterlockedIncrement(&pair_inflight);
     }
@@ -192,7 +192,7 @@ static HRESULT pair_execute(void *ctx)
         (ID3D12CommandList*)s->segments.host};
     ID3D12CommandQueue_ExecuteCommandLists(q,ARRAYSIZE(ordered),ordered);
     if(FAILED(ID3D12CommandQueue_Signal(q,w->end,1)))xs_stop();
-    if(!xs_sr_submitted(r->owner,&p->final_sr,q,w->end))xs_stop();
+    if(!xs_sr_submitted(r->owner,p->final_sr,p->final_sr+1,q,w->end))xs_stop();
     forget_release(a);
     if(a->display.captured.hwnd){
         a->display.released=r->host;ID3D12Resource_AddRef(r->host);

@@ -27,7 +27,13 @@ BOOL exercise(IUnknown *owner,ID3D12Device *hd,IUnknown *clear,IUnknown *r,IUnkn
     CHECK(IUnknown_Release(p)==1);
     pool_vtbl.root(l,alias);
     CHECK(s->bound==p && s->pipeline==host && s->graphics_root==pr && s->required_root==alias);
-    CHECK(sl_close(l)==S_OK && !IUnknown_Release(l));
+    CHECK(record_clear4_draw(s,3,1,0,0)==E_NOTIMPL);
+    IUnknown *queue=NULL;
+    CHECK(sl_close(l)==S_OK && xs_direct_queue(hd,&queue)==S_OK);
+    CHECK(checked_startup_submit(queue,1,&l,0,0)==E_ACCESSDENIED);
+    CHECK(checked_startup_submit(queue,1,&l,2,3)==E_ACCESSDENIED);
+    CHECK(!s->seal && !IUnknown_Release(l));
+    IUnknown_Release(queue);
     CHECK(!xs_pin_im96_pso(owner,hd,p,alias,&pr) && !pr);
     IUnknown_Release(a);
     puts("PASS F96 factory, explicit +c8 and wrapper retirement");

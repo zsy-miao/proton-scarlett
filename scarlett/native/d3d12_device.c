@@ -1317,37 +1317,47 @@ static struct color_resource *sr_image(struct xbox_device *d,const void *key)
 #ifdef TEST_SR_REUSE
 ID3D12Resource *test_sr_host(IUnknown *key){return CONTAINING_RECORD(key,struct color_resource,iface)->host;}
 /* Fixture registration owns the actual placed RT and its heap. */
-IUnknown *test_sr_image(IUnknown *owner)
+IUnknown *test_sr_image(IUnknown *owner,IUnknown *color)
 {
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
-    D3D12_HEAP_DESC hp={.SizeInBytes=64ull<<20,.Properties={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1},
+    D3D12_HEAP_DESC hp={.SizeInBytes=160ull<<20,.Properties={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1},
         .Flags=D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES};
     D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D,.Width=3840,.Height=2160,.DepthOrArraySize=1,
         .MipLevels=1,.Format=DXGI_FORMAT_R8G8B8A8_UNORM,.SampleDesc.Count=1,.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
     struct color_resource *c=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *c);
     if(!c)return NULL;
-    if(FAILED(ID3D12Device_CreateHeap(d->host,&hp,&IID_ID3D12Heap,(void**)&c->pair_heap)) ||
-       FAILED(ID3D12Device_CreatePlacedResource(d->host,c->pair_heap,0,&rd,D3D12_RESOURCE_STATE_RENDER_TARGET,NULL,&IID_ID3D12Resource,(void**)&c->host))){
+    if(color){
+        c->pair_heap=CONTAINING_RECORD(color,struct color_resource,iface)->pair_heap;ID3D12Heap_AddRef(c->pair_heap);
+        rd.Format=DXGI_FORMAT_R32G8X24_TYPELESS;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    }
+    if((!color && FAILED(ID3D12Device_CreateHeap(d->host,&hp,&IID_ID3D12Heap,(void**)&c->pair_heap))) ||
+       FAILED(ID3D12Device_CreatePlacedResource(d->host,c->pair_heap,color?64ull<<20:0,&rd,color?D3D12_RESOURCE_STATE_DEPTH_WRITE:D3D12_RESOURCE_STATE_RENDER_TARGET,NULL,&IID_ID3D12Resource,(void**)&c->host))){
         if(c->pair_heap)ID3D12Heap_Release(c->pair_heap);
         HeapFree(GetProcessHeap(),0,c);return NULL;
     }
-    c->refs=1;c->small_rt=TRUE;c->single_format=rd.Format;c->iface.lpVtbl=&color_vtbl.unknown;c->owner=d;IUnknown_AddRef(owner);
+    c->refs=1;c->small_rt=!color;c->depth=c->depth4k=!!color;c->single_format=rd.Format;c->iface.lpVtbl=&color_vtbl.unknown;c->owner=d;IUnknown_AddRef(owner);
     AcquireSRWLockExclusive(&d->descriptor_lock);c->next=d->colors;d->colors=c;ReleaseSRWLockExclusive(&d->descriptor_lock);
     return &c->iface;
 }
+IUnknown *test_dsv_heap(IUnknown *owner,SIZE_T *slot)
+{
+    IUnknown *heap=NULL;
+    if(FAILED(descriptor_heap(owner,(UINT[]){3,2048,0,1},&IID_ID3D12DescriptorHeap,(void**)&heap)))return NULL;
+    *slot=CONTAINING_RECORD(heap,struct desc_heap,iface)->start;return heap;
+}
 #endif
-static BOOL sr_descriptor(struct xbox_device *d,const struct xs_attachment_pin *p,D3D12_CPU_DESCRIPTOR_HANDLE *src)
+static BOOL sr_descriptor(struct xbox_device *d,const struct xs_attachment_pin *p,D3D12_CPU_DESCRIPTOR_HANDLE *src,BOOL ds)
 {
     UINT hits=0,claims=0;
     for(struct color_resource *r=d->colors;r;r=r->next)
         if(r->host==p->host && &r->iface!=p->identity)return FALSE;
-    for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){
+    for(struct desc_heap *h=ds?d->dsv_heaps:d->rtv_heaps;h;h=h->next){
         D3D12_CPU_DESCRIPTOR_HANDLE at;
         if(SUCCEEDED(descriptor_slot(&h->iface,p->slot,&at,NULL)))claims++;
         for(UINT j=0;h->records && j<h->count;j++)if(h->records[j].resource==p->host){
             SIZE_T slot=h->start+(SIZE_T)j*h->stride;
-            if(slot!=p->slot || !p->serial || h->records[j].serial!=p->serial || h->records[j].rtv_key!=(UINT_PTR)p->identity ||
-                attachment_locked(h,slot,RTV,&at)!=p->host)return FALSE;
+            if(slot!=p->slot || !p->serial || h->records[j].serial!=p->serial || (!ds && h->records[j].rtv_key!=(UINT_PTR)p->identity) ||
+                attachment_locked(h,slot,ds?DSV:RTV,&at)!=p->host)return FALSE;
             *src=at;hits++;
         }
     }
@@ -1355,32 +1365,58 @@ static BOOL sr_descriptor(struct xbox_device *d,const struct xs_attachment_pin *
 }
 /* All typed submissions using an attachment pass here. Only the sealed pair
  * supplies an end fence; an intervening attachment use invalidates its proof. */
-BOOL xs_sr_submitted(IUnknown *owner,const struct xs_attachment_pin *p,ID3D12CommandQueue *q,ID3D12Fence *end)
+BOOL xs_sr_submitted(IUnknown *owner,const struct xs_attachment_pin *p,const struct xs_attachment_pin *ds,ID3D12CommandQueue *q,ID3D12Fence *end)
 {
     if(!p->identity)return TRUE;
+    IUnknown *prior_ds=NULL;
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);
     struct color_resource *r=sr_image(d,p->identity);
-    for(struct color_resource *it=d->colors;it;it=it->next)
+    struct color_resource *depth=NULL;
+    for(struct color_resource *it=d->colors;it;it=it->next){
+        if(ds && ds->identity && it->host==ds->host){
+            if(&it->iface!=ds->identity || !it->depth4k || (it->writer && it->writer!=q)){
+                ReleaseSRWLockExclusive(&d->descriptor_lock);return FALSE;
+            }
+            depth=it;
+        }
         if(it->host==p->host && it->writer && (it!=r || it->writer!=q)){
             ReleaseSRWLockExclusive(&d->descriptor_lock);return FALSE;
         }
+    }
+    if(ds && ds->identity && !depth){ReleaseSRWLockExclusive(&d->descriptor_lock);return FALSE;}
+    if(depth){
+        if(!depth->writer){depth->writer=q;ID3D12CommandQueue_AddRef(q);}
+        for(struct color_resource *it=d->colors;it;it=it->next)if(it->sr_end && it->sr_ds.host==depth->host){
+            ID3D12Fence_Release(it->sr_end);it->sr_end=NULL;
+        }
+    }
     if(r && r->host==p->host){
         if(!r->writer){r->writer=q;ID3D12CommandQueue_AddRef(q);}
         else if(r->writer!=q)r->multi_writer=TRUE;
         if(r->sr_end){ID3D12Fence_Release(r->sr_end);r->sr_end=NULL;}
+        prior_ds=r->sr_ds.identity;r->sr_ds=(struct xs_attachment_pin){0};
         D3D12_CPU_DESCRIPTOR_HANDLE at;
-        if(end && !r->multi_writer && sr_descriptor(d,p,&at)){
+        if(end && !r->multi_writer && sr_descriptor(d,p,&at,FALSE) && (!depth || sr_descriptor(d,ds,&at,TRUE))){
+            r->sr_ds=depth?*ds:(struct xs_attachment_pin){0};
+            if(depth)IUnknown_AddRef(ds->identity);
             r->sr_slot=p->slot;r->sr_serial=p->serial;r->sr_end=end;ID3D12Fence_AddRef(end);
         }
     }
-    ReleaseSRWLockExclusive(&d->descriptor_lock);return TRUE;
+    ReleaseSRWLockExclusive(&d->descriptor_lock);if(prior_ds)IUnknown_Release(prior_ds);return TRUE;
 }
 static BOOL sr_live(struct xbox_device *d,struct color_resource *r,const struct xs_sr_ticket *t,D3D12_CPU_DESCRIPTOR_HANDLE *at)
 {
-    return r && !r->multi_writer && r->writer && r->sr_end && r->sr_end==t->end &&
+    if(!r || memcmp(&r->sr_ds,&t->ds,sizeof t->ds))return FALSE;
+    if(t->ds.identity){
+        struct color_resource *ds=d->colors;
+        while(ds && &ds->iface!=t->ds.identity)ds=ds->next;
+        if(!ds || !ds->depth4k || ds->host!=t->ds.host || ds->writer!=r->writer ||
+           ds->multi_writer || !sr_descriptor(d,&t->ds,at,TRUE))return FALSE;
+    }
+    return !r->multi_writer && r->writer && r->sr_end && r->sr_end==t->end &&
         r->sr_slot==t->rt.slot && r->sr_serial==t->rt.serial && r->host==t->rt.host &&
-        sr_descriptor(d,&t->rt,at);
+        sr_descriptor(d,&t->rt,at,FALSE);
 }
 HRESULT xs_sr_snapshot(IUnknown *owner,const void *key,struct xs_sr_ticket *out)
 {
@@ -1389,8 +1425,11 @@ HRESULT xs_sr_snapshot(IUnknown *owner,const void *key,struct xs_sr_ticket *out)
     AcquireSRWLockShared(&d->descriptor_lock);
     struct color_resource *r=sr_image(d,key);
     if(r){
-        struct xs_sr_ticket t={{&r->iface,r->host,r->sr_slot,r->sr_serial},r->sr_end};
-        if(sr_live(d,r,&t,&at)){IUnknown_AddRef(t.rt.identity);ID3D12Fence_AddRef(t.end);*out=t;hr=S_OK;}
+        struct xs_sr_ticket t={{&r->iface,r->host,r->sr_slot,r->sr_serial},r->sr_ds,r->sr_end};
+        if(sr_live(d,r,&t,&at)){
+            if(t.ds.identity)IUnknown_AddRef(t.ds.identity);
+            IUnknown_AddRef(t.rt.identity);ID3D12Fence_AddRef(t.end);*out=t;hr=S_OK;
+        }
     }
     ReleaseSRWLockShared(&d->descriptor_lock);return hr;
 }

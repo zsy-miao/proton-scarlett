@@ -105,6 +105,7 @@ static void drop_sr(struct startup_list *s){
     if(s->sr_view)ID3D12DescriptorHeap_Release(s->sr_view);
     if(s->sr.end)ID3D12Fence_Release(s->sr.end);
     if(s->sr.rt.identity)IUnknown_Release(s->sr.rt.identity);
+    if(s->sr.ds.identity)IUnknown_Release(s->sr.ds.identity);
     s->sr=(struct xs_sr_ticket){0};s->sr_view=NULL;s->sr_reversed=FALSE;
 }
 static void pair_unseal(struct startup_list *);
@@ -793,7 +794,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
             if(FAILED(hr))return hr;
             if(s->sr.rt.host==s->primary){drop_sr(s);return E_INVALIDARG;}
         }else if(s->sr.end && b.pResource==(ID3D12Resource*)s->sr.rt.identity){
-            if(!s->sr_view || s->sr_reversed || !rt_shader_edge(&b,FALSE) ||
+            if((!s->sr_view && !s->om.heap[0]) || s->sr_reversed || !rt_shader_edge(&b,FALSE) ||
                b.pResource!=(ID3D12Resource*)s->sr.rt.identity)return E_NOTIMPL;
             s->sr_reversed=TRUE;
         }else goto original_edge;
@@ -1051,6 +1052,8 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
             s->pipeline=p;s->graphics_root=private_root;
             ID3D12GraphicsCommandList7_SetGraphicsRootSignature(s->host,private_root);
             ID3D12GraphicsCommandList7_SetPipelineState(s->host,p);recorded_direct_state(s);
+            fprintf(stderr,"F96 installed-c8 tid=%lu owner=%p recorder=%p segment=%p alias=%p wrapper=%p privateRoot=%p hostPSO=%p hr=00000000\n",
+                    GetCurrentThreadId(),s->pool_owner,s,s->host,s->graphics_identity,s->bound,private_root,p);
             ReleaseSRWLockExclusive(&s->borrow_lock);return S_OK;
         }
     }
@@ -1074,7 +1077,14 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
 static void WINAPI pool_pipeline(IUnknown *i,IUnknown *pso)
 {
     pair_op(sl(i),0xc8);
-    if(FAILED(record_clear4(sl(i),pso)))xs_stop();
+    HRESULT hr=record_clear4(sl(i),pso);
+    if(FAILED(hr)){
+#ifdef XS_IM96_FACTORY
+        fprintf(stderr,"PSO refused-c8 tid=%lu owner=%p recorder=%p segment=%p alias=%p input=%p hr=%08lx\n",
+                GetCurrentThreadId(),sl(i)->pool_owner,sl(i),sl(i)->host,sl(i)->graphics_identity,pso,(DWORD)hr);
+#endif
+        xs_stop();
+    }
 }
 static HRESULT unbind_index(struct startup_list *s,const D3D12_INDEX_BUFFER_VIEW *view)
 {
@@ -1093,11 +1103,17 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->sr.end){
         SIZE_T at,n,depth=0;
-        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || s->sr_reversed || count!=1 || range ||
+        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || s->om.heap[0] || s->sr_reversed || count!=1 || range ||
            s->nops!=19 || s->ops[18]!=0x190/8)return E_NOTIMPL;
         if(!ReadProcessMemory(GetCurrentProcess(),rt,&at,sizeof at,&n) || n!=sizeof at ||
            (ds && (!ReadProcessMemory(GetCurrentProcess(),ds,&depth,sizeof depth,&n) || n!=sizeof depth)))return E_POINTER;
-        if(at!=s->sr.rt.slot || depth)return E_INVALIDARG;
+        if(at!=s->sr.rt.slot || depth!=s->sr.ds.slot)return E_INVALIDARG;
+        if(depth){
+            struct xs_attachment_pin pins[]={s->sr.rt,s->sr.ds};
+            HRESULT hr=xs_freeze_om(s->pool_owner,pins,(SIZE_T[]){at,depth},&s->om);
+            if(SUCCEEDED(hr)){replay_om(&s->om,s->host);recorded_direct_state(s);}
+            return hr;
+        }
         HRESULT hr=xs_sr_view(s->pool_owner,&s->sr,&s->sr_view,&s->sr_cpu);
         if(SUCCEEDED(hr)){ID3D12GraphicsCommandList7_OMSetRenderTargets(s->host,1,&s->sr_cpu,FALSE,NULL);recorded_direct_state(s);}
         return hr;
@@ -1139,6 +1155,9 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
 static void WINAPI pool_om(IUnknown *i,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
     pair_op(sl(i),0x190);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(sl(i)->sr.ds.identity && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x33317)xs_stop();
+#endif
     HRESULT hr=record_om(sl(i),count,rt,range,ds);
     if(FAILED(hr)){
 #ifdef SCARLETT_PAIR_SUBMIT
@@ -1455,6 +1474,7 @@ struct heap_retirement { struct xs_clear_source previous_vb,vb,source; IUnknown 
     ID3D12DescriptorHeap *output_heap;IUnknown *output_key;
 #ifdef SCARLETT_PAIR_SUBMIT
     BOOL reuse_guard;
+    struct om_views sr_om;
     struct xs_sr_ticket sr;
     ID3D12DescriptorHeap *sr_view;
 #endif
@@ -1474,6 +1494,8 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
     if(r->reuse_guard)InterlockedDecrement(&pair_inflight);
     if(r->sr.end)ID3D12Fence_Release(r->sr.end);
     if(r->sr.rt.identity)IUnknown_Release(r->sr.rt.identity);
+    if(r->sr.ds.identity)IUnknown_Release(r->sr.ds.identity);
+    drop_om(&r->sr_om);
     if(r->sr_view)ID3D12DescriptorHeap_Release(r->sr_view);
 #endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
@@ -1510,6 +1532,10 @@ static void retain_recording(struct heap_retirement *r,struct startup_list *s)
 {
 #ifdef SCARLETT_PAIR_SUBMIT
     if((r->sr=s->sr).end){ID3D12Fence_AddRef(r->sr.end);IUnknown_AddRef(r->sr.rt.identity);}
+    if(r->sr.ds.identity){
+        IUnknown_AddRef(r->sr.ds.identity);r->sr_om=s->om;
+        for(UINT i=0;i<2;i++)if(r->sr_om.heap[i])ID3D12DescriptorHeap_AddRef(r->sr_om.heap[i]);
+    }
     if((r->sr_view=s->sr_view))ID3D12DescriptorHeap_AddRef(r->sr_view);
 #endif
     if (s->marker && s->marker->buffer) {r->native=s->marker;InterlockedIncrement(&r->native->refs);}
@@ -1616,7 +1642,7 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
     if(s->primary && FAILED(xs_primary_writer(s->pool_owner,s->primary,q)))xs_stop();
     forget_release(CONTAINING_RECORD(iface,struct adapter,iface));
 #ifdef SCARLETT_PAIR_SUBMIT
-    if(!xs_sr_submitted(s->pool_owner,&s->attachments[0],q,NULL)){
+    if(!xs_sr_submitted(s->pool_owner,s->attachments,s->attachments+1,q,NULL)){
         ReleaseSRWLockExclusive(lock);retire_heaps(NULL,r,wait,WAIT_OBJECT_0);return E_ACCESSDENIED;
     }
 #endif

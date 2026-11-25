@@ -137,6 +137,15 @@ the private host root and PSO through the returned wrapper. Only an
 explicit `+c8` can install them on the recorder. This path does not
 admit a draw, bind the used table or qualify a CBV lifetime.
 
+In an opt-in build, `F96 factory ... step=returned hr=00000000` records
+the actual wrapper return. Join it to `F96 installed-c8` in the same
+process by owner, guest alias and wrapper. The latter is emitted after
+the host root and PSO setters and identifies the recorder and segment.
+`PSO refused-c8` alone is generic. A factory return is not a bind, and a
+bind is not a draw. The staged RADV and RTX fixtures recorded both; the
+ordinary runs of that stage had neither a successful return nor a
+matching install before their first stops.
+
 From the project root, with a local DXC and the six previously qualified
 private files listed by `factory/inputs.sha256`:
 

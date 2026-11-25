@@ -66,6 +66,7 @@ struct color_resource {
     ID3D12Fence *sr_end;
     SIZE_T sr_slot;
     UINT64 sr_serial;
+    struct xs_attachment_pin sr_ds; /* The color witness retains the distinct original depth registration. */
 #endif
 };
 static ULONG WINAPI color_addref(IUnknown *i)
@@ -88,6 +89,7 @@ static ULONG WINAPI color_release(IUnknown *i)
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
 #ifdef SCARLETT_PAIR_SUBMIT
         if(r->sr_end)ID3D12Fence_Release(r->sr_end);
+        if(r->sr_ds.identity)IUnknown_Release(r->sr_ds.identity);
 #endif
         if(r->writer) ID3D12CommandQueue_Release(r->writer);
 #endif

@@ -71,8 +71,10 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     copy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;copy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&copy);
 #ifdef TEST_SR_REUSE
-    extern IUnknown *test_sr_image(IUnknown *);
-    IUnknown *key=test_sr_image(owner),*prior=NULL;
+    extern IUnknown *test_sr_image(IUnknown *,IUnknown *),*test_dsv_heap(IUnknown *,SIZE_T *);
+    SIZE_T dslot=0;IUnknown *key=test_sr_image(owner,NULL),*depth=key?test_sr_image(owner,key):NULL,*prior=NULL;
+    IUnknown *dh=test_dsv_heap(owner,&dslot);
+    RCK(depth && dh && SUCCEEDED(xs_write_view(owner,0xa8,depth,(DWORD[]){20,3,0,0,0,0},dslot)));
     SIZE_T rt_slot=slot+64,empty=0;RCK(key && SUCCEEDED(xs_write_view(owner,0xa0,key,view,rt_slot)));
     /* The fixture builds a separate producer; the ordinary path uses pair_execute's end signal. */
     extern ID3D12Resource *test_sr_host(IUnknown *);
@@ -93,13 +95,36 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     s->nops=18;s->phase=B_INELIGIBLE;s->pending_470=s->depth_zero_pending=TRUE;
     RCK(FAILED(TRY()));
     struct xs_attachment_pin written={key,img,rt_slot,*(UINT64*)rt_slot};
-    xs_sr_submitted(owner,&written,as_queue(q),as_fence(prior));
+    struct xs_attachment_pin ds={depth,test_sr_host(depth),dslot,*(UINT64*)dslot};
+    RCK(xs_sr_submitted(owner,&written,&ds,as_queue(q),as_fence(prior)));
     b.pResource=(ID3D12Resource*)keys[0];RCK(FAILED(TRY()));b.pResource=(ID3D12Resource*)key;
     ++*(UINT64*)rt_slot;RCK(FAILED(TRY()));--*(UINT64*)rt_slot;
     RCK(SUCCEEDED(TRY()) && s->sr.rt.host==img && img!=s->primary);pair_op(s,0x190);
     RCK(FAILED(record_om(s,1,&slot,FALSE,NULL)) && FAILED(record_om(s,1,&rt_slot,FALSE,&slot)) &&
-        SUCCEEDED(record_om(s,1,&rt_slot,FALSE,&empty)));
-    const FLOAT red[]={1,0,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,s->sr_cpu,red,0,NULL);
+        FAILED(record_om(s,1,&rt_slot,FALSE,&empty)));
+    ++*(UINT64*)dslot;RCK(FAILED(record_om(s,1,&rt_slot,FALSE,&dslot)));--*(UINT64*)dslot;
+    RCK(SUCCEEDED(record_om(s,1,&rt_slot,FALSE,&dslot)) && s->om.heap[0] && s->om.heap[1] &&
+        FAILED(record_om(s,1,&rt_slot,FALSE,&dslot)));
+    RCK(SUCCEEDED(record_bounds(s,0,1)) && SUCCEEDED(record_clear_raster(s,1,&clear_rect,FALSE)) &&
+        SUCCEEDED(record_clear_raster(s,1,&clear_viewport,TRUE)));
+    const FLOAT red[]={1,0,0,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(s->host,s->om.cpu[0],red,0,NULL);
+    ID3D12GraphicsCommandList7_ClearDepthStencilView(s->host,s->om.cpu[1],D3D12_CLEAR_FLAG_DEPTH|D3D12_CLEAR_FLAG_STENCIL,.375f,0x69,0,NULL);
+    D3D12_RESOURCE_DESC dr;ds.host->lpVtbl->GetDesc(ds.host,&dr);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[2];UINT64 size;ID3D12Device_GetCopyableFootprints(d,&dr,0,2,0,fp,NULL,NULL,&size);
+    D3D12_RESOURCE_DESC db=rd;db.Width=size;ID3D12Resource *dsrb=NULL;BYTE *raw=NULL;
+    RCK(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&db,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&dsrb)) &&
+        SUCCEEDED(ID3D12Resource_Map(dsrb,0,NULL,(void**)&raw)));
+    *(float*)raw=-1;raw[fp[1].Offset]=0xcc;
+    /* Fixture observation only, after the OM operation: copy the original planes and restore DEPTH_WRITE. */
+    D3D12_RESOURCE_BARRIER observe={.Transition={ds.host,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_DEPTH_WRITE,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&observe);
+    for(UINT i=0;i<2;i++){
+        D3D12_TEXTURE_COPY_LOCATION to={.pResource=dsrb,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,.PlacedFootprint=fp[i]};
+        D3D12_TEXTURE_COPY_LOCATION from={.pResource=ds.host,.SubresourceIndex=i};
+        ID3D12GraphicsCommandList7_CopyTextureRegion(s->host,&to,0,0,0,&from,NULL);
+    }
+    observe.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;observe.Transition.StateAfter=D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&observe);
     /* Put a second pixel next to the primary witness at an aligned footprint offset. */
     ID3D12Resource *color_rb=NULL;UINT *color_pixel=NULL;
     RCK(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&color_rb)) &&
@@ -118,10 +143,14 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     RCK(SUCCEEDED(checked_startup_submit(q,1,&l,0,0)) && SUCCEEDED(queue_signal(q,done,1)));
     RCK(FAILED(checked_startup_submit(q,1,&l,0,0)));
 #ifdef TEST_SR_REUSE
-    IUnknown_Release(key);IUnknown_Release(l);l=NULL; /* in-flight retirement now owns the consumer's refs */
+    RCK(SUCCEEDED(xs_write_view(owner,0xa0,keys[1],view,rt_slot)));
+    IUnknown_Release(dh);IUnknown_Release(depth);IUnknown_Release(key);IUnknown_Release(l);l=NULL;
 #endif
     HANDLE event=CreateEventW(NULL,FALSE,FALSE,NULL);RCK(event && SUCCEEDED(xs_fence_event(done,1,event)) &&
         WaitForSingleObject(event,150)==WAIT_TIMEOUT && *pixel==0xdeadbeef);
+#ifdef TEST_SR_REUSE
+    RCK(*color_pixel==0xdeadbeef && *(float*)raw==-1 && raw[fp[1].Offset]==0xcc);
+#endif
     if(native){
         ULONGLONG until=GetTickCount64()+10000;
         while(ctrl[0x9c/4]!=0x29a5ee15 && GetTickCount64()<until)Sleep(1);
@@ -132,6 +161,9 @@ HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,
     RCK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0 && *pixel==0 && ID3D12Device_GetDeviceRemovedReason(d)==S_OK);
 #ifdef TEST_SR_REUSE
     RCK(*color_pixel==0xff0000ff);
+    RCK(*(float*)raw==.375f && raw[fp[1].Offset]==0x69);
+    ID3D12Resource_Unmap(dsrb,0,NULL);ID3D12Resource_Release(dsrb);
+    puts("PASS carried OM190: original fenced depth .375/stencil 69, red RTV and black primary after list release");
     ID3D12Resource_Unmap(color_rb,0,NULL);ID3D12Resource_Release(color_rb);
     ID3D12GraphicsCommandList7_Release(pl);ID3D12CommandAllocator_Release(pa);IUnknown_Release(prior);
     puts("PASS offscreen SR reuse: same-queue producer, private RTV, reverse, red offscreen and black primary after fenced retirement");

@@ -1150,6 +1150,19 @@ on both GPUs. A separate fixture for the earlier color pass produced zero
 RGBA with the measured zero multiplier, and the expected nonzero RGBA
 with nonzero fixture inputs.
 
+The reconciled opt-in provider (`ebb76880`) passed four hardware fixtures
+before the ordinary pair. AMD stopped at the intermittent timestamp
+(`+240`, return `+2482b37` from `+a1c36c`); RTX again stopped at `+160`.
+Both submitted the pair, queued `Signal(3)` and entered `PresentX(2)`
+with the submitted primary. Neither original end was observed to retire.
+Only token 1 returned successfully; both display counts stayed at 1.
+
+Separate operand captures on `31b441c9` identified the AMD offscreen
+transition after the native wait and the RTX clear input in chunk 2.
+On RTX the original 100 bytes fit at chunk offset `0x1ff80` (arena
+offset `0x5ff80`); the old check required arena offset `0x3ff80`. This
+capture says nothing about either subsequent vertex buffer.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
@@ -1172,11 +1185,16 @@ select the corresponding synthetic `test-marker-bank.c` cases.
 The submitted pair's last offscreen RT→SR transition supplies the original
 resource and descriptor generation. On the measured RTX recording, the
 next SR→RT uses that image; submission checks the original end fence and
-writer queue together with the primary proof. The color-only OM accepts one
-exact RTV and no depth. `tests/build-ordered-display.sh DIR restore-radv`
-builds the split-six primary fixture; `restore-rtx` also checks the
-offscreen reverse transition and separate red/black pixel readbacks.
-`tests/test-restore-ticket.sh` exercises stale proofs without a GPU.
+writer queue together with the primary proof. When the producer carried
+depth, `+190` from `+33317` must also name the original distinct depth
+registration, slot and descriptor serial. The consumer freezes the two
+views and retains both heaps and registrations through its own fence.
+The color barrier does not transition depth. Wrong owner, queue, fence,
+serial, alias, intervening use or replay cannot qualify the pair.
+`tests/build-ordered-display.sh DIR restore-radv` builds the split-six
+primary fixture; `restore-rtx` checks depth `.375`, stencil `69`, a red
+offscreen pixel and a black primary after releasing the source DSV heap
+and list. `tests/test-restore-ticket.sh` exercises stale proofs on CPU.
 
 The default bridge has no pair recorder or executor. `SCARLETT_PAIR_SUBMIT`
 enables recording, inventory and guest Signal-3 tracing. Ordinary two-list

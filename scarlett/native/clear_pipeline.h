@@ -67,6 +67,12 @@ static HRESULT blit_colour_pipeline(IUnknown *dev,UINT_PTR *q,IUnknown *root,con
 }
 #ifdef XS_IM96_FACTORY
 #include "im96_pipeline.h"
+static HRESULT f96_result(IUnknown *owner,IUnknown *alias,IUnknown *wrapper,HRESULT hr,const char *step)
+{
+    fprintf(stderr,"F96 factory tid=%lu owner=%p alias=%p wrapper=%p step=%s hr=%08lx\n",
+            GetCurrentThreadId(),owner,alias,wrapper,step,(DWORD)hr);
+    return hr;
+}
 #endif
 static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE_STREAM_DESC *desc,
         REFIID iid,void **out)
@@ -105,7 +111,8 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
 #ifdef XS_IM96_FACTORY
     im96=q[4]==1712 && q[7]==1588;
     if(im96){
-        HRESULT hr=im96_prepare(device,q,guest_root,v,s);if(FAILED(hr))return hr;
+        HRESULT hr=im96_prepare(device,q,guest_root,v,s);
+        if(FAILED(hr))return f96_result(device,guest_root,NULL,hr,"qualify/layout");
         host=(ID3D12RootSignature*)q[1];
     }else
 #endif
@@ -141,13 +148,24 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
         }
         ID3D12Device2_Release(d2);
     }
-    if (FAILED(hr)) { if(pso)ID3D12PipelineState_Release(pso);if(im96)ID3D12RootSignature_Release(host);IUnknown_Release(guest_root); return hr; }
+    if (FAILED(hr)) {
+        if(pso)ID3D12PipelineState_Release(pso);
+        if(im96)ID3D12RootSignature_Release(host);
+        IUnknown_Release(guest_root);
+#ifdef XS_IM96_FACTORY
+        if(im96)return f96_result(device,guest_root,NULL,hr,"device/pso");
+#endif
+        return hr;
+    }
     struct clear_wrapper *wrap=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *wrap);
     if (!wrap) {
         if(diag)ID3D12PipelineState_Release(diag);
         ID3D12PipelineState_Release(pso);
         if(im96)ID3D12RootSignature_Release(host);
         IUnknown_Release(guest_root);
+#ifdef XS_IM96_FACTORY
+        if(im96)return f96_result(device,guest_root,NULL,E_OUTOFMEMORY,"wrapper");
+#endif
         return E_OUTOFMEMORY;
     }
     struct bvh_pipeline *p=&wrap->pso;
@@ -172,7 +190,7 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     }else IUnknown_Release(guest_root);
     *out=&p->iface;
 #ifdef XS_IM96_FACTORY
-    if(im96)return S_OK;
+    if(im96)return f96_result(device,guest_root,&p->iface,S_OK,"returned");
 #endif
     OutputDebugStringA(colour?"scarlett: created qualified colour PSO\n":"scarlett: created qualified clear-pair graphics PSO\n");
     return S_OK;

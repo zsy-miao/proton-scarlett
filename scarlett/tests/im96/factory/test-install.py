@@ -8,6 +8,7 @@ prog=r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#define GetCurrentThreadId() 1ul
 typedef int HRESULT;typedef void IUnknown,ID3D12PipelineState,ID3D12RootSignature;
 #define E_NOTIMPL -1
 #define S_OK 0
