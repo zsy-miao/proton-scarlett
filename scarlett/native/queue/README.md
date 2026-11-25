@@ -1509,6 +1509,15 @@ Neither run sampled original-end retirement. Only token 1 returned
 Private pixel review found black on AMD and black/white with a cursor
 on RTX.
 
+One RTX diagnostic on the same provider source logged the first failed
+check after the RAW32 replacement (serial 134→142, four holds). The
+original end fence read 0 both on entry to `+120` and at the check that
+requires 1. The passing fixture read 1 and selected `[372469,372472)`.
+The recording stopped before validating the constant-buffer publication.
+The samples do not establish when the fence later completed. Exit was 2;
+only token 1 returned, count stayed at 1, and the six unique decoded
+images showed blank black/white frames and a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
