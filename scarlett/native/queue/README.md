@@ -1574,6 +1574,15 @@ face closed again. Matching issued no queue work (`execDelta=0`) and
 checked submissions remained denied. This fixture did not observe a
 later retail token or establish release ownership in the game.
 
+A staged RTX retail diagnostic retained the serial-14 producer at Close
+without assigning a token. The separate successor requested the release
+and a timestamp and then closed successfully. Both requests were recorded
+as intent only. The already-claimed serial-17 receipt was rejected.
+No subsequent submission naming the pair, later token, or reset was
+observed before the title stopped at `+4ecc936` from `+501f6b3`. The
+original serial-17 end read 1, but `PresentX(2)` did not log a return;
+the count stayed at 1. Private review found only blank frames and a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
