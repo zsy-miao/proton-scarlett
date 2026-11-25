@@ -1943,6 +1943,16 @@ Ordinary AMD on the identical provider stopped at `+33317`, reached count 1
 and produced 118 black frames. This queue build predates the AMD target-bind
 fix in `47002876`. Neither run sampled the source-surface RGB count.
 
+On the combined provider `bf6d6155`, both adapter fixtures passed: AMD
+selected the three cells once and changed only four pixels on explicit
+clear; RTX retired the new serial-14 end before recycler signal 5.
+In the matched ordinary runs, AMD stopped at serial 17's successor
+timestamp before submitting the pair (91 decoded frames). RTX submitted
+the serial-17 pair, bound the serial-14 target and selected the three
+cells. Its successor timestamp stopped at the alternate head-offset check
+(229 decoded frames). Only token 1 returned and counted on either GPU.
+The captures showed black, white or a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
