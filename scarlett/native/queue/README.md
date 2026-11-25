@@ -2040,6 +2040,23 @@ serial-14 Close. Its frame-2 GPU work retired, but `PresentX(2)` had no
 logged return. All 97 client frames were black. The setter's own fence
 sample and rejecting condition were not captured.
 
+In matched ordinary runs on `a306bf6f`, RTX retired serial 17 and completed
+`PresentX(2)`, count 1→2. Token 3 passed the pending-5 lease check and then
+stopped at `+24821e3`; no serial-14 execution or new end was observed.
+Of the 259 decoded frames, 244 were black and the remainder showed a blank
+window or cursor. AMD stopped at the serial-17 successor timestamp before
+pair submission; only token 1 returned and all 278 frames were black. This
+provider branches from `a694bc9d` and does not include the AMD pin fix.
+
+A separate RTX fixture (`e27a80de` on `07f11f9f`) simulated a successful
+display return of B between two uses of A. A and B occupied disjoint
+slices of the same imported allocation. The generic reuse proof expired,
+but the tagged frame-3 job could still use A after checking the successful
+return, original end, live descriptors and writer. Missing return, wrong
+end, wrong depth/stencil serial, foreign queue, overlap and alias were
+rejected. Both timestamp layouts retired on fresh ends and preserved the
+green/red readbacks and guards. The fixture did not present a live window.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
