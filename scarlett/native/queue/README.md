@@ -1861,6 +1861,20 @@ Two further diagnostic builds identified the checks that returned failure:
   be correct. `PresentX(2)` returned success, count reached 2, and all
   337 decoded frames showed only black/white or a cursor.
 
+The RTX target-5 fixture (`c3d49f74`) verified the fence ordering on
+hardware. With the split list gated, the publisher had queued 5 while
+the recycler still read 4. After the new batch retired the recycler
+read 5, timestamps were ordered, serial 14 was green and serial 17
+remained red. These were fixture-owned lists.
+
+The AMD source-pixel fixture matched exactly one readback to the original
+token-2 end and serial-17 primary. All 8,294,400 pixels had nonzero RGB;
+the independently decoded display showed the three expected patterns.
+In the subsequent retail diagnostic (`3a40c3c7`), the first refusal was
+the one-RTV `+190/+33317` bind. Token 2 entered but its original end was
+not observed to retire, and no source readback was logged. The 91 decoded
+frames showed only black/white. The retail source pixel count is unknown.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
