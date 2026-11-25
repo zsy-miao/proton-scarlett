@@ -1,0 +1,165 @@
+--- a/scarlett/native/queue/s14-record.h
++++ b/scarlett/native/queue/s14-record.h
+@@ -77,8 +77,21 @@
+     struct system_timestamp *h=s->s14_head,*tail=NULL;
+     UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),records[4]={0};
+     UINT bank;UINT64 indices;SIZE_T off;
++#ifdef XS_RTX_S14_ALT_CPU
++    /* Select once from the retained producer; never allow the tail to select its partner. */
++    const SIZE_T tail_off=h && h->cpu_offset==0x419f258?0x419f250:0x419f6d0;
++    const BOOL alternate=tail_off==0x419f250;
++#define HEAD_OFF (tail_off+8)
++#define TAIL_OFF tail_off
++#define TAIL_RESOLVE (tail_off%65536)
++#else
++#define HEAD_OFF 0x419f6d8
++#define TAIL_OFF 0x419f6d0
++#define TAIL_RESOLVE 0xf6d0
++#endif
++#define TERM14(test,expr) test(expr)
+     if(BAD14(s->stamp) || BAD14(!obs14_successor(obs14_scope,s)) || BAD14(!h->cpu_section) || BAD14(!h->mapping) || BAD14(!h->dst) || BAD14(!h->query) ||
+-       BAD14(h->retained) || BAD14(h->section) || BAD14(h->tail_recorded) || BAD14(h->cpu_offset!=0x419f6d8) || BAD14(h->cpu_addr!=addr+8) ||
++       BAD14(h->retained) || BAD14(h->section) || BAD14(h->tail_recorded) || TERM14(BAD14,h->cpu_offset!=HEAD_OFF) || BAD14(h->cpu_addr!=addr+8) ||
+        BAD14(!lease_read(exe+0xa943a0c,&bank,4)) || BAD14(bank!=3) || BAD14(!lease_read(exe+0x75dedb0,&indices,8)) || BAD14(indices!=1) ||
+        BAD14(!lease_read(exe+0xa943a18+3*8,records+3,8)))return E_ACCESSDENIED;
+     struct scarlett_section_info owner;
+@@ -86,15 +99,42 @@
+     if(FAILED(hr)){OK14(SUCCEEDED(hr) && "acquire owner");return hr;}
+     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+     BOOL valid=OK14(owner.section) && OK14(same) && OK14(same(h->cpu_section,owner.section)) && OK14(owner.offset==0x3fb30c0) &&
+-        OK14(records[3]-(UINT_PTR)owner.base==owner.offset) && OK14(addr-(UINT_PTR)owner.base==0x419f6d0) &&
++        OK14(records[3]-(UINT_PTR)owner.base==owner.offset) && TERM14(OK14,addr-(UINT_PTR)owner.base==TAIL_OFF) &&
+         OK14(obs14_indexed(obs14_scope,h->cpu_addr,&owner,bank,1,records));
+     if(owner.section)CloseHandle(owner.section);
+     if(!valid)return E_ACCESSDENIED;
+     hr=prepare_timestamp(s->device,addr,0,&tail,&off);
+     if(FAILED(hr)){OK14(SUCCEEDED(hr) && "prepare timestamp");return hr;}
+-    if(BAD14(!tail->cpu_section) || BAD14(!same(h->cpu_section,tail->cpu_section)) || BAD14(tail->cpu_offset!=0x419f6d0) ||
+-       BAD14(tail->cpu_addr!=addr) || BAD14(off!=0xf6d0) || BAD14(!tail->mapping) || BAD14(tail->retained) || BAD14(tail->section) ||
++    if(BAD14(!tail->cpu_section) || BAD14(!same(h->cpu_section,tail->cpu_section)) || TERM14(BAD14,tail->cpu_offset!=TAIL_OFF) ||
++       BAD14(tail->cpu_addr!=addr) || TERM14(BAD14,off!=TAIL_RESOLVE) || BAD14(!tail->mapping) || BAD14(tail->retained) || BAD14(tail->section) ||
+        BAD14(tail->mapping==h->mapping) || BAD14(tail->dst==h->dst) || BAD14(tail->query==h->query)){drop_timestamp(tail);return E_ACCESSDENIED;}
++#ifdef XS_RTX_S14_ALT_CPU
++    if(alternate){
++#ifdef XS_TEST_S14_AFTER_IMPORT
++        XS_TEST_S14_AFTER_IMPORT();
++#endif
++        /* Recheck the live index and owner after opening the tail import. The
++         * original head and the tail must both describe this same CPU view. */
++        UINT_PTR record=0;
++        struct scarlett_section_info live_owner={0};
++        if(BAD14(!h->second_bank) || BAD14(h->obs_wb || tail->obs_wb) || BAD14(h->obs_base!=owner.base) ||
++           BAD14(tail->obs_base!=owner.base) || BAD14(h->obs_size!=owner.view_size || tail->obs_size!=owner.view_size) ||
++           BAD14(!s->allocator || s->allocator->lpVtbl!=&at.prefix) ||
++           BAD14(InterlockedCompareExchange64(&CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface)->generation,0,0)!=(LONG64)s->alloc_generation) ||
++           BAD14(!lease_read(exe+0xa943a0c,&bank,4) || bank!=3) || BAD14(!lease_read(exe+0x75dedb0,&indices,8) || indices!=1) ||
++           BAD14(!lease_read(exe+0xa943a18+3*8,&record,8) || record!=records[3]) ||
++           BAD14(FAILED(scarlett_acquire_section((void*)record,96,&live_owner)))){drop_timestamp(tail);return E_ACCESSDENIED;}
++        valid=OK14(live_owner.section) && OK14(same(h->cpu_section,live_owner.section)) &&
++            OK14(live_owner.base==owner.base && live_owner.offset==owner.offset && live_owner.view_size==owner.view_size) &&
++            OK14(obs14_indexed(obs14_scope,h->cpu_addr,&live_owner,bank,1,records));
++        if(live_owner.section)CloseHandle(live_owner.section);
++        if(!valid){drop_timestamp(tail);return E_ACCESSDENIED;}
++    }
++#endif
++#undef TERM14
++#undef HEAD_OFF
++#undef TAIL_OFF
++#undef TAIL_RESOLVE
+     emit_q0(tail,s->host,off);s->stamp=tail;
+     fprintf(stderr,"S14 recorded CPU timestamp host=%p tail=%llx off=%zx headOff=%zx bank=%u ownerOff=%zx\n",
+         s->host,addr,tail->cpu_offset,h->cpu_offset,bank,owner.offset);
+--- a/scarlett/native/queue/test-s14-job.c
++++ b/scarlett/native/queue/test-s14-job.c
+@@ -1,14 +1,22 @@
+ /* Fixture boundary: seed only the already qualified producer and prior S17 key.
+  * The S14 bind, release, stamp, Close and checked submit use queue.c unchanged. */
++static void change_owner_after_import(void);
++#define XS_TEST_S14_AFTER_IMPORT() change_owner_after_import()
+ #include "queue.c"
+ #define CK(x) do{if(!(x)){fprintf(stderr,"S14 bank3 FAIL %d: %s\n",__LINE__,#x);exit(1);}}while(0)
+ #define OK(x) do{HRESULT h_=(x);if(h_!=S_OK){fprintf(stderr,"S14 bank3 FAIL %d: %s hr=%08lx\n",__LINE__,#x,(DWORD)h_);exit(1);}}while(0)
+-enum { poolbytes=0x49400000, ro=0x3fb30c0, win=0x4190000, delta=0xf6d0 };
++enum { poolbytes=0x49400000, ro=0x3fb30c0, win=0x4190000 };
++static UINT delta;
+ static BYTE *pool,*original,*reuse,*exe;
+ static struct system_timestamp *producer_stamp;
+ static IUnknown *list14;
+ static HMODULE xmem;
+ static UINT64 addr;
++static int change_owner;
++static void change_owner_after_import(void)
++{
++    if(change_owner){((DWORD*)(pool+ro))[20]^=8;change_owner=0;}
++}
+ static const UINT64 empty=0xadadadadadadadadull;
+ static IUnknown *producer14,*shared14,*writer,*prior;
+ static struct pub_wire records[2];static UINT_PTR outer[32+514],arg_keys[2],*ids=outer+32;
+@@ -54,8 +62,9 @@
+     OK(close_at(producer14,(UINT_PTR)exe+0x72a1));CK(p->seal && p->seal->s14);
+     CK(!s14_records);s14_records=p;
+ }
+-void bank3_setup(void)
++void bank3_setup(UINT target)
+ {
++    CK(target==0xf6d0 || target==0xf250);delta=target;
+     /* Resource-heap creation looks up XMem in an already loaded module. */
+     xmem=LoadLibraryW(L"xmem.dll");
+     CK(xmem && GetProcAddress(xmem,"XMemAlloc") && GetProcAddress(xmem,"XMemFree"));
+@@ -98,6 +107,17 @@
+     HANDLE old=s->s14_head->cpu_section,other=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,65536,NULL);CK(other);
+     s->s14_head->cpu_section=other;DENY();s->s14_head->cpu_section=old;CloseHandle(other);
+     CK(FAILED(pool_timestamp(s,addr+8,0,0,1)) && FAILED(pool_timestamp(s,addr,0,1,1)) && FAILED(pool_timestamp(s,addr,0,0,0)) && !s->stamp);
++    /* A coherent owner array for the other measured layout cannot pair with this head. */
++    UINT64 swapped=(UINT_PTR)pool+win+(delta==0xf250?0xf6d0:0xf250),used=swapped+0x4010;
++    memcpy(w+18,&used,8);memcpy(w+20,&swapped,8);memcpy(w+22,&swapped,8);
++    DENY();CK(FAILED(pool_timestamp(s,swapped,0,0,1)) && !s->stamp);
++    used=addr+0x4010;memcpy(w+18,&used,8);memcpy(w+20,&addr,8);memcpy(w+22,&addr,8);
++    if(delta==0xf250){
++        void *base=s->s14_head->obs_base;s->s14_head->obs_base=original;DENY();s->s14_head->obs_base=base;
++        struct command_allocator *a=CONTAINING_RECORD(shared14,struct command_allocator,a.iface);
++        InterlockedIncrement64(&a->generation);DENY();InterlockedDecrement64(&a->generation);
++        change_owner=1;DENY();CK(!change_owner);w[20]^=8;
++    }
+     OK(pool_timestamp(s,addr,0,0,1));batch_step(s,B_TAIL_STAMP);
+     CK(FAILED(pool_timestamp(s,addr,0,0,1)) && s->stamp!=s->s14_head && !xs_list_host(list14));
+     OK(close_at(list14,(UINT_PTR)exe+0x72a1));CK(s->seal && s->seal->s14 && !s->offered && !s->deferred);
+@@ -121,5 +141,7 @@
+     CK(UnmapViewOfFile(original) && VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(exe+0xa940000,0,MEM_RELEASE) && VirtualFree(exe+0x75d0000,0,MEM_RELEASE));
+     CK(*(DWORD*)(marker_page+0x98)==2 && *(DWORD*)(marker_page+0x9c)==0x29a5ee15);
+     IUnknown_Release(list14);IUnknown_Release(producer14);IUnknown_Release(shared14);
+-    puts("PASS S14 bank3 CPU timestamp: original +419f6d0 after exact VA reuse at token 3; head +419f6d8, guards and rejected guest submits");
++    CK(VirtualFree((void*)arena.base,0,MEM_RELEASE) && VirtualFree(marker_page,65536,MEM_RELEASE));
++    CK(VirtualFree(exe+0x6890000,0,MEM_RELEASE) && VirtualFree(exe+0x75e0000,0,MEM_RELEASE));
++    printf("PASS S14 measured layout: tail=%x head=%x after exact VA reuse; guarded original and replacement pages\n",win+delta,win+delta+8);
+ }
+--- a/scarlett/native/test-job-entry.c
++++ b/scarlett/native/test-job-entry.c
+@@ -38,14 +38,14 @@
+     D3D12_RESOURCE_BARRIER b={.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,from,to}};
+     ID3D12GraphicsCommandList7_ResourceBarrier(l,1,&b);
+ }
+-void bank3_setup(void);
++void bank3_setup(UINT);
+ void bank3_head(ID3D12Device*,ID3D12GraphicsCommandList7*);
+ void bank3_tail(ID3D12Device*,IUnknown*,IUnknown**,const struct xs_attachment_pin*,ID3D12GraphicsCommandList7*,ID3D12GraphicsCommandList7**,D3D12_TEXTURE_BARRIER);
+ void bank3_recycle(void);
+ void bank3_done(UINT64,UINT64,UINT64,UINT64*,UINT64*);
+-int main(void)
++static int layout(UINT delta)
+ {
+-    bank3_setup();
++    bank3_setup(delta);
+     const DWORD params[20]={[0]=0x20004,[2]=0x100000,[10]=1,[15]=0x20};
+     IUnknown *owner;OK(D3D12XboxCreateDevice(NULL,params,&bootstrap_iid,(void**)&owner));
+     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+@@ -180,3 +180,9 @@
+     IUnknown_Release(banks[0]);IUnknown_Release(banks[1]);
+     IUnknown_Release(views);IUnknown_Release(owner);return 0;
+ }
++
++int main(void)
++{
++    CHECK(layout(0xf250)==0 && layout(0xf6d0)==0);
++    puts("PASS both measured CPU layouts on separate S14 batches");return 0;
++}

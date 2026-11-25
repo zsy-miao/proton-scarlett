@@ -18,4 +18,22 @@ bash scarlett/tests/s14-target5/build.sh dispatch "$BANK3_OUTPUT"
 
 **Seed limits.** The producer profile, prior serial-17 key, capture identities, source spans, publication records/book and writer-clock context are test-owned. The dispatcher fixture exercises native recording, Close, checked submission and retirement; it does not replay all 37 producer opcodes or establish title eligibility.
 
-**Completion constraint.** Both qualified paths require the prior publisher to have signalled **and completed 4** at admission. The dispatcher additionally checks book high-water ≥5. A queued 4 sampled at 3 does not qualify; the queued-4 experiment is separate.
+**Completion constraint.** `fence` and `dispatch` require the prior publisher to have signalled **and completed 4** at admission. The dispatcher additionally checks book high-water ≥5.
+
+### Queued 4 and the two timestamp layouts
+
+```sh
+bash scarlett/tests/s14-target5/build.sh queued4 "$BANK3_OUTPUT"
+bash scarlett/tests/s14-target5/build.sh layouts "$COMBINED_OUTPUT"
+```
+
+`queued4` extends `dispatch`. The flag-off DLL matches `df32e6f1`. The RTX run of EXE `45c41e82` with DLL `4998adf0` exited 0: the writer had queued 4, the fence still read 3, and the book high-water was 5. The fresh batch end retired and the original spans and timestamps were verified before signal 5.
+
+`layouts` starts from the retained combined build output (provider `bf6d6155`, RTX fixture `ecf6c002`; see `combined-preimages.sha256`). It builds the flag-off control and the two-layout provider `a694bc9d` once, then reproduces both fixture revisions:
+
+| Fixture | Recorded RTX result on `a694bc9d` |
+| --- | --- |
+| `original/game_scarlett_master.exe` (`ccc684b5`) | Exit 1. The alternate tail/head (`0x419f250/0x419f258`) retired and passed readback after address reuse. The next setup expected token 1 but received 4 (`S14 FAIL 134: token==i`), before testing the original layout. |
+| `fixture/game_scarlett_master.exe` (`baeccf0b`) | Exit 0. Each layout ran in a fresh child process with tokens 1, 2, 3. The alternate pair and the original tail/head (`0x419f6d0/0x419f6d8`) each passed ordered timestamp, fresh retirement fence, green14/red17 and guard checks. |
+
+The clock correction changes only the fixture entry point. Both commands cross-build and verify hashes without running either executable.

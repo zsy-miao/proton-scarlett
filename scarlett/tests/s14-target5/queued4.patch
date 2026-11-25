@@ -1,0 +1,143 @@
+--- a/scarlett/native/queue/pair-execute.h
++++ b/scarlett/native/queue/pair-execute.h
+@@ -162,8 +162,12 @@
+     if(!pub_pair(&p->publication,&s->publication,w->lists,target) || w->lists<0x100 ||
+        !lease_read(w->lists-0x100,outer,sizeof outer) || !lease_read(exe+0x68929d0,&book,sizeof book) ||
+        book!=exe+0x75e0e98 || !lease_read(book,b,sizeof b) || (BYTE)b[1] || b[0]!=(UINT_PTR)&w->queue->iface ||
+-       outer[0]!=book+0x28 || !b[2] || b[2]!=outer[1] || outer[2]!=target || b[3]>=target || b[5]!=target-1 ||
+-       b[6]<target)return NULL;
++       outer[0]!=book+0x28 || !b[2] || b[2]!=outer[1] || outer[2]!=target || b[3]>=target || b[5]!=target-1)return NULL;
++#ifdef XS_RTX_S14_QUEUED4
++    if(p->s14)fprintf(stderr,"S14 book check fence=%zx target=%llu cached=%zu submitted=%zu highWater=%zu\n",
++        b[2],target,b[3],b[5],b[6]);
++#endif
++    if(b[6]<target)return NULL;
+     for(UINT j=0;j<3;j++){
+         const struct lease_span *v=p->spans+j;struct lease_span live;
+         if(!lease_span_read(v->arena.base,v->va,v->bytes,&live) || memcmp(&v->arena,&live.arena,sizeof v->arena) ||
+@@ -171,13 +175,23 @@
+     }
+     for(struct monitored_fence *f=live_fences;f;f=f->next){
+         if((UINT_PTR)&f->a.iface!=b[2])continue;
++#ifdef XS_RTX_S14_QUEUED4
++        if(p->s14)fprintf(stderr,"S14 ledger check prior=%llu sameQueue=%u sameDevice=%u mixed=%u protected=%u\n",
++            f->high,f->publisher==w->queue->host.queue,f->device==p->segments.device,f->mixed,f->protected_pair);
++#endif
+         if(f->mixed || f->protected_pair || f->high!=target-1 || f->publisher!=w->queue->host.queue ||
+            f->device!=p->segments.device)return NULL;
+         UINT64 completed=fence_completed(&f->a.iface);
+         if(completed>=target || completed<b[3])return NULL;
+ #ifdef XS_RTX_S14_JOB
++#ifdef XS_RTX_S14_QUEUED4
++        /* Same-queue Signal(4) was accepted under submit_lock before this
++         * job. A sample of 3 can lag that signal, but cannot substitute for it. */
++        if(p->s14 && completed!=3 && completed!=4)return NULL;
++#else
+         if(p->s14 && completed!=4)return NULL;
+ #endif
++#endif
+ #ifdef XS_RTX_S14_JOB
+         fprintf(stderr,"PAIR lease node=%zx gen=%u fence=%p prior=%llu sampled=%llu cached=%zu submitted=%zu pending=%llu\n",
+             p->publication.node,p->publication.gen,&f->a.iface,f->high,completed,b[3],b[5],target);
+--- a/scarlett/native/queue/fresh-publication.h
++++ b/scarlett/native/queue/fresh-publication.h
+@@ -95,6 +95,10 @@
+         s->trace_id,b[2],outer[2],b[3],b[5],f->high,fence_completed(&f->a.iface),f->publisher,
+         f->publisher==as_queue(iface),f->device==s->device,f->mixed,f->protected_pair);
+     else fprintf(stderr,"FRESHPUB fence list=%zx fence=%zx target=%zu ledger=absent\n",s->trace_id,b[2],outer[2]);
++#ifdef XS_RTX_S14_QUEUED4
++    if(s->output_serial==14)fprintf(stderr,"S14 book sample list=%zx target=%zu cached=%zu submitted=%zu highWater=%zu ledger=%s\n",
++        s->trace_id,outer[2],b[3],b[5],b[6],!f?"absent":f->mixed?"mixed":f->publisher!=as_queue(iface)?"foreign":"same-queue");
++#endif
+     ReleaseSRWLockShared(&publisher_lock);
+     *target=outer[2];return TRUE;
+ }
+--- a/scarlett/native/queue/test-job-entry.c
++++ b/scarlett/native/queue/test-job-entry.c
+@@ -45,7 +45,30 @@
+ }
+ static HRESULT try14(IUnknown *q){return checked_startup_submit(q,2,(IUnknown**)ids,3,3);}
+ void job14_deny(void){CK(FAILED(try14(writer)));}
++static IUnknown *bad[4],*other_writer;
++void queued4_controls(ID3D12Device *dev)
++{
++    OK(xs_direct_queue(dev,&other_writer));
++    for(UINT k=0;k<4;k++){
++        OK(xs_shared_fence(dev,bad+k));
++        IUnknown *q=k==0?other_writer:writer;
++        UINT last=k==3?5:k==2?3:4;
++        for(UINT v=1;v<=last;v++)OK(queue_signal(q,bad[k],v));
++        HANDLE ev=CreateEventW(NULL,FALSE,FALSE,NULL);CK(ev);
++        OK(xs_fence_event(bad[k],last,ev));CK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0);CloseHandle(ev);
++        if(k==1)OK(xs_cpu_signal(bad[k],4)); /* Sticky mixed even at the same numeric value. */
++    }
++}
+ void job14_commit(ID3D12Device *dev){
++    UINT_PTR *book=(void*)(exe+0x75e0e98);book[6]=4;job14_deny();book[6]=5;
++    OK(queue_signal(writer,bad[2],4));OK(queue_signal(writer,bad[2],5));
++    CK(fence_completed(bad[2])==3 && fence_completed(bad[3])==5);
++    for(UINT k=0;k<4;k++){
++        outer[1]=book[2]=(UINT_PTR)bad[k];job14_deny();
++    }
++    outer[1]=book[2]=1;job14_deny(); /* Unregistered identity never dispatched. */
++    outer[1]=book[2]=(UINT_PTR)prior;
++    ++sl(list14)->seal->segments.alloc_generation;job14_deny();--sl(list14)->seal->segments.alloc_generation;
+     IUnknown *foreign;OK(xs_direct_queue(dev,&foreign));CK(FAILED(try14(foreign)));IUnknown_Release(foreign);
+     IUnknown *orig=(IUnknown*)ids[0];ids[0]=1;job14_deny();ids[0]=(UINT_PTR)orig;
+     UINT_PTR old=ids[0];ids[0]=ids[1];ids[1]=old;job14_deny();ids[1]=ids[0];ids[0]=old;
+@@ -54,6 +77,8 @@
+     CK(allocator_reset(shared14)==DXGI_ERROR_WAS_STILL_DRAWING);OK(try14(writer));job14_deny();
+     IUnknown *na,*nb;OK(xs_allocator(dev,0,&na));OK(xs_allocator(dev,0,&nb));
+     OK(sl_reset(producer14,na,NULL,0));OK(sl_reset(list14,nb,NULL,0));IUnknown_Release(na);IUnknown_Release(nb);job14_deny();
+-    CK(allocator_reset(shared14)==DXGI_ERROR_WAS_STILL_DRAWING && xs_cpu_signal(prior,5)==E_ACCESSDENIED);
++    CK(allocator_reset(shared14)==DXGI_ERROR_WAS_STILL_DRAWING && xs_cpu_signal(prior,5)==E_ACCESSDENIED &&
++        queue_signal(other_writer,prior,5)==E_ACCESSDENIED);
+ }
++void queued4_done(void){for(UINT k=0;k<4;k++)IUnknown_Release(bad[k]);IUnknown_Release(other_writer);}
+ void job14_retired(void){for(UINT k=0;k<10000;k++){HRESULT hr=allocator_reset(shared14);if(hr==S_OK)return;CK(hr==DXGI_ERROR_WAS_STILL_DRAWING);Sleep(1);}CK(FALSE);}
+--- a/scarlett/native/test-job-entry.c
++++ b/scarlett/native/test-job-entry.c
+@@ -9,6 +9,7 @@
+ void job14_prepare(ID3D12Device *,IUnknown *,ID3D12GraphicsCommandList7 **);
+ void job14_producer(const struct xs_attachment_pin *,struct xs_sr_ticket,ID3D12Resource *);
+ void job14_publish(void),job14_deny(void),job14_commit(ID3D12Device *),job14_retired(void);
++void queued4_controls(ID3D12Device *),queued4_done(void);
+ void bank3_reset(ID3D12Device*);
+ ID3D12CommandQueue *bank3_writer(ID3D12Device*,ID3D12Fence**);
+ BOOL bank3_prior(ID3D12CommandQueue*,UINT64);
+@@ -141,21 +142,28 @@
+     job14_deny();OK(xs_pair_frame_submit(owner,3,q,FALSE,f[2],enqueue14,jobs+2,&epoch));wait_value(f[2],1);
+     /* Match the retail high=4, sampled=3 distinction while signal 4 is pending. */
+     ID3D12Fence *gate4;OK(ID3D12Device_CreateFence(dev,0,0,&IID_ID3D12Fence,(void**)&gate4));
++    queued4_controls(dev);
+     OK(ID3D12CommandQueue_Wait(q,gate4,1));bank3_signal(4);CHECK(bank3_prior(q,4) && ID3D12Fence_GetCompletedValue(recycler)==3);
+-    job14_deny();OK(ID3D12Fence_Signal(gate4,1));wait_value(recycler,4);ID3D12Fence_Release(gate4);
+-    OK(ID3D12CommandQueue_Wait(q,f[4],1));job14_commit(dev);
++    job14_commit(dev);
+     ID3D12Fence_Release(f[3]);f[3]=frame_find(&d->clock,3)->batch_end;CHECK(f[3] && f[3]!=f[1] && f[3]!=f[2]);ID3D12Fence_AddRef(f[3]);
+     CHECK(xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0);
+-    bank3_signal(5);CHECK(bank3_prior(q,5) && ID3D12Fence_GetCompletedValue(recycler)==4);
++    OK(ID3D12CommandQueue_Wait(q,f[4],1));bank3_signal(5);
++    CHECK(bank3_prior(q,5) && ID3D12Fence_GetCompletedValue(recycler)==3);
+     UINT64 low,high,cpu_tick;bank3_recycle();OK(ID3D12CommandQueue_GetClockCalibration(q,&low,&cpu_tick));
+-    OK(ID3D12Fence_Signal(f[4],1));wait_value(f[3],1);OK(xs_frame_submission_query(owner,3,q,TRUE));
+-    wait_value(recycler,5);job14_retired();
++    OK(ID3D12Fence_Signal(gate4,1));wait_value(f[3],1);OK(xs_frame_submission_query(owner,3,q,TRUE));
++    job14_retired();CHECK(ID3D12Fence_GetCompletedValue(recycler)==4);ID3D12Fence_Release(gate4);
+     OK(ID3D12CommandQueue_GetClockCalibration(q,&high,&cpu_tick));
+     ID3D12CommandList *oracle=(ID3D12CommandList*)l[5];
++    /* The direct queue is still held after newEnd; inspect batch-produced bytes before permitting 5. */
++    OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));for(UINT i=128;i<152;i++)CHECK(map[i]==0x71+(i-128)/8);
++    ID3D12Resource_Unmap(rb,0,NULL);
++    UINT64 old,head,tail,sentinel=0xa5a5a5a5a5a5a5a5ull;
++    OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));memcpy(&old,map+32,8);ID3D12Resource_Unmap(rb,0,NULL);
++    bank3_done(old,low,high,&head,&tail);CHECK(ID3D12Fence_GetCompletedValue(recycler)==4);
++    puts("PASS queued4: original signals 1..4, admitted at 3; distinct S14 end retired, allocator reset, original spans and stamps verified before 5");
++    OK(ID3D12Fence_Signal(f[4],1));wait_value(recycler,5);queued4_done();
+     ID3D12CommandQueue_ExecuteCommandLists(q,1,&oracle);OK(ID3D12CommandQueue_Signal(q,f[5],1));wait_value(f[5],1);
+     OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));
+-    UINT64 old,head,tail,sentinel=0xa5a5a5a5a5a5a5a5ull;
+-    memcpy(&old,map+32,8);bank3_done(old,low,high,&head,&tail);
+     CHECK(old && old!=sentinel && head!=sentinel && tail!=sentinel && old<=head && head<=tail);
+     CHECK(!memcmp(map+512,"\0\xff\0\xff",4) && !memcmp(map+1024,"\xff\0\0\xff",4));
+     for(UINT i=128;i<152;i++)CHECK(map[i]==0x71+(i-128)/8);

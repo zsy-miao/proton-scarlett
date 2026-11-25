@@ -1,0 +1,22 @@
+--- a/scarlett/native/test-job-entry.c
++++ b/scarlett/native/test-job-entry.c
+@@ -181,8 +181,17 @@
+     IUnknown_Release(views);IUnknown_Release(owner);return 0;
+ }
+ 
+-int main(void)
++#include <process.h>
++int main(int argc,char **argv)
+ {
+-    CHECK(layout(0xf250)==0 && layout(0xf6d0)==0);
++    if(argc==2 && !strcmp(argv[1],"--s14-alt"))return layout(0xf250);
++    if(argc==2 && !strcmp(argv[1],"--s14-original"))return layout(0xf6d0);
++    CHECK(argc==1);
++    /* Frame tokens are process-wide. Each recording starts in a fresh copy
++     * of this executable; the admitted parent waits for each result. */
++    WCHAR self[32768];DWORD n=GetModuleFileNameW(NULL,self,ARRAYSIZE(self));
++    CHECK(n && n<ARRAYSIZE(self));
++    CHECK(_wspawnl(_P_WAIT,self,L"s14-fixture",L"--s14-alt",(wchar_t*)NULL)==0);
++    CHECK(_wspawnl(_P_WAIT,self,L"s14-fixture",L"--s14-original",(wchar_t*)NULL)==0);
+     puts("PASS both measured CPU layouts on separate S14 batches");return 0;
+ }
