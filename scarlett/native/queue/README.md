@@ -1798,8 +1798,25 @@ creation with `E_NOTIMPL`. It did not reach the release or timestamp.
 The fixture creates its resource descriptor heap before loading XMem;
 this heap path looks up `XMemAlloc` and `XMemFree` in an already loaded
 module. A fixture-only correction (`a4792964`) loads XMem before heap
-setup. It is cross-built but not hardware-qualified. The matched retail
-runs were withheld.
+setup. On RTX the corrected fixture passed: a three-operation successor
+closed successfully after recording the release and CPU-backed timestamp
+resolve. The original tail at offset `0x419f6d0` and head at `0x419f6d8`
+received ordered timestamps after the fixture reused the guest VA; both
+guards and the replacement mapping remained intact. Token 3's fixture
+batch end was distinct from token 2's end.
+
+The same staged provider `becb01a3` then ran once on each adapter. AMD
+recorded the replacement VB, then refused `+190/+33317` from `+bfd93`:
+one non-range RTV at `0x1f1b0000`, no DSV. The saved offscreen ticket
+was still live and named RTV/DSV serials 119/121. The supplied slot was
+different from the offscreen RTV; the log alone does not identify its
+current descriptor generation. On RTX, serial 14's producer closed and
+the successor recorded the release barrier. The timestamp operation
+(`+240/+2482b37` from `+a1c42c`) refused address `0x799f250` with
+`E_ACCESSDENIED`. Its backing cannot be inferred from the successful
+fixture for the other address. Neither run logged a `PresentX(2)` return
+or a display count above 1. AMD's 90 decoded frames and RTX's 223 showed
+only black/white or a cursor.
 
 ### Cross-build the guarded token-2 checkpoint
 
