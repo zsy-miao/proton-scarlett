@@ -60,3 +60,19 @@ RTX retail request shared an allocator and a receipt. Both adapters requested
 a timestamp *after* the release. Neither the calibrated synthetic split
 nor its copy pixels qualify those commands, table/VB/chunk lifetimes or an
 ordinary two-member submission.
+
+### Serial 14 on its own frame token
+
+[`test-s14-release.c`](../native/test-s14-release.c) exercises the recorded
+whole-surface release with a fresh token-3 batch. Build it as a static C
+test with the staged provider's queue and VM objects, the usual paired
+provider flags, `-DTEST_DISTINCT_PRIMARY -DTEST_CARRIED_TARGET`, and
+`-ld3d12 -ldxgi -ldxguid`. It includes the test device TU itself.
+
+The control image (serial 17, red) retires on token 2. Hold the token-3
+batch at a queue fence: serial 17's end must already read 1 while the
+new end reads 0. After opening the gate, verify the new end, ordered GPU
+timestamps and guarded readback (serial 14 green; serial 17 still red).
+The test owns the query destinations and command lists. A pass therefore
+does not validate the game's timestamp address or authorize submission
+of unpublished retail lists.

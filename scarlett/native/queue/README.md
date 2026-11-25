@@ -1733,6 +1733,21 @@ rewrite and list reset. The 100-byte clear source, 4,080-byte vertex
 buffer, guards and both depth/stencil planes passed readback. The setter
 did not emit a host table bind or a submission.
 
+The [RTX token-3 fixture](../../tests/same-batch-release.md#serial-14-on-its-own-frame-token)
+(`615b843b`) then exited 0. The synthetic serial-14 pair retired on its own
+batch end, distinct from token 2's serial-17 end. Timestamp order, readback
+guards and green/red pixels on the respective surfaces passed.
+
+On identical ordinary build `a3124418`, AMD selected slot 372600 on the
+same segment and original end as `+190`. Next it stopped at vertex-buffer
+setter `+180/+32966` from `+bfd93`. The display count reached 1. RTX's
+`PresentX(1)` returned `DXGI_ERROR_WAS_STILL_DRAWING` after a 250,995 µs
+producer-fence wait. No display increment was logged. Its first unsupported
+call was `+490/+32113` from `+50a624f`, before any serial-14 barrier or
+timestamp row. Both runs submitted token 2 and entered `PresentX(2)`
+without a return or an end-completion sample. The private captures showed
+only black/white frames and, on RTX, a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at

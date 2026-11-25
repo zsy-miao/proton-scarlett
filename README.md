@@ -8,9 +8,9 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
-| How far does it get? | Both ordinary runs reached the request to show frame 2 and stayed at display count 1. In one RTX diagnostic the game completed its second presentation and the display count reached 2. The capture still showed no game content. |
-| What's blocking it? | Ordinary AMD stopped while selecting shader inputs. Ordinary RTX stopped while releasing a display surface. Neither run showed game content. |
-| What did the latest test show? | An [AMD test](scarlett/native/queue/README.md#first-split-six-shader-table-on-amd) selected the game's measured shader-input slot and kept the original render targets intact. An [RTX shader test](scarlett/native/queue/README.md#seven-level-texture-view) read all 12,282 texels of the seven-level texture. Neither result shows a retail draw to the display. |
+| How far does it get? | Both ordinary runs requested frame 2. AMD displayed one blank frame; RTX timed out on its first presentation. An earlier RTX diagnostic completed two presentations, both without recognizable game content. |
+| What's blocking it? | AMD selected the shader inputs and then stopped at the next vertex-buffer request. RTX stopped at a resource barrier before the surface release under test. |
+| What did the latest test show? | The [RTX test](scarlett/tests/same-batch-release.md#serial-14-on-its-own-frame-token) released one surface using its own third-frame submission and verified the other surface stayed intact. AMD retail reproduced the [slot selection](scarlett/native/queue/README.md#first-split-six-shader-table-on-amd) that passed its fixture. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress
