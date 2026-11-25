@@ -1410,6 +1410,18 @@ Neither setter succeeded. The range checks establish which slots fit,
 not their descriptor contents or a draw. Both diagnostics sampled their
 own original token-2 end at 0 when recording stopped.
 
+The RTX fixture rebuilt for `POST120_SLOT=372469` exited 0. The selection
+advanced the logical table epoch from 1 to 2. Fenced readback found the
+returned primary black before and after selection, then blue after the
+fixture's explicit clear through the retained RTV. The original clear
+and both vertex buffers survived address reuse; both depth/stencil planes
+were unchanged. This was a fixture-only setter, not an ordinary retail run.
+
+One subsequent AMD diagnostic took the first-VB path without the explicit
+#42 bind. It recorded the 4,080-byte buffer, then refused the one-cell
+`+120` above. Its original end sampled 0 and the display count stopped at 1.
+The vertex-buffer operands after the explicit #42 bind remain unmeasured.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
