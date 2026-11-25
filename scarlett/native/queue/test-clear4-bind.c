@@ -463,7 +463,13 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     D3D12_VERTEX_BUFFER_VIEW second={v->data+0x1df10,4080,24},bad=second;
 #define REPLACE() record_colour_vb(&pass,0,1,&second)
     REQUIRE(FAILED(REPLACE()));
-    pass.nops=32;pair_op(&pass,0x180); /* The signature does not identify the intervening op. */
+#ifdef TEST_SPLIT6_TARGET
+    pool_root(&face.iface,late_root_id(FALSE)); /* Op 32 was the measured root replay. */
+    REQUIRE(pass.nops==32);
+#else
+    pass.nops=32;
+#endif
+    pair_op(&pass,0x180);
 #ifdef TEST_RETURNED_SETTERS
 #define NO_REPLACE() REQUIRE(FAILED(REPLACE()) && vb_calls==before_vb+1 && !pass.previous_vb.buffer)
     post.parent=NULL;NO_REPLACE();post.parent=&m;
@@ -554,6 +560,9 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     rd.Width+=4096;
 #ifdef TEST_CARRIED_TARGET
     rd.Width+=1024;
+#ifdef TEST_SPLIT6_TARGET
+    REQUIRE(rd.Width==FULL_BASE);rd.Width+=2*FULL_BYTES;
+#endif
 #endif
 #endif
 #endif
@@ -595,6 +604,19 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     REQUIRE(group_count==1 && edge_count==1 && barrier_host==pass.host && !memcmp(seen,&expected_edge,
         offsetof(D3D12_TEXTURE_BARRIER,Flags)+sizeof expected_edge.Flags));
     REQUIRE(test_target_frame(owner,as_queue(q),as_fence(end)));
+#ifdef TEST_SPLIT6_TARGET
+    REQUIRE(pass.split_at==6 && pass.nops==35 && !ID3D12Fence_GetCompletedValue(as_fence(end)));
+    struct startup_list pending_om=pass;
+#define REFUSE_OM() REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)) && !pass.output_heap && om_calls==oc)
+    pass.ops[33]^=1;REFUSE_OM();pass.ops[33]^=1;
+    pass.sr_reversed=FALSE;REFUSE_OM();pass.sr_reversed=TRUE;
+    pass.ops[25]=0xc8/8;REFUSE_OM();pass.ops[25]=0x110/8;
+    post.parent=NULL;REFUSE_OM();post.parent=&m;
+    ++pass.vb.span.gen;REFUSE_OM();--pass.vb.span.gen;
+    --pass.vb.span.holds;REFUSE_OM();++pass.vb.span.holds;
+    ++v->gen;REFUSE_OM();--v->gen;
+#undef REFUSE_OM
+#endif
     REQUIRE(FAILED(record_om(&pass,0,&ps,FALSE,NULL)) && FAILED(record_om(&pass,1,&ps,TRUE,NULL)) &&
         FAILED(record_om(&pass,1,&ps,FALSE,slots+1)) && FAILED(record_om(&pass,1,slots,FALSE,NULL)));
     ++pass.clear_serial;REQUIRE(FAILED(record_om(&pass,1,&ps,FALSE,NULL)));--pass.clear_serial;
@@ -614,7 +636,15 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     REQUIRE(om_calls==oc && !pass.output_heap && record_om(&pass,1,&ps,FALSE,NULL)==S_OK &&
         om_calls==oc+1 && om_count==1 && !om_range && om_host==pass.host && last_rt==pass.output_cpu.ptr && !last_ds &&
         pass.output_slot==ps && pass.output_serial==pass.clear_serial && pass.output_serial==*(UINT64*)ps &&
-        FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+         FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+#ifdef TEST_SPLIT6_TARGET
+    REQUIRE(checked_startup_submit(q,1,&active,0,0)==E_ACCESSDENIED && checked_tagged_submit(q,1,&active,3,3)==E_ACCESSDENIED && executions==ex);
+    HANDLE retired=CreateEventW(NULL,FALSE,FALSE,NULL);
+    REQUIRE(retired && xs_fence_event(end,1,retired)==S_OK && xs_cpu_signal(hold_end,1)==S_OK &&
+        WaitForSingleObject(retired,10000)==WAIT_OBJECT_0 && record_om(&pending_om,1,&ps,FALSE,NULL)==E_ACCESSDENIED &&
+        !pending_om.output_heap && om_calls==oc+1);
+    CloseHandle(retired);IUnknown_Release(hold_end);
+#endif
     REQUIRE(FAILED(record_table0(&pass,0,start+213*32)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) &&
         pass.table_epoch==1 && pass.table0.cells==1 && pass.table0.slot==372600 && tables==prior_tables);
     REQUIRE(barrier_total==bc+1 && legacy_calls==lc && om_calls==oc+1 &&
@@ -625,8 +655,14 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
         xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
     sample_quad(pass.host,pass.primary,rb,19);
+#ifdef TEST_SPLIT6_TARGET
+    fixture_primary_copy(&pass,rb,0);
+#endif
     const FLOAT blue[]={0,0,1,1};ID3D12GraphicsCommandList7_ClearRenderTargetView(pass.host,pass.output_cpu,blue,1,&region);
     sample_quad(pass.host,pass.primary,rb,20);
+#ifdef TEST_SPLIT6_TARGET
+    fixture_primary_copy(&pass,rb,1);
+#endif
     keep_views.primary_pin=pass.primary_pin;keep_views.output_heap=pass.output_heap;
 #endif
     retain_recording(&views,&keep_views);
@@ -713,6 +749,18 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
         UINT rgba;memcpy(&rgba,p+(19+k)*512+y*256+x*4,4);REQUIRE(rgba==(k?0xffff0000u:0));
     }
     ID3D12DescriptorHeap_Release(views.output_heap);IUnknown_Release(views.output_key);
+#ifdef TEST_SPLIT6_TARGET
+    for(UINT phase=0;phase<2;phase++){
+        const DWORD *pixels=(const DWORD*)(p+FULL_BASE+phase*FULL_BYTES);
+        for(UINT y=0;y<FULL_H;y++)for(UINT x=0;x<FULL_W;x++){
+            DWORD want=phase && x>=10 && x<12 && y>=8 && y<10?0xffff0000u:0;
+            if(pixels[y*FULL_W+x]!=want){
+                fprintf(stderr,"FAIL primary phase=%u (%u,%u) got=%08lx expected=%08lx\n",phase,x,y,pixels[y*FULL_W+x],want);return FALSE;
+            }
+        }
+    }
+    puts("PASS split-six production OM: original unretired frame, all 3840x2160 pixels black before explicit clear; only four blue after");
+#endif
     puts("PASS returned +190: original frame queue and epoch, one private primary RTV survived reset, black then blue; table/draw/submit denied");
     REQUIRE(test_target_frame(owner,NULL,NULL));
 #endif

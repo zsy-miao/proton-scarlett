@@ -1177,6 +1177,29 @@ static BOOL first_returned_setter(struct startup_list *s)
 {
     return !s->table_epoch && !s->table0.heap && !s->table0.cells && returned_setter_inputs(s);
 }
+/* Split six: the post-replacement single reversed the carried RT, not the returned primary. */
+static BOOL native_returned_om(struct startup_list *s)
+{
+    static const BYTE ops[]="\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92"
+        "\x32\x46\x16\x15\x2c\x0c\x14\x22\x30\x92\x32\x46\x24\x22\x30\x92\x32";
+    const struct xs_clear_source *a=&s->previous_vb,*b=&s->vb;
+    struct lease_span live;ID3D12DescriptorHeap *banks[2];
+    if(s->nops!=sizeof ops-1 || memcmp(s->ops,ops,sizeof ops-1) || !xs_is_adapter(s->device,0x1002,0x164e) ||
+       !carried_clear_split(s) || s->alloc_generation || s->offered || s->deferred || s->output_cpu.ptr ||
+       !s->depth_zero_pending || s->guest_topology!=XS_RECTLIST || !s->prior_root || !s->prior_pso ||
+       !s->graphics_identity || s->graphics_identity!=s->required_root ||
+       !s->sr.ds.identity || s->attachments[0].identity || s->attachments[1].identity ||
+       FAILED(xs_initial_heap_banks(s->pool_owner,s->heaps,banks)) ||
+       a->buffer==s->source.buffer || b->buffer==s->source.buffer ||
+       memcmp(&a->span.arena,&b->span.arena,sizeof a->span.arena) || b->span.stamp!=~1ull || b->span.holds!=3 ||
+       !lease_span_read(a->span.arena.base,b->span.va,b->span.bytes,&live) || memcmp(&live.arena,&b->span.arena,sizeof live.arena) ||
+       live.node!=b->span.node || live.gen!=b->span.gen || live.data!=b->span.data ||
+       live.holds!=b->span.holds || live.stamp!=b->span.stamp)return FALSE;
+    for(UINT j=0;j<2;j++)if(!s->om.cpu[j].ptr || !s->first_om.cpu[j].ptr || s->first_om.cpu[j].ptr==s->om.cpu[j].ptr)return FALSE;
+    ID3D12RootSignature *root=xs_retain_colour_root(s->pool_owner,s->graphics_identity);
+    if(!root)return FALSE;
+    IUnknown_Release(s->graphics_identity);return root==s->graphics_root;
+}
 #endif
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
@@ -1187,8 +1210,9 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
         if(s->sr_reversed){
             const struct xs_clear_source *first=&s->previous_vb,*vb=&s->vb;
             if(ds || !s->primary_cleared || !s->primary_pin || s->primary_key!=(UINT_PTR)s->primary_pin || s->output_heap ||
-               !s->rt_roundtripped || s->offscreen_sr || s->reuse_epoch!=1 || s->split_at!=5 || s->nops!=35 ||
-               s->ops[30]!=0x120/8 || s->ops[32]!=0x180/8 || s->ops[34]!=0x190/8 || !xs_is_rtx3070(s->device) ||
+               !s->rt_roundtripped || s->offscreen_sr || s->reuse_epoch!=1 || s->nops!=35 ||
+               s->ops[30]!=0x120/8 || s->ops[32]!=0x180/8 || s->ops[34]!=0x190/8 ||
+               (s->split_at==6 ? !native_returned_om(s) : (s->split_at!=5 || !xs_is_rtx3070(s->device))) ||
                !s->heaps[0] || s->table_epoch!=1 || s->table0.cells!=1 || s->table0.slot!=372600 ||
                s->table0.heap!=s->heaps[0] || s->table0.root!=s->graphics_identity || s->bound || s->pipeline ||
                !s->clear4_drew || !vb->needs_publication || !vb->buffer || vb->buffer==first->buffer ||
@@ -1199,7 +1223,7 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
             if(!ReadProcessMemory(GetCurrentProcess(),rt,&at,sizeof at,&n) || n!=sizeof at)return E_POINTER;
             if(at!=s->clear_slot)return E_INVALIDARG;
             HRESULT hr=xs_freeze_returned_output(s->pool_owner,s->primary_pin,s->primary,at,s->clear_serial,s->reuse_epoch,
-                &s->sr,&s->output_heap,&s->output_cpu);
+                &s->sr,s->split_at==6,&s->output_heap,&s->output_cpu);
             if(SUCCEEDED(hr)){
                 s->output_slot=at;s->output_serial=s->clear_serial;
                 ID3D12GraphicsCommandList7_OMSetRenderTargets(s->host,1,&s->output_cpu,FALSE,NULL);recorded_direct_state(s);

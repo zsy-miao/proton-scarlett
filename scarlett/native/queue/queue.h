@@ -78,7 +78,7 @@ HRESULT xs_sr_view(IUnknown *,const struct xs_sr_ticket *,ID3D12DescriptorHeap *
 BOOL xs_check_returned_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,UINT64,
         const struct xs_sr_ticket *,D3D12_CPU_DESCRIPTOR_HANDLE);
 HRESULT xs_freeze_returned_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,UINT64,
-        const struct xs_sr_ticket *,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *);
+        const struct xs_sr_ticket *,BOOL,ID3D12DescriptorHeap **,D3D12_CPU_DESCRIPTOR_HANDLE *);
 HRESULT xs_reuse_with_sr(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *,const struct xs_sr_ticket *);
 #endif
 #endif

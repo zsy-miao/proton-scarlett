@@ -19,3 +19,16 @@ static BOOL prepare_returned_target(struct startup_list *s,ID3D12CommandQueue *w
 }
 
 BOOL test_target_frame(IUnknown*,ID3D12CommandQueue*,ID3D12Fence*);
+#ifdef TEST_SPLIT6_TARGET
+enum { FULL_BASE=10752, FULL_W=3840, FULL_H=2160, FULL_BYTES=FULL_W*FULL_H*4 };
+static void fixture_primary_copy(struct startup_list *s,ID3D12Resource *rb,UINT phase)
+{
+    D3D12_RESOURCE_BARRIER b={.Transition={s->primary,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    D3D12_TEXTURE_COPY_LOCATION src={.pResource=s->primary},dst={.pResource=rb,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .PlacedFootprint={FULL_BASE+phase*FULL_BYTES,{DXGI_FORMAT_R8G8B8A8_UNORM,FULL_W,FULL_H,1,FULL_W*4}}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
+    ID3D12GraphicsCommandList7_CopyTextureRegion(s->host,&dst,0,0,0,&src,NULL);
+    b.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;b.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&b);
+}
+#endif

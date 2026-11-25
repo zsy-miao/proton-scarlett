@@ -1875,6 +1875,29 @@ the one-RTV `+190/+33317` bind. Token 2 entered but its original end was
 not observed to retire, and no source readback was logged. The 91 decoded
 frames showed only black/white. The retail source pixel count is unknown.
 
+On RTX, the calibrated observer (`f5cb9390`) reached token 2. The fixture
+counted 8,294,400 nonblack RGB pixels on its original source and reproduced
+all three expected display patterns. In retail, the source matched the
+released serial-17 key, slot, queue and retired original end. The readback
+count was **0/8,294,400 nonblack RGB pixels**. `PresentX(2)` then returned
+`S_OK` and the display count advanced 1→2. The 271 decoded frames showed
+black/white or a cursor; no video frame was time-matched to the flip.
+Token 3 later reached the two-member submission refusal.
+
+On AMD (`d240b4df`), the producer's null pipeline selection for slot 97
+was sampled 2.1373 ms before the host began creating that same pipeline.
+The host call took 4.9283 ms of wall time and succeeded. On another list
+in the same process the null selection was sampled during that call.
+Neither return nor elapsed time proves when the title published the result.
+
+The AMD production bind fixture (`93d19170`) passed on `47002876`, including
+the original-end and descriptor checks and full readbacks before and after
+the four-pixel clear. Matched ordinary AMD then bound primary serial 14,
+epoch 1, and first refused `+120/+32206` from `+3346d`. RTX selected three
+cells at slot 372469, epoch 2, then first refused the alternate timestamp
+at `0x799f250` (`+2482b37` from `+a1c42c`). Both runs returned success for
+token 1 only; neither capture showed game content.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
