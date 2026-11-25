@@ -1623,6 +1623,20 @@ closed without submitting. The serial-17 fence completed, but token 2
 had no logged Present return or display-count increment. The 223 decoded
 frames showed only black, white and a cursor.
 
+RTX fixture `61c63390` passed on provider `9b15b8fc` and Wine `0020`
+(`ntdll.so` `084db04f`). The public `+58` call returned guest VA
+`0x1613eb000` (host GPU VA `0x149deb000`). The validation helper refused
+a wrong caller, a freed view, private-memory reuse, a different section,
+and the original section remapped at the same address (generation 1→10).
+Fenced readback matched all seven mips, padding and both guards.
+
+The identical ordinary build then ran on AMD and RTX. AMD first stopped
+at `+120/+32206` from `+3346d`. RTX selected `[372469,372472)` with the
+original end sampled at 0, then stopped at `+490/+32113` from `+24847a8`.
+Neither run established a retail `+58` result. Both entered `PresentX(2)`
+without a logged return; the display count stayed at 1 and private
+captures showed no game content.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at

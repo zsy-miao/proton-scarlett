@@ -1,5 +1,12 @@
 # Scarlett section lifetime ABI v1 (native x64)
 
+Apply `0020-wine-wc-view-identity.patch` after `0019` for the seven-mip
+texture address query. Build `dlls/ntdll/ntdll.so` and stage it as
+`files/lib/wine/x86_64-unix/ntdll.so` with the matching `d3d12_xs.dll`.
+The private query `0x5343010a` returns the section reference and view
+generation in one lookup. Freeing and remapping the same section at the
+same address gives a different generation. The caller closes the handle.
+
 `0019-wine-a8-line-copy.patch` follows `0018`. The native 128-byte A8
 write accepts a 256-byte-aligned destination after validating the whole
 256-byte span. Stage the rebuilt `ntdll.so` with the matching `xg_xs.dll`.

@@ -10,6 +10,11 @@ extern "C" HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**)
 extern "C" ID3D12Resource *test_row_backing(IUnknown*);
 extern "C" HRESULT xs_write_view(IUnknown*,UINT,IUnknown*,const void*,SIZE_T);
 #endif
+#ifdef TEST_SEVEN_VA
+extern "C" UINT64 test_seven_guest_va(IUnknown*,UINT_PTR);
+extern "C" UINT64 fixture_row_va(IUnknown*);
+extern "C" char fixture_row_return;
+#endif
 static int exercise(bool line){
     const UINT pool=0x89700000,off=line?0xe6cf800:0x1c3eb000,span=line?256:0xd900,guard=256,total=span+2*guard;
     auto xm=LoadLibraryA("xmem.dll"),xg=LoadLibraryA("xg_xs.dll");CK(xm && xg);
@@ -72,6 +77,19 @@ static int exercise(bool line){
     ComPtr<IUnknown> title;title.Attach((IUnknown*)obj);
     ComPtr<ID3D12Resource> placed;placed.Attach(test_row_backing(title.Get()));
     CK(placed && placed->GetDesc().Width==span && placed->GetDesc().Flags==D3D12_RESOURCE_FLAG_NONE);
+#ifdef TEST_SEVEN_VA
+    constexpr UINT_PTR caller=0x4ecc936;
+    scarlett_wc_view_info orig;
+    CK(scarlett_acquire_wc_view(dst,span,&orig)==S_OK && orig.info.base==b && orig.info.offset==off &&
+       orig.info.view_size==pool && orig.info.section && orig.generation);
+    CK((UINT_PTR)&fixture_row_return-(UINT_PTR)GetModuleHandleW(nullptr)==caller);
+    UINT64 live=fixture_row_va(title.Get());
+    CK(live==(UINT_PTR)dst && live!=placed->GetGPUVirtualAddress());
+    printf("PASS seven-va58 dispatch: site=%llx guest=%p result=%llx host=%llx\n",
+           (unsigned long long)caller,dst,live,placed->GetGPUVirtualAddress());
+    CK(!test_seven_guest_va(title.Get(),caller+1));
+    puts("PASS seven-va58 helper: wrong caller on live row");
+#endif
     CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
     using Make=HRESULT(WINAPI*)(IUnknown*,const void*,REFIID,void**);using Start=SIZE_T(WINAPI*)(IUnknown*);
     UINT hd[]={0,4,1,1};ComPtr<IUnknown> slots;
@@ -79,7 +97,9 @@ static int exercise(bool line){
     SIZE_T slot=((Start)((*(void***)slots.Get())[0x48/8]))(slots.Get());
     DWORD view[]={41,4,0x1688,0,0,7,0,0,0,0};BYTE before[64];memcpy(before,(void*)slot,sizeof before);
     CK(FAILED(xs_write_view(device.Get(),0x90,title.Get(),view,slot)) && !memcmp(before,(void*)slot,sizeof before));
+#ifndef TEST_SEVEN_VA
     title.Reset();CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
+#endif
 #endif
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=total;rd.Height=rd.DepthOrArraySize=rd.MipLevels=rd.SampleDesc.Count=1;rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -94,8 +114,17 @@ static int exercise(bool line){
     l->CopyBufferRegion(read.Get(),guard+span,raw,off+span,guard);
     // Late writes distinguish the original WC range from a detached copy.
     dst[0]^=0x57;expect[guard]^=0x57;MemoryBarrier();
-    CK(VirtualFree(b,0,MEM_RELEASE) && VirtualAlloc(b,pool,MEM_RESERVE,PAGE_NOACCESS)==b);
+    CK(VirtualFree(b,0,MEM_RELEASE));
+#ifdef TEST_SEVEN_VA
+    CK(!test_seven_guest_va(title.Get(),caller));
+    puts("PASS seven-va58 helper: freed VA");
+#endif
+    CK(VirtualAlloc(b,pool,MEM_RESERVE,PAGE_NOACCESS)==b);
     CK(VirtualAlloc(dst-guard,total,MEM_COMMIT,PAGE_READWRITE));memset(dst-guard,0x8d,total);
+#ifdef TEST_SEVEN_VA
+    CK(!test_seven_guest_va(title.Get(),caller));
+    puts("PASS seven-va58 helper: same VA private reuse");
+#endif
     CK(FAILED(place(off)) && !obj);
 #else
     l->CopyBufferRegion(read.Get(),0,raw,off-guard,total);
@@ -106,6 +135,31 @@ static int exercise(bool line){
 #ifdef TEST_SEVEN_PLACE
     for(UINT i=0;i<total;i++)CK(dst[(ptrdiff_t)i-guard]==0x8d);
     CK(SUCCEEDED(d->GetDeviceRemovedReason()));
+#endif
+#ifdef TEST_SEVEN_VA
+    CK(VirtualFree(b,0,MEM_RELEASE));
+    using Same=BOOL(WINAPI*)(HANDLE,HANDLE);
+    auto same=(Same)(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");CK(same);
+    using Wc=HRESULT(WINAPI*)(ID3D12Device3*,SIZE_T,HANDLE,HANDLE*,ID3D12Heap**);
+    auto wc=(Wc)(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWcHeapV1");CK(wc);
+    ComPtr<ID3D12Heap> otherHeap;HANDLE other=nullptr;
+    CK(wc(d.Get(),pool,nullptr,&other,otherHeap.GetAddressOf())==S_OK && other && !same(other,orig.info.section));
+    for(unsigned original=0;original<2;original++){
+        HANDLE input=original?orig.info.section:other;
+        scarlett_section_info remap;scarlett_wc_view_info now;
+        CK(scarlett_query_section_handle(0x53430004,b,pool,&remap,input)==S_OK && remap.base==b);
+        CK(scarlett_acquire_wc_view(dst,span,&now)==S_OK && now.info.base==b && now.info.offset==off &&
+           now.info.view_size==pool && now.info.section && same(input,now.info.section));
+        CK(!!same(orig.info.section,now.info.section)==!!original &&
+           now.generation && now.generation!=orig.generation && CloseHandle(now.info.section));
+        if(original) CK(!memcmp(dst-guard,expect.data(),total));
+        CK(!test_seven_guest_va(title.Get(),caller));
+        printf("PASS seven-va58 helper: same VA %s section generation=%llu original=%llu\n",
+               original?"original":"different",now.generation,orig.generation);
+        if(!original){CK(VirtualFree(b,0,MEM_RELEASE) && CloseHandle(other));otherHeap.Reset();}
+    }
+    title.Reset();CK(place(off)==DXGI_ERROR_INVALID_CALL && !obj);
+    CK(CloseHandle(orig.info.section));
 #endif
     CK(VirtualFree(b,0,MEM_RELEASE));printf("PASS %s: %s original WC GPU readback, all bytes, padding, adjacent guards and negatives\n",line?"A8 line from thread stack":"seven XG copies",native?"native":"section");return 0;
 }

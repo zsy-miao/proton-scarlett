@@ -34,8 +34,29 @@ static HRESULT WINAPI row_query(IUnknown *iface,REFIID iid,void **out)
     if (!iid || (!IsEqualIID(iid,&IID_IUnknown) && !IsEqualIID(iid,&IID_ID3D12Resource))) return E_NOINTERFACE;
     row_addref(iface); *out=iface; return S_OK;
 }
-static const struct { IUnknownVtbl unknown; xs_stop_fn rest[64]; } row_vtbl={
-    {row_query,row_addref,row_release},{[0 ... 63]=xs_stop}};
+static UINT64 seven_guest_va(IUnknown *id,UINT_PTR caller)
+{
+    const struct row_buffer *r=CONTAINING_RECORD(id,struct row_buffer,iface);
+    if(caller!=0x4ecc936 || r->bytes!=0xd900 || !r->section || !r->generation)return 0;
+    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+    struct scarlett_wc_view_info view;
+    if(!same || scarlett_acquire_wc_view(r->va,r->bytes,&view)!=S_OK)return 0;
+    struct scarlett_section_info live=view.info;
+    BOOL match=view.generation==r->generation && live.section && live.view_size==WC_POOL_BYTES && live.offset==r->off &&
+        live.offset<=live.view_size-r->bytes && (UINT_PTR)r->va>=live.offset &&
+        (UINT_PTR)live.base==(UINT_PTR)r->va-live.offset && same(live.section,r->section);
+    if(live.section)CloseHandle(live.section);
+    return match?(UINT_PTR)r->va:0;
+}
+static UINT64 WINAPI row_va(IUnknown *id)
+{
+    UINT64 va=seven_guest_va(id,(UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL));
+    if(!va)xs_stop();
+    return va;
+}
+static const struct { IUnknownVtbl unknown; xs_stop_fn pre[8]; __typeof__(&row_va) va; xs_stop_fn rest[55]; } row_vtbl={
+    {row_query,row_addref,row_release},{[0 ... 7]=xs_stop},row_va,{[0 ... 54]=xs_stop}};
+_Static_assert(offsetof(__typeof__(row_vtbl),va)==0x58,"row address ABI");
 struct atlas_slots { IUnknownVtbl unknown; xs_stop_fn gap[5];
     HRESULT (WINAPI *map)(IUnknown*,UINT,const D3D12_RANGE*,void**);
     void (WINAPI *unmap)(IUnknown*,UINT,const D3D12_RANGE*); xs_stop_fn rest[57]; };
@@ -95,7 +116,7 @@ static HRESULT create_row_buffer(struct xbox_device *d,UINT64 va,UINT bytes,UINT
     ID3D12Heap *heap=NULL;
     r->va=(void*)va;
     if(atlas)native_pool_ctl(0x53430103,r->va,&r->generation,sizeof r->generation);
-    HRESULT hr=open_wc_buffer(d,va,bytes,name,&r->host,&heap,&r->section,atlas?&r->off:NULL);
+    HRESULT hr=open_wc_buffer(d,va,bytes,name,&r->host,&heap,&r->section,(atlas || seven)?&r->off:NULL,seven?&r->generation:NULL);
     if(heap){
         UINT64 id=0;ID3D12Heap_Release(heap);
         if(!r->generation || native_pool_ctl(0x53430103,r->va,&id,sizeof id)<0 || id!=r->generation){

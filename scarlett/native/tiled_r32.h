@@ -1,6 +1,6 @@
 /* Private 0032 ABI. Resolve the allocation by guest VA each time; callers own the returned buffer. */
 static HRESULT open_wc_buffer(struct xbox_device *d,UINT64 va,UINT span,const char *name,ID3D12Resource **out,
-        ID3D12Heap **ret_heap,HANDLE *ret_section,UINT_PTR *ret_off)
+        ID3D12Heap **ret_heap,HANDLE *ret_section,UINT_PTR *ret_off,UINT64 *ret_generation)
 {
     ID3D12Heap *heap=NULL;UINT off=0;HANDLE section=NULL;
     HRESULT (WINAPI *place)(ID3D12Device*,ID3D12Heap*,HANDLE,SIZE_T,SIZE_T,ID3D12Resource**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),name);
@@ -9,7 +9,14 @@ static HRESULT open_wc_buffer(struct xbox_device *d,UINT64 va,UINT span,const ch
     if(hr==S_FALSE){
         struct scarlett_section_info i;
         if(!xs_is_rtx3070(d->host)) return E_NOTIMPL;
-        if(FAILED(hr=scarlett_query_section(0x53430005,(void*)va,span,&i)))return hr;
+        if(ret_generation){
+            struct scarlett_wc_view_info view;
+            hr=scarlett_acquire_wc_view((void*)va,span,&view);
+            if(hr==S_OK){i=view.info;*ret_generation=view.generation;}
+            /* Older Wine can still place the buffer, but cannot authorize an address query. */
+            else if(hr==HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED)) hr=scarlett_query_section(0x53430005,(void*)va,span,&i);
+        }else hr=scarlett_query_section(0x53430005,(void*)va,span,&i);
+        if(FAILED(hr))return hr;
         if(!i.section || i.view_size!=WC_POOL_BYTES || i.offset>i.view_size-span || va!=(UINT_PTR)i.base+i.offset){if(i.section)CloseHandle(i.section);return E_INVALIDARG;}
         section=i.section;off=i.offset;
     }else if(hr!=S_OK)return hr;
@@ -36,7 +43,7 @@ static HRESULT create_tiled_buffer(struct xbox_device *d,DXGI_FORMAT fmt,BOOL sm
     const char *name=rg?"ScarlettTiledRG160V1":fmt==DXGI_FORMAT_R32_FLOAT?"ScarlettTiledFloat160V1":
             small?"ScarlettTiledUint160V1":r11?"ScarlettTiledR11FiveV1":"ScarlettTiledR32BufferV1";
     HRESULT hr=open_wc_buffer(d,va,tile_span(r),name,
-            &r->host,&r->tile_heap,&r->tile_section,&r->tile_offset);
+             &r->host,&r->tile_heap,&r->tile_section,&r->tile_offset,NULL);
     if (FAILED(hr)) {HeapFree(GetProcessHeap(),0,r);return hr;}
     r->iface.lpVtbl=&color_vtbl.unknown;r->refs=1;r->owner=d;IUnknown_AddRef(&d->iface);
     AcquireSRWLockExclusive(&d->descriptor_lock);r->next=d->colors;d->colors=r;ReleaseSRWLockExclusive(&d->descriptor_lock);

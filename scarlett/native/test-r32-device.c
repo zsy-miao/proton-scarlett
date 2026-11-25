@@ -1,4 +1,10 @@
 #include "d3d12_device.c"
+#ifdef TEST_SEVEN_VA
+UINT64 test_seven_guest_va(IUnknown *id,UINT_PTR caller)
+{
+    return seven_guest_va(id,caller);
+}
+#endif
 /* Fixture only: acquire the buffer that the actual +428 factory pinned. */
 ID3D12Resource *test_r32_backing(IUnknown *object)
 {

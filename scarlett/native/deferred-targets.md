@@ -408,6 +408,14 @@ address was reused, and the replacement stayed untouched. A second
 overlapping placement and an unsupported view were rejected. Retail
 creation with this patch and subsequent shader sampling remain unverified.
 
+The later address-query fixture builds `test-r32-device.c` with
+`TEST_SEVEN_VA` and `xg/test-linear-seven.cpp` with `TEST_SEVEN_PLACE` and
+`TEST_SEVEN_VA`. Link `xg/test-seven-site.S` into the test executable with
+`-Wl,--image-base,0x140000000,--section-start,.s7site=0x144ecc000`. This
+puts the test's public `+58` return site at `+4ecc936`. The negative cases
+call the same validation helper because the public method stops on refusal.
+Use Wine patch `0020` and backend `0045` for this RTX test.
+
 Four retail launches: one RTX diagnostic, two matched staged ordinary
 runs and a separate RTX run through the installed `bdc4efab` baseline.
 The two fixtures ran before ordinary verification. AMD stopped at
