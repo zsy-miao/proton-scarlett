@@ -1,0 +1,152 @@
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -21,4 +21,20 @@
+ #include "../om-views.h"
+ struct startup_list {
++#ifdef TEST_IM96_CONSUME
++    UINT ready_next;
++    ID3D12GraphicsCommandList7 *ready_segment;
++    struct consume_ticket {
++        struct startup_list *list;
++        ID3D12GraphicsCommandList7 *segment;
++        const struct used_proof *proof;
++        IUnknown *alias,*output;
++        ID3D12Resource *vb;
++        UINT64 epoch,output_serial;
++        IUnknown *producer,*source_heap;
++        SIZE_T table,arena_base;
++        UINT64 map,generation,raw_serial,texture_serial;
++        IUnknown *wrapper,*allocator; ID3D12PipelineState *pso; ID3D12RootSignature *private_root; ID3D12Fence *end; UINT64 reuse,alloc_generation; SIZE_T slot; BOOL emitted;
++    } sealed;
++#endif
+ #ifdef XS_TRACE_FRESH_PUBLICATION
+     struct startup_list *trace_next;
+@@ -1520,4 +1536,7 @@
+     return S_OK;
+ }
++#ifdef TEST_IM96_CONSUME
++#include "im96-consume.h"
++#endif
+ static void WINAPI pool_clear4_draw(IUnknown *i,UINT n,UINT instances,UINT first,UINT base)
+ {
+@@ -1527,4 +1546,7 @@
+     if(s->source.needs_publication && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0xbff06)xs_stop();
+ #endif
++#ifdef TEST_IM96_CONSUME
++    if(s->sealed.list){if(FAILED(draw96(s,n,instances,first,base)))xs_stop();return;}
++#endif
+     if(FAILED(record_clear4_draw(s,n,instances,first,base)))xs_stop();
+ }
+--- a/scarlett/native/test-clear-device.c
++++ b/scarlett/native/test-clear-device.c
+@@ -57,9 +57,27 @@
+ #ifdef TEST_IM96_USED
+ #include "../tests/im96/used-proof.h"
++UINT64 WINAPI ScarlettB0MappingV1(const struct XsPlacedCapture *,const void *,const void *,SIZE_T);
++UINT64 test_b0_map(IUnknown *owner,IUnknown *allocation,SIZE_T cpu,UINT bytes)
++{
++    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !allocation || bytes!=480)return 0;
++    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
++    UINT64 id=0;UINT count=0;
++    AcquireSRWLockShared(&d->descriptor_lock);
++    for(struct placed_backing *p=d->placed;p;p=p->next){
++        if(cpu-p->guest_va!=0x3dc40 || !p->matches(p->capture,(void*)p->guest_va))continue;
++        count++;
++        __typeof__(&ScarlettB0MappingV1) query=(void*)GetProcAddress(p->module,"ScarlettB0MappingV1");
++        if(query && &p->title->iface==allocation)id=query(p->capture,(void*)p->guest_va,(void*)cpu,bytes);
++    }
++    ReleaseSRWLockShared(&d->descriptor_lock);return count==1?id:0;
++}
+ /* Internal fixture callers hold both heaps, image and allocation identities. */
+ BOOL test_used_current(const struct used_proof *u)
+ {
+     if(!u->owner || u->owner->lpVtbl!=&bootstrap_vtbl.unknown || !u->cb_allocation ||
+-       !u->raw_allocation || !u->cb_generation || !u->raw_serial || !u->tex_serial)return FALSE;
++       !u->raw_allocation || !u->cb_generation || !u->raw_serial || !u->tex_serial ||
++       !u->map_at_alloc || !u->map_at_publish || u->map_at_alloc!=u->map_at_publish ||
++       !u->bound || !u->epoch || u->bound->epoch!=u->epoch ||
++       u->bound->table!=u->table || u->bound->heap!=u->visible)return FALSE;
+     struct xbox_device *d=CONTAINING_RECORD(u->owner,struct xbox_device,iface);
+     struct desc_heap *src=NULL,*vis=NULL;
+@@ -93,5 +111,9 @@
+            (UINT_PTR)p->capture!=u->cb_generation)goto done;
+     }
+-    ok=matches==1;
++    if(matches==1){
++        struct placed_backing*p=CONTAINING_RECORD(u->cb_allocation,struct placed_identity,iface)->private;
++        __typeof__(&ScarlettB0MappingV1) query=(void*)GetProcAddress(p->module,"ScarlettB0MappingV1");
++        ok=query && query(p->capture,(void*)u->base,(void*)(u->base+0x3dc40),480)==u->map_at_publish;
++    }
+ done:ReleaseSRWLockShared(&d->descriptor_lock);return ok;
+ }
+--- a/scarlett/native/queue/im96-consume.h
++++ b/scarlett/native/queue/im96-consume.h
+@@ -18,8 +18,16 @@
+         s->previous_vb.buffer && sealed.vb && s->vb.buffer==sealed.vb && s->vb.placed==u->raw_allocation &&
+         s->previous_vb.placed==s->source.placed && s->source.placed==s->vb.placed &&
+-        s->offscreen_sr && s->rt_roundtripped && s->attachments[0].host==u->image &&
++        s->rt_roundtripped && s->sr_reversed && !s->offscreen_sr && !s->attachments[0].identity &&
++        !s->primary_released && sealed.end && s->sr.end==sealed.end && sealed.reuse && sealed.reuse==s->reuse_epoch &&
++        sealed.allocator && sealed.allocator==s->allocator && sealed.alloc_generation==s->alloc_generation &&
++        sealed.wrapper==s->bound && sealed.private_root==s->graphics_root && sealed.pso==s->pipeline &&
++        s->split_at==6 && s->sr.rt.identity && s->sr.rt.identity==u->texture_key && s->sr.rt.host==u->image &&
++        s->primary_pin!=(IUnknown *)u->texture_key && s->primary_key==(UINT_PTR)s->primary_pin &&
++        s->primary_cleared && s->clear_slot==s->output_slot && s->output_slot==sealed.slot &&
++        s->clear_serial==s->output_serial &&
+         u->image && s->primary && s->primary!=u->image && s->primary_pin==sealed.output &&
+         s->output_heap && s->output_cpu.ptr && sealed.output_serial && s->output_serial==sealed.output_serial &&
+-        xs_live_output(s->pool_owner,s->primary_pin,s->primary,s->output_slot,s->output_serial) &&
++        xs_check_returned_output(s->pool_owner,s->primary_pin,s->primary,s->output_slot,s->output_serial,
++            s->reuse_epoch,&s->sr,(D3D12_CPU_DESCRIPTOR_HANDLE){0}) &&
+         test_used_current(u);
+ }
+@@ -27,5 +35,5 @@
+     if(!open_direct_state(s) || s->ready_next!=0x60 || s->ready_segment!=s->host || s->sealed.emitted || !s->prior_pso || !s->bound || !s->pipeline ||
+         !s->full_rect || !s->full_vp || s->guest_topology!=XS_RECTLIST ||
+-        n!=3 || instances!=1 || base || first>(4080-3*24)/24 || !current96(s))return E_NOTIMPL;
++        n!=3 || instances!=1 || base || first || !current96(s))return E_NOTIMPL;
+     ID3D12RootSignature *root=NULL;
+     ID3D12PipelineState *p=xs_pin_im96_pso(s->pool_owner,s->device,s->bound,s->graphics_identity,&root);
+--- a/scarlett/tests/im96/used-proof.h
++++ b/scarlett/tests/im96/used-proof.h
+@@ -4,5 +4,5 @@
+ struct used_proof {
+     IUnknown *owner,*src_heap,*visible,*raw_allocation,*cb_allocation;
+-    ID3D12Resource *image;
++    IUnknown *texture_key; ID3D12Resource *image;
+     SIZE_T base,raw_slot,tex_slot,cb_slot,table;
+     UINT64 raw_serial,tex_serial,cb_generation;
+--- a/scarlett/tests/im96/used-table.hpp
++++ b/scarlett/tests/im96/used-table.hpp
+@@ -1,4 +1,6 @@
+ #include "used-proof.h"
+ extern "C" {
++IUnknown *test_sr_image(IUnknown*,IUnknown*);
++ID3D12Resource *test_sr_host(IUnknown*);
+ HRESULT xs_write_address_srv(IUnknown*,const void*,const void*,SIZE_T);
+ HRESULT xs_write_view(IUnknown*,UINT,IUnknown*,const void*,SIZE_T);
+@@ -40,9 +42,6 @@
+         padding=buf(32,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
+         checks=buf(576,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
+-        D3D12_HEAP_PROPERTIES h={};h.Type=D3D12_HEAP_TYPE_DEFAULT;h.CreationNodeMask=h.VisibleNodeMask=1;
+-        D3D12_RESOURCE_DESC td={};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=td.Height=8;
+-        td.MipLevels=2;td.DepthOrArraySize=td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+-        HR(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&td,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&texture)));
+-        texture_key.Attach(test_texture(u.owner,texture.Get(),FALSE));CK(texture_key);
++        texture_key.Attach(test_sr_image(u.owner,nullptr));CK(texture_key);texture=test_sr_host(texture_key.Get());
++        u.texture_key=texture_key.Get();auto td=texture->GetDesc();CK(td.Width==3840 && td.Height==2160 && td.MipLevels==1);
+         HR(xs_write_view(u.owner,0x90,texture_key.Get(),srv_words,u.tex_slot));u.tex_serial=*(UINT64*)u.tex_slot;u.image=texture.Get();
+         u.view.Format=td.Format;u.view.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;u.view.Shader4ComponentMapping=0x1688;u.view.Texture2D.MipLevels=1;
+@@ -50,9 +49,7 @@
+         HR(d->CreateDescriptorHeap(&hh,IID_PPV_ARGS(&color_heap)));auto at=color_heap->GetCPUDescriptorHandleForHeapStart();
+         D3D12_RENDER_TARGET_VIEW_DESC rv={};rv.Format=td.Format;rv.ViewDimension=D3D12_RTV_DIMENSION_TEXTURE2D;
+-        for(UINT mip=0;mip<2;mip++){
+-            rv.Texture2D.MipSlice=mip;d->CreateRenderTargetView(texture.Get(),&rv,at);
+-            const float c[]={mip?0.f:1.f,mip?1.f:0.f,mip?0.f:1.f,1};l->ClearRenderTargetView(at,c,0,nullptr);
+-            at.ptr+=d->GetDescriptorHandleIncrementSize(hh.Type);
+-        }
++        d->CreateRenderTargetView(texture.Get(),&rv,at);
++        const float left[]={1,0,1,1},right[]={0,1,0,1};D3D12_RECT half={1920,0,3840,2160};
++        l->ClearRenderTargetView(at,left,0,nullptr);l->ClearRenderTargetView(at,right,1,&half);
+     }
+     void produce(){
