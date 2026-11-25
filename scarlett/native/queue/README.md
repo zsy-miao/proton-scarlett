@@ -2010,6 +2010,21 @@ guest address was reused and the pair retired on its own end, Q0 was
 unchanged and Q1 fell in the calibrated interval. The original allocation
 changed only at the two timestamp cells and the replacement page was intact.
 
+Both fixtures passed on combined provider `25360625`. In the matched
+ordinary runs, AMD bound serial 14 and selected `372469/3/2`; its producer
+closed with `eligible=0` and the successor barrier stopped at `+32113`
+from `+24847a8`. AMD's serial-17 end was last sampled at 0. RTX stopped
+at `+2482b37` from `+a1c42c`: the alternate timestamp head lacked the
+required bank flag. The serial-17 end later sampled 1. Both processes
+entered `PresentX(2)`; neither logged a return or a display count above 1.
+AMD's 91 frames were black; RTX's 229 showed only black, white or a cursor.
+
+The separate AMD `13b76beb` diagnostic stopped earlier at the vertex
+buffer setter (`+32966` from `+bfd93`), before the returned table or the
+targeted barrier. Its serial-17 end retired and the token-2 display lease
+was accepted, but the display count stayed at 1. Its successful pipeline
+factory return did not lead to an observed matching install or draw.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at

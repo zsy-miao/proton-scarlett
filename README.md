@@ -10,7 +10,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
 | How far does it get? | Ordinary RTX completed two presentations and requested work for frame 3. AMD also completed two presentations in a diagnostic. Neither showed game content. |
 | Why is the image still blank? | On RTX, all 8,294,400 pixels of the second surface were RGB black **before** presentation. On AMD, the game selected the final composite pass before the host began creating its pipeline, and skipped the draw. |
-| What's blocking it? | On the latest matched build, AMD selected the three shader inputs, then stopped at a resource transition. An RTX diagnostic showed why frame 3 was refused: the recorder could no longer verify the state of the surface it needed to reuse. |
+| What's blocking it? | On the latest matched build, AMD selected the three shader inputs, then stopped at a resource transition. RTX completed the GPU work for frame 2 but stopped at the next surface's timestamp; its second presentation did not return. |
 | What did the latest test show? | On both GPUs, a [composite draw fixture](scarlett/tests/im96/README.md#composite-draw-to-a-returned-primary) wrote exactly 36 green pixels to the target and preserved the source. Retail has yet to issue that draw with a ready pipeline. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
