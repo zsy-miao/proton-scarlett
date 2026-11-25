@@ -1979,6 +1979,21 @@ received ordered writes in their original allocation after address reuse.
 Each child retired one serial-14 batch on its own end and verified the
 green and red surfaces and their guards.
 
+In matched retail runs on `a694bc9d`, ordinary AMD bound the returned
+serial-14 target, selected slot 372469 (three cells, epoch 2), and closed
+the producer. The first refusal was the successor barrier `+490/+32113`
+from `+24847a8`; its wire operands were not captured. Only token 1
+returned. RTX recorded the original-layout timestamp and closed the
+successor. `PresentX(2)` returned `S_OK`, count reached 2, and token 3's
+pending-5 lease passed. No serial-14 execution or new end was observed.
+The 149 AMD and 235 RTX decoded frames showed no game content.
+
+A separate RTX diagnostic (`fcb6c4b0`) took the alternate layout. Its
+first timestamp refusal was the producer head's unset `second_bank` flag.
+The matching head, tail and owner at the successor do not establish the
+producer's state when that flag was set. The later submission checks
+were not reached.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at

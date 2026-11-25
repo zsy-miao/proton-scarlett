@@ -200,6 +200,13 @@ camera bytes and 32 guard bytes after address reuse. This measures the
 first-vertex-0 draw with fixture-owned inputs. Retail has not yet shown
 that draw with its own selected pipeline and inputs.
 
+On AMD, fixture `c78d9264` also copied the sampled texture immediately
+before that draw. After the consuming fence retired, mip 0 contained
+4,147,200 opaque magenta texels on the left and 4,147,200 opaque green
+texels on the right. Row padding and end guards were intact. The 36 green
+pixels were measured separately on the output. Retail input texels have
+not been measured.
+
 Tool pin: DXC `1.9(dev;4950-b106a961)`; `LICENSE-LLVM.txt` (UI/NCSA)
 and `LICENSE-MS.txt` (Microsoft DirectX Shader Compiler terms) accompany
 the separately installed compiler. Source and behavioral attribution for
