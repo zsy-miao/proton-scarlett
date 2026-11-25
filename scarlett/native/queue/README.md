@@ -1764,6 +1764,13 @@ of the replacement itself was not sampled. This was the pending-color
 path, with no explicit #42 bind. Only token 1 returned; all 91 decoded
 frames were blank black or white.
 
+RADV fixture `6b5c3601` passed on provider `72ab3eb4`. On the same
+segment as fresh `+190` and the one-cell table selection, the recorder
+accepted the 4,080-byte replacement VB after checking its live allocation.
+After address reuse and fence completion, readback matched all three
+original spans (100, 4,080 and 4,080 bytes) and their guards. Both depth
+and stencil planes were unchanged. Pending submission remained denied.
+
 In the paired RTX diagnostic (`0d3ad2bd`), the `+490/+32113` refusal
 from `+50a624f` did not recur. Its resource and failing predicate remain
 unidentified. Serial 14 instead qualified at producer Close, and its

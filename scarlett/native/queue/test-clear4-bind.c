@@ -463,7 +463,28 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     D3D12_VERTEX_BUFFER_VIEW second={v->data+0x1df10,4080,24},bad=second;
 #define REPLACE() record_colour_vb(&pass,0,1,&second)
     REQUIRE(FAILED(REPLACE()));
-    pass.nops=32;pair_op(&pass,0x180); /* op 32 was not identified in the trace */
+    pass.nops=32;pair_op(&pass,0x180); /* The signature does not identify the intervening op. */
+#ifdef TEST_RETURNED_SETTERS
+#define NO_REPLACE() REQUIRE(FAILED(REPLACE()) && vb_calls==before_vb+1 && !pass.previous_vb.buffer)
+    post.parent=NULL;NO_REPLACE();post.parent=&m;
+    pass.split_at=5;NO_REPLACE();pass.split_at=6;
+    pass.offered=(void*)1;NO_REPLACE();pass.offered=NULL;
+    pass.deferred=(void*)1;NO_REPLACE();pass.deferred=NULL;
+    pass.bound=pso;pass.pipeline=s->pipeline;NO_REPLACE();pass.bound=NULL;pass.pipeline=NULL;
+    pass.ops[25]=0xc8/8;NO_REPLACE();pass.ops[25]=0x110/8;
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(gate)));NO_REPLACE();
+    REQUIRE(test_target_frame(owner,as_queue(q),as_fence(end)));
+    pass.heaps[1]=NULL;NO_REPLACE();pass.heaps[1]=inline_pair[1];
+    pass.first_om.cpu[0]=pass.om.cpu[0];NO_REPLACE();pass.first_om.cpu[0]=old_om.cpu[0];
+    pass.sr.rt.serial++;NO_REPLACE();pass.sr.rt.serial--;
+    v->holds--;NO_REPLACE();v->holds++;
+    v->stamp=0;NO_REPLACE();v->stamp=~1ull;
+    /* A separately readable node at the right local offset is still the wrong owner. */
+    struct lease_node *other_node=(void*)(nodes+3*0x58);
+    *other_node=*v;other_node->data+=arena->stride;
+    second.BufferLocation+=arena->stride;NO_REPLACE();second.BufferLocation-=arena->stride;
+#undef NO_REPLACE
+#endif
     REQUIRE(FAILED(record_colour_vb(&pass,1,1,&second)) && FAILED(record_colour_vb(&pass,0,2,&second)) &&
         FAILED(record_colour_vb(&pass,0,1,NULL)));
     second.StrideInBytes++;REQUIRE(FAILED(REPLACE()));second.StrideInBytes--;
@@ -490,6 +511,14 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
         vb_rec==s->host && last_vb.BufferLocation==ID3D12Resource_GetGPUVirtualAddress(pass.vb.buffer) &&
         last_vb.SizeInBytes==4080 && last_vb.StrideInBytes==24 && FAILED(REPLACE()) &&
         vb_calls==before_vb+2 && tables==prior_tables && pass.table_epoch==1);
+#ifdef TEST_RETURNED_SETTERS
+    REQUIRE(!memcmp(&first,&pass.previous_vb,sizeof first) && pass.vb.buffer!=first.buffer &&
+        pass.vb.buffer!=pass.source.buffer && last_vb.BufferLocation!=second.BufferLocation &&
+        !memcmp(&pass.first_om,&old_om,sizeof old_om) && !memcmp(&pass.om,&new_om,sizeof new_om) &&
+        !pair_profile(&pass) && FAILED(record_table0(&pass,0,handle)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) &&
+        checked_startup_submit(q,1,&active,0,0)==E_ACCESSDENIED && checked_tagged_submit(q,1,&active,3,3)==E_ACCESSDENIED &&
+        executions==ex && tables==prior_tables);
+#endif
     s->previous_vb=pass.previous_vb;struct xs_clear_source replacement=retain_source(pass.vb);
 #undef REPLACE
 #endif
@@ -644,6 +673,9 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
 #endif
 #ifdef TEST_CARRIED_REPLACEMENT
     memset((void*)second.BufferLocation,0xcd,4080);MemoryBarrier();
+#ifdef TEST_NATIVE_FIRST180
+    v->gen=held.span.gen; /* Isolate same-VA replacement backing from the stale-generation negative above. */
+#endif
     REQUIRE(test_reused_registration(owner,d,s->host,&held,&held_vb,&replacement) &&
         !s->previous_vb.buffer && IUnknown_Release(placed)==3 && !ID3D12Fence_GetCompletedValue(as_fence(done)));
 #else

@@ -1156,8 +1156,8 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
     if (FAILED(unbind_index(sl(i),view))) xs_stop();
 }
 #ifdef SCARLETT_PAIR_SUBMIT
-/* Both setters use the same returned frame, bank pair and unconsumed first VB. */
-static BOOL first_returned_setter(struct startup_list *s)
+/* Recheck the returned frame, bank pair and unconsumed first VB at each setter. */
+static BOOL returned_setter_inputs(struct startup_list *s)
 {
     ID3D12DescriptorHeap *banks[2];
     if(!pending_colour_inputs(s))return FALSE;
@@ -1166,13 +1166,16 @@ static BOOL first_returned_setter(struct startup_list *s)
     IUnknown_Release(s->graphics_identity);
     return root==s->graphics_root && returned_primary_wait(s) && s->post->threshold==1 && s->reuse_epoch==1 && !s->alloc_generation &&
         !s->sr_reversed && !s->sr_view && !s->offscreen_sr && !s->output_heap && s->rt_roundtripped &&
-        !s->table_epoch && !s->table0.heap && !s->table0.cells &&
         s->primary_cleared && s->primary_pin && s->primary_key==(UINT_PTR)s->primary_pin &&
         s->om.heap[0] && s->om.heap[1] && s->om.cpu[0].ptr && s->om.cpu[1].ptr &&
         SUCCEEDED(xs_initial_heap_banks(s->pool_owner,s->heaps,banks)) &&
         xs_held_table_inputs(&s->source,&s->vb) &&
         xs_check_returned_output(s->pool_owner,s->primary_pin,s->primary,s->clear_slot,s->clear_serial,s->reuse_epoch,
             &s->sr,(D3D12_CPU_DESCRIPTOR_HANDLE){0});
+}
+static BOOL first_returned_setter(struct startup_list *s)
+{
+    return !s->table_epoch && !s->table0.heap && !s->table0.cells && returned_setter_inputs(s);
 }
 #endif
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
@@ -1413,8 +1416,16 @@ static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,cons
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->source.needs_publication){
         if(!s->sr.end || s->sr_reversed || !s->sr.ds.identity || s->reuse_epoch!=1 || !carried_clear_split(s))return E_NOTIMPL;
-        if(s->split_at==6 && (replacement || s->table0.heap || s->table0.cells || !s->sr.rt.identity ||
-           !s->om.heap[0] || !s->om.heap[1] || !s->source.buffer))return E_NOTIMPL;
+        if(s->split_at==6){
+            if(!s->sr.rt.identity || !s->om.heap[0] || !s->om.heap[1] || !s->source.buffer)return E_NOTIMPL;
+            if(replacement){
+                if(!xs_is_adapter(s->device,0x1002,0x164e) || s->offered || s->deferred ||
+                   s->nops!=33 || memcmp(s->ops+24,"\x14\x22\x30\x92\x32",5) ||
+                   s->vb.buffer==s->source.buffer || !returned_setter_inputs(s))return E_NOTIMPL;
+                for(UINT j=0;j<2;j++)
+                    if(!s->first_om.cpu[j].ptr || s->first_om.cpu[j].ptr==s->om.cpu[j].ptr)return E_NOTIMPL;
+            }else if(s->table0.heap || s->table0.cells)return E_NOTIMPL;
+        }
         if(replacement){
             table_slot=372600;
             if(s->nops!=33 || s->ops[30]!=0x120/8 || s->ops[32]!=0x180/8 || s->table_epoch!=1 ||
@@ -1443,8 +1454,8 @@ static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,cons
     bind_colour_vb(s->host,&s->vb);recorded_direct_state(s);
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->source.needs_publication && s->split_at==6)
-        fprintf(stderr,"scarlett: native first +180 recorded segment=%p placed=%p capture=%p node=%zx gen=%u bytes=%u pending publication\n",
-                s->host,next.placed,next.capture,next.span.node,next.span.gen,next.span.bytes);
+        fprintf(stderr,"scarlett: native %s +180 recorded segment=%p placed=%p capture=%p node=%zx gen=%u bytes=%u pending publication\n",
+                replacement?"replacement":"first",s->host,next.placed,next.capture,next.span.node,next.span.gen,next.span.bytes);
 #endif
     return S_OK;
 }
