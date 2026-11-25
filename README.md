@@ -8,8 +8,8 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
-| How far does it get? | On both GPUs the game asked to show frame 2. Only the first, blank frame reached the display. |
-| What's blocking it? | In the [latest staged runs](scarlett/native/queue/README.md#after-the-color-and-depth-rebind), AMD stopped when the game supplied a vertex buffer. RTX got past that and stopped when the game selected shader inputs. |
+| How far does it get? | Both GPUs have reached the game's request to show frame 2. Only the first, blank frame has reached the display. |
+| What's blocking it? | In the [latest staged runs](scarlett/native/queue/README.md#release-side-timestamp-on-both-gpus), both GPUs stopped at a timestamp before the second display request. Earlier runs got further: AMD stopped at a vertex buffer and RTX at shader-input selection. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress

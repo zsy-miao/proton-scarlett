@@ -1248,6 +1248,25 @@ RTX retained the original 4,080 vertex bytes and recorded both color
 barriers. Submission of the new list still requires its own source
 publication and recycler fence.
 
+### Release-side timestamp on both GPUs
+
+On `632f07fe` with backend `0045`, the RTX fixture selected one cell in the
+active heap at setter epoch 0 and rejected a repeat setter and replacement
+vertex buffer. This checks range selection; it doesn't establish descriptor
+contents or a native shader bind.
+
+The ordinary runs on AMD and RTX both exited 2 at the release-side timestamp
+(`+240`, return `+2482b37` from `+a1c42c`). Both issued token 2 and closed
+the producer list, but neither logged a submitted token-2 pair end or
+entered `PresentX(2)`. On both, `PresentX(1)` returned `S_OK` and the
+same-window count advanced 0→1. The decoded AMD frames were black; the RTX
+client was blank black/white. These runs did not reach the new setter.
+
+In the separate AMD diagnostic the first refusal was a pipeline bind
+(`+c8`); its submitted token-2 end sampled 0. The RTX diagnostic hit title
+breakpoint `+5a92b11` during token 1. Neither diagnostic supplied a new
+vertex-buffer view.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
