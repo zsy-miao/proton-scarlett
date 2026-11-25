@@ -1221,6 +1221,33 @@ WB section and full array extent matched. On RTX the new bind named the
 original color and depth descriptors again. Neither observation establishes
 the next vertex view or submission of this list.
 
+### After the color and depth rebind
+
+On staged provider `f1acc125` and backend `0045`, both ordinary retail
+runs submitted the token-2 pair, queued `Signal(3)` successfully, and
+entered `PresentX(2)`. Neither logged retirement of that pair or a return
+from `PresentX(2)`. Both exited 2. Token 1 returned `S_OK` on both; the
+same-window count advanced from 0 to 1 and the decoded clients stayed blank.
+
+| GPU | First ordinary stop on the next command list |
+| --- | --- |
+| AMD (RADV) | First vertex-buffer setter (`+180`, return `+32966` from `+bfd93`). Its buffer range is still unknown. |
+| RTX 3070 | Shader-table selection (`+120`, return `+32206` from `+3346d`), after rebinding the offscreen color and depth targets. |
+
+A separate RTX diagnostic resolved the game's handle to one cell at slot
+372600 in its active heap (root index 0, epoch 0). This identifies the
+selected range, not its contents at draw time. The AMD diagnostic stopped
+earlier at a pipeline bind. Each diagnostic sampled its own token-2 end
+at 0 when recording stopped.
+
+Before retail ran, the AMD fixture verified the relocated timestamp landed
+in the original qword; the RTX fixture verified both pairs of color and
+depth views survived a descriptor rewrite and list reset. Separately, both
+GPUs passed the integrated source checkpoint: AMD drew the carried clear;
+RTX retained the original 4,080 vertex bytes and recorded both color
+barriers. Submission of the new list still requires its own source
+publication and recycler fence.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
