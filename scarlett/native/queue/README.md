@@ -1493,6 +1493,22 @@ also refused with the RAW32 record still live. Checked submissions
 remained denied; the primary stayed black until the fixture cleared it
 blue. Exit 0 confirms the baseline refusal, not acceptance of five holds.
 
+With staged provider `55d559c9`, RTX fixture `ff62fe95` exited 0:
+it selected `[372469,372472)` at epoch 2 after validating the RAW32
+write, the 480-byte constant-buffer publication and the matching
+completed end. An unrelated fifth allocation with a live RAW32 record
+still refused. Checked submissions stayed denied, the primary stayed
+black until the explicit blue clear, and both DSV planes were unchanged.
+
+Ordinary retail ran once on AMD and then RTX with that same provider.
+Both stopped at `+120`, return `+32206` from `+3346d`, and exited 2.
+RTX recorded the RAW32 replacement (serial 138→149 at four holds)
+after the returned `+190`, but no successful table selection.
+Neither run sampled original-end retirement. Only token 1 returned
+`S_OK`; both entered `PresentX(2)` with the display count still at 1.
+Private pixel review found black on AMD and black/white with a cursor
+on RTX.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
