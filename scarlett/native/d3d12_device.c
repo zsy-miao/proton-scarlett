@@ -1182,6 +1182,29 @@ HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommand
     return copy_pass_span(owner,hd,list,va,replacement?0x3df10:0x3ef30,4080,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,expected,out);
 }
 /* The active heap is pinned by this recording; no title descriptor memory is read. */
+#ifdef SCARLETT_PAIR_SUBMIT
+BOOL xs_held_table_inputs(const struct xs_clear_source *c,const struct xs_clear_source *f)
+{
+#ifdef SCARLETT_STAGED_PLACED
+    if(!c->needs_publication || !f->needs_publication || !c->buffer || !f->buffer ||
+       !c->placed || c->placed!=f->placed || c->placed->lpVtbl!=&placed_vtbl.unknown ||
+       !c->capture || c->capture!=f->capture)return FALSE;
+    struct placed_backing *p=CONTAINING_RECORD(c->placed,struct placed_identity,iface)->private;
+    if(p->capture!=c->capture || !p->matches(p->capture,(void*)p->guest_va))return FALSE;
+    const struct lease_span *sp[]={&c->span,&f->span};
+    for(UINT j=0;j<2;j++){
+        const struct lease_span *v=sp[j];struct lease_span live;
+        if(v->bytes!=(j?4080u:100u) || v->holds!=(j?3u:2u) || v->stamp!=~1ull ||
+           v->va-v->data!=(j?0x1ef30u:0x1ff80u) || !lease_span_read(p->guest_va,v->va,v->bytes,&live) ||
+           memcmp(&v->arena,&live.arena,sizeof v->arena) || v->data!=live.data || live.holds!=3 ||
+           live.stamp!=v->stamp || v->node!=live.node || v->gen!=live.gen)return FALSE;
+    }
+    return c->span.node==f->span.node && c->span.gen==f->span.gen && c->span.data==f->span.data;
+#else
+    (void)c;(void)f;return FALSE;
+#endif
+}
+#endif
 HRESULT xs_active_table_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT cells,UINT *slot)
 {
     if(!active || active->lpVtbl!=&desc_vtbl.unknown)return E_INVALIDARG;

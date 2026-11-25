@@ -1369,7 +1369,11 @@ static void WINAPI pool_colour_vb(IUnknown *i,UINT slot,UINT count,const D3D12_V
 static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
 {
 #ifdef SCARLETT_PAIR_SUBMIT
-    if(s->source.needs_publication)return E_NOTIMPL;
+    if(s->source.needs_publication && (!s->sr.end || s->sr_reversed || s->reuse_epoch!=1 || s->split_at!=5 ||
+       s->nops!=31 || s->ops[30]!=0x120/8 || s->previous_vb.buffer || s->table_epoch || s->table0.heap ||
+       !s->om.heap[0] || !s->om.heap[1] || !s->first_om.heap[0] || !s->first_om.heap[1] ||
+       s->first_om.heap[0]==s->om.heap[0] || s->first_om.heap[1]==s->om.heap[1] ||
+       !xs_held_table_inputs(&s->source,&s->vb)))return E_NOTIMPL;
 #endif
     if(index || !s->rt_roundtripped || !s->vb.buffer || s->vb.placed!=s->source.placed ||
        !s->heaps[0] || s->table_epoch==UINT64_MAX)return E_NOTIMPL;
@@ -1394,6 +1398,9 @@ static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
 static void WINAPI pool_b27(IUnknown *i,UINT index,UINT64 handle)
 {
     pair_op(sl(i),0x120);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(sl(i)->source.needs_publication && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x32206)xs_stop();
+#endif
     if(FAILED(record_table0(sl(i),index,handle)))xs_stop();
 }
 /* Only these slots have been traced on the pool's returned pointer. */

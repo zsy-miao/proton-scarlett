@@ -239,6 +239,24 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     for(UINT k=0;k<2;k++)REQUIRE(pass.first_om.heap[k]==old_om.heap[k] && pass.om.heap[k]!=old_om.heap[k] &&
         old_om.cpu[k].ptr==pass.first_om.cpu[k].ptr && pass.om.cpu[k].ptr!=old_om.cpu[k].ptr);
     REQUIRE(pass.source.needs_publication && pass.vb.needs_publication);
+#ifdef TEST_MEASURED_B27
+    pass.heaps[0]=inline_pair[0]; /* pinned for this call by the fixture */
+    UINT64 start=((SIZE_T(WINAPI*)(IUnknown*))(*(void***)pass.heaps[0])[0x48/8])(pass.heaps[0]);
+    UINT64 handle=start+372600ull*32;UINT prior_tables=tables;
+    REQUIRE(FAILED(record_table0(&pass,0,handle)));
+    pass.nops=30;pair_op(&pass,0x120); /* diagnostic reports op 31, not the intermediate opcode */
+    REQUIRE(FAILED(record_table0(&pass,1,handle)) && FAILED(record_table0(&pass,0,handle+1)));
+    pass.heaps[0]=inline_pair[1];REQUIRE(FAILED(record_table0(&pass,0,handle)));pass.heaps[0]=inline_pair[0];
+    v->gen++;REQUIRE(FAILED(record_table0(&pass,0,handle)));v->gen--;
+    pass.vb.span.gen++;REQUIRE(FAILED(record_table0(&pass,0,handle)));pass.vb.span.gen--;
+    pass.vb.capture=NULL;REQUIRE(FAILED(record_table0(&pass,0,handle)));pass.vb.capture=pass.source.capture;
+    REQUIRE(!pass.table_epoch && !pass.table0.heap && record_table0(&pass,0,handle)==S_OK &&
+        pass.table0.slot==372600 && pass.table0.cells==1 && pass.table0.heap==inline_pair[0] &&
+        pass.table0.root==pass.graphics_identity && pass.table_epoch==1);
+    REQUIRE(FAILED(record_table0(&pass,0,handle)) && FAILED(record_colour_vb(&pass,0,1,&vb)) &&
+        pass.table_epoch==1 && tables==prior_tables && vb_calls==before_vb+1 && pass.source.needs_publication);
+    puts("PASS measured +120: slot 372600 selected logically at epoch 0; repeat and replacement VB refused");
+#endif
 #endif
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
         xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
