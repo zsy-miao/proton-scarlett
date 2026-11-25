@@ -103,3 +103,17 @@ timestamp against the original CPU section. Its owned token-3 callback
 tests the original mapping after exact VA reuse; that callback is absent
 from the provider. An ordinary run may not reach this recorder. A matching
 build is evidence neither of retail publication nor of a token-3 submit.
+
+### Test through the token-3 dispatcher
+
+The staged RTX fixture `49441389` on `df32e6f1` entered the tagged
+dispatcher and executed the prefix, producer, and recorded successor once,
+in order. The new batch end retired independently of the serial-17 end.
+Resetting both list faces while the batch was held did not free the shared
+allocator. After retirement, the three buffer sentinels, ordered timestamps,
+green serial 14, red serial 17 and guards all matched.
+
+The recycler was already at 4 when the fixture entered the dispatcher.
+The same publisher queued 5 while the batch was held; 5 completed after
+the batch retired. In the retail observation, 4 had been queued but the CPU
+still read 3. This fixture does not qualify that ordering case.
