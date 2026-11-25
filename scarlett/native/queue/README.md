@@ -1096,6 +1096,24 @@ AMD stopped at the fresh-list timestamp (`+a1c36c`), RTX at a barrier
 complete. In a separate AMD run the timestamp succeeded and the game
 requested the adjacent `+0x9c` marker on the same control section.
 
+### Reusing render targets
+
+On staged build `3adfd5b8`, both ordinary runs submitted token 2 and
+queued the game's signal on its original fence. Neither showed completion
+of that batch or a second flip. Both stopped at `+490`, return `+32113`,
+but on different resource transitions:
+
+| GPU | First stop | What the separate diagnostic identified |
+| --- | --- | --- |
+| AMD | Parent `+50a624f` | The game requested its first presented primary (RTV serial 14) as a render target again after the native counter wait. |
+| RTX | Parent `+332e1` | The game had reacquired and cleared that primary. It then requested the offscreen 4K color target (RTV serial 119) for rendering after shader reads. |
+
+On both GPUs a textured-composite fixture exercised the title's setter
+order, from explicit pipeline bind through the three-cell table setter and
+draw. Fenced readback found 64 textured pixels and 192 untouched guards.
+The retail composite worker reached the matching factory request, but the
+corresponding render list closed without a matching pipeline bind or draw.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The default bridge has no pair recorder or executor. `SCARLETT_PAIR_SUBMIT`
