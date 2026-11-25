@@ -1457,6 +1457,22 @@ three at this point. The diagnostic did not identify the two additional
 holds. The display count stayed at 1 and the capture was blank apart from
 the cursor.
 
+A single RTX write trace identified both allocations on the same recorder
+thread and generation between the returned `+190` and `+120`. Both went
+through the same counter increment. The distinct producer return addresses
+and observed allocation ranges were:
+
+| Live holds | Producer return | Chunk-local range (end exclusive) |
+| --- | --- | --- |
+| 3→4 | `+4d9f234`, 128-byte RAW32 input | `[0x1de20,0x1dea0)` |
+| 4→5 | `+4d9f540`, 480-byte dirty constant buffer | `[0x1dc40,0x1de20)` |
+
+Neither range overlapped the clear or either vertex buffer. The trace
+ended at `+120` after exactly two writes, and the existing three-hold
+check refused the call. Token 2 entered `PresentX` without a logged
+return; the count stayed at 1. This identifies the allocations, but does
+not establish their publication or use by a draw.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
