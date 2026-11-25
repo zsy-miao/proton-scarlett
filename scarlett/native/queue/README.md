@@ -1544,6 +1544,15 @@ and returned `E_ACCESSDENIED`. Its face pointer matched the earlier
 submitted successor, which does not establish ownership of this release.
 Only token 1 returned; the count stayed at 1.
 
+A follow-up RTX diagnostic traced the clock and offer list at the refused
+release. The serial-14 producer closed successfully with table epoch 2
+but offered no receipt. Token 2 was still the latest issued token in
+clock epoch 1 on host queue `8c1f30`, and its batch end was already
+assigned to the serial-17 pair. The sole offer was that pair's claimed
+receipt. The serial-14 lookup therefore had zero matching offers and
+returned no eligible queue or token. `PresentX(2)` did not log a return;
+the 211 decoded client images contained only black or white.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
