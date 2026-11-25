@@ -1608,6 +1608,21 @@ The failing log does not distinguish an arena allocation failure from
 a failed committed or placed resource creation; it contains no `+58`
 query for the later resource.
 
+In one locked RTX diagnostic (`bab88222`), the 2560×1440 constructor
+passed. On thread 228 the same descriptor returned size `0x1e00000`
+and alignment `0x10000`, then placed creation (`+428`) returned `S_OK`
+with a non-null resource at guest VA `0xd5f3d0000`. No committed call
+or `+5707b8c` breakpoint was recorded for that constructor. The earlier
+intermittent failure remains unclassified.
+
+This time `+4ecc936` from `+501f6b3` reached slot `+58` on a row-buffer
+wrapper: `first=unsupported-slot bytes=d900 va=0xd675eb000`. Its size
+identifies the 128×72 linear `R32_FLOAT` texture with seven mip levels.
+The slot stopped before any mapping check. The serial-14 successor had
+closed without submitting. The serial-17 fence completed, but token 2
+had no logged Present return or display-count increment. The 223 decoded
+frames showed only black, white and a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
