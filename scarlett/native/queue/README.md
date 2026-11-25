@@ -1818,6 +1818,15 @@ fixture for the other address. Neither run logged a `PresentX(2)` return
 or a display count above 1. AMD's 90 decoded frames and RTX's 223 showed
 only black/white or a cursor.
 
+An AMD diagnostic (`ab26e02c`) also completed the second presentation.
+The serial-17 end sampled 1, `PresentX(2)` returned `S_OK`, and the
+display count advanced from 1 to 2. All 202 decoded frames were identical
+black. On the later list, the first VB, two-resource barrier, fresh RT/DS
+bind and one-cell table selection succeeded. The next graphics refusal
+was `+180/+32966` from `+bfd93`; the replacement did not record. This
+run therefore did not measure the later bind's supplied RTV identity
+or the barrier immediately preceding it.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
