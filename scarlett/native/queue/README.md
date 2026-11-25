@@ -1723,6 +1723,16 @@ end `0x8e7950` sampled at 0, then stopped at `+490/+32113` from
 return. The display counts stayed at 1. AMD showed black; RTX showed
 black and white. Neither established a retail seven-mip SRV write.
 
+### First split-six shader table on AMD
+
+RADV fixture `e5584581` exited 0 on staged provider `59443b7f`. The
+native `+190` and one-cell `+120` used the same segment and original
+end. Root index 0 selected slot 372600 and advanced the logical table
+epoch from 0 to 1. Both frozen color/depth view pairs survived descriptor
+rewrite and list reset. The 100-byte clear source, 4,080-byte vertex
+buffer, guards and both depth/stencil planes passed readback. The setter
+did not emit a host table bind or a submission.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at

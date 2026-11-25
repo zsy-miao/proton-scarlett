@@ -391,6 +391,10 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
 #ifdef TEST_MEASURED_B27
 #ifdef TEST_RETURNED_SETTERS
     struct om_views new_om=pass.om;
+#ifndef TEST_FIRST_TABLE_ONLY
+    REQUIRE(amd && pass.split_at==6);
+    const UINT chosen=372600;
+#else
     UINT chosen=213; /* Arbitrary fixture control, never used by the provider. */
     const char *raw=getenv("XS_FIXTURE_TABLE_SLOT");
     if(raw){
@@ -398,6 +402,7 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
         unsigned long n=strtoul(raw,NULL,10);
         REQUIRE(n<D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1);chosen=(UINT)n;
     }
+#endif
 #else
     UINT chosen=372600;
     pass.heaps[0]=inline_pair[0]; /* pinned for this call by the fixture */
@@ -414,6 +419,13 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     pair_op(&pass,0x120);
 #ifdef TEST_RETURNED_SETTERS
 #define BAD_TABLE() REQUIRE(FAILED(record_table0(&pass,0,handle)) && !pass.table_epoch && !pass.table0.heap && tables==prior_tables)
+#ifndef TEST_FIRST_TABLE_ONLY
+    REQUIRE(FAILED(record_table0(&pass,0,handle-32)) && FAILED(record_table0(&pass,0,handle+32)));
+    pass.split_at=5;BAD_TABLE();pass.split_at=6;
+    post.parent=NULL;BAD_TABLE();post.parent=&m;
+    pass.bound=pso;BAD_TABLE();pass.bound=NULL;
+    pass.ops[28]^=1;BAD_TABLE();pass.ops[28]^=1;
+#endif
     pass.sr.ds.serial++;BAD_TABLE();pass.sr.ds.serial--;
     pass.sr.rt.serial++;BAD_TABLE();pass.sr.rt.serial--;
     pass.reuse_epoch++;BAD_TABLE();pass.reuse_epoch--;
@@ -432,12 +444,6 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     v->gen++;REQUIRE(FAILED(record_table0(&pass,0,handle)));v->gen--;
     pass.vb.span.gen++;REQUIRE(FAILED(record_table0(&pass,0,handle)));pass.vb.span.gen--;
     pass.vb.capture=NULL;REQUIRE(FAILED(record_table0(&pass,0,handle)));pass.vb.capture=pass.source.capture;
-#if defined(TEST_RETURNED_SETTERS) && !defined(TEST_FIRST_TABLE_ONLY)
-    REQUIRE(amd && FAILED(record_table0(&pass,0,handle)) && !pass.table_epoch && !pass.table0.cells && !pass.table0.heap &&
-        tables==prior_tables && executions==ex && !pair_profile(&pass) && !memcmp(&pass.first_om,&old_om,sizeof old_om) &&
-        !memcmp(&pass.om,&new_om,sizeof new_om) && !memcmp(&first,&pass.vb,sizeof first));
-    puts("PASS native +190 production: original epoch and fresh views; supplied first +120 refused without commit");
-#else
     REQUIRE(!pass.table_epoch && !pass.table0.heap && record_table0(&pass,0,handle)==S_OK &&
         pass.table0.slot==chosen && pass.table0.cells==1 && pass.table0.heap==inline_pair[0] &&
         pass.table0.root==pass.graphics_identity && pass.table_epoch==1);
@@ -452,7 +458,6 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     printf("PASS split %u +490 +190 +120: supplied slot %u, epoch 0->1, original frame/VB and frozen views, no host table or submit\n",pass.split_at,chosen);
 #else
     puts("PASS measured +120: slot 372600 selected logically at epoch 0; repeat refused");
-#endif
 #endif
 #ifdef TEST_CARRIED_REPLACEMENT
     D3D12_VERTEX_BUFFER_VIEW second={v->data+0x1df10,4080,24},bad=second;

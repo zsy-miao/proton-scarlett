@@ -1460,13 +1460,21 @@ static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
 {
 #ifdef SCARLETT_PAIR_SUBMIT
 #ifdef TEST_FIRST_TABLE_ONLY
-    if((s->source.needs_publication || s->sr.end) && (!first_returned_setter(s) ||
-       s->nops!=31 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 || s->ops[30]!=0x120/8 ||
-       !s->first_om.heap[0] || !s->first_om.heap[1] || s->first_om.heap[0]==s->om.heap[0] ||
-       s->first_om.heap[1]==s->om.heap[1] || !s->first_om.cpu[0].ptr || !s->first_om.cpu[1].ptr ||
-       s->first_om.cpu[0].ptr==s->om.cpu[0].ptr || s->first_om.cpu[1].ptr==s->om.cpu[1].ptr))return E_NOTIMPL;
+    if(s->source.needs_publication || s->sr.end){
 #else
-    if(s->source.needs_publication && (!s->sr.end || s->sr_reversed || s->reuse_epoch!=1 || s->split_at!=5 ||
+    BOOL native=(s->sr.end || s->source.needs_publication) && (s->split_at==6 || (s->marker && s->marker->buffer));
+    if(native){
+        if(s->split_at!=6 || !s->marker || !s->marker->buffer || !xs_is_adapter(s->device,0x1002,0x164e) ||
+           s->offered || s->deferred || s->table0.root || s->table0.slot)return E_NOTIMPL;
+#endif
+        if(!first_returned_setter(s) ||
+           s->nops!=31 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 || s->ops[30]!=0x120/8 ||
+           !s->first_om.heap[0] || !s->first_om.heap[1] || s->first_om.heap[0]==s->om.heap[0] ||
+           s->first_om.heap[1]==s->om.heap[1] || !s->first_om.cpu[0].ptr || !s->first_om.cpu[1].ptr ||
+           s->first_om.cpu[0].ptr==s->om.cpu[0].ptr || s->first_om.cpu[1].ptr==s->om.cpu[1].ptr)return E_NOTIMPL;
+    }
+#ifndef TEST_FIRST_TABLE_ONLY
+    else if(s->source.needs_publication && (!s->sr.end || s->sr_reversed || s->reuse_epoch!=1 || s->split_at!=5 ||
        s->nops!=31 || s->ops[30]!=0x120/8 || s->previous_vb.buffer || s->table_epoch || s->table0.heap ||
        !s->om.heap[0] || !s->om.heap[1] || !s->first_om.heap[0] || !s->first_om.heap[1] ||
        s->first_om.heap[0]==s->om.heap[0] || s->first_om.heap[1]==s->om.heap[1] ||
@@ -1486,10 +1494,18 @@ static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
     }else if(!pending_colour_inputs(s))return E_NOTIMPL;
     UINT slot;HRESULT hr=xs_active_table_slot(s->pool_owner,s->heaps[0],handle,cells,&slot);
     if(SUCCEEDED(hr)){
+#if defined(SCARLETT_PAIR_SUBMIT) && !defined(TEST_FIRST_TABLE_ONLY)
+        /* shortcut: only the measured one-cell range until another native setter is qualified. */
+        if(native && (slot!=372600 || cells!=1))return E_NOTIMPL;
+#endif
         if(cells==3 && s->table0.cells==1)s->prior_b27_slot=s->table0.slot;
         s->table0=(__typeof__(s->table0)){s->heaps[0],s->graphics_identity,slot,cells};
         ++s->table_epoch;
         recorded_direct_state(s);
+#if defined(SCARLETT_PAIR_SUBMIT) && !defined(TEST_FIRST_TABLE_ONLY)
+        if(native)fprintf(stderr,"scarlett: native first +120 logical segment=%p end=%p handle=%llx slot=%u cells=1 epoch=%llu\n",
+            s->host,s->sr.end,handle,slot,s->table_epoch);
+#endif
     }
     return hr;
 }
