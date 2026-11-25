@@ -1706,6 +1706,14 @@ logical `+120` selection. The `PresentX(2)` return precedes both token
 could advance subsequent work, but could not alter the pixels already
 presented for token 2 in this run.
 
+The serial-17 producer inventories in the six ordinary launches on
+`9b15b8fc`, `d1a9c79e` and `a3124418` also have 38 operations, one
+`+60` at op 25, and `+120` last. The current `pair_profile` requires
+that exact sequence before it seals a token-2 producer. A future
+recording with a composite draw into the primary would need its own
+qualified submission path; it cannot be inferred from a completed fence
+on the existing one.
+
 ### Seven-level texture view
 
 RTX fixture `b9f9c92e` passed (exit 0). The `+230` write at `+4ecc821`
@@ -1783,6 +1791,15 @@ returned `E_ACCESSDENIED` at the serial-14 timestamp gate; no timestamp
 resolve or serial-14 batch submission was established. Serial 17's own
 end reached 1. Token 1 presented, token 2 entered without a logged
 return, and all 223 captured frames showed only black, white or a cursor.
+
+The first RTX hardware qualification of that destination (fixture
+`dccdb97c`, combined provider `becb01a3`) exited 1 at descriptor heap
+creation with `E_NOTIMPL`. It did not reach the release or timestamp.
+The fixture creates its resource descriptor heap before loading XMem;
+this heap path looks up `XMemAlloc` and `XMemFree` in an already loaded
+module. A fixture-only correction (`a4792964`) loads XMem before heap
+setup. It is cross-built but not hardware-qualified. The matched retail
+runs were withheld.
 
 ### Cross-build the guarded token-2 checkpoint
 
