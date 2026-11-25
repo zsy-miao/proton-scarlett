@@ -33,6 +33,7 @@ HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12Desc
 struct xs_attachment_pin {IUnknown *identity; ID3D12Resource *host; SIZE_T slot; UINT64 serial;};
 /* The wrapper pins both its XMem module and the original generation. */
 #ifdef SCARLETT_PAIR_SUBMIT
+ID3D12PipelineState *xs_pin_rect42(IUnknown*,ID3D12Device*,IUnknown*,IUnknown**);
 #include "lease-range.h"
 #endif
 struct xs_clear_source {IUnknown *placed;ID3D12Resource *buffer;
@@ -48,6 +49,7 @@ HRESULT xs_copy_clear_source(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList
 #ifdef SCARLETT_PAIR_SUBMIT
 HRESULT xs_copy_restored_clear(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList7 *,UINT64,struct xs_clear_source *);
 BOOL xs_held_table_inputs(const struct xs_clear_source*,const struct xs_clear_source*);
+HRESULT xs_copy_carried_replacement(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,const struct xs_clear_source*,const struct xs_clear_source*,struct xs_clear_source*);
 HRESULT xs_copy_restored_first_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,const struct xs_clear_source*,struct xs_clear_source*);
 #endif
 struct om_views;

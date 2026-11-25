@@ -42,8 +42,20 @@ struct ClearSourceControl {
     void replace(){
         CK(XMemMapPhysicalPages(at[3],752,nullptr)==at[3] && XMemMapPhysicalPages(at[4],1600,nullptr)==at[4]);
         CK(XMemMapPhysicalPages(at[2],432,nullptr)==at[2] && XMemFreePhysicalPages(2960,ids));
+#ifdef TEST_CARRIED_REPLACEMENT
+        ULONG_PTR n=2960;CK(XMemAllocatePhysicalPages(0x280,&n,ids) && n==2960);
+        CK(XMemMapPhysicalPages(at[2],432,ids+2528)==at[2] && XMemMapPhysicalPages(at[3],752,ids)==at[3] &&
+           XMemMapPhysicalPages(at[4],1600,ids+752)==at[4]);replaced=true;
+#else
         for(auto va:at)CK(VirtualFree(va,0,MEM_RELEASE));
         CK(VirtualAlloc(at[2],27u<<20,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==at[2]);replaced=true;
+#endif
     }
+#ifdef TEST_CARRIED_REPLACEMENT
+    ~ClearSourceControl(){CK(replaced && XMemMapPhysicalPages(at[2],432,nullptr)==at[2] &&
+        XMemMapPhysicalPages(at[3],752,nullptr)==at[3] && XMemMapPhysicalPages(at[4],1600,nullptr)==at[4] &&
+        XMemFreePhysicalPages(2960,ids));for(auto va:at)CK(VirtualFree(va,0,MEM_RELEASE));}
+#else
     ~ClearSourceControl(){CK(replaced && VirtualFree(at[2],0,MEM_RELEASE));}
+#endif
 };

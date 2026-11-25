@@ -1,6 +1,9 @@
 #include "clear_pair_dxil.h"
 #include "clear_srgb_dxil.h"
 #include "clear_diag_dxil.h"
+#ifdef SCARLETT_PAIR_SUBMIT
+#include "blit_colour_rect_dxil.h"
+#endif
 
 /* Reuse PSO lifetime/identity, but never identify graphics PSOs as BVH kernels. */
 static HRESULT WINAPI clear_name(IUnknown *i,const WCHAR *name)
@@ -142,6 +145,13 @@ static HRESULT WINAPI clear_pipeline(IUnknown *device,const D3D12_PIPELINE_STATE
     HRESULT hr=ID3D12Device_QueryInterface(d->host,&IID_ID3D12Device2,(void **)&d2);
     if (SUCCEEDED(hr)) {
         hr=ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void **)&pso);
+#ifdef SCARLETT_PAIR_SUBMIT
+        if(SUCCEEDED(hr) && colour){
+            /* Optional RECTLIST alternate. A missing GS must not disable the ordinary colour PSO. */
+            q[0x78/8]=(UINT_PTR)blit_colour_rect_gs;q[0x80/8]=sizeof blit_colour_rect_gs;
+            ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void**)&diag);
+        }
+#endif
         if(SUCCEEDED(hr) && clear4){
             q[6]=(UINT_PTR)clear_diag_dxil;q[7]=sizeof clear_diag_dxil;
             hr=ID3D12Device2_CreatePipelineState(d2,&sd,&IID_ID3D12PipelineState,(void**)&diag);

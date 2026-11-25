@@ -1,4 +1,26 @@
 #include "d3d12_device.c"
+#ifdef TEST_CARRIED_REPLACEMENT
+static IUnknown *register_again(IUnknown *owner,UINT_PTR base)
+{
+    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=PLACED_WIDTH,.Height=1,
+        .DepthOrArraySize=1,.MipLevels=1,.SampleDesc.Count=1,.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR,.Flags=0x20004};
+    IUnknown *p=NULL;
+    placed_create(CONTAINING_RECORD(owner,struct xbox_device,iface),base,&rd,UINT_MAX,NULL,&IID_ID3D12Resource,(void**)&p);
+    return p;
+}
+IUnknown *test_duplicate_registration(IUnknown *owner,UINT_PTR base){return register_again(owner,base);}
+BOOL test_reused_registration(IUnknown *owner,ID3D12Device *d,ID3D12GraphicsCommandList7 *l,
+        struct xs_clear_source *c,struct xs_clear_source *f,struct xs_clear_source *r)
+{
+    IUnknown *next=register_again(owner,c->span.arena.base);
+    if(!next)return FALSE;
+    struct placed_backing *p=CONTAINING_RECORD(next,struct placed_identity,iface)->private;
+    struct xs_clear_source none={0};
+    BOOL ok=next!=c->placed && p->capture!=c->capture && p->matches(p->capture,(void*)p->guest_va) &&
+        FAILED(xs_copy_carried_replacement(owner,d,l,r->span.va,c,f,&none)) && !none.buffer;
+    IUnknown_Release(next);return ok;
+}
+#endif
 #ifdef TEST_IM96_USED
 #include "../tests/im96/used-proof.h"
 /* Internal fixture callers hold both heaps, image and allocation identities. */

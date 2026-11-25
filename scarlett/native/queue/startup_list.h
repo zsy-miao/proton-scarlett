@@ -1037,9 +1037,19 @@ static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
     if(!s->prior_pso && s->source.buffer)bind_source(s->host,&s->source);
     recorded_direct_state(s);return S_OK;
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+#include "carried-rect42.h"
+#endif
 static void WINAPI pool_root(IUnknown *i,IUnknown *root)
 {
     pair_op(sl(i),0x110);
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct startup_list *s=sl(i);
+    if(s->prior_pso && s->bound && s->graphics_identity!=s->required_root){
+        if(FAILED(carried_rect42(s,root,(UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL))))xs_stop();
+        return;
+    }
+#endif
     if(FAILED(record_graphics_root(sl(i),root)))xs_stop();
 }
 static HRESULT record_blend(struct startup_list *s,const FLOAT *input)
@@ -1109,7 +1119,14 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
 static void WINAPI pool_pipeline(IUnknown *i,IUnknown *pso)
 {
     pair_op(sl(i),0xc8);
-    HRESULT hr=record_clear4(sl(i),pso);
+    HRESULT hr;
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct startup_list *s=sl(i);
+    if(s->source.needs_publication && s->bound && s->bound!=pso && !s->prior_pso)
+        hr=carried_rect42(s,pso,(UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL));
+    else
+#endif
+        hr=record_clear4(sl(i),pso);
     if(FAILED(hr)){
 #ifdef XS_IM96_FACTORY
         fprintf(stderr,"PSO refused-c8 tid=%lu owner=%p recorder=%p segment=%p alias=%p input=%p hr=%08lx\n",
@@ -1335,22 +1352,31 @@ static BOOL pending_colour_inputs(struct startup_list *s)
 }
 static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *input)
 {
-#ifdef SCARLETT_PAIR_SUBMIT
-    if(s->source.needs_publication && (s->vb.buffer || s->table_epoch || s->rt_roundtripped || !s->sr.end ||
-       s->sr_reversed || !s->sr.ds.identity || s->reuse_epoch!=1 || s->split_at!=5 ||
-       s->nops!=27 || memcmp(s->ops+24,"\x14\x22\x30",3)))return E_NOTIMPL;
-#endif
     BOOL replacement=s->vb.buffer!=NULL;
+    UINT table_slot=368504;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->source.needs_publication){
+        if(!s->sr.end || s->sr_reversed || !s->sr.ds.identity || s->reuse_epoch!=1 || s->split_at!=5)return E_NOTIMPL;
+        if(replacement){
+            table_slot=372600;
+            if(s->nops!=33 || s->ops[30]!=0x120/8 || s->ops[32]!=0x180/8 || s->table_epoch!=1 ||
+               !s->heaps[0] || !s->om.heap[0] || !s->om.heap[1] || !s->first_om.heap[0] || !s->first_om.heap[1] ||
+               s->first_om.heap[0]==s->om.heap[0] || s->first_om.heap[1]==s->om.heap[1] ||
+               !same_carried_views(s))return E_NOTIMPL;
+        }else if(s->table_epoch || s->rt_roundtripped || s->nops!=27 || memcmp(s->ops+24,"\x14\x22\x30",3))return E_NOTIMPL;
+    }
+#endif
     if(!pending_colour_inputs(s)||slot||count!=1)return E_NOTIMPL;
     if(replacement && (!s->rt_roundtripped || s->table0.cells!=1 || s->table0.heap!=s->heaps[0] ||
-        s->table0.slot!=368504 || s->table0.root!=s->graphics_identity || s->vb.placed!=s->source.placed))return E_NOTIMPL;
+        s->table0.slot!=table_slot || s->table0.root!=s->graphics_identity || s->vb.placed!=s->source.placed))return E_NOTIMPL;
     D3D12_VERTEX_BUFFER_VIEW v;SIZE_T got;if(!ReadProcessMemory(GetCurrentProcess(),input,&v,sizeof v,&got)||got!=sizeof v)return E_POINTER;
     if(v.SizeInBytes!=4080 || v.StrideInBytes!=24)return E_NOTIMPL;
     struct xs_clear_source next={0};
     HRESULT hr;
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->source.needs_publication)
-        hr=xs_copy_restored_first_vb(s->pool_owner,s->device,s->host,v.BufferLocation,&s->source,&next);
+        hr=replacement?xs_copy_carried_replacement(s->pool_owner,s->device,s->host,v.BufferLocation,&s->source,&s->vb,&next):
+                xs_copy_restored_first_vb(s->pool_owner,s->device,s->host,v.BufferLocation,&s->source,&next);
     else
 #endif
         hr=xs_copy_colour_vb(s->pool_owner,s->device,s->host,v.BufferLocation,replacement,s->source.placed,&next);

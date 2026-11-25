@@ -1114,10 +1114,22 @@ static HRESULT copy_pass_span(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCom
     struct placed_backing *p=NULL;
     AcquireSRWLockShared(&d->descriptor_lock);
     for(struct placed_backing *it=d->placed;it;it=it->next){
-        if(va-it->guest_va!=offset || !it->matches(it->capture,(void*)it->guest_va))continue;
+#ifdef SCARLETT_PAIR_SUBMIT
+        /* The carried replacement is resolved by containment, before testing the held identity. */
+        if(offset==UINT_MAX){if(va-it->guest_va>=PLACED_WIDTH)continue;}
+        else
+#endif
+        if(va-it->guest_va!=offset)continue;
+        if(!it->matches(it->capture,(void*)it->guest_va))continue;
         if(p){p=NULL;break;}p=it;
     }
     if(p && expected && expected!=&p->title->iface)p=NULL;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(p && offset==UINT_MAX){
+        offset=(UINT)(va-p->guest_va);
+        if(bytes>PLACED_WIDTH-offset)p=NULL;
+    }
+#endif
     if(p)placed_addref(&p->title->iface);
     ReleaseSRWLockShared(&d->descriptor_lock);
     if(!p)return E_INVALIDARG;
@@ -1181,7 +1193,6 @@ HRESULT xs_copy_colour_vb(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommand
     if(!expected)return E_INVALIDARG;
     return copy_pass_span(owner,hd,list,va,replacement?0x3df10:0x3ef30,4080,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,expected,out);
 }
-/* The active heap is pinned by this recording; no title descriptor memory is read. */
 #ifdef SCARLETT_PAIR_SUBMIT
 BOOL xs_held_table_inputs(const struct xs_clear_source *c,const struct xs_clear_source *f)
 {
@@ -1204,7 +1215,20 @@ BOOL xs_held_table_inputs(const struct xs_clear_source *c,const struct xs_clear_
     (void)c;(void)f;return FALSE;
 #endif
 }
+HRESULT xs_copy_carried_replacement(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCommandList7 *list,
+        UINT64 va,const struct xs_clear_source *clear,const struct xs_clear_source *first,struct xs_clear_source *out)
+{
+    struct lease_span v;
+    if(!xs_held_table_inputs(clear,first) || !lease_span_read(clear->span.arena.base,va,4080,&v) ||
+       memcmp(&v.arena,&first->span.arena,sizeof v.arena) || v.node!=first->span.node || v.gen!=first->span.gen ||
+       v.data!=first->span.data || v.holds!=3 || v.stamp!=~1ull || va-v.data!=0x1df10)return E_INVALIDARG;
+    /* The three checked chunk-local ranges are disjoint. Each copy owns its placed and buffer refs. */
+    HRESULT hr=copy_pass_span(owner,hd,list,va,UINT_MAX,v.bytes,D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,first->placed,out);
+    if(SUCCEEDED(hr)){out->span=v;out->needs_publication=TRUE;}
+    return hr;
+}
 #endif
+/* The active heap is pinned by this recording; no title descriptor memory is read. */
 HRESULT xs_active_table_slot(IUnknown *owner,IUnknown *active,UINT64 handle,UINT cells,UINT *slot)
 {
     if(!active || active->lpVtbl!=&desc_vtbl.unknown)return E_INVALIDARG;
@@ -1610,6 +1634,21 @@ HRESULT xs_im96_private_layout(IUnknown *owner,IUnknown *alias,ID3D12RootSignatu
     if(FAILED(hr))IUnknown_Release(alias);
     return hr;
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+ID3D12PipelineState *xs_pin_rect42(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown **required)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    if(d->host!=device)return NULL;
+    ID3D12PipelineState *rect=NULL;
+    AcquireSRWLockShared(&d->descriptor_lock);
+    for(struct clear_wrapper *w=d->colour_psos;w;w=w->next)
+        if(&w->pso.iface==identity && w->root && w->diagonal){
+            bp_addref(identity);*required=w->root;rect=w->diagonal;break;
+        }
+    ReleaseSRWLockShared(&d->descriptor_lock);return rect;
+}
+#endif
 ID3D12PipelineState *xs_pin_colour_pso(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown *root)
 {
     if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;
@@ -1655,6 +1694,9 @@ ID3D12PipelineState *xs_pin_clear4(IUnknown *owner,ID3D12Device *device,IUnknown
 ID3D12PipelineState *xs_clear4_effective(IUnknown *pin,UINT64 lanes)
 {
     struct clear_wrapper *w=CONTAINING_RECORD(pin,struct clear_wrapper,pso.iface);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(w->colour)return NULL;
+#endif
     if(!w->diagonal)return NULL;
     if(lanes==UINT64_MAX)return w->pso.host;
     if(lanes==0xffff00000000ffffULL)return w->diagonal;

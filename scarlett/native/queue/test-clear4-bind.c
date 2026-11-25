@@ -92,6 +92,10 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
 #include "test-quad-read.h"
 #include "test-rt-roundtrip.h"
+#ifdef TEST_CARRIED_REPLACEMENT
+IUnknown *test_duplicate_registration(IUnknown*,UINT_PTR);
+BOOL test_reused_registration(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,struct xs_clear_source*,struct xs_clear_source*,struct xs_clear_source*);
+#endif
 #ifdef TEST_RESTORED_CLEAR
 #include "test-restored-abi.h"
 /* Original mapping, capture, list and fence are real. Only the prior list prefix
@@ -195,6 +199,28 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     pass.graphics_identity=NULL;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.graphics_identity=root;
     pass.sr.ds.identity=NULL;REQUIRE(FAILED(record_clear4_draw(&pass,3,1,0,0)));pass.sr.ds.identity=ids[1];
     REQUIRE(record_clear4_draw(&pass,3,1,0,0)==S_OK && FAILED(record_clear4_draw(&pass,3,1,0,0)));
+#ifdef TEST_CARRIED_RECT42
+    /* Reconstruct the saved prefix; carried source, #4 draw, OM, #42 factory and host setters are real. */
+    memcpy(pass.ops,"\x20\x47\x20\x48\x47\x4a\x92\x34\x14\x7e\x19\x22\x4b\x2f\x18\x8e\x17\x92",18);
+    struct list_face f42={.state=&pass};pool_topology(&f42.iface,XS_RECTLIST);pair_op(&pass,0xc8);
+    UINT np=psos,nr=roots;IUnknown *ready42=publish_late(),*colour42=late_root_id(FALSE);
+    REQUIRE(ready42 && pass.bound==pso && pass.graphics_identity==root && !pass.prior_pso &&
+        FAILED(carried_rect42(&pass,NULL,0x327bc)) && FAILED(carried_rect42(&pass,pso,0x327bc)) &&
+        FAILED(carried_rect42(&pass,(IUnknown*)1,0x327bc)) && FAILED(carried_rect42(&pass,ready42,0x327bd)));
+    pass.ops[0]^=1;REQUIRE(FAILED(carried_rect42(&pass,ready42,0x327bc)));pass.ops[0]^=1;
+    pass.source.needs_publication=FALSE;REQUIRE(FAILED(carried_rect42(&pass,ready42,0x327bc)));pass.source.needs_publication=TRUE;
+    REQUIRE(psos==np && roots==nr && carried_rect42(&pass,ready42,0x327bc)==S_OK &&
+        pass.bound==ready42 && pass.prior_pso==pso && pass.required_root==colour42 &&
+        pass.graphics_identity==root && pass.graphics_root==s->graphics_root && !pass.prior_root &&
+        psos==np+1 && roots==nr && seen_rec==s->host && FAILED(carried_rect42(&pass,ready42,0x327bc)));
+    pair_op(&pass,0x110);
+    REQUIRE(FAILED(carried_rect42(&pass,root,0x327cb)) && FAILED(carried_rect42(&pass,late_root_id(TRUE),0x327cb)) &&
+        FAILED(carried_rect42(&pass,colour42,0x327ca)) && roots==nr && pass.graphics_identity==root &&
+        carried_rect42(&pass,colour42,0x327cb)==S_OK && roots==nr+1 && psos==np+1 &&
+        pass.graphics_identity==colour42 && pass.prior_root==root && seen_root==pass.graphics_root &&
+        FAILED(carried_rect42(&pass,colour42,0x327cb)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) &&
+        !pair_profile(&pass) && pass.source.needs_publication && !pass.vb.buffer && !pass.table0.cells);
+#endif
 #ifdef TEST_FIRST180
     struct list_face face={.state=&pass};pool_topology(&face.iface,XS_RECTLIST);pool_root(&face.iface,late_root_id(FALSE));
     pair_op(&pass,0x180);D3D12_VERTEX_BUFFER_VIEW vb={v->data+0x1ef30,4080,24};UINT before_vb=vb_calls;
@@ -255,14 +281,48 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
         pass.table0.root==pass.graphics_identity && pass.table_epoch==1);
     REQUIRE(FAILED(record_table0(&pass,0,handle)) && FAILED(record_colour_vb(&pass,0,1,&vb)) &&
         pass.table_epoch==1 && tables==prior_tables && vb_calls==before_vb+1 && pass.source.needs_publication);
-    puts("PASS measured +120: slot 372600 selected logically at epoch 0; repeat and replacement VB refused");
+    puts("PASS measured +120: slot 372600 selected logically at epoch 0; repeat refused");
+#ifdef TEST_CARRIED_REPLACEMENT
+    D3D12_VERTEX_BUFFER_VIEW second={v->data+0x1df10,4080,24},bad=second;
+#define REPLACE() record_colour_vb(&pass,0,1,&second)
+    REQUIRE(FAILED(REPLACE()));
+    pass.nops=32;pair_op(&pass,0x180); /* op 32 was not identified in the trace */
+    REQUIRE(FAILED(record_colour_vb(&pass,1,1,&second)) && FAILED(record_colour_vb(&pass,0,2,&second)) &&
+        FAILED(record_colour_vb(&pass,0,1,NULL)));
+    second.StrideInBytes++;REQUIRE(FAILED(REPLACE()));second.StrideInBytes--;
+    second.SizeInBytes--;REQUIRE(FAILED(REPLACE()));second.SizeInBytes++;
+    pass.table_epoch++;REQUIRE(FAILED(REPLACE()));pass.table_epoch--;
+    pass.table0.slot--;REQUIRE(FAILED(REPLACE()));pass.table0.slot++;
+    pass.table0.cells++;REQUIRE(FAILED(REPLACE()));pass.table0.cells--;
+    pass.heaps[0]=inline_pair[1];REQUIRE(FAILED(REPLACE()));pass.heaps[0]=inline_pair[0];
+    pass.table0.root=NULL;REQUIRE(FAILED(REPLACE()));pass.table0.root=pass.graphics_identity;
+    pass.sr.end=as_fence(gate);REQUIRE(FAILED(REPLACE()));pass.sr.end=as_fence(end);
+    pass.vb.span.gen++;REQUIRE(FAILED(REPLACE()));pass.vb.span.gen--;
+    pass.source.span.gen++;REQUIRE(FAILED(REPLACE()));pass.source.span.gen--;
+    v->gen++;REQUIRE(FAILED(REPLACE()));v->gen--;
+    pass.vb.capture=owner;REQUIRE(FAILED(REPLACE()));pass.vb.capture=cap;
+    second.BufferLocation+=16;REQUIRE(FAILED(REPLACE()));second.BufferLocation-=16;
+    bad.BufferLocation=vb.BufferLocation-4079;REQUIRE(FAILED(record_colour_vb(&pass,0,1,&bad)));
+    bad.BufferLocation=va-4079;REQUIRE(FAILED(record_colour_vb(&pass,0,1,&bad)));
+    IUnknown *also=test_duplicate_registration(owner,base);REQUIRE(also && FAILED(REPLACE()) && IUnknown_Release(also)==0);
+    REQUIRE(vb_calls==before_vb+1 && !pass.previous_vb.buffer && pass.vb.span.va==vb.BufferLocation);
+    memset((void*)second.BufferLocation,0x12,4080);
+    REQUIRE(REPLACE()==S_OK && pass.previous_vb.span.va==vb.BufferLocation && pass.vb.span.va==second.BufferLocation &&
+        pass.vb.span.gen==v->gen && pass.vb.span.node==(UINT_PTR)v && pass.vb.placed==placed && pass.vb.capture==cap &&
+        pass.vb.needs_publication && pass.previous_vb.needs_publication && pass.source.needs_publication &&
+        vb_rec==s->host && last_vb.BufferLocation==ID3D12Resource_GetGPUVirtualAddress(pass.vb.buffer) &&
+        last_vb.SizeInBytes==4080 && last_vb.StrideInBytes==24 && FAILED(REPLACE()) &&
+        vb_calls==before_vb+2 && tables==prior_tables && pass.table_epoch==1);
+    s->previous_vb=pass.previous_vb;struct xs_clear_source replacement=retain_source(pass.vb);
+#undef REPLACE
+#endif
 #endif
 #endif
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
         xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
 #undef TRIP
 #endif
-    s->vb=pass.vb;struct xs_clear_source held_vb=retain_source(s->vb);
+    s->vb=pass.vb;struct xs_clear_source held_vb=retain_source(s->previous_vb.buffer?s->previous_vb:s->vb);
 #endif
 #endif
     s->source=pass.source;
@@ -273,6 +333,9 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
 #endif
 #ifdef TEST_FRESH190
     rd.Width=5632;
+#ifdef TEST_CARRIED_REPLACEMENT
+    rd.Width+=4096;
+#endif
 #endif
     REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb)));
     BYTE *p;REQUIRE(SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&p)));memset(p,0xe7,rd.Width);ID3D12Resource_Unmap(rb,0,NULL);
@@ -293,8 +356,12 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     D3D12_RESOURCE_BARRIER bar={.Transition={dst,0,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE}};
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&bar);ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,12,dst,0,100);
 #ifdef TEST_FIRST180
-    bar.Transition.pResource=s->vb.buffer;bar.Transition.StateBefore=D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&bar);ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,136,s->vb.buffer,0,4080);
+    bar.Transition.pResource=held_vb.buffer;bar.Transition.StateBefore=D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&bar);ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,136,held_vb.buffer,0,4080);
+#ifdef TEST_CARRIED_REPLACEMENT
+    bar.Transition.pResource=replacement.buffer;ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&bar);
+    ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,5640,replacement.buffer,0,4080);
+#endif
 #endif
     REQUIRE(sl_close(l)==S_OK && !s->seal && !xs_list_host(l));
     UINT before=executions;
@@ -307,8 +374,17 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
 #ifdef TEST_FIRST180
     REQUIRE(!s->vb.buffer);
     for(UINT k=0;k<4080;k++)((BYTE*)vb.BufferLocation)[k]=(BYTE)(7*k+(k>>5));
+#ifdef TEST_CARRIED_REPLACEMENT
+    for(UINT k=0;k<4080;k++)((BYTE*)second.BufferLocation)[k]=(BYTE)(0x41+3*k);
+#endif
     MemoryBarrier();recycle(arg);memset((void*)vb.BufferLocation,0xcd,4080);MemoryBarrier();
+#ifdef TEST_CARRIED_REPLACEMENT
+    memset((void*)second.BufferLocation,0xcd,4080);MemoryBarrier();
+    REQUIRE(test_reused_registration(owner,d,s->host,&held,&held_vb,&replacement) &&
+        !s->previous_vb.buffer && IUnknown_Release(placed)==3 && !ID3D12Fence_GetCompletedValue(as_fence(done)));
+#else
     REQUIRE(IUnknown_Release(placed)==2 && !ID3D12Fence_GetCompletedValue(as_fence(done)));
+#endif
 #else
     recycle(arg);REQUIRE(FAILED(xs_copy_restored_clear(owner,d,s->host,va,&s->source)) && IUnknown_Release(placed)==1);
 #endif
@@ -316,9 +392,19 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     REQUIRE(ev && xs_fence_event(done,1,ev)==S_OK && xs_cpu_signal(gate,1)==S_OK && WaitForSingleObject(ev,10000)==WAIT_OBJECT_0 &&
         ID3D12Fence_GetCompletedValue(as_fence(done))==1 && SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&p)));
     for(UINT j=0;j<128;j++)REQUIRE(p[j]==(j>=12 && j<112?expected[j-12]:0xe7));
+#ifdef TEST_CARRIED_RECT42
+    /* pass borrowed the original #4 and root pins from s; release only the two new pins. */
+    IUnknown_Release(pass.bound);IUnknown_Release(pass.graphics_identity);
+    puts("PASS carried #42: +c8 changed only PSO; +110 installed its matching root; original source and guards survived fence");
+#endif
 #ifdef TEST_FIRST180
     for(UINT i=0;i<4096;i++){UINT k=i-8;REQUIRE(p[128+i]==(k<4080?(BYTE)(7*k+(k>>5)):0xe7));}
     drop_source(&held_vb);IUnknown_Release(pass.graphics_identity);
+#ifdef TEST_CARRIED_REPLACEMENT
+    for(UINT i=0;i<4096;i++){UINT k=i-8;REQUIRE(p[5632+i]==(k<4080?(BYTE)(0x41+3*k):0xe7));}
+    drop_source(&replacement);
+    puts("PASS carried replacement +180: original clear and both VBs after registered VA reuse and fence");
+#endif
 #ifdef TEST_RTX_TRIP
 #ifdef TEST_FRESH190
     for(UINT k=0;k<2;k++)for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++){
