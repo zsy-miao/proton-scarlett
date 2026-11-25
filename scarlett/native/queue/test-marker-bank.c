@@ -1,4 +1,15 @@
 /* The same two marker banks use native GPU writes or ordered CPU aliases. */
+#ifdef TEST_RTX_THIRD_WAIT
+#define TEST_RTX_THIRD_POST
+#endif
+#ifdef TEST_NATIVE_THIRD_WAIT
+#define TEST_THIRD_PREFIX
+#define TEST_BANK3_WB
+static volatile unsigned *post_alias;
+static unsigned release_sample;
+#define XS_OBSERVE_COUNTER_RELEASE() __atomic_store_n(&release_sample,*post_alias,__ATOMIC_RELEASE)
+static int ready_before_submit;
+#endif
 #include "queue.c"
 #include "test-depth-slots.h"
 #define CK(x) do { if (!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);return 1;} } while(0)
@@ -63,6 +74,37 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
     CK(s->stamp && s->stamp->retained && s->stamp->query && s->stamp->dst &&
        !s->stamp->second_bank && !s->stamp->successor_bank && FAILED(pool_timestamp(s,target,0,0,1)));
     batch_step(s,B_HEAD_STAMP);CK(s->phase==B_HEAD_STAMP);
+#ifdef TEST_NATIVE_THIRD_WAIT
+    pair_op(s,0x238);
+    CK(FAILED(record_native_post(s,addr,0x29a5ee15,0,0)) && FAILED(record_native_post(s,addr+4,2,0,0)));
+    CK(FAILED(record_native_post(s,addr+4,0x29a5ee15,1,0)) && !s->marker->native_post);
+    const UINT64 ref=0x8000000100000000ull|(UINT)GetTickCount64(),below=ref-(1ull<<32);
+    UINT64 cell=(UINT_PTR)page;
+    CK(FAILED(record_counter_wait(s,cell,7,ref,1)) && !s->head && !s->post);
+    s->alloc_generation++;CK(FAILED(native_post_at(s,addr+4,0x29a5ee15,0,0,0x4ed46aa)));s->alloc_generation--;
+    CK(FAILED(native_post_at(s,addr+4,0x29a5ee15,0,0,0x4ed46ab)) && !s->marker->native_post);
+    BYTE *foreign=alloc(NULL,65536,0x20401000,0x283,0x42404);CK(foreign && foreign!=page);
+    CK(FAILED(native_post_at(s,(UINT_PTR)foreign+0x9c,0x29a5ee15,0,0,0x4ed46aa)));
+    HR(native_post_at(s,addr+4,0x29a5ee15,0,0,0x4ed46aa));
+    CK(FAILED(record_native_post(s,addr+4,0x29a5ee15,0,0)));batch_step(s,B_POST);
+    pair_op(s,0x250);
+    CK(record_counter_wait(s,(UINT_PTR)foreign,7,ref,1)==E_INVALIDARG && VirtualFree(foreign,65536,MEM_RELEASE));
+    CK(FAILED(record_counter_wait(s,cell+8,7,ref,1)) && FAILED(record_counter_wait(s,cell+1,7,ref,1)) &&
+        FAILED(record_counter_wait(s,cell,6,ref,1)) && FAILED(record_counter_wait(s,cell,7,ref,0)));
+    s->ops[4]^=1;CK(FAILED(record_counter_wait(s,cell,7,ref,1)));s->ops[4]^=1;
+    s->phase=B_HEAD_STAMP;CK(FAILED(record_counter_wait(s,cell,7,ref,1)));s->phase=B_POST;
+    s->alloc_generation++;CK(FAILED(record_counter_wait(s,cell,7,ref,1)));s->alloc_generation--;
+    s->stamp->third_wb=FALSE;CK(FAILED(record_counter_wait(s,cell,7,ref,1)));s->stamp->third_wb=TRUE;
+    CK(!s->head && !s->post);
+    s->nops--;CK(FAILED(wait64_at(s,cell,7,ref,1,0x2484b11)) && s->nops==5 && !s->post);
+    HR(wait64_at(s,cell,7,ref,1,0x2484b12));
+    CK(s->phase==B_WAIT && s->split_at==6 && s->head && s->host!=s->head && !s->post_boundary &&
+       s->post && s->post->parent==s->marker && !s->post->word && s->post->counter && s->post->threshold==ref &&
+       FAILED(record_counter_wait(s,cell,7,ref,1)));
+    post_alias=(volatile UINT*)alias+0x9c/4;
+    __atomic_store_n(&release_sample,0,__ATOMIC_RELEASE);
+    __atomic_store_n((UINT64*)alias,ready_before_submit?ref+1:below,__ATOMIC_RELEASE);
+#endif
 #endif /* TEST_BANK3_WB */
     HR(sl_close(list));HR(xs_queue_wait(q,gate,1));HR(checked_startup_submit(q,1,&list,0,0));HR(queue_signal(q,end,1));
     HR(sl_reset(list,fresh,NULL,0));IUnknown_Release(list);
@@ -79,7 +121,23 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
        *tick==0xadadadadadadadadull);
     UINT64 low,high,cpu;HR(ID3D12CommandQueue_GetClockCalibration(as_queue(q),&low,&cpu));
 #endif /* TEST_BANK3_WB */
+#ifdef TEST_NATIVE_THIRD_WAIT
+    CK(*post_alias==0xa7a7a7a7 && !__atomic_load_n(&release_sample,__ATOMIC_ACQUIRE));
+    HR(xs_cpu_signal(gate,1));
+    if (!ready_before_submit) {
+        ULONGLONG until=GetTickCount64()+10000;
+        while(*post_alias!=0x29a5ee15 && GetTickCount64()<until)Sleep(1);
+        CK(*post_alias==0x29a5ee15 && ((volatile UINT*)alias)[0x98/4]==2 && *tick!=0xadadadadadadadadull);
+        CK(WaitForSingleObject(done,150)==WAIT_TIMEOUT && !__atomic_load_n(&release_sample,__ATOMIC_ACQUIRE));
+        __atomic_store_n((UINT64*)alias,0x7fffffffffffffffull,__ATOMIC_RELEASE);
+        CK(WaitForSingleObject(done,150)==WAIT_TIMEOUT && !__atomic_load_n(&release_sample,__ATOMIC_ACQUIRE));
+        __atomic_store_n((UINT64*)alias,ref,__ATOMIC_RELEASE);
+    }
+    CK(WaitForSingleObject(done,10000)==WAIT_OBJECT_0 && __atomic_load_n(&release_sample,__ATOMIC_ACQUIRE)==0x29a5ee15);
+    HR(ID3D12Device_GetDeviceRemovedReason(d));
+#else
     HR(xs_cpu_signal(gate,1));CK(WaitForSingleObject(done,10000)==WAIT_OBJECT_0);HR(ID3D12Device_GetDeviceRemovedReason(d));
+#endif
 #ifdef TEST_BANK3_WB
     HR(ID3D12CommandQueue_GetClockCalibration(as_queue(q),&high,&cpu));
     CK(*tick && *tick!=0xadadadadadadadadull && *tick>=low && *tick<=high);
@@ -87,12 +145,17 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
     CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(view.base,0,MEM_RELEASE) &&
        VirtualFree(bp,0,MEM_RELEASE) && VirtualFree(ip,0,MEM_RELEASE));
 #endif /* TEST_BANK3_WB */
+#ifdef TEST_NATIVE_THIRD_WAIT
+    CK(__atomic_load_n((UINT64*)alias,__ATOMIC_ACQUIRE)==ref+(UINT64)ready_before_submit);
+    for(UINT j=0;j<65536/4;j++)CK((j<2 || ((volatile UINT*)alias)[j]==(j==0x98/4?2:j==0x9c/4?0x29a5ee15u:0xa7a7a7a7u)) && ((UINT*)page)[j]==0xbdbdbdbd);
+#else
     for(UINT j=0;j<65536/4;j++)CK(((volatile UINT*)alias)[j]==(j==0x98/4?2:0xa7a7a7a7) && ((UINT*)page)[j]==0xbdbdbdbd);
+#endif
     CloseHandle(done);IUnknown_Release(end);IUnknown_Release(gate);IUnknown_Release(q);IUnknown_Release(a);IUnknown_Release(fresh);
     CK(VirtualFree(alias,65536,MEM_RELEASE) && VirtualFree(page,0,MEM_RELEASE));
 #ifndef TEST_BANK3_WB
     puts("PASS third native +98=2: exact original dword after gate; replacement and neighbors intact; wrong phase/gen/offset/value/control/flags and timestamp refused");
-#else /* TEST_BANK3_WB */
+#elif !defined(TEST_NATIVE_THIRD_WAIT)
     puts("PASS third native +98=2 and bank3/index1 +419f258: original WB qword in queue clock interval, replacements and neighbors intact");
 #endif /* TEST_BANK3_WB */
     return 0;
@@ -222,6 +285,10 @@ static int check(UINT offset,UINT value,BOOL native)
 int main(void){ID3D12Device *d;HR(D3D12CreateDevice(NULL,D3D_FEATURE_LEVEL_12_0,&IID_ID3D12Device,(void**)&d));BOOL native=!xs_is_rtx3070(d);ID3D12Device_Release(d);
 #ifdef TEST_RTX_THIRD_POST
     CK(!native);return check(0x98,2,FALSE);
+#elif defined(TEST_NATIVE_THIRD_WAIT)
+    CK(native);CK(!check(0x98,2,TRUE));ready_before_submit=1;CK(!check(0x98,2,TRUE));
+    puts("PASS guarded RADV third native +250: held and pre-satisfied unsigned waits, +9c visible before counter release, VA reuse intact");
+    return 0;
 #elif defined(TEST_THIRD_PREFIX)
     CK(native);return check(0x98,2,TRUE);
 #else

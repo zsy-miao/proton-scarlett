@@ -9,6 +9,9 @@ extern "C" ID3D12CommandQueue *test_host_queue(IUnknown*);
 extern "C" HRESULT test_bridge_count(IUnknown *,UINT *);
 extern "C" ULONG_PTR test_generation(IUnknown*);
 extern "C" HANDLE test_pending_present;
+#ifdef TEST_REACQUIRE
+extern "C" HRESULT test_reacquire(IUnknown*,IUnknown*,IUnknown**,SIZE_T,volatile UINT*,BOOL);
+#endif
 struct BridgeGUI {
     IUnknown *dev,*queue=nullptr;
     HWND hwnd=nullptr,replacement=nullptr;
@@ -114,6 +117,9 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     while(ctrl[3]!=0x29a5ee15 && GetTickCount64()<head_deadline)Sleep(1);
     CK(ctrl[2]==0 && ctrl[3]==0x29a5ee15 && ticks[1] && !ticks[0]);
     CK(present(q.Get(),token,keys[0])==DXGI_ERROR_WAS_STILL_DRAWING && !ticks[0]);
+#ifdef TEST_REACQUIRE
+    HR(test_reacquire(q.Get(),batches[0],keys,dest,ctrl,FALSE));
+#endif
     InterlockedExchange64((volatile LONG64*)ctrl,1);
     auto flip=[&](IUnknown *key){
         HRESULT hr;ULONGLONG deadline=GetTickCount64()+10000;
@@ -124,6 +130,13 @@ static int bridge_fixture(ID3D12Device *d,IUnknown *dev,IUnknown **keys,IUnknown
     CK(flip(keys[0])==S_OK && displayed(1));
     HR(test_bridge_count(q.Get(),&count));CK(count==1 && ticks[0]>ticks[1]);
     CK(test_ring_index(q.Get())==1-ring);
+#ifdef TEST_REACQUIRE
+    HR(test_reacquire(q.Get(),batches[0],keys,dest,ctrl,TRUE));
+    CK(SetEvent(gui.quit) && WaitForSingleObject(thread,5000)==WAIT_OBJECT_0);
+    CloseHandle(thread);CloseHandle(gui.changed);CloseHandle(gui.ready);CloseHandle(gui.destroy);CloseHandle(gui.quit);
+    puts("PASS primary reacquire: fenced original COMMON to RT after ring flip; stale, foreign, alias and invalid rejected");
+    return 0;
+#endif
     printf("PASS singleton token=1 count=1 generation=%zu\n",generation);Sleep(1600);
     HR(fw(dev,0,1000,nullptr,0,&token));CK(token==2);
     const UINT64 second_token=token;

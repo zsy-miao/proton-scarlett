@@ -136,12 +136,22 @@ static HRESULT present_released(struct adapter *a,UINT64 token,IUnknown *key,ID3
             else if (done==UINT64_MAX) hr=DXGI_ERROR_DEVICE_REMOVED;
             else if (done==1 && !bridge_window(a)){HWND h=NULL;HRESULT hhr=IDXGISwapChain3_GetHwnd(a->display.chain,&h);fprintf(stderr,"DETAIL window get=%lx chain=%p live=%p tid=%lu/%lu cookie=%p/%p\n",hhr,h,a->display.window,GetWindowThreadProcessId(h,NULL),a->display.creator,GetPropW(h,L"Scarlett.Present.Owner"),a->display.cookie);}
             else if (done==1) {
+#ifdef SCARLETT_PAIR_SUBMIT
+                const SIZE_T slot=a->display.clear_slot;
+                const UINT64 serial=a->display.clear_serial;
+                const UINT ring=IDXGISwapChain3_GetCurrentBackBufferIndex(a->display.chain);
+#endif
                 a->display.primary=src;a->display.primary_state=D3D12_RESOURCE_STATE_COMMON;
                 /* Serialize against tracked submissions and raw queue exposure until the
                  * private queue has retired the copy. Only its independent DXGI flip follows. */
                 hr=xs_frame_present_release(a->display.owner,token,(IDXGISwapChain *)a->display.chain,bridge_copy,&c,
                         a->host.queue,a->display.released_end);
                 a->display.primary=NULL;
+#ifdef SCARLETT_PAIR_SUBMIT
+                /* Released producer fence and COMMON-restoring copy fence both retired. */
+                if(hr==S_OK && token==1 && ring==0 && IDXGISwapChain3_GetCurrentBackBufferIndex(a->display.chain)==1)
+                    xs_returned_common(pin,slot,serial);
+#endif
             }
         }
         if (pin) {xs_finish_flip(pin);IUnknown_Release(pin);}

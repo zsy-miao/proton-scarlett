@@ -2,6 +2,70 @@
 #define XS_TEST_ORDERED_QUEUE
 #endif
 #include "queue/queue.c"
+#ifdef TEST_REACQUIRE
+HRESULT xs_write_view(IUnknown *,UINT,IUnknown *,const void *,SIZE_T);
+HRESULT test_reacquire(IUnknown *q,IUnknown *source,IUnknown **keys,SIZE_T slot,volatile UINT *ctrl,BOOL presented)
+{
+    struct startup_list *old=sl(source);IUnknown *owner=old->pool_owner;ID3D12Device *d=old->device;
+    UINT64 epoch=0;
+    if(!presented)return FAILED(xs_reuse_common(owner,keys[0],old->primary,NULL,&epoch))?S_OK:E_FAIL;
+    if(!xs_is_rtx3070(d))return E_NOTIMPL;
+    IUnknown *a,*l,*foreign,*done;
+#define RCK(e) do{if(!(e)){fprintf(stderr,"FAIL primary reacquire line=%d: %s\n",__LINE__,#e);return E_FAIL;}}while(0)
+    RCK(SUCCEEDED(xs_allocator(d,0,&a)) && SUCCEEDED(xs_device_list(d,0,a,TRUE,owner,&l)) &&
+        SUCCEEDED(xs_direct_queue(d,&foreign)) && SUCCEEDED(xs_shared_fence(d,&done)));
+    struct startup_list *s=sl(l);
+    UINT64 base=(UINT_PTR)ctrl,ref=3;
+    RCK(SUCCEEDED(xs_bind_pool_heaps(l,2,old->heaps)));pool_vtbl.marker(l,base+0x98,2,0,0);
+    RCK(SUCCEEDED(xs_bind_pool_heaps(l,2,old->heaps)));pool_vtbl.timestamp(l,old->stamp->tail_addr+8,0,0,1);
+    pool_vtbl.marker(l,base+0x9c,0x29a5ee15,0,0);
+    RCK(SUCCEEDED(wait64_at(s,base,7,ref,1,0x2484b12)));pair_op(s,0x490);
+    D3D12_TEXTURE_BARRIER b={.SyncBefore=D3D12_BARRIER_SYNC_NONE,.SyncAfter=D3D12_BARRIER_SYNC_RENDER_TARGET,
+        .AccessBefore=D3D12_BARRIER_ACCESS_NO_ACCESS,.AccessAfter=D3D12_BARRIER_ACCESS_RENDER_TARGET,
+        .LayoutBefore=(D3D12_BARRIER_LAYOUT)31,.LayoutAfter=D3D12_BARRIER_LAYOUT_RENDER_TARGET,.Subresources={UINT_MAX,0,0,0,0,0}};
+    D3D12_BARRIER_GROUP g={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&b};
+#define TRY() record_primary_barrier_at(s,1,&g,0x32113)
+    b.pResource=(ID3D12Resource*)keys[1];RCK(FAILED(TRY()));
+    b.pResource=old->primary;RCK(FAILED(TRY()));b.pResource=(ID3D12Resource*)keys[0];
+    b.AccessBefore=0;RCK(FAILED(TRY()));b.AccessBefore=D3D12_BARRIER_ACCESS_NO_ACCESS;
+    b.Subresources.NumPlanes=1;RCK(FAILED(TRY()));b.Subresources.NumPlanes=0;
+    RCK(FAILED(record_primary_barrier_at(s,1,&g,0x32114)) && !s->primary);
+    DWORD view[]={28,4,0,0,0,0};SIZE_T alias=slot+32;
+    RCK(SUCCEEDED(xs_write_view(owner,0xa0,keys[0],view,alias)) && FAILED(TRY()));
+    RCK(SUCCEEDED(xs_write_view(owner,0xa0,keys[1],view,alias)));
+    (*(UINT64*)slot)++;RCK(FAILED(TRY()));(*(UINT64*)slot)--;
+    RCK(SUCCEEDED(TRY()) && s->primary==old->primary && s->primary_pin==keys[0] && s->reuse_epoch);
+    batch_step(s,B_ACQUIRED);
+    FLOAT clear[4]={0};pool_vtbl.clear(l,slot,clear,0,NULL);
+    ID3D12Resource *rb;UINT *pixel=NULL;
+    D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_READBACK,.CreationNodeMask=1,.VisibleNodeMask=1};
+    D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=512,.Height=1,
+        .DepthOrArraySize=1,.MipLevels=1,.SampleDesc.Count=1,.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+    RCK(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb)) &&
+        SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&pixel)));*pixel=0xdeadbeef;
+    D3D12_RESOURCE_BARRIER copy={.Transition={s->primary,0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&copy);
+    D3D12_TEXTURE_COPY_LOCATION dst={.pResource=rb,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .PlacedFootprint={0,{DXGI_FORMAT_R8G8B8A8_UNORM,1,1,1,256}}},src={.pResource=s->primary};
+    D3D12_BOX box={0,0,0,1,1,1};ID3D12GraphicsCommandList7_CopyTextureRegion(s->host,&dst,0,0,0,&src,&box);
+    copy.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;copy.Transition.StateAfter=D3D12_RESOURCE_STATE_RENDER_TARGET;
+    ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&copy);
+    RCK(SUCCEEDED(sl_close(l)) && FAILED(checked_startup_submit(foreign,1,&l,0,0)));
+    UINT64 stale=s->reuse_epoch;
+    RCK(FAILED(xs_reuse_common(owner,keys[0],old->primary,as_queue(foreign),&stale)));
+    RCK(SUCCEEDED(checked_startup_submit(q,1,&l,0,0)) && SUCCEEDED(queue_signal(q,done,1)));
+    RCK(FAILED(checked_startup_submit(q,1,&l,0,0)));
+    HANDLE event=CreateEventW(NULL,FALSE,FALSE,NULL);RCK(event && SUCCEEDED(xs_fence_event(done,1,event)) &&
+        WaitForSingleObject(event,150)==WAIT_TIMEOUT && *pixel==0xdeadbeef);
+    InterlockedExchange64((volatile LONG64*)ctrl,ref);
+    RCK(WaitForSingleObject(event,10000)==WAIT_OBJECT_0 && *pixel==0 && ID3D12Device_GetDeviceRemovedReason(d)==S_OK);
+    ID3D12Resource_Unmap(rb,0,NULL);ID3D12Resource_Release(rb);
+    CloseHandle(event);IUnknown_Release(done);IUnknown_Release(foreign);IUnknown_Release(l);IUnknown_Release(a);
+    return S_OK;
+#undef TRY
+#undef RCK
+}
+#endif
 #ifdef TEST_PRESENT_BRIDGE
 HANDLE test_pending_present;
 ULONG_PTR test_generation(IUnknown *q){return CONTAINING_RECORD(q,struct adapter,iface)->display.captured.generation;}

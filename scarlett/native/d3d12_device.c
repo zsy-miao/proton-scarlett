@@ -1291,6 +1291,54 @@ HRESULT xs_pair_writer(IUnknown *owner,IUnknown *key,ID3D12Resource *src,SIZE_T 
     ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
 }
 #endif
+#ifdef SCARLETT_PAIR_SUBMIT
+void xs_returned_common(IUnknown *pin,SIZE_T slot,UINT64 serial)
+{
+    struct color_resource *r=CONTAINING_RECORD(pin,struct color_resource,iface);
+    D3D12_RESOURCE_DESC rd;r->host->lpVtbl->GetDesc(r->host,&rd);
+    if(rd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Width!=3840 || rd.Height!=2160 ||
+       rd.DepthOrArraySize!=1 || rd.MipLevels!=1 || rd.Format!=DXGI_FORMAT_R8G8B8A8_UNORM ||
+       rd.SampleDesc.Count!=1 || rd.SampleDesc.Quality || rd.Flags!=(D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET|D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))return;
+    AcquireSRWLockExclusive(&r->owner->descriptor_lock);
+    if(r->claimed && r->flipping && r->writer && !r->multi_writer){
+        r->common_epoch=r->writer_epoch;r->common_slot=slot;r->common_serial=serial;
+    }
+    ReleaseSRWLockExclusive(&r->owner->descriptor_lock);
+}
+/* The caller holds the primary registration pin. A second recorded list can
+ * snapshot the same epoch but cannot submit after the first consumes it. */
+HRESULT xs_reuse_common(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch)
+{
+    if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !pin || !src)return E_INVALIDARG;
+    struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);
+    HRESULT hr=E_ACCESSDENIED;
+    AcquireSRWLockExclusive(&d->descriptor_lock);
+    struct color_resource *r=d->colors;while(r && &r->iface!=pin)r=r->next;
+    if(!r || r->owner!=d || r->host!=src || r->msaa || !r->slice || !r->claimed || !r->writer ||
+       r->multi_writer || r->flipping || !r->common_epoch || r->common_epoch!=r->writer_epoch ||
+       (commit && (commit!=r->writer || *epoch!=r->common_epoch)))goto out;
+    for(struct color_resource *it=d->colors;it;it=it->next)
+        if(it!=r && (it->host==src || it->slice==r->slice))goto out;
+    UINT hits=0,claims=0;
+    for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){
+        D3D12_CPU_DESCRIPTOR_HANDLE at;
+        if(SUCCEEDED(descriptor_slot(&h->iface,r->common_slot,&at,NULL)))claims++;
+        for(UINT j=0;h->records && j<h->count;j++)if(h->records[j].resource==src){
+            SIZE_T slot=h->start+(SIZE_T)j*h->stride;
+            if(slot!=r->common_slot || !r->common_serial || h->records[j].serial!=r->common_serial ||
+               h->records[j].rtv_key!=(UINT_PTR)pin || attachment_locked(h,slot,RTV,&at)!=src)goto out;
+            hits++;
+        }
+    }
+    if(hits==1 && claims==1){
+        *epoch=r->common_epoch;
+        if(commit){r->common_epoch=0;r->writer_epoch++;}
+        hr=S_OK;
+    }
+out:
+    ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
+}
+#endif
 IUnknown *xs_claim_view(IUnknown *owner,IUnknown *key,ID3D12Resource *src,ID3D12CommandQueue *q,SIZE_T slot,UINT64 serial,BOOL flip)
 {
     struct xbox_device *d=CONTAINING_RECORD(owner,struct xbox_device,iface);IUnknown *pin=NULL;
@@ -1298,6 +1346,9 @@ IUnknown *xs_claim_view(IUnknown *owner,IUnknown *key,ID3D12Resource *src,ID3D12
     for(struct color_resource *r=d->colors;r;r=r->next) if(&r->iface==key && r->slice && r->host==src && r->writer==q && !r->multi_writer && !r->flipping) {
         for(struct desc_heap *h=d->rtv_heaps;h;h=h->next){D3D12_CPU_DESCRIPTOR_HANDLE cpu;
             if(attachment_locked(h,slot,RTV,&cpu)==src && h->records[(slot-h->start)/h->stride].serial==serial){
+#ifdef SCARLETT_PAIR_SUBMIT
+                if(flip)for(struct color_resource *it=d->colors;it;it=it->next)it->common_epoch=0;
+#endif
                 r->claimed=TRUE;r->flipping=flip;pin=key;IUnknown_AddRef(pin);break;
             }
         }

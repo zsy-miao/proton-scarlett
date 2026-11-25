@@ -60,6 +60,10 @@ HRESULT xs_pair_writer(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,ID3D
 HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);
 IUnknown *xs_claim_view(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,SIZE_T,UINT64,BOOL);
 void xs_finish_flip(IUnknown *);
+#ifdef SCARLETT_PAIR_SUBMIT
+void xs_returned_common(IUnknown *,SIZE_T,UINT64);
+HRESULT xs_reuse_common(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *);
+#endif
 #endif
 HRESULT xs_clear_primary_rtv(IUnknown *owner,ID3D12GraphicsCommandList7 *list,SIZE_T slot,ID3D12Resource *primary,UINT64 *serial);
 /* Borrowed recorder, for internal typed command translation only. */

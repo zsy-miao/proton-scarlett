@@ -60,6 +60,9 @@ static void CALLBACK publish_marker(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
         if (j->m->counter) fprintf(stderr,"WSI producer gate satisfied tick=%llu polls=%u threshold=%llu\n",GetTickCount64(),j->polls,j->m->threshold);
 #endif
+#ifdef XS_OBSERVE_COUNTER_RELEASE
+        if (j->m->counter) XS_OBSERVE_COUNTER_RELEASE();
+#endif
         if (FAILED(ID3D12Fence_Signal(j->fence,2)) &&
             SUCCEEDED(ID3D12Device_GetDeviceRemovedReason(j->device))) xs_stop();
     }

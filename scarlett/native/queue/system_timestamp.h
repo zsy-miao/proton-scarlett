@@ -3,6 +3,7 @@ struct system_timestamp {
     LONG refs;
     BOOL second_bank;
 #ifdef SCARLETT_PAIR_SUBMIT
+    BOOL third_wb;
     HANDLE cpu_section;
     UINT64 cpu_addr;
     SIZE_T cpu_offset;
@@ -56,19 +57,13 @@ static BOOL active_stamp(UINT64 addr,const struct scarlett_section_info *pool)
 }
 #ifdef SCARLETT_PAIR_SUBMIT
 /* Validate the producer record through the very section used for the GPU import. */
-static BOOL third_wb_target(UINT64 addr,const struct scarlett_section_info *dst)
+static BOOL wb_record(UINT64 head,const struct scarlett_section_info *dst,UINT_PTR record,SIZE_T record_off)
 {
-    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),record;DWORD bank,index;SIZE_T n;
-    if(!dst->section || dst->offset!=0x419f258 || dst->view_size!=0x49400000 ||
-       addr-(UINT_PTR)dst->base!=dst->offset ||
-       !ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a0c),&bank,4,&n) || n!=4 || bank!=3 ||
-       !ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0x75dedb0),&index,4,&n) || n!=4 || index!=1 ||
-       !ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a18+3*8),&record,sizeof record,&n) || n!=sizeof record ||
-       record-(UINT_PTR)dst->base!=0x3fb30c0)return FALSE;
+    if(record-(UINT_PTR)dst->base!=record_off)return FALSE;
     struct scarlett_section_info owner;
     if(FAILED(scarlett_query_section(0x5343000c,(void*)record,96,&owner)))return FALSE;
     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
-    BOOL valid=owner.base==dst->base && owner.view_size==dst->view_size && owner.offset==0x3fb30c0 &&
+    BOOL valid=owner.base==dst->base && owner.view_size==dst->view_size && owner.offset==record_off &&
         owner.section && same && same(owner.section,dst->section);
     if(owner.section)CloseHandle(owner.section);
     if(!valid)return FALSE;
@@ -76,11 +71,24 @@ static BOOL third_wb_target(UINT64 addr,const struct scarlett_section_info *dst)
     if(FAILED(scarlett_query_section_handle(0x5343000b,NULL,dst->view_size,&alias,dst->section)))return FALSE;
     DWORD w[24];UINT64 used,mirror,array;
     valid=alias.base && alias.view_size==dst->view_size;
-    if(valid)memcpy(w,(BYTE*)alias.base+0x3fb30c0,sizeof w);
+    if(valid)memcpy(w,(BYTE*)alias.base+record_off,sizeof w);
     if(!alias.base || !VirtualFree(alias.base,0,MEM_RELEASE) || !valid)return FALSE;
     memcpy(&used,w+18,8);memcpy(&mirror,w+20,8);memcpy(&array,w+22,8);
-    return w[2]==2048 && w[3]==8 && (w[14]>>16)==2 && array==addr-8 &&
+    return w[2]==2048 && w[3]==8 && (w[14]>>16)==2 && array==head-8 &&
         mirror==array && used==array+0x4010;
+}
+static BOOL live_wb_head(UINT64 addr,const struct scarlett_section_info *dst,UINT bank,SIZE_T head_off,SIZE_T record_off)
+{
+    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),record;DWORD active,index;SIZE_T n;
+    return dst->section && dst->offset==head_off && dst->view_size==0x49400000 && addr-(UINT_PTR)dst->base==head_off &&
+        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a0c),&active,4,&n) && n==4 && active==bank &&
+        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0x75dedb0),&index,4,&n) && n==4 && index==1 &&
+        ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a18+bank*8),&record,sizeof record,&n) && n==sizeof record &&
+        wb_record(addr,dst,record,record_off);
+}
+static BOOL third_wb_target(UINT64 addr,const struct scarlett_section_info *dst)
+{
+    return live_wb_head(addr,dst,3,0x419f258,0x3fb30c0);
 }
 static HRESULT prepare_timestamp(ID3D12Device *d,UINT64 addr,UINT prefix,struct system_timestamp **out,SIZE_T *resolve)
 #else
@@ -93,7 +101,11 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     if (wb && FAILED(hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i))) return hr;
     const UINT window=65536;
 #ifdef SCARLETT_PAIR_SUBMIT
-    BOOL second=prefix==1 && (i.offset==0x419aa38 || (i.section && i.view_size==0x49400000 && active_stamp(addr,&i)));
+    BOOL second=FALSE;
+    if(prefix==1){
+        if(wb && i.offset==0x419aeb8)second=live_wb_head(addr,&i,2,0x419aeb8,0x3fb3050);
+        else second=i.offset==0x419aa38 || (i.section && i.view_size==0x49400000 && active_stamp(addr,&i));
+    }
     if (!i.section || i.view_size!=0x49400000 || i.offset!=addr-(UINT_PTR)i.base || i.offset>i.view_size-8 ||
         (prefix==2 ? !wb || !third_wb_target(addr,&i) :
         wb && !second && i.offset!=0x4196218 && i.offset!=0x4196698 && i.offset!=0x41964a8)) {
@@ -107,6 +119,9 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     struct system_timestamp *t=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *t);
     if (!t) {CloseHandle(i.section);return E_OUTOFMEMORY;}
     t->refs=1;t->second_bank=second;
+#ifdef SCARLETT_PAIR_SUBMIT
+    t->third_wb=prefix==2;
+#endif
     ID3D12Heap *heap=NULL;
     if (wb) {
         HRESULT (WINAPI *open)(ID3D12Device *,SIZE_T,HANDLE,HANDLE *,ID3D12Heap **)=(void *)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettWbHeapV1");
@@ -123,7 +138,7 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
     D3D12_QUERY_HEAP_DESC qd={D3D12_QUERY_HEAP_TYPE_TIMESTAMP,1,1};
 #ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
 #ifdef SCARLETT_PAIR_SUBMIT
-    t->successor_bank=wb && second && i.offset==0x419aa38;
+    t->successor_bank=wb && second && (i.offset==0x419aa38 || i.offset==0x419aeb8);
 #endif
     if (i.offset==0x4196218
 #ifdef SCARLETT_PAIR_SUBMIT
@@ -221,7 +236,8 @@ static inline BOOL cpu_successor_target(struct system_timestamp *head,struct sys
 static HRESULT successor_target(struct system_timestamp *t,UINT64 addr,UINT bank,UINT64 indices,UINT_PTR record)
 {
     if(!t || !t->successor_bank || !t->retained || !t->section || !t->dst || !t->query ||
-       t->tail_recorded || bank!=2 || indices!=1 || addr!=t->tail_addr || t->tail_offset!=0x419aa30)return E_INVALIDARG;
+       t->tail_recorded || bank!=2 || indices!=1 || addr!=t->tail_addr ||
+       (t->tail_offset!=0x419aa30 && t->tail_offset!=0x419aeb0))return E_INVALIDARG;
     struct scarlett_section_info i,owner;
     HRESULT hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i);
     if(FAILED(hr))return hr;
@@ -230,7 +246,8 @@ static HRESULT successor_target(struct system_timestamp *t,UINT64 addr,UINT bank
     BOOL valid=base && addr>=base && record>=base && record-base==0x3fb3050 &&
         addr-base==t->tail_offset && i.offset==t->tail_offset && i.view_size==0x49400000 &&
         i.section && same && same(i.section,t->section);
-    if(valid){
+    if(valid && t->tail_offset==0x419aeb0)valid=wb_record(addr+8,&i,record,0x3fb3050);
+    else if(valid){
         hr=scarlett_query_section(0x5343000c,(void*)record,96,&owner);
         valid=SUCCEEDED(hr) && owner.section && same(owner.section,t->section) &&
             owner.base==i.base && owner.view_size==i.view_size && owner.offset==record-base &&

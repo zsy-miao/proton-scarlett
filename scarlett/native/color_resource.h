@@ -39,6 +39,10 @@ struct color_resource {
 #if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
     UINT64 writer_epoch;
 #endif
+#ifdef SCARLETT_PAIR_SUBMIT
+    UINT64 common_epoch,common_serial;
+    SIZE_T common_slot;
+#endif
     IUnknown iface;
     LONG refs;
     struct xbox_device *owner;

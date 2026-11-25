@@ -1126,6 +1126,23 @@ corresponding render list closed without a matching pipeline bind or draw.
 
 ### Cross-build the guarded token-2 checkpoint
 
+The paired build also recognizes the alternate bank-2 WB head/tail at
+`419aeb8/419aeb0` after checking the live owner record through the same
+section. On the fresh bank-3 AMD list, the `+238` post from `+4ed46aa`
+writes `29a5ee15` at `+9c`; the unsigned `+250` wait from `+2484b12`
+splits after op six. The RTX alias post has already split after op five.
+The native and alias cases keep the original control backing through the wait.
+
+Only the RTX alias path can reacquire the returned primary at `+32113`.
+Token 1 must have completed the release and COMMON-restoring copy and
+flipped ring 0→1. Recording checks the owner, resource, unique slice and
+RTV slot/serial. Submission checks and consumes the writer epoch under
+the owner lock on the original queue; the private fence guards retirement.
+The `TEST_REACQUIRE` ordered-present fixture checks an actual cleared pixel
+after the held wait, plus pre-flip, wrong queue, stale, alias and invalid
+barrier rejection. `TEST_NATIVE_THIRD_WAIT` and `TEST_RTX_THIRD_WAIT`
+select the corresponding synthetic `test-marker-bank.c` cases.
+
 The default bridge has no pair recorder or executor. `SCARLETT_PAIR_SUBMIT`
 enables recording, inventory and guest Signal-3 tracing. Ordinary two-list
 dispatch also requires `SCARLETT_GUARDED_PAIR_DISPATCH`; `PAIR_INVENTORY_ONLY`
