@@ -1446,6 +1446,17 @@ check and reached epoch 2. The diagnostic did not distinguish the helper's
 internal capture and span checks. It exited 2; only token 1 returned and
 the display count stayed at 1.
 
+The next locked RTX diagnostic isolated `live.holds != 3` on the clear.
+The same recording passed the three-hold check at the returned `+190`
+bind; at `+120` the count was five. The retained clear (100 bytes, two
+holds when recorded) and first VB (4,080 bytes, three holds when recorded)
+shared a placed resource, capture, node and generation. The live clear
+still matched its saved node, generation, stamp and chunk offset `0x1ff80`.
+The helper returned before reading the live VB. R2 keeps the live count at
+three at this point. The diagnostic did not identify the two additional
+holds. The display count stayed at 1 and the capture was blank apart from
+the cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
