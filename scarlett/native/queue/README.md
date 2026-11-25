@@ -1134,6 +1134,22 @@ The furthest RTX diagnostic reached `+190` (return `+33317`): the game
 supplied the original offscreen RTV **and** DSV (serials 119 and 121).
 The color-only bind rejected the DSV.
 
+### Color and depth rebound
+
+On staged provider `31b441c9`, four focused fixtures passed before the
+ordinary pair. AMD stopped at the offscreen barrier (`+490`, return
+`+32113` from `+332e1`). RTX passed the color/depth bind and stopped at
+the next root shader-resource address (`+160`, return `+32327` from
+`+3346d`). Both displayed token 1 only. No qualified composite factory
+return or matching bind was observed in either retail run.
+
+In the RTX fixture the carried depth/stencil contents were read back after
+the fence along with a red offscreen target and black primary. The same
+tested factory created and explicitly bound the private textured pipeline
+on both GPUs. A separate fixture for the earlier color pass produced zero
+RGBA with the measured zero multiplier, and the expected nonzero RGBA
+with nonzero fixture inputs.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
