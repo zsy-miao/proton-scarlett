@@ -1188,6 +1188,10 @@ depth and stencil. Both passed before ordinary retail ran.
 | AMD | Release-side timestamp, `+240`, return `+2482b37` from `+a1c42c`. Token 2 issued; no pair end was recorded. | Token 1 returned successfully, count 0→1. |
 | RTX | Primary transition, `+490`, return `+32113` from `+50a624f`. The token-2 pair submitted and `Signal(3)` succeeded. | Token 1 returned `DXGI_ERROR_WAS_STILL_DRAWING` after 251 ms; count stayed at 0. |
 
+RTX subsequently logged completion of the same token-1 fence it had
+timed out on. The token-2 pair had a different fence; its retirement was
+not observed. The log does not identify what delayed token 1.
+
 Neither ordinary run returned `PresentX(2)` successfully or showed a
 recognizable image. Separate diagnostics reached the next list: AMD
 requested the three-vertex clear; RTX recorded it to RTV/DSV 119/121 and
