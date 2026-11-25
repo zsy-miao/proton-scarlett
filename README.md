@@ -9,8 +9,8 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
 | How far does it get? | Both GPUs have reached the game's request to show frame 2. Only the first, blank frame has reached the display. |
-| What's blocking it? | Both GPUs stopped while selecting shader inputs. In the [RTX diagnostic](scarlett/native/queue/README.md#after-the-raw-buffer-view), the earlier GPU work was still pending when the game selected its inputs; the passing test had finished that work first. |
-| What did the latest test show? | The staged RTX provider accepted the five holds when the test supplied the expected raw and constant buffers after earlier GPU work completed. It rejected an unrelated fifth allocation. |
+| What's blocking it? | In the [latest staged runs](scarlett/native/queue/README.md#after-the-raw-buffer-view), RTX selected its shader inputs and then stopped at a resource barrier. AMD still stopped at shader-input selection. |
+| What did the latest test show? | RTX can record the selection while earlier GPU work is pending. A hardware test verified that an unrelated allocation is still rejected and the new commands cannot yet be submitted. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress

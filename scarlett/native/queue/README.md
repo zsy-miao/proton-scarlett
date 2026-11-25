@@ -1518,6 +1518,21 @@ The samples do not establish when the fence later completed. Exit was 2;
 only token 1 returned, count stayed at 1, and the six unique decoded
 images showed blank black/white frames and a cursor.
 
+Stage `c16862ab` allows the logical selection with the original fence
+at 0 or 1, after the same queue, generation and allocation checks.
+RTX fixture `eed25eb6` held the fence at 0 through selection and both
+submission refusals. An unrelated fifth allocation with the RAW32 record
+still live was rejected. The fixture opened the gate only after these
+checks; the primary readback was black/black/blue and both DSV planes
+remained unchanged.
+
+On the identical ordinary build, RTX selected `[372469,372472)` at epoch
+2 with original end `77b5e4e0` sampled at 0. Its next refusal was the
+`+490` resource barrier, return `+32113` from `+24847a8`. Its operands
+were not captured. AMD stopped at `+120`, return `+32206` from `+3346d`.
+Both runs exited 2; both entered `PresentX(2)` without a logged return,
+the display count stayed at 1, and neither capture showed game content.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
