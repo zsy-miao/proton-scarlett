@@ -1267,6 +1267,20 @@ In the separate AMD diagnostic the first refusal was a pipeline bind
 breakpoint `+5a92b11` during token 1. Neither diagnostic supplied a new
 vertex-buffer view.
 
+Two later diagnostics on the same baseline passed the release timestamp
+and entered `PresentX(2)`. On both, guest `Signal(3)` succeeded; the
+original pair end still read 0 at the first refusal. Neither logged a
+token-2 return or a display count above 1.
+
+* AMD rejected an explicit bind of color pipeline #42 while clear pipeline
+  #4 was still bound. The rejected wrapper belonged to the same device;
+  its root differed from the active one.
+* RTX reached the replacement vertex view after selecting the one-cell
+  table. The supplied view was slot 0, 4,080 bytes, stride 24. Its entire
+  range at chunk offset `0x1df10` fit the original live allocation. It
+  shared the first view's backing and generation but named different bytes
+  (first view at `0x1ef30`). The diagnostic did not read the table payload.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
