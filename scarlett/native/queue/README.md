@@ -1475,6 +1475,15 @@ sampled at 1 before the watch armed. Despite that completion,
 The earlier pair's completion does not establish that the later
 recording released either allocation or that a draw consumed it.
 
+CPU tests of the staged `c2cc52b9` checks isolated two ways that this
+state is refused. With matching registration and the expected saved clear
+and first-VB spans, the held-input check returns on its first live read
+when the count is five. Independently, the read-only returned-output
+check accepts a pending fence (0) but rejects a completed fence (1).
+Using its non-null destination mode at 1 would actually copy a descriptor.
+The logical setter needs a validation-only test for the completed pair
+and evidence for both new allocations.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
