@@ -1,6 +1,6 @@
 /* Only included by the opt-in factory. q is an owned 688-byte snapshot. */
 #include "im96_host_dxil.h"
-HRESULT xs_im96_private_layout(IUnknown*,IUnknown*,ID3D12RootSignature**);
+static HRESULT im96_pipeline_root(IUnknown*,IUnknown*,ID3D12RootSignature**);
 
 static const BYTE im96_fixed[]={0x6a,0x1a,0x91,0xfc,0x96,0x6f,0x57,0x9f,0x3e,0x7e,0x5c,0xf9,0xf0,0xf4,0x05,0xcf,0xa3,0xee,0x4c,0x5b,0x9d,0x31,0x3c,0x28,0x77,0x8b,0xd0,0x9f,0xd9,0x5a,0x21,0xf4};
 static HRESULT im96_prepare(IUnknown *device,UINT_PTR *q,IUnknown *alias,const void *vs,const void *ps)
@@ -28,8 +28,8 @@ static HRESULT im96_prepare(IUnknown *device,UINT_PTR *q,IUnknown *alias,const v
            elements[k].InputSlotClass!=ia[k].InputSlotClass || elements[k].InstanceDataStepRate)return E_NOTIMPL;
     }
     ID3D12RootSignature *private_root=NULL;
-    HRESULT hr=xs_im96_private_layout(device,alias,&private_root);
-    if(FAILED(hr))return hr; /* success transfers an alias ref and a host root ref */
+    HRESULT hr=im96_pipeline_root(device,alias,&private_root);
+    if(FAILED(hr))return hr;
     q[1]=(UINT_PTR)private_root;q[3]=(UINT_PTR)im96_vs;q[4]=sizeof im96_vs;q[6]=(UINT_PTR)im96_ps;q[7]=sizeof im96_ps;
     q[15]=(UINT_PTR)im96_gs;q[16]=sizeof im96_gs;q[77]=(UINT_PTR)ia;
     q[79]=((UINT64)D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE<<32)|14;

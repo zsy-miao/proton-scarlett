@@ -32,7 +32,7 @@ int (*check_hash)(const void*,UINT,const BYTE*);
 #define shader_digest_matches check_hash
 static int copy_in(void*d,const void*s,size_t n){if(!s)return 0;memcpy(d,s,n);return 1;}
 int acquired=0;
-HRESULT xs_im96_private_layout(IUnknown *device,IUnknown *alias,ID3D12RootSignature **root){
+static HRESULT im96_pipeline_root(IUnknown *device,IUnknown *alias,ID3D12RootSignature **root){
     if(device!=(void*)33 || alias!=(void*)42)return -3;
     ++acquired;*root=(void*)96;return 0;}
 #include "im96_pipeline.h"

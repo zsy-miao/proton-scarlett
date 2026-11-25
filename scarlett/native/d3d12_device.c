@@ -1675,6 +1675,18 @@ HRESULT xs_im96_private_layout(IUnknown *owner,IUnknown *alias,ID3D12RootSignatu
     if(FAILED(hr))IUnknown_Release(alias);
     return hr;
 }
+#ifdef XS_IM96_FACTORY
+static HRESULT im96_pipeline_root(IUnknown *owner,IUnknown *identity,ID3D12RootSignature **out)
+{
+    if(!out)return E_POINTER;
+    ID3D12RootSignature *root=retain_graphics_kind(owner,identity,ROOT_IM96);
+    if(!root)return xs_im96_private_layout(owner,identity,out);
+    /* The registry pinned the guest identity; the PSO wrapper also owns a host root ref. */
+    ID3D12RootSignature_AddRef(root);
+    *out=root;
+    return S_OK;
+}
+#endif
 #ifdef SCARLETT_PAIR_SUBMIT
 ID3D12PipelineState *xs_pin_rect42(IUnknown *owner,ID3D12Device *device,IUnknown *identity,IUnknown **required)
 {

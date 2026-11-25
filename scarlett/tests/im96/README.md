@@ -132,8 +132,10 @@ No upstream implementation copied.
 
 `XS_IM96_FACTORY` is a build-time opt-in. The 688-byte stream must match
 the normalized fixed-state digest, both entire guest stages, the three
-IA elements and a live b27 alias on the same device. The factory owns
-the private host root and PSO through the returned wrapper. Only an
+IA elements and a live canonical #96 root or b27 alias on the same device.
+The factory retains the canonical host root directly; for b27 it creates
+the private #96 layout. The returned wrapper owns the guest identity, host
+root and PSO. Only an
 explicit `+c8` can install them on the recorder. This path does not
 admit a draw, bind the used table or qualify a CBV lifetime.
 
@@ -161,15 +163,24 @@ each SHA-256 and emits the header in the build directory. The existing
 private fixture directory supplies the inputs; they are not distributed.
 `game/` contains the hardware fixture; the sibling `d3d12_xs.dll` is
 the opt-in paired provider built from the same device source. The fixture
-links the recorder directly. It exercises real device creation, checked
+links the recorder directly. It checks both factory root kinds, foreign and
+stale roots, and guest/host cleanup after a fixture-only host PSO failure.
+It exercises real device creation, checked
 factory inputs, an explicit bind on a synthetic post-clear list, repeated
 alias selection and wrapper retirement. The CPU installer test separately
 checks root-before-PSO ordering. A successful hardware run exits zero
 and prints `PASS F96 factory, explicit +c8 and wrapper retirement`.
-It issues no draw or queue submission. The same fixture (`d082991f`)
+It issues no draw or queue submission. The earlier b27-only fixture (`d082991f`)
 passed on RADV and RTX: creation and publication succeeded, the explicit
 bind selected the private root and PSO, and closing and releasing the list
 retired the wrapper.
+
+Fixture `ab2cbb8d` passed on both RADV and RTX. It created a real host
+pipeline with the registered canonical root and verified that both root
+kinds released their references after a host creation failure. The b27
+path also installed the pipeline on explicit `+c8`. The measured retail
+request used b27; this canonical-root result does not explain why the
+pipeline was unavailable when the game selected the pass.
 
 Tool pin: DXC `1.9(dev;4950-b106a961)`; `LICENSE-LLVM.txt` (UI/NCSA)
 and `LICENSE-MS.txt` (Microsoft DirectX Shader Compiler terms) accompany
