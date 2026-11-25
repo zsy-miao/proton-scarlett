@@ -1658,6 +1658,18 @@ Token 2 had a completed sync fence but no submitted rendering batch or
 `PresentX(2)` entry. The count stayed at 1; private review found only
 blank frames and a cursor.
 
+The two saved traces used the same timestamp validation code. In the
+refused run the serial-17 producer had a mapped CPU section, head address
+`0x799acc8` and offset `0x419acc8`. The successor requested `0x799acc0`:
+the required eight-byte spacing holds, but the head and requested tail
+offsets (`0x419acc8/0x419acc0` relative to the producer's base) match
+neither admitted pair (`0x419aa38/0x419aa30` or `0x419aeb8/0x419aeb0`).
+The run that reached the seven-mip query closed and submitted serial 17
+with two distinct mapped stamps. It did not log which admitted pair it
+used. The refused run did not log tail preparation or the live record, so
+the offsets identify a definite mismatch, not the first returning branch
+or proof that the successor used the same backing.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
