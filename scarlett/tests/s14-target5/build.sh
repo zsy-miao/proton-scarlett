@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 2 && ($1 == fence || $1 == dispatch || $1 == queued4 || $1 == layouts) ]] || {
-    echo "usage: bash build.sh {fence|dispatch|queued4} BANK3_OUTPUT | layouts COMBINED_OUTPUT" >&2; exit 2;
+mode=${1:-}
+case $mode in
+    fence|dispatch|queued4) pre=preimages ;;
+    layouts) pre=combined-preimages ;;
+    indexed|sibling) pre=layouts-preimages ;;
+    *) pre= ;;
+esac
+[[ $# == 2 && -n $pre ]] || {
+    echo "usage: bash build.sh {fence|dispatch|queued4} BANK3_OUTPUT | layouts COMBINED_OUTPUT | {indexed|sibling} LAYOUTS_OUTPUT" >&2; exit 2;
 }
-mode=$1
 here=$(cd "$(dirname "$0")" && pwd)
 base=$(realpath "$2")
 check(){ sha256sum --strict -c "$here/$1.sha256"; }
-if [[ $mode == layouts ]]; then (cd "$base" && check combined-preimages); else (cd "$base" && check preimages); fi
+(cd "$base" && check "$pre")
 out=$(mktemp -d "${TMPDIR:-/tmp}/s14-$mode.XXXXXXXX")
 echo "Build directory: $out"
 cd "$out"
@@ -33,9 +39,23 @@ provider(){
     "$cc" -shared -s -Wl,--no-insert-timestamp,--image-base,0x24d560000 \
         "$dir/device.o" "$dir/queue.o" inputs/d3d12_vm.o "$n/d3d12_xs.def" -ld3d12 -ldxgi -o "$dir/d3d12_xs.dll"
 }
-if [[ $mode == layouts ]]; then
-    mkdir off on original fixture
+if [[ $mode == layouts || $mode == indexed || $mode == sibling ]]; then
     f+=(-DXS_TRACE_S14_SUCCESSOR -DXS_RTX_S14_JOB -DXS_RTX_S14_QUEUED4 -DXS_AMD_RETURNED_FIVE)
+    mkdir off on fixture
+fi
+if [[ $mode == indexed || $mode == sibling ]]; then
+    apply "$mode"
+    f+=(-DXS_RTX_S14_ALT_CPU)
+    provider off
+    cmp off/d3d12_xs.dll "$base/on/d3d12_xs.dll"
+    if [[ $mode == indexed ]]; then f+=(-DXS_RTX_S14_INDEXED_ALIAS); else f+=(-DXS_RTX_S14_ABA); fi
+    provider on
+    fixture test-job-entry test-job-entry queue fixture -DTEST_SR_REUSE
+    check "$mode-outputs"
+    exit 0
+fi
+if [[ $mode == layouts ]]; then
+    mkdir original
     apply alt-cpu
     provider off
     cmp off/d3d12_xs.dll "$base/combined/d3d12_xs.dll"

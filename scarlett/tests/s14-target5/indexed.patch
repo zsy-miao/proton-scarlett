@@ -1,0 +1,279 @@
+--- a/scarlett/native/queue/prefix_marker.h
++++ b/scarlett/native/queue/prefix_marker.h
+@@ -6,6 +6,9 @@
+     volatile LONG *word;
+     UINT value;
+     SIZE_T generation;
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    UINT_PTR guest_word;
++#endif
+     struct prefix_marker *parent; /* Post marker shares the prefix alias. */
+     HANDLE control_section;
+     UINT native_post; /* Value published at offset 12, or zero before the post. */
+--- a/scarlett/native/queue/s14-record.h
++++ b/scarlett/native/queue/s14-record.h
+@@ -20,6 +20,9 @@
+     if(!s->closed || s->error!=S_OK || !s->reservation || s->offered || s->seal || s->host_exposed ||
+        !s->sr.end || !s->source.needs_publication || !s->previous_vb.needs_publication ||
+        !s->vb.needs_publication || !s->stamp || !s->stamp->dst || !s->stamp->query ||
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++       !s->stamp->indexed_allocator || s->stamp->indexed_allocator!=s->allocator ||
++#endif
+        !s->output_heap || !s->output_cpu.ptr || !s->primary_cleared || s->primary_released ||
+        s->primary_key!=(UINT_PTR)s->primary_pin || s->output_serial!=14 || s->clear_serial!=14 ||
+        s->clear_slot!=s->output_slot || s->reuse_epoch!=1 || s->alloc_generation ||
+@@ -72,6 +75,53 @@
+         OK14(xs_live_output(s->pool_owner,s->primary_pin,s->primary,s->s14_slot,14));
+ }
+ static BOOL s14_successor(struct startup_list *s){return obs14_successor(NULL,s);}
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++static BOOL live_alias_word(UINT_PTR word,SIZE_T generation)
++{
++    struct scarlett_section_info id;
++    return generation && SUCCEEDED(scarlett_query_section(0x53430015,(void*)word,4,&id)) &&
++        id.view_size==65536 && word-(UINT_PTR)id.base==0x98 && id.offset==generation;
++}
++static BOOL fresh_indexed_allocator(struct startup_list *s)
++{
++    return s->allocator && s->allocator->lpVtbl==&at.prefix && !s->alloc_generation &&
++        !InterlockedCompareExchange64(&CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface)->generation,0,0);
++}
++/* The producer import, live pair and bank record must still be the same CPU section. */
++static BOOL live_indexed_pair(struct system_timestamp *h)
++{
++    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),records[4]={0};
++    UINT bank,flags;UINT64 indices;
++    if(!h->cpu_section || !h->mapping || !h->dst || !h->query || h->retained || h->section || h->obs_wb ||
++       h->second_bank || h->third_wb || (h->cpu_offset!=0x419f258 && h->cpu_offset!=0x419f6d8) ||
++       h->obs_size!=0x49400000 || h->cpu_addr-(UINT_PTR)h->obs_base!=h->cpu_offset ||
++       !lease_read(exe+0xa943a0c,&bank,4) || bank!=3 || !lease_read(exe+0x75dedb0,&indices,8) || indices!=1 ||
++       !lease_read(exe+0xa943a18+3*8,records+3,8) || records[3]-(UINT_PTR)h->obs_base!=0x3fb30c0)return FALSE;
++    struct scarlett_section_info owner={0},pair={0};
++    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
++    BOOL valid=same && SUCCEEDED(scarlett_acquire_section((void*)records[3],96,&owner)) &&
++        SUCCEEDED(scarlett_acquire_section((void*)(h->cpu_addr-8),16,&pair)) &&
++        owner.section && pair.section && same(owner.section,h->cpu_section) && same(pair.section,h->cpu_section) &&
++        owner.base==h->obs_base && pair.base==owner.base && owner.view_size==h->obs_size && pair.view_size==h->obs_size &&
++        owner.offset==0x3fb30c0 && pair.offset==h->cpu_offset-8 &&
++        lease_read(records[3]+14*sizeof(DWORD),&flags,sizeof flags) && flags==0x20001 &&
++        indexed_stamp(h->cpu_addr,&owner,bank,1,records);
++    if(owner.section)CloseHandle(owner.section);
++    if(pair.section)CloseHandle(pair.section);
++    return valid;
++}
++static void qualify_indexed_alias(struct startup_list *s,struct system_timestamp *h)
++{
++    struct prefix_marker *m=s->marker;
++    if(s->phase!=B_REBOUND || s->nops!=4 || memcmp(s->ops,"\x20\x47\x20\x48",4) ||
++       s->host_exposed || s->head || s->post || s->primary || s->deferred || !s->heaps[0] || !s->heaps[1] ||
++       !m || m->value!=2 || !m->alias || m->buffer || m->heap || m->control_section ||
++       m->word!=(LONG*)((BYTE*)m->alias+0x98) || !live_alias_word(m->guest_word,m->generation) ||
++       !fresh_indexed_allocator(s) || !xs_is_rtx3070(s->device) || !live_indexed_pair(h))return;
++    h->indexed_allocator=s->allocator;IUnknown_AddRef(h->indexed_allocator);
++    h->marker_word=m->guest_word;h->marker_generation=m->generation;
++}
++#endif
+ static HRESULT s14_timestamp_gate(const char **obs14_scope,struct startup_list *s,UINT64 addr)
+ {
+     struct system_timestamp *h=s->s14_head,*tail=NULL;
+@@ -80,7 +130,9 @@
+ #ifdef XS_RTX_S14_ALT_CPU
+     /* Select once from the retained producer; never allow the tail to select its partner. */
+     const SIZE_T tail_off=h && h->cpu_offset==0x419f258?0x419f250:0x419f6d0;
++#ifndef XS_RTX_S14_INDEXED_ALIAS
+     const BOOL alternate=tail_off==0x419f250;
++#endif
+ #define HEAD_OFF (tail_off+8)
+ #define TAIL_OFF tail_off
+ #define TAIL_RESOLVE (tail_off%65536)
+@@ -108,7 +160,16 @@
+     if(BAD14(!tail->cpu_section) || BAD14(!same(h->cpu_section,tail->cpu_section)) || TERM14(BAD14,tail->cpu_offset!=TAIL_OFF) ||
+        BAD14(tail->cpu_addr!=addr) || TERM14(BAD14,off!=TAIL_RESOLVE) || BAD14(!tail->mapping) || BAD14(tail->retained) || BAD14(tail->section) ||
+        BAD14(tail->mapping==h->mapping) || BAD14(tail->dst==h->dst) || BAD14(tail->query==h->query)){drop_timestamp(tail);return E_ACCESSDENIED;}
+-#ifdef XS_RTX_S14_ALT_CPU
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++#ifdef XS_TEST_S14_AFTER_IMPORT
++    XS_TEST_S14_AFTER_IMPORT();
++#endif
++    if(BAD14(!h->indexed_allocator || h->indexed_allocator!=s->allocator) || BAD14(!fresh_indexed_allocator(s)) ||
++       BAD14(!live_alias_word(h->marker_word,h->marker_generation)) || BAD14(!live_indexed_pair(h)) ||
++       BAD14(tail->obs_base!=h->obs_base || tail->obs_size!=h->obs_size || tail->obs_wb)){
++        drop_timestamp(tail);return E_ACCESSDENIED;
++    }
++#elif defined(XS_RTX_S14_ALT_CPU)
+     if(alternate){
+ #ifdef XS_TEST_S14_AFTER_IMPORT
+         XS_TEST_S14_AFTER_IMPORT();
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -505,6 +505,9 @@
+     hr=scarlett_query_section(0x53430015,(void *)addr,4,&id);
+     if (FAILED(hr)) {drop_marker(m);return hr;}
+     m->generation=id.offset;
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    m->guest_word=addr;
++#endif
+     hr=scarlett_query_section(0x53430120,(void *)addr,4,&lease);
+     if (FAILED(hr)) {HeapFree(GetProcessHeap(),0,m);return hr;}
+     m->alias=lease.base; m->word=(LONG *)((BYTE *)lease.base+lease.offset); m->value=value;
+@@ -693,6 +696,16 @@
+     }
+ #endif
+     if (s->stamp) return E_NOTIMPL;
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    if(s->marker && s->marker->alias && s->marker->value==2){
++        SIZE_T off;struct system_timestamp *h;
++        HRESULT hr=prepare_timestamp(s->device,addr,0,&h,&off);
++        if(FAILED(hr))return hr;
++        qualify_indexed_alias(s,h);
++        emit_q0(h,s->host,off);s->stamp=h;
++        return S_OK;
++    }
++#endif
+     return record_timestamp(s->device,s->host,addr,s->marker && s->marker->value==1,&s->stamp);
+ }
+ static inline HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+--- a/scarlett/native/queue/system_timestamp.h
++++ b/scarlett/native/queue/system_timestamp.h
+@@ -9,6 +9,12 @@
+ struct system_timestamp {
+     LONG refs;
+     BOOL second_bank,third_wb;
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    /* Non-null only for an independently qualified value-2 producer. */
++    IUnknown *indexed_allocator;
++    UINT_PTR marker_word;
++    SIZE_T marker_generation;
++#endif
+ #ifdef SCARLETT_PAIR_SUBMIT
+     HANDLE cpu_section;
+     UINT64 cpu_addr;
+@@ -32,6 +38,9 @@
+ static void drop_timestamp(struct system_timestamp *t)
+ {
+     if (!t || InterlockedDecrement(&t->refs)) return;
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    if(t->indexed_allocator)IUnknown_Release(t->indexed_allocator);
++#endif
+     if (t->query) ID3D12QueryHeap_Release(t->query);
+     if (t->dst) ID3D12Resource_Release(t->dst);
+     if (t->retained) ID3D12Heap_Release(t->retained);
+--- a/scarlett/native/queue/test-s14-job.c
++++ b/scarlett/native/queue/test-s14-job.c
+@@ -9,6 +9,9 @@
+ static UINT delta;
+ static BYTE *pool,*original,*reuse,*exe;
+ static struct system_timestamp *producer_stamp;
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++static struct system_timestamp *unqualified;
++#endif
+ static IUnknown *list14;
+ static HMODULE xmem;
+ static UINT64 addr;
+@@ -29,20 +32,22 @@
+     ids[k]=(UINT_PTR)face;ids[256+k]=(UINT_PTR)&arena;ids[512+k]=records[k].arg;
+ }
+ void record_bank3_head(ID3D12Device *,ID3D12GraphicsCommandList7 *);
+-void job14_prepare(ID3D12Device *dev,IUnknown *owner,ID3D12GraphicsCommandList7 **tail){
++void job14_prepare(ID3D12Device *dev,IUnknown *owner,IUnknown **banks,ID3D12GraphicsCommandList7 **tail){
+     OK(xs_allocator(dev,0,&shared14));OK(xs_device_list(dev,0,shared14,TRUE,owner,&producer14));
+     CK(register_callback(shared14,exe+0x555df10,ctx));
+     struct startup_list *p=sl(producer14);BYTE *ctrl;
+     HRESULT (WINAPI *make)(ID3D12Device *,SIZE_T,void **)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");
+-    CK(make);OK(make(dev,65536,(void**)&ctrl));*(UINT64*)ctrl=1;OK(prefix_write(p,(UINT_PTR)ctrl+0x98,2,0,0));
++    CK(make);OK(make(dev,65536,(void**)&ctrl));*(UINT64*)ctrl=1;
++    OK(xs_bind_pool_heaps(producer14,2,banks));sl_marker(producer14,(UINT_PTR)ctrl+0x98,2,0,0);
++    OK(xs_bind_pool_heaps(producer14,2,banks));
+     marker_page=ctrl;record_bank3_head(dev,p->host);
+-    struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);CK(post);p->nops=5;
+-    post->word=p->marker->word+1;post->value=0x29a5ee15;post->counter=p->marker->alias;post->threshold=1;OK(split_native_list(p,post));
++    sl_marker(producer14,(UINT_PTR)ctrl+0x9c,0x29a5ee15,0,0);
++    OK(wait64_at(p,(UINT_PTR)ctrl,7,1,1,0x2484b12));
+     ID3D12GraphicsCommandList7_Release(*tail);*tail=p->host;ID3D12GraphicsCommandList7_AddRef(*tail);
+     struct adapter *a=CONTAINING_RECORD(writer,struct adapter,iface);a->display.owner=owner;IUnknown_AddRef(owner);
+ }
+ void job14_producer(const struct xs_attachment_pin *pin,struct xs_sr_ticket sr,ID3D12Resource *model){
+-    struct startup_list *p=sl(producer14);p->stamp=producer_stamp;p->reuse_epoch=1;p->sr=sr;
++    struct startup_list *p=sl(producer14);CK(p->stamp==producer_stamp);p->reuse_epoch=1;p->sr=sr;
+     p->primary_pin=pin->identity;IUnknown_AddRef(pin->identity);p->primary=pin->host;ID3D12Resource_AddRef(pin->host);
+     p->s14_tid=GetCurrentThreadId();p->output_slot=pin->slot;p->output_serial=pin->serial;
+     BYTE *storage=VirtualAlloc(NULL,0x20000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);CK(storage);
+@@ -77,13 +82,41 @@
+     void *(WINAPI *alloc)(void*,SIZE_T,DWORD,UINT64,DWORD)=(void*)GetProcAddress(xmem,"XMemVirtualAlloc");
+     CK(alloc);pool=alloc(NULL,poolbytes,0x20003000,0x183,0x22004);CK(pool);
+     addr=(UINT_PTR)(pool+win+delta);DWORD *w=(DWORD*)(pool+ro);UINT64 used=addr+0x4010;
+-    w[2]=0x800;w[3]=8;w[14]=2<<16;memcpy(w+18,&used,8);memcpy(w+20,&addr,8);memcpy(w+22,&addr,8);
++    w[2]=0x800;w[3]=8;w[14]=0x20001;memcpy(w+18,&used,8);memcpy(w+20,&addr,8);memcpy(w+22,&addr,8);
+     *(UINT*)(exe+0xa943a0c)=3;*(UINT64*)(exe+0x75dedb0)=1;*(UINT_PTR*)(exe+0xa943a18+24)=(UINT_PTR)w;
+     struct scarlett_section_info orig;OK(scarlett_acquire_section((void*)addr,8,&orig));
+     CK(orig.base==pool && orig.view_size==poolbytes && orig.offset==win+delta);
+     original=MapViewOfFile(orig.section,FILE_MAP_READ|FILE_MAP_WRITE,0,win,65536);CK(original && CloseHandle(orig.section));
+-    memset(original,0xad,65536);OK(record_timestamp(dev,host,addr+8,1,&producer_stamp));
+-    CK(producer_stamp->cpu_section && producer_stamp->second_bank && !producer_stamp->retained);
++    memset(original,0xad,65536);
++    struct startup_list *p=sl(producer14);
++    CK(host==p->host && dev==p->device && p->marker->value==2 && p->marker->alias && !p->marker->buffer);
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    /* Each rejected proof still records an ordinary prefix-zero query on its own list. */
++    for(UINT k=0;k<6;k++){
++        IUnknown *face,*alloc;OK(xs_allocator(dev,0,&alloc));OK(xs_device_list(dev,0,alloc,TRUE,p->pool_owner,&face));
++        OK(xs_bind_pool_heaps(face,2,p->heaps));sl_marker(face,(UINT_PTR)marker_page+(k==0?0x94:0x98),2,0,0);
++        OK(xs_bind_pool_heaps(face,2,p->heaps));
++        if(k==1)*(UINT64*)(exe+0x75dedb0)|=1ull<<32;
++        if(k==2)*(UINT*)(exe+0xa943a0c)=2;
++        if(k==3)*(UINT_PTR*)(exe+0xa943a18+24)+=8;
++        if(k==4)w[20]^=8;
++        if(k==5)w[14]^=1;
++        sl_timestamp(face,addr+8,0,0,1);
++        struct system_timestamp *bad=sl(face)->stamp;
++        CK(bad && bad->cpu_section && !bad->indexed_allocator && !bad->second_bank);
++        if(k==1){unqualified=bad;InterlockedIncrement(&bad->refs);}
++        *(UINT64*)(exe+0x75dedb0)=1;*(UINT*)(exe+0xa943a0c)=3;*(UINT_PTR*)(exe+0xa943a18+24)=(UINT_PTR)w;
++        if(k==4)w[20]^=8;
++        if(k==5)w[14]^=1;
++        OK(sl_close(face));IUnknown_Release(face);IUnknown_Release(alloc);
++    }
++    sl_timestamp(producer14,addr+8,0,0,1);producer_stamp=p->stamp;
++    CK(producer_stamp && producer_stamp->indexed_allocator==shared14 && !producer_stamp->second_bank &&
++       producer_stamp->cpu_section && !producer_stamp->retained);
++    printf("PASS indexed alias head: offset=%zx marker=2 prefix=0 second_bank=0; six unqualified producers stayed generic\n",producer_stamp->cpu_offset);
++#else
++    pair_op(p,0x240);OK(record_timestamp(dev,host,addr+8,1,&p->stamp));producer_stamp=p->stamp;batch_step(p,B_HEAD_STAMP);
++#endif
+ }
+ void bank3_tail(ID3D12Device *dev,IUnknown *owner,IUnknown **banks,const struct xs_attachment_pin *pins,
+         ID3D12GraphicsCommandList7 *producer,ID3D12GraphicsCommandList7 **out,D3D12_TEXTURE_BARRIER wire)
+@@ -112,7 +145,13 @@
+     memcpy(w+18,&used,8);memcpy(w+20,&swapped,8);memcpy(w+22,&swapped,8);
+     DENY();CK(FAILED(pool_timestamp(s,swapped,0,0,1)) && !s->stamp);
+     used=addr+0x4010;memcpy(w+18,&used,8);memcpy(w+20,&addr,8);memcpy(w+22,&addr,8);
++#ifdef XS_RTX_S14_INDEXED_ALIAS
++    {
++        s->s14_head=unqualified;DENY();s->s14_head=producer_stamp;drop_timestamp(unqualified);unqualified=NULL;
++        ++producer_stamp->marker_generation;DENY();--producer_stamp->marker_generation;
++#else
+     if(delta==0xf250){
++#endif
+         void *base=s->s14_head->obs_base;s->s14_head->obs_base=original;DENY();s->s14_head->obs_base=base;
+         struct command_allocator *a=CONTAINING_RECORD(shared14,struct command_allocator,a.iface);
+         InterlockedIncrement64(&a->generation);DENY();InterlockedDecrement64(&a->generation);
+--- a/scarlett/native/test-job-entry.c
++++ b/scarlett/native/test-job-entry.c
+@@ -6,7 +6,7 @@
+ #define OK(x) do{HRESULT hr_=(x);if(hr_!=S_OK){fprintf(stderr,"S14 HRESULT %08lx: %s\n",(DWORD)hr_,#x);exit(1);}}while(0)
+ struct job14 {ID3D12CommandQueue *q;ID3D12Fence *end;UINT n,calls;ID3D12CommandList *ls[2];
+     IUnknown *owner;const struct xs_attachment_pin *target;UINT64 reuse;};
+-void job14_prepare(ID3D12Device *,IUnknown *,ID3D12GraphicsCommandList7 **);
++void job14_prepare(ID3D12Device *,IUnknown *,IUnknown **,ID3D12GraphicsCommandList7 **);
+ void job14_producer(const struct xs_attachment_pin *,struct xs_sr_ticket,ID3D12Resource *);
+ void job14_publish(void),job14_deny(void),job14_commit(ID3D12Device *),job14_retired(void);
+ void queued4_controls(ID3D12Device *),queued4_done(void);
+@@ -86,7 +86,7 @@
+         .DepthOrArraySize=1,.MipLevels=1,.SampleDesc.Count=1,.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+     OK(ID3D12Device_CreateCommittedResource(dev,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb));
+     BYTE *map;OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));memset(map,0xa5,4096);ID3D12Resource_Unmap(rb,0,NULL);
+-    job14_prepare(dev,owner,l+3);
++    job14_prepare(dev,owner,banks,l+3);
+     SIZE_T ds_slot;IUnknown *sr_rt=test_sr_image(owner,NULL),*sr_ds=test_sr_image(owner,sr_rt),*ds_heap=test_dsv_heap(owner,&ds_slot);
+     CHECK(sr_rt && sr_ds && ds_heap);SIZE_T rt_slot=desc_cpu(views)+2*descriptor_stride(owner,hd.Type);
+     OK(xs_write_view(owner,RTV,sr_rt,(DWORD[]){28,4,0,0},rt_slot));OK(xs_write_view(owner,DSV,sr_ds,(DWORD[]){20,3,0,0,0,0},ds_slot));

@@ -37,3 +37,21 @@ bash scarlett/tests/s14-target5/build.sh layouts "$COMBINED_OUTPUT"
 | `fixture/game_scarlett_master.exe` (`baeccf0b`) | Exit 0. Each layout ran in a fresh child process with tokens 1, 2, 3. The alternate pair and the original tail/head (`0x419f6d0/0x419f6d8`) each passed ordered timestamp, fresh retirement fence, green14/red17 and guard checks. |
 
 The clock correction changes only the fixture entry point. Both commands cross-build and verify hashes without running either executable.
+
+### Independent RTX component recipes
+
+Use the output of the `layouts` command above for both builds:
+
+```sh
+bash scarlett/tests/s14-target5/build.sh indexed "$LAYOUTS_OUTPUT"
+bash scarlett/tests/s14-target5/build.sh sibling "$LAYOUTS_OUTPUT"
+```
+
+Both modes check the `baeccf0b` fixture preimage and rebuild the flag-off DLL byte-for-byte against `a694bc9d`. Each enables just its own change:
+
+| Mode | Provider / fixture | Recorded RTX result, both layouts |
+| --- | --- | --- |
+| `indexed` | `a306bf6f` / `91e3473b` | The indexed producer with alias marker value 2 qualified; six malformed producers per layout stayed generic. Ordered timestamps and guarded pixel readback passed. |
+| `sibling` | `07f11f9f` / `e27a80de` | Two disjoint imported surfaces exercised A→B→A. The fixture **simulated B's successful WSI return callback**; it performed no live flip. The generic epoch expired. Missing return, wrong fence/depth serial/queue, overlap and alias were rejected; the valid submission retired and both colors passed. |
+
+These hashes identify the standalone components. The merged owner's provider `d432e1ba` and RTX fixture `8797be40` have a separate build and result record.

@@ -1,0 +1,272 @@
+--- a/scarlett/native/color_resource.h
++++ b/scarlett/native/color_resource.h
+@@ -53,4 +53,8 @@
+     DXGI_FORMAT single_format,small_tile_format;
+     void *slice;
++#ifdef XS_RTX_S14_ABA
++    void *import_base;
++    SIZE_T import_bytes;
++#endif
+     void (WINAPI *xfree)(void *,UINT64);
+     struct color_resource *next;
+@@ -79,4 +83,7 @@
+     ULONG refs=InterlockedDecrement(&r->refs);
+     if (!refs) {
++#ifdef XS_RTX_S14_ABA
++        if(d->aba.a.identity==i || d->aba.b.identity==i)memset(&d->aba,0,sizeof d->aba);
++#endif
+         struct color_resource **p=&d->colors;
+         while (*p!=r) p=&(*p)->next;
+--- a/scarlett/native/d3d12_device.c
++++ b/scarlett/native/d3d12_device.c
+@@ -98,4 +98,11 @@
+ #endif
+     struct frame_clock clock;
++#ifdef XS_RTX_S14_ABA
++    struct {
++        struct xs_attachment_pin a,b;
++        UINT64 bw;
++        ID3D12Fence *end; /* identity only; token 2 and the sealed recording retain it */
++    } aba;
++#endif
+ #endif
+ };
+@@ -865,4 +872,7 @@
+     hr=import(d->host,mapping.base,mapping.size,mapping.offset,&lease->iface,&r->host);
+     if (FAILED(hr) || !r->host) { if (SUCCEEDED(hr)) hr=E_FAIL; goto failed; }
++#ifdef XS_RTX_S14_ABA
++    r->import_base=mapping.base;r->import_bytes=info.SizeInBytes;
++#endif
+     lease_release(&lease->iface); /* imported image now owns the pin and module reference */
+     r->iface.lpVtbl=&color_vtbl.unknown;
+@@ -1706,5 +1716,10 @@
+     *out=heap;*cpu=dst;return S_OK;
+ }
++#ifdef XS_RTX_S14_ABA
++#include "s14-sibling.h"
++static HRESULT reuse_with_sr(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch,const struct xs_sr_ticket *ticket,BOOL tagged)
++#else
+ HRESULT xs_reuse_with_sr(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch,const struct xs_sr_ticket *ticket)
++#endif
+ {
+     if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown || !pin || !src)return E_INVALIDARG;
+@@ -1714,5 +1729,18 @@
+     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+     struct color_resource *r=returned_view_locked(d,pin,src,&cpu);
++#ifdef XS_RTX_S14_ABA
++    UINT64 live=r?r->common_epoch:0;
++    if(!r && tagged && commit && *epoch==1 && ticket && ticket->end && ticket->ds.identity &&
++       d->aba.a.identity==pin && d->aba.a.host==src && d->aba.end==ticket->end){
++        /* Tagged callback holds the frame lock: the original end cannot be replaced. */
++        struct frame_record *f=frame_find(&d->clock,2);
++        if(f && f->queue==commit && f->batch_end==ticket->end && ID3D12Fence_GetCompletedValue(ticket->end)==1){
++            r=sibling_pair(d,commit);if(r)live=r->writer_epoch;
++        }
++    }
++    if(r && (!commit || (commit==r->writer && *epoch==live))){
++#else
+     if(r && (!commit || (commit==r->writer && *epoch==r->common_epoch))){
++#endif
+         if(ticket){
+             struct color_resource *rt=sr_image(d,ticket->rt.identity);
+@@ -1722,6 +1750,13 @@
+             ID3D12Fence_Release(rt->sr_end);rt->sr_end=NULL;
+         }
++#ifdef XS_RTX_S14_ABA
++        *epoch=live;
++#else
+         *epoch=r->common_epoch;
++#endif
+         if(commit){r->common_epoch=0;r->writer_epoch++;}
++#ifdef XS_RTX_S14_ABA
++        if(commit && d->aba.a.identity==pin)memset(&d->aba,0,sizeof d->aba);
++#endif
+         hr=S_OK;
+     }
+@@ -1729,4 +1764,10 @@
+     ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
+ }
++#ifdef XS_RTX_S14_ABA
++HRESULT xs_reuse_with_sr(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch,const struct xs_sr_ticket *ticket)
++{return reuse_with_sr(owner,pin,src,commit,epoch,ticket,FALSE);}
++HRESULT xs_s14_reuse(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *q,UINT64 *epoch,const struct xs_sr_ticket *ticket)
++{return reuse_with_sr(owner,pin,src,q,epoch,ticket,TRUE);}
++#endif
+ HRESULT xs_reuse_common(IUnknown *owner,IUnknown *pin,ID3D12Resource *src,ID3D12CommandQueue *commit,UINT64 *epoch)
+ {return xs_reuse_with_sr(owner,pin,src,commit,epoch,NULL);}
+@@ -1740,4 +1781,7 @@
+             if(attachment_locked(h,slot,RTV,&cpu)==src && h->records[(slot-h->start)/h->stride].serial==serial){
+ #ifdef SCARLETT_PAIR_SUBMIT
++#ifdef XS_RTX_S14_ABA
++                if(flip)sibling_claim(d,r,slot,serial,q);
++#endif
+                 if(flip)for(struct color_resource *it=d->colors;it;it=it->next)it->common_epoch=0;
+ #endif
+--- a/scarlett/native/queue/offscreen.h
++++ b/scarlett/native/queue/offscreen.h
+@@ -152,4 +152,8 @@
+                 if(hr==S_OK && token==1 && ring==0 && IDXGISwapChain3_GetCurrentBackBufferIndex(a->display.chain)==1)
+                     xs_returned_common(pin,slot,serial);
++#ifdef XS_RTX_S14_ABA
++                if(hr==S_OK && token==2 && ring==1 && !IDXGISwapChain3_GetCurrentBackBufferIndex(a->display.chain))
++                    xs_s14_presented(pin,end);
++#endif
+ #endif
+             }
+--- a/scarlett/native/queue/queue.h
++++ b/scarlett/native/queue/queue.h
+@@ -73,4 +73,8 @@
+ HRESULT xs_reuse_common(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *);
+ struct xs_sr_ticket {struct xs_attachment_pin rt,ds;ID3D12Fence *end;};
++#ifdef XS_RTX_S14_ABA
++void xs_s14_presented(IUnknown *,ID3D12Fence *);
++HRESULT xs_s14_reuse(IUnknown *,IUnknown *,ID3D12Resource *,ID3D12CommandQueue *,UINT64 *,const struct xs_sr_ticket *);
++#endif
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+ struct xs_five_key {
+--- a/scarlett/native/queue/s14-job.h
++++ b/scarlett/native/queue/s14-job.h
+@@ -72,5 +72,9 @@
+     if(f && ID3D12Fence_GetCompletedValue(p->sr.end)==1 &&
+        xs_live_output(p->pool_owner,p->primary_pin,p->primary,p->output_slot,14))
++#ifdef XS_RTX_S14_ABA
++        hr=xs_s14_reuse(p->pool_owner,p->primary_pin,p->primary,g->writer,&p->reuse_epoch,&p->sr);
++#else
+         hr=xs_reuse_with_sr(p->pool_owner,p->primary_pin,p->primary,g->writer,&p->reuse_epoch,&p->sr);
++#endif
+     if(hr==S_OK){
+         f->protected_pair=TRUE;w->book_fence=f;IUnknown_AddRef(&f->a.iface);InterlockedIncrement(&pair_inflight);
+--- /dev/null
++++ b/scarlett/native/s14-sibling.h
+@@ -0,0 +1,43 @@
++/* Under descriptor_lock. The importer pins a 64 MiB arena and admits only
++ * offsets 0 and one aligned physical allocation size. No VA-only stand-ins. */
++static struct color_resource *sibling_pair(struct xbox_device *d,ID3D12CommandQueue *q)
++{
++    struct color_resource *a=NULL,*b=NULL;
++    for(struct color_resource *r=d->colors;r;r=r->next)if(r->slice){
++        if(&r->iface==d->aba.a.identity)a=r;
++        else if(&r->iface==d->aba.b.identity)b=r;
++        else return NULL;
++    }
++    if(!a || !b || a->owner!=d || b->owner!=d || a->host==b->host ||
++       a->host!=d->aba.a.host || b->host!=d->aba.b.host || a->msaa || b->msaa ||
++       !a->import_base || a->import_base!=b->import_base || !a->import_bytes ||
++       a->import_bytes!=b->import_bytes || a->import_bytes>(32u<<20) ||
++       a->writer!=q || b->writer!=q || !a->claimed || !b->claimed || a->flipping || b->flipping ||
++       a->multi_writer || b->multi_writer || a->writer_epoch!=1 || b->writer_epoch!=d->aba.bw ||
++       a->common_serial!=14 || d->aba.a.slot!=a->common_slot || d->aba.a.slot==d->aba.b.slot)return NULL;
++    UINT_PTR ao=(UINT_PTR)a->slice-(UINT_PTR)a->import_base,bo=(UINT_PTR)b->slice-(UINT_PTR)b->import_base;
++    if(!((ao==0 && bo==a->import_bytes) || (bo==0 && ao==a->import_bytes)))return NULL;
++    D3D12_CPU_DESCRIPTOR_HANDLE at;
++    return sr_descriptor(d,&d->aba.a,&at,FALSE) && sr_descriptor(d,&d->aba.b,&at,FALSE)?a:NULL;
++}
++static void sibling_claim(struct xbox_device *d,struct color_resource *b,SIZE_T slot,UINT64 serial,ID3D12CommandQueue *q)
++{
++    memset(&d->aba,0,sizeof d->aba);
++    if(serial!=17 || !b->import_bytes || !b->claimed || !b->writer_epoch)return;
++    for(struct color_resource *a=d->colors;a;a=a->next)if(a!=b && a->common_epoch==1 && a->common_serial==14){
++        d->aba.a=(struct xs_attachment_pin){&a->iface,a->host,a->common_slot,14};
++        d->aba.b=(struct xs_attachment_pin){&b->iface,b->host,slot,17};
++        d->aba.bw=b->writer_epoch;
++        if(!sibling_pair(d,q))memset(&d->aba,0,sizeof d->aba);
++        break;
++    }
++}
++/* Called only for token 2's successful 1->0 return, while the flip pin is held. */
++void xs_s14_presented(IUnknown *pin,ID3D12Fence *end)
++{
++    struct color_resource *b=CONTAINING_RECORD(pin,struct color_resource,iface);
++    struct xbox_device *d=b->owner;
++    AcquireSRWLockExclusive(&d->descriptor_lock);
++    if(b->flipping && d->aba.b.identity==pin)d->aba.end=end;
++    ReleaseSRWLockExclusive(&d->descriptor_lock);
++}
+--- a/scarlett/native/test-job-entry.c
++++ b/scarlett/native/test-job-entry.c
+@@ -17,4 +17,25 @@
+ void bank3_release_writer(void);
+ static ID3D12Fence *recycler;
++/* Same two imported display slices as test-allocation-info.cpp. */
++static void *(WINAPI *alloc_default)(SIZE_T,UINT64);
++static void (WINAPI *free_default)(void*,UINT64);
++static BYTE *display_arena;
++static SIZE_T slice_bytes;
++static UINT takes,gives;
++static void *WINAPI take_slice(SIZE_T n,UINT64 attr)
++{
++    if(attr!=XS_DISPLAY_ATTR)return alloc_default(n,attr);
++    CHECK(n==slice_bytes && n && n<=32u<<20 && takes<2);
++    if(!display_arena)display_arena=alloc_default(64u<<20,attr);
++    CHECK(display_arena);return display_arena+n*takes++;
++}
++static void WINAPI give_slice(void *p,UINT64 attr)
++{
++    if(attr!=XS_DISPLAY_ATTR){free_default(p,attr);return;}
++    CHECK((p==display_arena || p==display_arena+slice_bytes) && ++gives<=2);
++    if(gives==2)free_default(display_arena,attr);
++}
++__declspec(dllexport) struct {void *(WINAPI *a)(SIZE_T,UINT64);void (WINAPI *f)(void*,UINT64);}
++    __XMemAllocationHooks__={take_slice,give_slice};
+ static HRESULT enqueue14(void *ctx)
+ {
+@@ -47,4 +68,7 @@
+ {
+     bank3_setup(delta);
++    HMODULE xm=GetModuleHandleW(L"xmem.dll");CHECK(xm);
++    alloc_default=(void*)GetProcAddress(xm,"XMemAllocDefault");free_default=(void*)GetProcAddress(xm,"XMemFreeDefault");
++    CHECK(alloc_default && free_default);
+     const DWORD params[20]={[0]=0x20004,[2]=0x100000,[10]=1,[15]=0x20};
+     IUnknown *owner;OK(D3D12XboxCreateDevice(NULL,params,&bootstrap_iid,(void**)&owner));
+@@ -55,6 +79,10 @@
+     struct xs_attachment_pin pin[2];
+     D3D12_CPU_DESCRIPTOR_HANDLE cpu[2];
++    D3D12_RESOURCE_ALLOCATION_INFO info;OK(primary_info(d->host,&info));slice_bytes=info.SizeInBytes;
++    const DWORD desc[]={3,0,0,0,3840,0,2160,0x10001,28,1,0,0,0x300005};
++    const D3D12_HEAP_PROPERTIES props={.Type=D3D12_HEAP_TYPE_DEFAULT,.CreationNodeMask=1,.VisibleNodeMask=1};
++    const D3D12_CLEAR_VALUE cv={.Format=DXGI_FORMAT_R8G8B8A8_UNORM};
+     for(UINT i=0;i<2;i++){
+-        key[i]=test_returned_image(owner,d->host);CHECK(key[i]);
++        OK(bootstrap_committed(owner,&props,8,desc,3,&cv,NULL,0,NULL,&IID_ID3D12Resource,(void**)(key+i)));
+         SIZE_T slot=desc_cpu(views)+i*descriptor_stride(owner,hd.Type);
+         for(UINT k=i?15:1;k<=(i?17:14);k++)OK(xs_write_view(owner,RTV,key[i],(DWORD[]){28,4,0,0},slot));
+@@ -76,4 +104,5 @@
+         OK(ID3D12Device_CreateCommandList(dev,1,0,a[i],NULL,&IID_ID3D12GraphicsCommandList7,(void**)&l[i]));
+     }
++    for(UINT i=0;i<2;i++)edge14(l[0],pin[i].host,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
+     OK(ID3D12GraphicsCommandList7_Close(l[0]));OK(ID3D12GraphicsCommandList7_Close(l[2]));
+     ID3D12Fence *f[6];
+@@ -139,4 +168,27 @@
+     CHECK(xs_sr_submitted(owner,&rt,&ds,q,f[1]));struct xs_sr_ticket sr={0};OK(xs_sr_snapshot(owner,sr_rt,&sr));
+     job14_producer(pin,sr,rb);bank3_tail(dev,owner,banks,pin,l[3],l+4,wire);job14_publish();
++    /* Simulate B's accepted flip callback after the pair has sealed both lists. */
++    UINT64 bw=0;OK(xs_pair_writer(owner,key[1],pin[1].host,pin[1].slot,17,q,&bw,FALSE));
++    OK(xs_pair_writer(owner,key[1],pin[1].host,pin[1].slot,17,q,&bw,TRUE));
++    CHECK(!xs_claim_view(owner,key[1],pin[1].host,q,pin[0].slot,17,TRUE));
++    flip=xs_claim_view(owner,key[1],pin[1].host,q,pin[1].slot,17,TRUE);
++    CHECK(flip==key[1] && d->aba.a.identity==key[0] && !d->aba.end);
++    UINT64 retry=1;CHECK(xs_reuse_common(owner,key[0],pin[0].host,NULL,&retry)==E_ACCESSDENIED);
++    CHECK(xs_s14_reuse(owner,key[0],pin[0].host,q,&retry,&sr)==E_ACCESSDENIED); /* No successful return yet. */
++    xs_s14_presented(flip,f[1]);xs_finish_flip(flip);IUnknown_Release(flip);
++    CHECK(d->aba.end==f[1]);
++    struct xs_sr_ticket wrong=sr;wrong.end=f[0];
++    CHECK(xs_s14_reuse(owner,key[0],pin[0].host,q,&retry,&wrong)==E_ACCESSDENIED);
++    wrong=sr;wrong.ds.serial++;
++    CHECK(xs_s14_reuse(owner,key[0],pin[0].host,q,&retry,&wrong)==E_ACCESSDENIED);
++    CHECK(xs_s14_reuse(owner,key[0],pin[0].host,foreign,&retry,&sr)==E_ACCESSDENIED);
++    struct color_resource *b_image=CONTAINING_RECORD(key[1],struct color_resource,iface);
++    void *saved_slice=b_image->slice;b_image->slice=display_arena;
++    CHECK(xs_s14_reuse(owner,key[0],pin[0].host,q,&retry,&sr)==E_ACCESSDENIED);
++    b_image->slice=saved_slice;
++    IUnknown *alias=test_primary_alias(owner,pin[0].host);CHECK(alias);
++    CHECK(xs_s14_reuse(owner,key[0],pin[0].host,q,&retry,&sr)==E_ACCESSDENIED);
++    IUnknown_Release(alias);
++    puts("PASS sibling controls: generic epoch expired; missing return, wrong end/DS serial/queue, overlap and alias denied");
+     OK(bootstrap_frame_wait(owner,0,1000,NULL,0,&token));CHECK(token==3);
+     job14_deny();OK(xs_pair_frame_submit(owner,3,q,FALSE,f[2],enqueue14,jobs+2,&epoch));wait_value(f[2],1);
+@@ -146,4 +198,5 @@
+     OK(ID3D12CommandQueue_Wait(q,gate4,1));bank3_signal(4);CHECK(bank3_prior(q,4) && ID3D12Fence_GetCompletedValue(recycler)==3);
+     job14_commit(dev);
++    CHECK(!d->aba.end && xs_s14_reuse(owner,key[0],pin[0].host,q,&retry,&sr)==E_ACCESSDENIED);
+     ID3D12Fence_Release(f[3]);f[3]=frame_find(&d->clock,3)->batch_end;CHECK(f[3] && f[3]!=f[1] && f[3]!=f[2]);ID3D12Fence_AddRef(f[3]);
+     CHECK(xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0);
