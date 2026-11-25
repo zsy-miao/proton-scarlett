@@ -1907,6 +1907,12 @@ at 4 to validation at 5. The first refusal was the split-at-5 check (actual
 split: 6). No three-cell selection was committed, and the descriptor contents
 were not sampled. All 175 decoded frames were black; only token 1 returned.
 
+The first production fixture for that selection (`d0993a7c` on `f3646156`)
+committed the three-cell range once, at epoch 2 with the original fence at
+0. It then exited 1 in the check covering fence retirement and rejection
+of a stale render-target bind. The assertion did not report which clause
+failed. The ordinary AMD/RTX runs for this build were withheld.
+
 The queued-fence RTX fixture (`45c41e82`) passed on `4998adf0`: the original
 queue had signaled 4 while the CPU still saw 3. The new serial-14 end
 retired with the recycler at 4; a separate gate then allowed signal 5.
