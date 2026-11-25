@@ -1435,7 +1435,16 @@ the returned `+190` bind but no `+120` commit. Both submitted token 2
 Only `PresentX(1)` returned `S_OK`: the display count advanced 0→1 and
 neither run logged the return of `PresentX(2)` or sampled end retirement.
 Private review found only blank black/white frames on AMD and the same
-with a cursor on RTX. The rejecting condition in retail is still unknown.
+with a cursor on RTX.
+
+A single RTX diagnostic logged the first failing `+120` condition on the
+same segment and original end as the returned `+190` bind. The exact
+37-operation sequence passed. With slot 372600 still selected at epoch 1,
+`xs_held_table_inputs(&s->source, &s->previous_vb)` returned false before
+the setter looked up the three-cell range. The R2 fixture passed that
+check and reached epoch 2. The diagnostic did not distinguish the helper's
+internal capture and span checks. It exited 2; only token 1 returned and
+the display count stayed at 1.
 
 ### Cross-build the guarded token-2 checkpoint
 
