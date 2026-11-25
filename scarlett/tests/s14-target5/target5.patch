@@ -1,0 +1,153 @@
+--- a/scarlett/native/test-s14-target5.c
++++ b/scarlett/native/test-s14-target5.c
+@@ -7,4 +7,11 @@
+ struct job14 {ID3D12CommandQueue *q;ID3D12Fence *end;UINT n,calls;ID3D12CommandList *ls[2];
+     IUnknown *owner;const struct xs_attachment_pin *target;UINT64 reuse;};
++BOOL bank3_split(UINT,ID3D12CommandList**);
++void bank3_reset(ID3D12Device*);
++ID3D12CommandQueue *bank3_writer(ID3D12Device*,ID3D12Fence**);
++BOOL bank3_prior(ID3D12CommandQueue*,UINT64);
++void bank3_signal(UINT64);
++void bank3_release_writer(void);
++static ID3D12Fence *recycler;
+ static HRESULT enqueue14(void *ctx)
+ {
+@@ -12,18 +19,20 @@
+     if(j->target){
+         const struct xs_attachment_pin *p=j->target;
+-        if(!xs_live_output(j->owner,p->identity,p->host,p->slot,p->serial) ||
++        if(!bank3_split(j->n,j->ls) || !bank3_prior(j->q,4) || ID3D12Fence_GetCompletedValue(recycler)!=4 ||
++           !xs_live_output(j->owner,p->identity,p->host,p->slot,p->serial) ||
+            FAILED(xs_reuse_common(j->owner,p->identity,p->host,j->q,&j->reuse)))return E_ACCESSDENIED;
+     }
+     ++j->calls;
+     ID3D12CommandQueue_ExecuteCommandLists(j->q,j->n,j->ls);
++    if(j->target)bank3_signal(5);
+     HRESULT hr=ID3D12CommandQueue_Signal(j->q,j->end,1);
+     CHECK(hr==S_OK); /* execution is irreversible */
+     return hr;
+ }
+-static void wait14(ID3D12Fence *end)
++static void wait_value(ID3D12Fence *end,UINT64 value)
+ {
+     HANDLE ev=CreateEventW(NULL,FALSE,FALSE,NULL);
+-    CHECK(ev);OK(ID3D12Fence_SetEventOnCompletion(end,1,ev));
+-    CHECK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0 && ID3D12Fence_GetCompletedValue(end)==1);
++    CHECK(ev);OK(ID3D12Fence_SetEventOnCompletion(end,value,ev));
++    CHECK(WaitForSingleObject(ev,10000)==WAIT_OBJECT_0 && ID3D12Fence_GetCompletedValue(end)==value);
+     CloseHandle(ev);
+ }
+@@ -62,5 +71,5 @@
+     ID3D12Device *dev=d->host;ID3D12CommandQueue *q,*foreign;
+     D3D12_COMMAND_QUEUE_DESC qd={0};
+-    OK(ID3D12Device_CreateCommandQueue(dev,&qd,&IID_ID3D12CommandQueue,(void**)&q));
++    q=bank3_writer(dev,&recycler);
+     OK(ID3D12Device_CreateCommandQueue(dev,&qd,&IID_ID3D12CommandQueue,(void**)&foreign));
+     /* Keep the independent readback outside the S14 batch. */
+@@ -121,8 +130,20 @@
+     for(UINT i=1;i<=2;i++){OK(bootstrap_frame_wait(owner,0,1000,NULL,0,&token));CHECK(token==i);}
+     OK(xs_pair_frame_submit(owner,2,q,FALSE,f[0],enqueue14,jobs,&epoch));
+-    OK(xs_pair_frame_submit(owner,2,q,TRUE,f[1],enqueue14,jobs+1,&epoch));wait14(f[1]);
++    OK(xs_pair_frame_submit(owner,2,q,TRUE,f[1],enqueue14,jobs+1,&epoch));
++    for(UINT i=1;i<=3;i++)bank3_signal(i);
++    wait_value(recycler,3);wait_value(f[1],1);
+     OK(bootstrap_frame_wait(owner,0,1000,NULL,0,&token));CHECK(token==3);
+     CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)));
+-    OK(xs_pair_frame_submit(owner,3,q,FALSE,f[2],enqueue14,jobs+2,&epoch));wait14(f[2]);
++    OK(xs_pair_frame_submit(owner,3,q,FALSE,f[2],enqueue14,jobs+2,&epoch));wait_value(f[2],1);
++    CHECK(bank3_split(jobs[3].n,jobs[3].ls));
++    CHECK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)==E_ACCESSDENIED &&
++        !jobs[3].calls && ID3D12Fence_GetCompletedValue(f[3])==0);
++    bank3_signal(4);wait_value(recycler,4);
++    CHECK(bank3_prior(q,4) && !bank3_prior(foreign,4) && recycler!=f[1] && recycler!=f[3]);
++    jobs[3].n=1;
++    CHECK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)==E_ACCESSDENIED);
++    jobs[3].n=2;jobs[3].ls[0]=(void*)l[4];jobs[3].ls[1]=(void*)l[3];
++    CHECK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)==E_ACCESSDENIED);
++    jobs[3].ls[0]=(void*)l[3];jobs[3].ls[1]=(void*)l[4];
+     ++jobs[3].reuse;CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)));--jobs[3].reuse;
+     CHECK(FAILED(xs_pair_frame_submit(owner,2,q,TRUE,f[3],enqueue14,jobs+3,&epoch)) &&
+@@ -132,10 +153,14 @@
+     CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)) && jobs[3].calls==1 &&
+         frame_find(&d->clock,2)->batch_end==f[1] && frame_find(&d->clock,3)->batch_end==f[3] &&
+-        xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0);
++        xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0 &&
++        bank3_prior(q,5) && ID3D12Fence_GetCompletedValue(recycler)==4);
+     UINT64 low,high,cpu_tick;bank3_recycle();OK(ID3D12CommandQueue_GetClockCalibration(q,&low,&cpu_tick));
+-    OK(ID3D12Fence_Signal(f[4],1));wait14(f[3]);OK(xs_frame_submission_query(owner,3,q,TRUE));
++    OK(ID3D12Fence_Signal(f[4],1));wait_value(f[3],1);OK(xs_frame_submission_query(owner,3,q,TRUE));
++    CHECK(ID3D12Fence_GetCompletedValue(recycler)==5);
+     OK(ID3D12CommandQueue_GetClockCalibration(q,&high,&cpu_tick));
+     ID3D12CommandList *oracle=(ID3D12CommandList*)l[5];
+-    ID3D12CommandQueue_ExecuteCommandLists(q,1,&oracle);OK(ID3D12CommandQueue_Signal(q,f[5],1));wait14(f[5]);
++    ID3D12CommandQueue_ExecuteCommandLists(q,1,&oracle);OK(ID3D12CommandQueue_Signal(q,f[5],1));wait_value(f[5],1);
++    bank3_reset(dev);
++    CHECK(!bank3_split(jobs[3].n,jobs[3].ls) && enqueue14(jobs+3)==E_ACCESSDENIED && jobs[3].calls==1);
+     OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));
+     UINT64 old,head,tail,sentinel=0xa5a5a5a5a5a5a5a5ull;
+@@ -146,9 +171,9 @@
+         !(i>=512 && i<516) && !(i>=1024 && i<1028))CHECK(map[i]==0xa5);
+     ID3D12Resource_Unmap(rb,0,NULL);OK(ID3D12Device_GetDeviceRemovedReason(dev));
+-    printf("PASS S14 fresh submit token=3: ordered native pair, batchEnd=%p old17End=%p; queries %llu <= %llu <= %llu, green14/red17 and guards\n",
++    printf("PASS S14 prior recycler 4 -> 5; split head+tail token=3, batchEnd=%p old17End=%p; queries %llu <= %llu <= %llu, green14/red17 and guards; stale/foreign/reset denied\n",
+         f[3],f[1],old,head,tail);
+     OK(bootstrap_frame_interval(owner,NULL,33333,1,0));
+     for(UINT i=0;i<6;i++){ID3D12GraphicsCommandList7_Release(l[i]);ID3D12CommandAllocator_Release(a[i]);ID3D12Fence_Release(f[i]);}
+-    ID3D12QueryHeap_Release(query);ID3D12Resource_Release(rb);ID3D12CommandQueue_Release(q);ID3D12CommandQueue_Release(foreign);
++    ID3D12QueryHeap_Release(query);ID3D12Resource_Release(rb);bank3_release_writer();ID3D12CommandQueue_Release(foreign);
+     for(UINT i=0;i<2;i++){IUnknown_Release(key[i]);ID3D12Resource_Release(pin[i].host);}
+     IUnknown_Release(banks[0]);IUnknown_Release(banks[1]);
+--- /dev/null
++++ b/scarlett/native/queue/test-s14-ledger.c
+@@ -0,0 +1,51 @@
++/* Observe only the lists recorded by this executable. */
++#define bank3_head record_bank3_head
++#include "test-s14-bank3.c"
++#undef bank3_head
++
++static ID3D12CommandList *head14;
++static IUnknown *writer,*prior;
++ID3D12CommandQueue *bank3_writer(ID3D12Device *dev,ID3D12Fence **f)
++{
++    OK(xs_direct_queue(dev,&writer));OK(xs_shared_fence(dev,&prior));
++    *f=as_fence(prior);
++    return as_queue(writer);
++}
++
++void bank3_signal(UINT64 value)
++{
++    OK(queue_signal(writer,prior,value));
++}
++
++BOOL bank3_prior(ID3D12CommandQueue *q,UINT64 high)
++{
++    struct monitored_fence *m=CONTAINING_RECORD(prior,struct monitored_fence,a.iface);
++    return m->publisher==q && !m->mixed && m->high==high;
++}
++
++void bank3_release_writer(void)
++{
++    IUnknown_Release(prior);IUnknown_Release(writer);
++}
++
++void bank3_head(ID3D12Device *dev,ID3D12GraphicsCommandList7 *host)
++{
++    record_bank3_head(dev,host);
++    head14=(ID3D12CommandList*)host;
++}
++
++BOOL bank3_split(UINT n,ID3D12CommandList **ls)
++{
++    struct startup_list *s=sl(list14);
++    return s->closed && s->s14_head && s->stamp && s->s14_head!=s->stamp &&
++        n==2 && ls[0]==head14 && ls[1]==(ID3D12CommandList*)s->host;
++}
++
++void bank3_reset(ID3D12Device *dev)
++{
++    IUnknown *fresh;
++    OK(xs_allocator(dev,0,&fresh));
++    OK(sl_reset(list14,fresh,NULL,0));
++    CK(!sl(list14)->s14_head && !sl(list14)->stamp);
++    IUnknown_Release(fresh);
++}

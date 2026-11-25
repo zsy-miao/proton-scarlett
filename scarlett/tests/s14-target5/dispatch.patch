@@ -1,0 +1,293 @@
+--- a/scarlett/native/d3d12_device.c
++++ b/scarlett/native/d3d12_device.c
+@@ -1271,6 +1271,20 @@
+     return xs_acquire_primary(owner,identity,NULL);
+ }
+ #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
++#ifdef XS_RTX_S14_JOB
++/* The producer recorded against frame 2's existing batch, not its receipt. */
++ID3D12CommandQueue *xs_s14_clock(IUnknown *owner,ID3D12Fence *prior,UINT *epoch)
++{
++    if(!prior || !owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;
++    struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;
++    ID3D12CommandQueue *q=NULL;
++    AcquireSRWLockShared(&f->lock);
++    struct frame_record *r=frame_find(f,2);
++    if(r && r==&f->history[(f->cursor-1)%ARRAYSIZE(f->history)] && r->batch_end==prior &&
++       r->sync_end && r->queue){q=r->queue;ID3D12CommandQueue_AddRef(q);*epoch=f->epoch;}
++    ReleaseSRWLockShared(&f->lock);return q;
++}
++#endif
+ ID3D12CommandQueue *xs_release_clock(IUnknown *owner,UINT64 *token,UINT *epoch)
+ {
+     if(!owner || owner->lpVtbl!=&bootstrap_vtbl.unknown)return NULL;
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -116,6 +116,9 @@
+ 
+ #ifdef SCARLETT_PAIR_SUBMIT
+ static void pair_seal(struct startup_list *,IUnknown *);
++#ifdef XS_RTX_S14_JOB
++static void seal14(struct startup_list *,IUnknown *);
++#endif
+ static void drop_sr(struct startup_list *s){
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+     xs_five_forget(s->pool_owner,s,s->five_cookie);
+@@ -311,6 +314,9 @@
+     }
+ #endif
+ #ifdef SCARLETT_PAIR_SUBMIT
++#ifdef XS_RTX_S14_JOB
++    if(caller==(UINT_PTR)GetModuleHandleW(NULL)+0x72a1 && s->error==S_OK && (s->s14_tid || s->s14_head))seal14(s,i);
++#endif
+     if((s->offered || s->deferred) && caller==(UINT_PTR)GetModuleHandleW(NULL)+0x72a1)pair_seal(s,i);
+ #endif
+     return s->error;
+@@ -2113,6 +2119,9 @@
+ #ifdef XS_TRACE_FRESH_PUBLICATION
+     fresh_submit(iface,count,(UINT_PTR)lists,token,flags,(UINT_PTR)__builtin_return_address(0));
+ #endif
++#ifdef XS_RTX_S14_JOB
++    if(count==2 && token==3 && flags==3 && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x24821e3)xs_stop();
++#endif
+     if(count==2 && token==2 && flags==3 && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x24821e3)xs_stop();
+ #endif
+     if (checked_startup_submit(iface,count,lists,token,flags)!=S_OK) xs_stop();
+--- a/scarlett/native/queue/tagged_batch.h
++++ b/scarlett/native/queue/tagged_batch.h
+@@ -36,6 +36,9 @@
+     ID3D12CommandQueue *q=as_queue(iface);
+ #if defined(SCARLETT_PAIR_SUBMIT) && !defined(PAIR_INVENTORY_ONLY)
+     if(count==2 && flags==3 && token==2)return submit_pair(iface,lists);
++#ifdef XS_RTX_S14_JOB
++    if(count==2 && flags==3 && token==3)return submit14(iface,lists);
++#endif
+ #endif
+     if (!q || !token || count!=1 || (flags!=0 && flags!=3)) {
+ #ifdef XS_TRACE_S14_SUCCESSOR
+--- a/scarlett/native/queue/pair-execute.h
++++ b/scarlett/native/queue/pair-execute.h
+@@ -4,7 +4,12 @@
+ struct pair_gen {
+     struct pair_gen *next;
+     LONG refs;
++#ifdef XS_RTX_S14_JOB
++    BOOL s14;UINT frame_epoch;ID3D12CommandQueue *writer;
++    IUnknown *id,*pins[40];UINT npins;
++#else
+     IUnknown *id,*pins[32];UINT npins;
++#endif
+     struct command_allocator *allocator;
+     struct release_receipt *receipt;
+     struct startup_list segments; /* Only the five fields consumed by execute_segments. */
+@@ -35,7 +40,11 @@
+     if(InterlockedDecrement(&g->refs))return;
+     pair_unpin_allocator(g);
+     drop_marker(g->segments.post);drop_marker(g->segments.marker);
+-    drop_timestamp(g->stamp);drop_receipt(g->receipt);
++    drop_timestamp(g->stamp);
++#ifdef XS_RTX_S14_JOB
++    if(g->s14)drop_timestamp(g->segments.s14_head);else
++#endif
++    drop_receipt(g->receipt);
+     while(g->npins){IUnknown *p=g->pins[--g->npins];IUnknown_Release(p);}
+     HeapFree(GetProcessHeap(),0,g);
+ }
+@@ -145,24 +154,37 @@
+ {
+     const struct pair_gen *p=w->g[0],*s=w->g[1];
+     UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),book=0,b[7],outer[3];
+-    if(!pub_pair(&p->publication,&s->publication,w->lists,3) || w->lists<0x100 ||
++    const UINT64 target=
++#ifdef XS_RTX_S14_JOB
++        p->s14?5:
++#endif
++        3;
++    if(!pub_pair(&p->publication,&s->publication,w->lists,target) || w->lists<0x100 ||
+        !lease_read(w->lists-0x100,outer,sizeof outer) || !lease_read(exe+0x68929d0,&book,sizeof book) ||
+        book!=exe+0x75e0e98 || !lease_read(book,b,sizeof b) || (BYTE)b[1] || b[0]!=(UINT_PTR)&w->queue->iface ||
+-       outer[0]!=book+0x28 || !b[2] || b[2]!=outer[1] || outer[2]!=3 || b[3]>=3 || b[5]!=2 ||
+-       b[6]<3)return NULL;
++       outer[0]!=book+0x28 || !b[2] || b[2]!=outer[1] || outer[2]!=target || b[3]>=target || b[5]!=target-1 ||
++       b[6]<target)return NULL;
+     for(UINT j=0;j<3;j++){
+         const struct lease_span *v=p->spans+j;struct lease_span live;
+         if(!lease_span_read(v->arena.base,v->va,v->bytes,&live) || memcmp(&v->arena,&live.arena,sizeof v->arena) ||
+-           live.node!=p->publication.node || live.gen!=p->publication.gen || live.holds || live.stamp!=3)return NULL;
++           live.node!=p->publication.node || live.gen!=p->publication.gen || live.holds || live.stamp!=target)return NULL;
+     }
+     for(struct monitored_fence *f=live_fences;f;f=f->next){
+         if((UINT_PTR)&f->a.iface!=b[2])continue;
+-        if(f->mixed || f->protected_pair || f->high!=2 || f->publisher!=w->queue->host.queue ||
++        if(f->mixed || f->protected_pair || f->high!=target-1 || f->publisher!=w->queue->host.queue ||
+            f->device!=p->segments.device)return NULL;
+         UINT64 completed=fence_completed(&f->a.iface);
+-        if(completed>=3 || completed<b[3])return NULL;
++        if(completed>=target || completed<b[3])return NULL;
++#ifdef XS_RTX_S14_JOB
++        if(p->s14 && completed!=4)return NULL;
++#endif
++#ifdef XS_RTX_S14_JOB
++        fprintf(stderr,"PAIR lease node=%zx gen=%u fence=%p prior=%llu sampled=%llu cached=%zu submitted=%zu pending=%llu\n",
++            p->publication.node,p->publication.gen,&f->a.iface,f->high,completed,b[3],b[5],target);
++#else
+         fprintf(stderr,"PAIR lease node=%zx gen=%u fence=%p prior=%llu sampled=%llu cached=%zu submitted=%zu pending=3\n",
+             p->publication.node,p->publication.gen,&f->a.iface,f->high,completed,b[3],b[5]);
++#endif
+         return f;
+     }
+     return NULL;
+@@ -214,6 +236,9 @@
+     for(struct pair_gen *g=pair_registry;g;g=g->next)
+         for(UINT j=0;j<2;j++)if(g->id==ids[j])w->g[j]=g;
+     struct pair_gen *p=w->g[0],*s=w->g[1];
++#ifdef XS_RTX_S14_JOB
++    if((p && p->s14) || (s && s->s14))goto out;
++#endif
+     if(!p || !s || !p->producer || s->producer || p->used || s->used || p->receipt!=s->receipt ||
+        p->allocator!=s->allocator || p->segments.device!=s->segments.device)goto out;
+     struct release_receipt *r=p->receipt;
+@@ -242,3 +267,7 @@
+     if(hr!=S_OK){if(waiter)CloseThreadpoolWait(waiter);pair_cleanup(w);}
+     return hr;
+ }
++
++#ifdef XS_RTX_S14_JOB
++#include "s14-job.h"
++#endif
+--- /dev/null
++++ b/scarlett/native/queue/s14-job.h
+@@ -0,0 +1,133 @@
++ID3D12CommandQueue *xs_s14_clock(IUnknown *,ID3D12Fence *,UINT *);
++/* The recorder has already identified the producer, or emitted the successor
++ * barrier/timestamp. Seal immutable native recordings, never the submitted face. */
++static void seal14(struct startup_list *s,IUnknown *id)
++{
++    BOOL producer=!s->s14_head;
++    if(s->seal || s->deferred || s->offered || s->host_exposed || !s->closed || s->error!=S_OK ||
++       !s->reservation || !s->allocator || s->allocator->lpVtbl!=&at.prefix || !s->stamp ||
++       !s->trace_pub.record || s->trace_pub.list!=(UINT_PTR)id || s->s14_tid!=GetCurrentThreadId())return;
++    if(producer && (!s->sr.end || !s->sr.rt.identity || !s->sr.ds.identity || s->output_serial!=14 ||
++       s->reuse_epoch!=1 || !s->head || s->head==s->host || !s->tail_allocator || !s->marker ||
++       !s->post || s->post->parent!=s->marker || !s->marker->alias || !s->post->counter ||
++       s->post->counter!=s->marker->alias || s->post->threshold!=1))return;
++    if(!producer && (!s14_successor(s) || s->stamp==s->s14_head))return;
++    struct pair_gen *g=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *g);
++    if(!g)return;
++    if(producer){
++        struct xs_clear_source *in[]={&s->source,&s->previous_vb,&s->vb};
++        for(UINT k=0;k<3;k++){
++            const struct lease_span *v=&in[k]->span;
++            if(!in[k]->needs_publication || !in[k]->buffer || !in[k]->placed || !in[k]->capture ||
++               in[k]->capture!=in[0]->capture || in[k]->placed!=in[0]->placed ||
++               v->node!=s->trace_pub.node || v->gen!=s->trace_pub.gen || v->data!=in[0]->span.data ||
++               memcmp(&v->arena,&in[0]->span.arena,sizeof v->arena) || v->va-v->data!=((UINT[]){0x1ff80,0x1ef30,0x1df10})[k] ||
++               v->bytes!=(k?4080u:100u) || v->holds!=(k?3u:2u) || v->stamp!=~1ull)goto bad;
++            g->spans[k]=*v;
++        }
++        if(in[0]->buffer==in[1]->buffer || in[1]->buffer==in[2]->buffer || in[2]->buffer==in[0]->buffer)goto bad;
++        if(!(g->writer=xs_s14_clock(s->pool_owner,s->sr.end,&g->frame_epoch)))goto bad;
++    }
++    g->allocator=CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface);
++    AcquireSRWLockExclusive(&g->allocator->lock);
++    if(g->allocator->generation!=(LONG64)s->alloc_generation ||
++       g->allocator->submission_pins==UINT_MAX || (UINT_PTR)g->allocator->entry!=(UINT_PTR)GetModuleHandleW(NULL)+0x555df10 ||
++       !pub_close((UINT_PTR)g->allocator->context,(UINT_PTR)id,producer,s->trace_pub.node,s->trace_pub.gen,&g->publication) ||
++       g->publication.record!=s->trace_pub.record || g->publication.arg!=s->trace_pub.arg || g->publication.pool!=s->trace_pub.pool){
++        ReleaseSRWLockExclusive(&g->allocator->lock);goto bad;
++    }
++    ++g->allocator->submission_pins;ReleaseSRWLockExclusive(&g->allocator->lock);
++    g->segments=(struct startup_list){.device=s->device,.head=s->head,.host=s->host,
++        .marker=s->marker,.post=s->post,.pool_owner=s->pool_owner,.primary=s->primary,
++        .primary_pin=s->primary_pin,.output_slot=s->output_slot,.s14_slot=s->s14_slot,
++        .s14_head=s->s14_head,.alloc_generation=s->alloc_generation,.reuse_epoch=s->reuse_epoch,.sr=s->sr};
++    g->stamp=s->stamp;InterlockedIncrement(&g->stamp->refs);
++    if(s->s14_head)InterlockedIncrement(&s->s14_head->refs);
++    if(s->marker)InterlockedIncrement(&s->marker->refs);
++    if(s->post)InterlockedIncrement(&s->post->refs);
++    void *pins[]={s->pool_owner,s->allocator,s->head,s->host,s->tail_allocator,s->heaps[0],s->heaps[1],
++        s->primary,s->primary_pin,s->output_heap,s->om.heap[0],s->om.heap[1],s->first_om.heap[0],s->first_om.heap[1],
++        s->attachments[0].identity,s->attachments[1].identity,s->prior_pso,s->prior_root,s->graphics_identity,s->bound,
++        s->source.placed,s->source.buffer,s->previous_vb.placed,s->previous_vb.buffer,s->vb.placed,s->vb.buffer,
++        s->sr_view,s->sr.end,s->sr.rt.identity,s->sr.ds.identity,g->writer};
++    _Static_assert(ARRAYSIZE(pins)<=ARRAYSIZE(g->pins),"S14 recording pins");
++    for(UINT j=0;j<ARRAYSIZE(pins);j++)pair_pin(g,pins[j]);
++    if(g->writer)ID3D12CommandQueue_Release(g->writer);
++    g->id=id;g->refs=1;g->s14=TRUE;g->producer=producer;
++    AcquireSRWLockExclusive(&pair_lock);g->next=pair_registry;pair_registry=s->seal=g;ReleaseSRWLockExclusive(&pair_lock);
++    return;
++bad:
++    if(g->writer)ID3D12CommandQueue_Release(g->writer);
++    HeapFree(GetProcessHeap(),0,g);
++}
++
++static HRESULT execute14(void *ctx)
++{
++    struct pair_job *w=ctx;struct adapter *a=w->queue;
++    struct pair_gen *g=w->g[0],*h=w->g[1];struct startup_list *p=&g->segments;
++    if(!TryAcquireSRWLockExclusive(&escape_lock))return E_ACCESSDENIED;
++    AcquireSRWLockExclusive(&publisher_lock);
++    struct monitored_fence *f=bridge_escaped?NULL:pair_book(w);
++    HRESULT hr=E_ACCESSDENIED;
++    if(f && ID3D12Fence_GetCompletedValue(p->sr.end)==1 &&
++       xs_live_output(p->pool_owner,p->primary_pin,p->primary,p->output_slot,14))
++        hr=xs_reuse_with_sr(p->pool_owner,p->primary_pin,p->primary,g->writer,&p->reuse_epoch,&p->sr);
++    if(hr==S_OK){
++        f->protected_pair=TRUE;w->book_fence=f;IUnknown_AddRef(&f->a.iface);InterlockedIncrement(&pair_inflight);
++    }
++    ReleaseSRWLockExclusive(&publisher_lock);ReleaseSRWLockExclusive(&escape_lock);
++    if(hr!=S_OK)return hr;
++    g->used=h->used=TRUE;InterlockedIncrement(&g->refs);InterlockedIncrement(&h->refs);IUnknown_AddRef(&a->iface);
++    execute_segments(g->writer,p,&w->prefix,&w->post);
++    ID3D12CommandList *successor=(ID3D12CommandList*)h->segments.host;
++    ID3D12CommandQueue_ExecuteCommandLists(g->writer,1,&successor);
++    if(FAILED(ID3D12CommandQueue_Signal(g->writer,w->end,1)))xs_stop();
++    forget_release(a);
++    if(a->display.captured.hwnd){
++        a->display.released=p->primary;ID3D12Resource_AddRef(p->primary);
++        a->display.released_end=w->end;ID3D12Fence_AddRef(w->end);
++        a->display.released_token=3;a->display.clear_slot=p->output_slot;a->display.clear_serial=14;
++    }
++    fprintf(stderr,"S14 job executed ids=%p/%p ordered=%p/%p/%p oldEnd=%p newEnd=%p publisher=%p prior=4 target=5\n",
++        g->id,h->id,p->head,p->host,successor,p->sr.end,w->end,f);
++    return S_OK;
++}
++static HRESULT submit14(IUnknown *iface,IUnknown *const *lists)
++{
++    IUnknown *ids[2];
++    if(!as_queue(iface) || !pub_read((UINT_PTR)lists,ids,sizeof ids) || !ids[0] || !ids[1] || ids[0]==ids[1])return E_INVALIDARG;
++    struct adapter *a=CONTAINING_RECORD(iface,struct adapter,iface);
++    struct pair_job *w=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *w);
++    if(!w)return E_OUTOFMEMORY;
++    HRESULT hr=E_ACCESSDENIED;PTP_WAIT waiter=NULL;
++    w->queue=a;w->lists=(UINT_PTR)lists;
++    AcquireSRWLockExclusive(&a->submit_lock);AcquireSRWLockExclusive(&pair_lock);
++    for(struct pair_gen *it=pair_registry;it;it=it->next)if(it->s14)
++        for(UINT k=0;k<2;k++)if(it->id==ids[k])w->g[k]=it;
++    struct pair_gen *g=w->g[0],*h=w->g[1];
++    if(!g || !h || !g->producer || h->producer || g->used || h->used ||
++       a->external_submissions || g->writer!=a->host.queue || g->allocator!=h->allocator ||
++       g->segments.pool_owner!=a->display.owner || h->segments.pool_owner!=a->display.owner ||
++       g->segments.device!=h->segments.device || g->segments.primary_pin!=h->segments.primary_pin ||
++       g->segments.primary!=h->segments.primary || g->segments.output_slot!=h->segments.s14_slot ||
++       h->segments.s14_head!=g->stamp || g->allocator_unpinned || h->allocator_unpinned)goto out;
++    AcquireSRWLockShared(&g->allocator->lock);
++    BOOL pinned=g->allocator->submission_pins>=2 && (UINT64)g->allocator->generation==g->segments.alloc_generation &&
++        g->segments.alloc_generation==h->segments.alloc_generation;
++    ReleaseSRWLockShared(&g->allocator->lock);
++    if(!pinned)goto out;
++    hr=ID3D12Device_CreateFence(g->segments.device,0,0,&IID_ID3D12Fence,(void**)&w->end);
++    if(FAILED(hr))goto out;
++    if(!(w->event=CreateEventW(NULL,FALSE,FALSE,NULL)) || !(waiter=CreateThreadpoolWait(retire_pair,w,NULL))){
++        hr=HRESULT_FROM_WIN32(GetLastError());goto out;
++    }
++    hr=xs_pair_frame_submit(g->segments.pool_owner,3,g->writer,TRUE,w->end,execute14,w,&g->frame_epoch);
++    if(hr==S_OK){
++        if(FAILED(ID3D12Fence_SetEventOnCompletion(w->end,1,w->event)))xs_stop();
++        SetThreadpoolWait(waiter,w->event,NULL);
++    }
++out:
++    ReleaseSRWLockExclusive(&pair_lock);ReleaseSRWLockExclusive(&a->submit_lock);
++    if(hr!=S_OK){if(waiter)CloseThreadpoolWait(waiter);pair_cleanup(w);}
++    return hr;
++}

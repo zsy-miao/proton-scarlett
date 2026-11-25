@@ -1,0 +1,4 @@
+bc20d9a493742d4a67c120b6d8da87458c752e6d61a6ab549fcd19ab413418f9  scarlett/native/d3d12_device.c
+bbc72aabf214e45f6745e82bb57a3b93e3f02961f44d1054ee1f8745c62b2c56  scarlett/native/queue/pair-execute.h
+ace374157aca949817a18acf2ecb44b25a55b90fc3145117526296352cfacc23  scarlett/native/queue/startup_list.h
+ce1c0b35957103a5c99b1c4ffd48e7d4a43bb299136b9217c5c9f548ae87bb3b  scarlett/native/queue/tagged_batch.h

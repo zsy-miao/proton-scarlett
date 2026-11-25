@@ -1,0 +1,334 @@
+--- a/scarlett/native/queue/fresh-publication.h
++++ b/scarlett/native/queue/fresh-publication.h
+@@ -19,4 +19,9 @@
+     struct startup_list **p=&fresh_lists;
+     while(*p!=s)p=&(*p)->trace_next;
++#ifdef XS_TRACE_S14_SUCCESSOR
++    if(s->trace_close)fprintf(stderr,"FRESHPUB s14-unlink face=%zx close=%llu reason=%s\n",
++        s->trace_id,s->trace_close,s->refs?"reset":"release");
++    s->trace_close=0;
++#endif
+     *p=s->trace_next;s->trace_id=0;s->trace_pub=(struct pub_seal){0};
+     ReleaseSRWLockExclusive(&fresh_lock);
+@@ -72,4 +77,8 @@
+ }
+ 
++#ifdef XS_TRACE_S14_SUCCESSOR
++#include "fresh-s14.h"
++#endif
++
+ static BOOL fresh_book(IUnknown *iface,const struct startup_list *s,UINT_PTR lists,UINT64 *target)
+ {
+@@ -99,4 +108,10 @@
+     for(struct startup_list *s=fresh_lists;s;s=s->trace_next)for(UINT j=0;j<count;j++){
+         if(ids[j]!=s->trace_id)continue;
++#ifdef XS_TRACE_S14_SUCCESSOR
++        if(s->trace_close){
++            if(abi)fresh_s14_submit(s,ids,j,count,lists,token,flags,iface);
++            continue;
++        }
++#endif
+         const struct lease_span *v=&s->source.span;struct lease_span now={0};
+         BOOL live=lease_span_read(v->arena.base,v->va,v->bytes,&now);
+--- /dev/null
++++ b/scarlett/native/queue/fresh-s14.h
+@@ -0,0 +1,58 @@
++/* A successor's retained timestamp identifies its original producer even if
++ * either face is reused. The weak registry holds neither list nor allocator. */
++static UINT64 fresh_serial;
++static struct startup_list *fresh_s14_producer(struct startup_list *s)
++{
++    struct startup_list *found=NULL;
++    for(struct startup_list *p=fresh_lists;p;p=p->trace_next){
++        if(p->trace_close || p->stamp!=s->s14_head || p->pool_owner!=s->pool_owner)continue;
++        if(found)return NULL;
++        found=p;
++    }
++    return found;
++}
++static void fresh_s14_close(struct startup_list *s,IUnknown *face)
++{
++    struct command_allocator *a=CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface);
++    AcquireSRWLockExclusive(&fresh_lock);
++    struct startup_list *p=fresh_s14_producer(s);
++    AcquireSRWLockShared(&a->lock);
++    if(p && (UINT_PTR)a->entry==(UINT_PTR)GetModuleHandleW(NULL)+0x555df10 && (UINT64)a->generation==s->alloc_generation)
++        pub_close((UINT_PTR)a->context,(UINT_PTR)face,FALSE,p->source.span.node,p->source.span.gen,&s->trace_pub);
++    s->trace_close=++fresh_serial;s->trace_id=(UINT_PTR)face;
++    s->trace_next=fresh_lists;fresh_lists=s;
++    fprintf(stderr,"FRESHPUB s14-close face=%p close=%llu producer=%zx alloc=%p recGen=%llu liveGen=%llu pins=%u record=%zx arg=%zx pool=%zx node=%zx/%u primary=%p slot=%zx/14\n",
++        face,s->trace_close,p?p->trace_id:0,s->allocator,s->alloc_generation,(UINT64)a->generation,a->submission_pins,
++        s->trace_pub.record,s->trace_pub.arg,s->trace_pub.pool,s->trace_pub.node,s->trace_pub.gen,s->primary_pin,s->s14_slot);
++    ReleaseSRWLockShared(&a->lock);
++    ReleaseSRWLockExclusive(&fresh_lock);
++}
++/* Caller holds fresh_lock shared. Identity only; existing producer span
++ * and ledger lines describe ownership. Never dispatch a submitted pointer. */
++static const char *fresh_s14_submit(struct startup_list *s,const UINT_PTR *ids,UINT j,UINT count,
++        UINT_PTR lists,UINT64 token,UINT flags,IUnknown *queue)
++{
++    struct startup_list *p=fresh_s14_producer(s);
++    struct command_allocator *a=CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface);
++    AcquireSRWLockShared(&a->lock);
++    UINT64 gen=a->generation;UINT pins=a->submission_pins;
++    ReleaseSRWLockShared(&a->lock);
++    UINT_PTR args[2],pools[2],next=0,rel=0;
++    const char *result="foreign-order";
++    if(count==2 && j==1 && p && ids[0]==p->trace_id){
++        const struct pub_seal *c=&s->trace_pub,*b=&p->trace_pub;
++        if(gen!=s->alloc_generation)result="allocator-generation-changed";
++        else if(!c->record || !b->record)result="unverified-close";
++        else if(!pub_read(lists+0x1000,args,sizeof args) || !pub_read(lists+0x800,pools,sizeof pools))result="unreadable";
++        else if(b->arg!=args[0] || b->pool!=pools[0] || c->arg!=args[1] || c->pool!=pools[1] ||
++                b->node!=c->node || b->gen!=c->gen)result="foreign-record";
++        else{
++            result=fresh_successor(b,s->trace_id,TRUE,args[1],pools[1],TRUE,&next,&rel);
++            if(next!=c->record)result="different-link";
++        }
++    }
++    fprintf(stderr,"FRESHPUB s14-member queue=%p count=%u slot=%u token=%llu flags=%x face=%zx close=%llu producer=%zx prev=%zx alloc=%p recGen=%llu liveGen=%llu pins=%u record=%zx next=%zx rel=%zx identity=%s\n",
++        queue,count,j,token,flags,s->trace_id,s->trace_close,p?p->trace_id:0,j?ids[j-1]:0,s->allocator,
++        s->alloc_generation,gen,pins,s->trace_pub.record,next,rel,result);
++    return result;
++}
+--- /dev/null
++++ b/scarlett/native/queue/s14-operands.h
+@@ -0,0 +1,46 @@
++/* Post-decision samples, including the requested VA even when no tail was prepared. */
++struct obs14_view { struct scarlett_section_info v; HRESULT cpu,wb; };
++static struct obs14_view obs14_view(UINT_PTR va,SIZE_T n)
++{
++    struct obs14_view r={.cpu=E_PENDING,.wb=E_PENDING};
++    if(va && FAILED(r.cpu=scarlett_acquire_section((void*)va,n,&r.v)))
++        r.wb=scarlett_query_section(0x5343000c,(void*)va,n,&r.v);
++    if(FAILED(r.cpu) && FAILED(r.wb))r.v=(struct scarlett_section_info){0};
++    return r;
++}
++static void obs14_dump(struct startup_list *s,UINT64 addr,UINT_PTR issuer,HRESULT hr,const char *first)
++{
++    DWORD saved=GetLastError();
++    struct system_timestamp *h=s->s14_head;
++    UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),record=0;
++    UINT bank=UINT_MAX;UINT64 ix=UINT64_MAX;
++    BOOL b=lease_read(exe+0xa943a0c,&bank,4),i=lease_read(exe+0x75dedb0,&ix,8);
++    BOOL r=b && bank<4 && lease_read(exe+0xa943a18+bank*8,&record,8);
++    struct obs14_view head=obs14_view(h->obs_va,8),tail=obs14_view(addr,8),own=obs14_view(r?record:0,96);
++    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
++    HANDLE held=h->cpu_section?h->cpu_section:h->section;
++#define EQ14(a,b) (!(a) || !(b) || !same?-1:!!same((a),(b)))
++    fprintf(stderr,"S14OBS decision issuer=+%zx host=%p headStamp=%p tailStamp=%p hr=%08lx first=[%s]\n",
++        issuer,s->host,h,s->stamp,hr,first?first:(SUCCEEDED(hr)?"PASS":"UNATTRIBUTED"));
++    fprintf(stderr,"S14OBS source va=%llx kind=%s base=%p size=%zx off=%zx resolve=%zx cpuVA=%llx cpuOff=%zx cpuSection=%p section=%p mapping=%p retained=%p dst=%p query=%p tailRecorded=%d\n",
++        h->obs_va,h->obs_wb?"wb":"cpu",h->obs_base,h->obs_size,h->obs_off,h->obs_off%65536,
++        h->cpu_addr,h->cpu_offset,h->cpu_section,h->section,h->mapping,h->retained,h->dst,h->query,h->tail_recorded);
++    fprintf(stderr,"S14OBS current headCpuHr=%08lx headWbHr=%08lx headBase=%p headSize=%zx headOff=%zx tailVA=%llx tailCpuHr=%08lx tailWbHr=%08lx tailBase=%p tailSize=%zx tailOff=%zx tailResolve=%zx adjacent=%d sameHeldHead=%d sameHeldTail=%d sameLiveHeadTail=%d sameHeldOwner=%d sameTailOwner=%d\n",
++        head.cpu,head.wb,head.v.base,head.v.view_size,head.v.offset,addr,tail.cpu,tail.wb,tail.v.base,tail.v.view_size,tail.v.offset,tail.v.offset%65536,
++        h->obs_va>=8 && h->obs_va-8==addr,EQ14(held,head.v.section),EQ14(held,tail.v.section),EQ14(head.v.section,tail.v.section),EQ14(held,own.v.section),EQ14(tail.v.section,own.v.section));
++    DWORD w[24]={0};UINT64 used=0,mirror=0,array=0;
++    BOOL fields=own.v.section && lease_read(record,w,sizeof w);
++    memcpy(&used,w+18,8);memcpy(&mirror,w+20,8);memcpy(&array,w+22,8);
++    BOOL bound=fields && own.v.view_size>=0x4810 && array>=(UINT_PTR)own.v.base &&
++        array-(UINT_PTR)own.v.base<=own.v.view_size-0x4810 && array<=UINTPTR_MAX-0x4810;
++    BOOL indexed=i && bound && ix<=UINT32_MAX && ix<2048;
++    UINT_PTR cell=indexed?array+ix*8:0;
++    fprintf(stderr,"S14OBS owner bankRead=%d bank=%u indicesRead=%d indices=%llx recordRead=%d record=%zx cpuHr=%08lx wbHr=%08lx base=%p size=%zx off=%zx fieldsRead=%d count=%lx stride=%lx flags=%lx used=%llx mirror=%llx array=%llx arrayOff=%zx arrayInBounds=%d indexedCell=%zx headIsIndexed=%d tailIsArray=%d\n",
++        b,bank,i,ix,r,record,own.cpu,own.wb,own.v.base,own.v.view_size,own.v.offset,fields,w[2],w[3],w[14],used,mirror,array,
++        bound?(SIZE_T)(array-(UINT_PTR)own.v.base):0,bound,cell,indexed && cell==h->obs_va,bound && array==addr);
++    if(head.v.section)CloseHandle(head.v.section);
++    if(tail.v.section)CloseHandle(tail.v.section);
++    if(own.v.section)CloseHandle(own.v.section);
++    fflush(stderr);SetLastError(saved);
++#undef EQ14
++}
+--- a/scarlett/native/queue/s14-record.h
++++ b/scarlett/native/queue/s14-record.h
+@@ -63,36 +63,37 @@
+     return hr;
+ }
+-static BOOL s14_successor(struct startup_list *s)
++static BOOL obs14_successor(const char **obs14_scope,struct startup_list *s)
+ {
+-    return s->s14_head && s->s14_old_key && s->primary_released && s->primary_pin && s->primary &&
+-        s->s14_tid==GetCurrentThreadId() && (UINT_PTR)s->primary_pin!=s->s14_old_key &&
+-        !s->alloc_generation && !s->head && !s->post && !s->marker && !s->deferred && !s->offered &&
+-        !s->pre_release && !s->after_alloc && !s->host_exposed && !s->successor_query && !s->seal &&
+-        s->nops==3 && !memcmp(s->ops,"\x20\x92\x48",3) &&
+-        xs_live_output(s->pool_owner,s->primary_pin,s->primary,s->s14_slot,14);
++    return OK14(s->s14_head) && OK14(s->s14_old_key) && OK14(s->primary_released) && OK14(s->primary_pin) && OK14(s->primary) &&
++        OK14(s->s14_tid==GetCurrentThreadId()) && OK14((UINT_PTR)s->primary_pin!=s->s14_old_key) &&
++        OK14(!s->alloc_generation) && OK14(!s->head) && OK14(!s->post) && OK14(!s->marker) && OK14(!s->deferred) && OK14(!s->offered) &&
++        OK14(!s->pre_release) && OK14(!s->after_alloc) && OK14(!s->host_exposed) && OK14(!s->successor_query) && OK14(!s->seal) &&
++        OK14(s->nops==3) && OK14(!memcmp(s->ops,"\x20\x92\x48",3)) &&
++        OK14(xs_live_output(s->pool_owner,s->primary_pin,s->primary,s->s14_slot,14));
+ }
+-static HRESULT s14_timestamp_gate(struct startup_list *s,UINT64 addr)
++static BOOL s14_successor(struct startup_list *s){return obs14_successor(NULL,s);}
++static HRESULT s14_timestamp_gate(const char **obs14_scope,struct startup_list *s,UINT64 addr)
+ {
+     struct system_timestamp *h=s->s14_head,*tail=NULL;
+     UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL),records[4]={0};
+     UINT bank;UINT64 indices;SIZE_T off;
+-    if(s->stamp || !s14_successor(s) || !h->cpu_section || !h->mapping || !h->dst || !h->query ||
+-       h->retained || h->section || h->tail_recorded || h->cpu_offset!=0x419f6d8 || h->cpu_addr!=addr+8 ||
+-       !lease_read(exe+0xa943a0c,&bank,4) || bank!=3 || !lease_read(exe+0x75dedb0,&indices,8) || indices!=1 ||
+-       !lease_read(exe+0xa943a18+3*8,records+3,8))return E_ACCESSDENIED;
++    if(BAD14(s->stamp) || BAD14(!obs14_successor(obs14_scope,s)) || BAD14(!h->cpu_section) || BAD14(!h->mapping) || BAD14(!h->dst) || BAD14(!h->query) ||
++       BAD14(h->retained) || BAD14(h->section) || BAD14(h->tail_recorded) || BAD14(h->cpu_offset!=0x419f6d8) || BAD14(h->cpu_addr!=addr+8) ||
++       BAD14(!lease_read(exe+0xa943a0c,&bank,4)) || BAD14(bank!=3) || BAD14(!lease_read(exe+0x75dedb0,&indices,8)) || BAD14(indices!=1) ||
++       BAD14(!lease_read(exe+0xa943a18+3*8,records+3,8)))return E_ACCESSDENIED;
+     struct scarlett_section_info owner;
+     HRESULT hr=scarlett_acquire_section((void*)records[3],96,&owner);
+-    if(FAILED(hr))return hr;
++    if(FAILED(hr)){OK14(SUCCEEDED(hr) && "acquire owner");return hr;}
+     BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+-    BOOL valid=owner.section && same && same(h->cpu_section,owner.section) && owner.offset==0x3fb30c0 &&
+-        records[3]-(UINT_PTR)owner.base==owner.offset && addr-(UINT_PTR)owner.base==0x419f6d0 &&
+-        indexed_stamp(h->cpu_addr,&owner,bank,1,records);
++    BOOL valid=OK14(owner.section) && OK14(same) && OK14(same(h->cpu_section,owner.section)) && OK14(owner.offset==0x3fb30c0) &&
++        OK14(records[3]-(UINT_PTR)owner.base==owner.offset) && OK14(addr-(UINT_PTR)owner.base==0x419f6d0) &&
++        OK14(obs14_indexed(obs14_scope,h->cpu_addr,&owner,bank,1,records));
+     if(owner.section)CloseHandle(owner.section);
+     if(!valid)return E_ACCESSDENIED;
+     hr=prepare_timestamp(s->device,addr,0,&tail,&off);
+-    if(FAILED(hr))return hr;
+-    if(!tail->cpu_section || !same(h->cpu_section,tail->cpu_section) || tail->cpu_offset!=0x419f6d0 ||
+-       tail->cpu_addr!=addr || off!=0xf6d0 || !tail->mapping || tail->retained || tail->section ||
+-       tail->mapping==h->mapping || tail->dst==h->dst || tail->query==h->query){drop_timestamp(tail);return E_ACCESSDENIED;}
++    if(FAILED(hr)){OK14(SUCCEEDED(hr) && "prepare timestamp");return hr;}
++    if(BAD14(!tail->cpu_section) || BAD14(!same(h->cpu_section,tail->cpu_section)) || BAD14(tail->cpu_offset!=0x419f6d0) ||
++       BAD14(tail->cpu_addr!=addr) || BAD14(off!=0xf6d0) || BAD14(!tail->mapping) || BAD14(tail->retained) || BAD14(tail->section) ||
++       BAD14(tail->mapping==h->mapping) || BAD14(tail->dst==h->dst) || BAD14(tail->query==h->query)){drop_timestamp(tail);return E_ACCESSDENIED;}
+     emit_q0(tail,s->host,off);s->stamp=tail;
+     fprintf(stderr,"S14 recorded CPU timestamp host=%p tail=%llx off=%zx headOff=%zx bank=%u ownerOff=%zx\n",
+@@ -100,2 +101,4 @@
+     return S_OK;
+ }
++
++#include "s14-operands.h"
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -25,4 +25,7 @@
+     UINT_PTR trace_id;
+     struct pub_seal trace_pub;
++#ifdef XS_TRACE_S14_SUCCESSOR
++    UINT64 trace_close;
++#endif
+ #endif
+ #ifdef SCARLETT_PAIR_SUBMIT
+@@ -293,4 +296,8 @@
+ #ifdef XS_TRACE_FRESH_PUBLICATION
+     if(s->source.needs_publication)fresh_close(s,i,caller);
++#ifdef XS_TRACE_S14_SUCCESSOR
++    else if(s->s14_head && s->error==S_OK && caller==(UINT_PTR)GetModuleHandleW(NULL)+0x72a1)
++        fresh_s14_close(s,i);
++#endif
+ #endif
+     if(SUCCEEDED(s->error))offer_release(s,i);
+@@ -622,12 +629,12 @@
+     batch_step(s,(s->stamp?B_POST:B_PREFIX));
+ }
+-static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
++static HRESULT obs14_pool(const char **obs14_scope,struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+ {
+     /* shortcut: only the observed kind-2 query encoding and primary-release pair. */
+-    if (!s->reservation || !s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
+-        FAILED(s->error) || x || y || flags!=1) return E_NOTIMPL;
+-    if (!addr || (addr&7)) return E_INVALIDARG;
++    if (BAD14(!s->reservation) || BAD14(!s->pool_owner) || BAD14(s->closed) || BAD14(s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT) ||
++        BAD14(FAILED(s->error)) || BAD14(x) || BAD14(y) || BAD14(flags!=1)) return E_NOTIMPL;
++    if (BAD14(!addr) || BAD14((addr&7))) return E_INVALIDARG;
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+-    if(s->s14_head)return s14_timestamp_gate(s,addr);
++    if(s->s14_head)return s14_timestamp_gate(obs14_scope,s,addr);
+ #endif
+     if (s->marker && s->marker->buffer && s->marker->value==2) {
+@@ -683,13 +690,18 @@
+     return record_timestamp(s->device,s->host,addr,s->marker && s->marker->value==1,&s->stamp);
+ }
++static inline HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
++{return obs14_pool(NULL,s,addr,x,y,flags);}
+ static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+ {
+     pair_op(sl(i),0x240);
++    const char *first=NULL;
++    const char **obs14_scope=sl(i)->s14_head?&first:NULL;
+     HRESULT hr=
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+-        sl(i)->s14_head && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x2482b37?
++        sl(i)->s14_head && BAD14((UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x2482b37)?
+         E_ACCESSDENIED:
+ #endif
+-        pool_timestamp(sl(i),addr,x,y,flags);
++        obs14_pool(obs14_scope,sl(i),addr,x,y,flags);
++    if(sl(i)->s14_head)obs14_dump(sl(i),addr,(UINT_PTR)__builtin_return_address(0)-(UINT_PTR)GetModuleHandleW(NULL),hr,first);
+     if (FAILED(hr)) {
+ #ifdef SCARLETT_PAIR_SUBMIT
+--- a/scarlett/native/queue/system_timestamp.h
++++ b/scarlett/native/queue/system_timestamp.h
+@@ -1,3 +1,10 @@
+ /* The title passes a CPU address into the marked system pool, not a GPU VA. */
++static inline BOOL obs14_check(const char **obs14_scope,BOOL v,BOOL bad,const char *expr)
++{
++    if(v==bad && obs14_scope && !*obs14_scope)*obs14_scope=expr;
++    return v;
++}
++#define BAD14(x) obs14_check(obs14_scope,!!(x),TRUE,#x)
++#define OK14(x) obs14_check(obs14_scope,!!(x),FALSE,#x)
+ struct system_timestamp {
+     LONG refs;
+@@ -18,4 +25,8 @@
+     BOOL tail_recorded,successor_bank;
+ #endif
++    UINT64 obs_va;
++    void *obs_base;
++    SIZE_T obs_off,obs_size;
++    BOOL obs_wb;
+ };
+ static void drop_timestamp(struct system_timestamp *t)
+@@ -35,14 +46,16 @@
+ }
+ /* +a1c309 selects one of four live records; +2482b16 indexes its qword array. */
++static BOOL obs14_indexed(const char **obs14_scope,UINT64 addr,const struct scarlett_section_info *pool,UINT bank,UINT index,const UINT_PTR *records)
++{
++    UINT_PTR owner;DWORD w[24];SIZE_T n;
++    if(BAD14(bank>=4) || BAD14(index!=1) || BAD14(!ReadProcessMemory(GetCurrentProcess(),records+bank,&owner,sizeof owner,&n)) || BAD14(n!=sizeof owner) ||
++       BAD14(pool->view_size!=0x49400000) || BAD14(owner<(UINT_PTR)pool->base) || BAD14(owner-(UINT_PTR)pool->base>pool->view_size-sizeof w) ||
++       BAD14(!ReadProcessMemory(GetCurrentProcess(),(void*)owner,w,sizeof w,&n)) || BAD14(n!=sizeof w)) return FALSE;
++    UINT64 array,mirror,used;memcpy(&array,w+22,8);memcpy(&mirror,w+20,8);memcpy(&used,w+18,8);
++    return OK14(w[2]==0x800) && OK14(w[3]==8) && OK14((w[14]>>16)==2) && OK14(array==mirror) && OK14(array>=(UINT_PTR)pool->base) &&
++        OK14(array-(UINT_PTR)pool->base<=pool->view_size-0x4010-0x800) && OK14(used==array+0x4010) && OK14(addr==array+index*8);
++}
+ static BOOL indexed_stamp(UINT64 addr,const struct scarlett_section_info *pool,UINT bank,UINT index,const UINT_PTR *records)
+-{
+-    UINT_PTR owner;DWORD w[24];SIZE_T n;
+-    if(bank>=4 || index!=1 || !ReadProcessMemory(GetCurrentProcess(),records+bank,&owner,sizeof owner,&n) || n!=sizeof owner ||
+-       pool->view_size!=0x49400000 || owner<(UINT_PTR)pool->base || owner-(UINT_PTR)pool->base>pool->view_size-sizeof w ||
+-       !ReadProcessMemory(GetCurrentProcess(),(void*)owner,w,sizeof w,&n) || n!=sizeof w) return FALSE;
+-    UINT64 array,mirror,used;memcpy(&array,w+22,8);memcpy(&mirror,w+20,8);memcpy(&used,w+18,8);
+-    return w[2]==0x800 && w[3]==8 && (w[14]>>16)==2 && array==mirror && array>=(UINT_PTR)pool->base &&
+-        array-(UINT_PTR)pool->base<=pool->view_size-0x4010-0x800 && used==array+0x4010 && addr==array+index*8;
+-}
++{ return obs14_indexed(NULL,addr,pool,bank,index,records); }
+ static BOOL active_stamp(UINT64 addr,const struct scarlett_section_info *pool)
+ {
+@@ -127,4 +140,5 @@
+     struct system_timestamp *t=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *t);
+     if (!t) {CloseHandle(i.section);return E_OUTOFMEMORY;}
++    t->obs_va=addr;t->obs_base=i.base;t->obs_size=i.view_size;t->obs_off=i.offset;t->obs_wb=wb;
+     t->refs=1;t->second_bank=second;t->third_wb=prefix==2;
+     ID3D12Heap *heap=NULL;
+--- a/scarlett/native/queue/tagged_batch.h
++++ b/scarlett/native/queue/tagged_batch.h
+@@ -38,5 +38,11 @@
+     if(count==2 && flags==3 && token==2)return submit_pair(iface,lists);
+ #endif
+-    if (!q || !token || count!=1 || (flags!=0 && flags!=3)) return E_NOTIMPL;
++    if (!q || !token || count!=1 || (flags!=0 && flags!=3)) {
++#ifdef XS_TRACE_S14_SUCCESSOR
++        fprintf(stderr,"FRESHPUB tagged-refusal queue=%p token=%llu count=%u flags=%x first=%s hr=%08lx\n",
++            iface,token,count,flags,!q?"!q":!token?"!token":count!=1?"count!=1":"flags",(DWORD)E_NOTIMPL);
++#endif
++        return E_NOTIMPL;
++    }
+     IUnknown *list;const void *vt;SIZE_T n;
+     if (!ReadProcessMemory(GetCurrentProcess(),lists,&list,sizeof list,&n) || n!=sizeof list ||

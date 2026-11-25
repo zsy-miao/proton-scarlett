@@ -1,0 +1,264 @@
+--- a/scarlett/native/test-job-entry.c
++++ b/scarlett/native/test-job-entry.c
+@@ -7,5 +7,7 @@
+ struct job14 {ID3D12CommandQueue *q;ID3D12Fence *end;UINT n,calls;ID3D12CommandList *ls[2];
+     IUnknown *owner;const struct xs_attachment_pin *target;UINT64 reuse;};
+-BOOL bank3_split(UINT,ID3D12CommandList**);
++void job14_prepare(ID3D12Device *,IUnknown *,ID3D12GraphicsCommandList7 **);
++void job14_producer(const struct xs_attachment_pin *,struct xs_sr_ticket,ID3D12Resource *);
++void job14_publish(void),job14_deny(void),job14_commit(ID3D12Device *),job14_retired(void);
+ void bank3_reset(ID3D12Device*);
+ ID3D12CommandQueue *bank3_writer(ID3D12Device*,ID3D12Fence**);
+@@ -17,13 +19,7 @@
+ {
+     struct job14 *j=ctx;
+-    if(j->target){
+-        const struct xs_attachment_pin *p=j->target;
+-        if(!bank3_split(j->n,j->ls) || !bank3_prior(j->q,4) || ID3D12Fence_GetCompletedValue(recycler)!=4 ||
+-           !xs_live_output(j->owner,p->identity,p->host,p->slot,p->serial) ||
+-           FAILED(xs_reuse_common(j->owner,p->identity,p->host,j->q,&j->reuse)))return E_ACCESSDENIED;
+-    }
++    CHECK(!j->target);
+     ++j->calls;
+     ID3D12CommandQueue_ExecuteCommandLists(j->q,j->n,j->ls);
+-    if(j->target)bank3_signal(5);
+     HRESULT hr=ID3D12CommandQueue_Signal(j->q,j->end,1);
+     CHECK(hr==S_OK); /* execution is irreversible */
+@@ -90,4 +86,9 @@
+     OK(ID3D12Device_CreateCommittedResource(dev,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb));
+     BYTE *map;OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));memset(map,0xa5,4096);ID3D12Resource_Unmap(rb,0,NULL);
++    job14_prepare(dev,owner,l+3);
++    SIZE_T ds_slot;IUnknown *sr_rt=test_sr_image(owner,NULL),*sr_ds=test_sr_image(owner,sr_rt),*ds_heap=test_dsv_heap(owner,&ds_slot);
++    CHECK(sr_rt && sr_ds && ds_heap);SIZE_T rt_slot=desc_cpu(views)+2*descriptor_stride(owner,hd.Type);
++    OK(xs_write_view(owner,RTV,sr_rt,(DWORD[]){28,4,0,0},rt_slot));OK(xs_write_view(owner,DSV,sr_ds,(DWORD[]){20,3,0,0,0,0},ds_slot));
++    struct xs_attachment_pin rt={sr_rt,test_sr_host(sr_rt),rt_slot,*(UINT64*)rt_slot},ds={sr_ds,test_sr_host(sr_ds),ds_slot,*(UINT64*)ds_slot};
+     for(UINT k=0;k<2;k++){
+         UINT i=1-k;ID3D12GraphicsCommandList7 *p=l[k?3:1];
+@@ -101,5 +102,7 @@
+             ID3D12GraphicsCommandList7_ResolveQueryData(p,query,D3D12_QUERY_TYPE_TIMESTAMP,0,1,rb,32);
+         }
+-        OK(ID3D12GraphicsCommandList7_Close(p));
++        edge14(p,rt.host,k?D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE:D3D12_RESOURCE_STATE_RENDER_TARGET,
++            k?D3D12_RESOURCE_STATE_RENDER_TARGET:D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++        if(!k)OK(ID3D12GraphicsCommandList7_Close(p));
+     }
+     D3D12_TEXTURE_BARRIER wire={.SyncBefore=D3D12_BARRIER_SYNC_RENDER_TARGET,.AccessBefore=D3D12_BARRIER_ACCESS_RENDER_TARGET,
+@@ -108,5 +111,5 @@
+     CHECK(FAILED(s14_emit(owner,pin+1,l[4],wire)) && FAILED(s14_emit(owner,pin,l[4],wire)));
+     wire.pResource=(ID3D12Resource*)key[0];wire.Flags=1;CHECK(FAILED(s14_emit(owner,pin,l[4],wire)));wire.Flags=0;
+-    bank3_tail(dev,owner,banks,pin,l[3],l+4,wire);
++
+     for(UINT i=0;i<2;i++){
+         D3D12_TEXTURE_COPY_LOCATION src={.pResource=pin[i].host},dst={.pResource=rb,.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+@@ -133,34 +136,22 @@
+     for(UINT i=1;i<=3;i++)bank3_signal(i);
+     wait_value(recycler,3);wait_value(f[1],1);
++    CHECK(xs_sr_submitted(owner,&rt,&ds,q,f[1]));struct xs_sr_ticket sr={0};OK(xs_sr_snapshot(owner,sr_rt,&sr));
++    job14_producer(pin,sr,rb);bank3_tail(dev,owner,banks,pin,l[3],l+4,wire);job14_publish();
+     OK(bootstrap_frame_wait(owner,0,1000,NULL,0,&token));CHECK(token==3);
+-    CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)));
+-    OK(xs_pair_frame_submit(owner,3,q,FALSE,f[2],enqueue14,jobs+2,&epoch));wait_value(f[2],1);
+-    CHECK(bank3_split(jobs[3].n,jobs[3].ls));
+-    CHECK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)==E_ACCESSDENIED &&
+-        !jobs[3].calls && ID3D12Fence_GetCompletedValue(f[3])==0);
+-    bank3_signal(4);wait_value(recycler,4);
+-    CHECK(bank3_prior(q,4) && !bank3_prior(foreign,4) && recycler!=f[1] && recycler!=f[3]);
+-    jobs[3].n=1;
+-    CHECK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)==E_ACCESSDENIED);
+-    jobs[3].n=2;jobs[3].ls[0]=(void*)l[4];jobs[3].ls[1]=(void*)l[3];
+-    CHECK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)==E_ACCESSDENIED);
+-    jobs[3].ls[0]=(void*)l[3];jobs[3].ls[1]=(void*)l[4];
+-    ++jobs[3].reuse;CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)));--jobs[3].reuse;
+-    CHECK(FAILED(xs_pair_frame_submit(owner,2,q,TRUE,f[3],enqueue14,jobs+3,&epoch)) &&
+-        FAILED(xs_pair_frame_submit(owner,3,foreign,TRUE,f[3],enqueue14,jobs+3,&epoch)) && !jobs[3].calls);
+-    OK(ID3D12CommandQueue_Wait(q,f[4],1));
+-    OK(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch));
+-    CHECK(FAILED(xs_pair_frame_submit(owner,3,q,TRUE,f[3],enqueue14,jobs+3,&epoch)) && jobs[3].calls==1 &&
+-        frame_find(&d->clock,2)->batch_end==f[1] && frame_find(&d->clock,3)->batch_end==f[3] &&
+-        xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0 &&
+-        bank3_prior(q,5) && ID3D12Fence_GetCompletedValue(recycler)==4);
++    job14_deny();OK(xs_pair_frame_submit(owner,3,q,FALSE,f[2],enqueue14,jobs+2,&epoch));wait_value(f[2],1);
++    /* Match the retail high=4, sampled=3 distinction while signal 4 is pending. */
++    ID3D12Fence *gate4;OK(ID3D12Device_CreateFence(dev,0,0,&IID_ID3D12Fence,(void**)&gate4));
++    OK(ID3D12CommandQueue_Wait(q,gate4,1));bank3_signal(4);CHECK(bank3_prior(q,4) && ID3D12Fence_GetCompletedValue(recycler)==3);
++    job14_deny();OK(ID3D12Fence_Signal(gate4,1));wait_value(recycler,4);ID3D12Fence_Release(gate4);
++    OK(ID3D12CommandQueue_Wait(q,f[4],1));job14_commit(dev);
++    ID3D12Fence_Release(f[3]);f[3]=frame_find(&d->clock,3)->batch_end;CHECK(f[3] && f[3]!=f[1] && f[3]!=f[2]);ID3D12Fence_AddRef(f[3]);
++    CHECK(xs_frame_submission_query(owner,3,q,TRUE)==E_PENDING && ID3D12Fence_GetCompletedValue(f[3])==0);
++    bank3_signal(5);CHECK(bank3_prior(q,5) && ID3D12Fence_GetCompletedValue(recycler)==4);
+     UINT64 low,high,cpu_tick;bank3_recycle();OK(ID3D12CommandQueue_GetClockCalibration(q,&low,&cpu_tick));
+     OK(ID3D12Fence_Signal(f[4],1));wait_value(f[3],1);OK(xs_frame_submission_query(owner,3,q,TRUE));
+-    CHECK(ID3D12Fence_GetCompletedValue(recycler)==5);
++    wait_value(recycler,5);job14_retired();
+     OK(ID3D12CommandQueue_GetClockCalibration(q,&high,&cpu_tick));
+     ID3D12CommandList *oracle=(ID3D12CommandList*)l[5];
+     ID3D12CommandQueue_ExecuteCommandLists(q,1,&oracle);OK(ID3D12CommandQueue_Signal(q,f[5],1));wait_value(f[5],1);
+-    bank3_reset(dev);
+-    CHECK(!bank3_split(jobs[3].n,jobs[3].ls) && enqueue14(jobs+3)==E_ACCESSDENIED && jobs[3].calls==1);
+     OK(ID3D12Resource_Map(rb,0,NULL,(void**)&map));
+     UINT64 old,head,tail,sentinel=0xa5a5a5a5a5a5a5a5ull;
+@@ -168,8 +159,9 @@
+     CHECK(old && old!=sentinel && head!=sentinel && tail!=sentinel && old<=head && head<=tail);
+     CHECK(!memcmp(map+512,"\0\xff\0\xff",4) && !memcmp(map+1024,"\xff\0\0\xff",4));
+-    for(UINT i=0;i<4096;i++)if(!(i>=32 && i<40) &&
++    for(UINT i=128;i<152;i++)CHECK(map[i]==0x71+(i-128)/8);
++    for(UINT i=0;i<4096;i++)if(!(i>=32 && i<40) && !(i>=128 && i<152) &&
+         !(i>=512 && i<516) && !(i>=1024 && i<1028))CHECK(map[i]==0xa5);
+     ID3D12Resource_Unmap(rb,0,NULL);OK(ID3D12Device_GetDeviceRemovedReason(dev));
+-    printf("PASS S14 prior recycler 4 -> 5; split head+tail token=3, batchEnd=%p old17End=%p; queries %llu <= %llu <= %llu, green14/red17 and guards; stale/foreign/reset denied\n",
++    printf("PASS S14 actual tagged dispatch: allocator pinned through batch, split prefix/producer/recorded release, recycler 4 -> 5; token=3, batchEnd=%p old17End=%p; queries %llu <= %llu <= %llu, green14/red17 and guards; stale/foreign/reset denied\n",
+         f[3],f[1],old,head,tail);
+     OK(bootstrap_frame_interval(owner,NULL,33333,1,0));
+@@ -177,4 +169,5 @@
+     ID3D12QueryHeap_Release(query);ID3D12Resource_Release(rb);bank3_release_writer();ID3D12CommandQueue_Release(foreign);
+     for(UINT i=0;i<2;i++){IUnknown_Release(key[i]);ID3D12Resource_Release(pin[i].host);}
++    IUnknown_Release(sr_rt);IUnknown_Release(sr_ds);IUnknown_Release(ds_heap);
+     IUnknown_Release(banks[0]);IUnknown_Release(banks[1]);
+     IUnknown_Release(views);IUnknown_Release(owner);return 0;
+--- a/scarlett/native/queue/test-job-entry.c
++++ b/scarlett/native/queue/test-job-entry.c
+@@ -1,9 +1,9 @@
+ /* Observe only the lists recorded by this executable. */
+ #define bank3_head record_bank3_head
+-#include "test-s14-bank3.c"
++#include "test-s14-job.c"
+ #undef bank3_head
+ 
+-static ID3D12CommandList *head14;
+-static IUnknown *writer,*prior;
++
++
+ ID3D12CommandQueue *bank3_writer(ID3D12Device *dev,ID3D12Fence **f)
+ {
+@@ -31,21 +31,29 @@
+ void bank3_head(ID3D12Device *dev,ID3D12GraphicsCommandList7 *host)
+ {
+-    record_bank3_head(dev,host);
+-    head14=(ID3D12CommandList*)host;
++    CK(sl(producer14)->host==host && sl(producer14)->device==dev && producer_stamp);
+ }
+ 
+-BOOL bank3_split(UINT n,ID3D12CommandList **ls)
+-{
+-    struct startup_list *s=sl(list14);
+-    return s->closed && s->s14_head && s->stamp && s->s14_head!=s->stamp &&
+-        n==2 && ls[0]==head14 && ls[1]==(ID3D12CommandList*)s->host;
++
++void job14_publish(void){
++    CK(VirtualAlloc(exe+0x6890000,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==exe+0x6890000 &&
++       VirtualAlloc(exe+0x75e0000,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==exe+0x75e0000);
++    UINT_PTR *book=(void*)(exe+0x75e0e98);*(UINT_PTR*)(exe+0x68929d0)=(UINT_PTR)book;
++    book[0]=(UINT_PTR)writer;book[2]=(UINT_PTR)prior;book[5]=4;book[6]=5;
++    outer[0]=(UINT_PTR)book+0x28;outer[1]=book[2];outer[2]=5;
++    records[0].next=(UINT_PTR)(records+1);records[1].rel=(UINT_PTR)node;
++    node->stamp=5;node->holds=0;
+ }
+-
+-void bank3_reset(ID3D12Device *dev)
+-{
+-    IUnknown *fresh;
+-    OK(xs_allocator(dev,0,&fresh));
+-    OK(sl_reset(list14,fresh,NULL,0));
+-    CK(!sl(list14)->s14_head && !sl(list14)->stamp);
+-    IUnknown_Release(fresh);
++static HRESULT try14(IUnknown *q){return checked_startup_submit(q,2,(IUnknown**)ids,3,3);}
++void job14_deny(void){CK(FAILED(try14(writer)));}
++void job14_commit(ID3D12Device *dev){
++    IUnknown *foreign;OK(xs_direct_queue(dev,&foreign));CK(FAILED(try14(foreign)));IUnknown_Release(foreign);
++    IUnknown *orig=(IUnknown*)ids[0];ids[0]=1;job14_deny();ids[0]=(UINT_PTR)orig;
++    UINT_PTR old=ids[0];ids[0]=ids[1];ids[1]=old;job14_deny();ids[1]=ids[0];ids[0]=old;
++    ++node->gen;job14_deny();--node->gen;node->holds=1;job14_deny();node->holds=0;
++    --outer[2];job14_deny();++outer[2];++sl(producer14)->seal->segments.reuse_epoch;job14_deny();--sl(producer14)->seal->segments.reuse_epoch;
++    CK(allocator_reset(shared14)==DXGI_ERROR_WAS_STILL_DRAWING);OK(try14(writer));job14_deny();
++    IUnknown *na,*nb;OK(xs_allocator(dev,0,&na));OK(xs_allocator(dev,0,&nb));
++    OK(sl_reset(producer14,na,NULL,0));OK(sl_reset(list14,nb,NULL,0));IUnknown_Release(na);IUnknown_Release(nb);job14_deny();
++    CK(allocator_reset(shared14)==DXGI_ERROR_WAS_STILL_DRAWING && xs_cpu_signal(prior,5)==E_ACCESSDENIED);
+ }
++void job14_retired(void){for(UINT k=0;k<10000;k++){HRESULT hr=allocator_reset(shared14);if(hr==S_OK)return;CK(hr==DXGI_ERROR_WAS_STILL_DRAWING);Sleep(1);}CK(FALSE);}
+--- a/scarlett/native/queue/test-s14-job.c
++++ b/scarlett/native/queue/test-s14-job.c
+@@ -11,4 +11,48 @@
+ static UINT64 addr;
+ static const UINT64 empty=0xadadadadadadadadull;
++static IUnknown *producer14,*shared14,*writer,*prior;
++static struct pub_wire records[2];static UINT_PTR outer[32+514],arg_keys[2],*ids=outer+32;
++static BYTE *marker_page;
++static BYTE ctx[0x12800];static _Alignas(8) BYTE nodebytes[0x58];
++static struct lease_node *node=(void*)nodebytes;static struct lease_arena arena;
++static void active14(UINT k,IUnknown *face){
++    arg_keys[k]=(UINT_PTR)face; records[k]=(struct pub_wire){.list=(UINT_PTR)face,.arg=(UINT_PTR)(arg_keys+k),.pool=(UINT_PTR)&arena,.acq=k?0:(UINT_PTR)node};
++    UINT_PTR active[]={(UINT_PTR)face,records[k].arg,(UINT_PTR)(records+k)+0x70};memcpy(ctx+0x127c8,active,sizeof active);
++    ids[k]=(UINT_PTR)face;ids[256+k]=(UINT_PTR)&arena;ids[512+k]=records[k].arg;
++}
++void record_bank3_head(ID3D12Device *,ID3D12GraphicsCommandList7 *);
++void job14_prepare(ID3D12Device *dev,IUnknown *owner,ID3D12GraphicsCommandList7 **tail){
++    OK(xs_allocator(dev,0,&shared14));OK(xs_device_list(dev,0,shared14,TRUE,owner,&producer14));
++    CK(register_callback(shared14,exe+0x555df10,ctx));
++    struct startup_list *p=sl(producer14);BYTE *ctrl;
++    HRESULT (WINAPI *make)(ID3D12Device *,SIZE_T,void **)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");
++    CK(make);OK(make(dev,65536,(void**)&ctrl));*(UINT64*)ctrl=1;OK(prefix_write(p,(UINT_PTR)ctrl+0x98,2,0,0));
++    marker_page=ctrl;record_bank3_head(dev,p->host);
++    struct prefix_marker *post=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *post);CK(post);p->nops=5;
++    post->word=p->marker->word+1;post->value=0x29a5ee15;post->counter=p->marker->alias;post->threshold=1;OK(split_native_list(p,post));
++    ID3D12GraphicsCommandList7_Release(*tail);*tail=p->host;ID3D12GraphicsCommandList7_AddRef(*tail);
++    struct adapter *a=CONTAINING_RECORD(writer,struct adapter,iface);a->display.owner=owner;IUnknown_AddRef(owner);
++}
++void job14_producer(const struct xs_attachment_pin *pin,struct xs_sr_ticket sr,ID3D12Resource *model){
++    struct startup_list *p=sl(producer14);p->stamp=producer_stamp;p->reuse_epoch=1;p->sr=sr;
++    p->primary_pin=pin->identity;IUnknown_AddRef(pin->identity);p->primary=pin->host;ID3D12Resource_AddRef(pin->host);
++    p->s14_tid=GetCurrentThreadId();p->output_slot=pin->slot;p->output_serial=pin->serial;
++    BYTE *storage=VirtualAlloc(NULL,0x20000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);CK(storage);
++    arena=(struct lease_arena){(UINT_PTR)storage,(UINT_PTR)node,1,0x20000,0x20000};node->data=arena.base;node->gen=1;node->stamp=~1ull;node->holds=5;
++    memcpy(exe+0x75df1b8,&arena,sizeof arena);
++    struct xs_clear_source *sources[]={&p->source,&p->previous_vb,&p->vb};
++    for(UINT k=0;k<3;k++){
++        struct xs_clear_source *x=sources[k];x->needs_publication=TRUE;x->capture=storage;x->placed=(IUnknown*)model;IUnknown_AddRef(x->placed);
++        D3D12_HEAP_PROPERTIES hp={.Type=D3D12_HEAP_TYPE_UPLOAD,.CreationNodeMask=1,.VisibleNodeMask=1};
++        D3D12_RESOURCE_DESC rd={.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER,.Width=k?4080:100,.Height=1,.DepthOrArraySize=1,.MipLevels=1,.SampleDesc.Count=1,.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
++        OK(ID3D12Device_CreateCommittedResource(p->device,&hp,0,&rd,D3D12_RESOURCE_STATE_GENERIC_READ,NULL,&IID_ID3D12Resource,(void**)&x->buffer));
++        void *m;OK(ID3D12Resource_Map(x->buffer,0,NULL,&m));memset(m,0x71+k,(size_t)rd.Width);ID3D12Resource_Unmap(x->buffer,0,NULL);
++        ID3D12GraphicsCommandList7_CopyBufferRegion(p->host,model,128+8*k,x->buffer,rd.Width-8,8);
++        CK(lease_span_read(arena.base,arena.base+((UINT[]){0x1ff80,0x1ef30,0x1df10})[k],k?4080:100,&x->span));x->span.holds=k?3:2;
++    }
++    active14(0,producer14); /* Owned stand-ins for recorder-qualified source spans. */
++    OK(close_at(producer14,(UINT_PTR)exe+0x72a1));CK(p->seal && p->seal->s14);
++    CK(!s14_records);s14_records=p;
++}
+ void bank3_setup(void)
+ {
+@@ -36,13 +80,11 @@
+         ID3D12GraphicsCommandList7 *producer,ID3D12GraphicsCommandList7 **out,D3D12_TEXTURE_BARRIER wire)
+ {
+-    IUnknown *alloc,*wrapped_q;OK(xs_allocator(dev,0,&alloc));OK(xs_device_list(dev,0,alloc,TRUE,owner,&list14));
+-    struct startup_list *s=sl(list14),p={.host=producer,.pool_owner=owner,.stamp=producer_stamp,.primary=pins[0].host,
+-        .primary_pin=pins[0].identity,.output_slot=pins[0].slot,.output_serial=pins[0].serial,.s14_tid=GetCurrentThreadId()};
+-    s->s14_old_key=(UINT_PTR)pins[1].identity;CK(!s14_records);s14_records=&p;
++    IUnknown *alloc=shared14,*wrapped_q;IUnknown_AddRef(alloc);OK(xs_device_list(dev,0,alloc,TRUE,owner,&list14));
++    struct startup_list *s=sl(list14),*p=sl(producer14);CK(p->host==producer && p->s14_tid);
++    active14(1,list14);s->s14_old_key=(UINT_PTR)pins[1].identity;
+     OK(xs_bind_pool_heaps(list14,2,banks));pair_op(s,0x490);
+     D3D12_BARRIER_GROUP group={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=&wire};
+     OK(record_primary_barrier_at(s,1,&group,0x32113));batch_step(s,B_RELEASED);
+-    CK(s->s14_head==producer_stamp && p.s14_used && s->primary_released && s->primary_pin==pins[0].identity && !s->deferred);
+-    s14_remove(&p);drop_timestamp(producer_stamp);producer_stamp=NULL; /* successor alone owns original head */
++    CK(s->s14_head==producer_stamp && p->s14_used && s->primary_released && s->primary_pin==pins[0].identity && !s->deferred);
+     pair_op(s,0x240);
+ #define DENY() CK(FAILED(pool_timestamp(s,addr,0,0,1)) && !s->stamp)
+@@ -59,7 +101,7 @@
+     OK(pool_timestamp(s,addr,0,0,1));batch_step(s,B_TAIL_STAMP);
+     CK(FAILED(pool_timestamp(s,addr,0,0,1)) && s->stamp!=s->s14_head && !xs_list_host(list14));
+-    OK(close_at(list14,(UINT_PTR)exe+0x72a1));CK(!s->seal && !s->offered && !s->deferred);
++    OK(close_at(list14,(UINT_PTR)exe+0x72a1));CK(s->seal && s->seal->s14 && !s->offered && !s->deferred);
+     OK(xs_direct_queue(dev,&wrapped_q));CK(checked_startup_submit(wrapped_q,1,&list14,0,0)==E_ACCESSDENIED &&
+-        FAILED(checked_startup_submit(wrapped_q,1,&list14,3,3)) && checked_startup_submit(wrapped_q,2,&list14,3,3)==E_NOTIMPL);
++        FAILED(checked_startup_submit(wrapped_q,1,&list14,3,3)) && FAILED(checked_startup_submit(wrapped_q,2,(IUnknown*[]){producer14,list14},3,3)));
+     IUnknown_Release(wrapped_q);IUnknown_Release(alloc);
+     ID3D12GraphicsCommandList7_Release(*out);*out=s->host;ID3D12GraphicsCommandList7_AddRef(*out);
+@@ -78,5 +120,6 @@
+     for(UINT i=0;i<65536;i++)CK(reuse[i]==0x49 && ((i>=delta && i<delta+16) || original[i]==0xad));
+     CK(UnmapViewOfFile(original) && VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(exe+0xa940000,0,MEM_RELEASE) && VirtualFree(exe+0x75d0000,0,MEM_RELEASE));
+-    IUnknown_Release(list14);
++    CK(*(DWORD*)(marker_page+0x98)==2 && *(DWORD*)(marker_page+0x9c)==0x29a5ee15);
++    IUnknown_Release(list14);IUnknown_Release(producer14);IUnknown_Release(shared14);
+     puts("PASS S14 bank3 CPU timestamp: original +419f6d0 after exact VA reuse at token 3; head +419f6d8, guards and rejected guest submits");
+ }
