@@ -1827,6 +1827,22 @@ was `+180/+32966` from `+bfd93`; the replacement did not record. This
 run therefore did not measure the later bind's supplied RTV identity
 or the barrier immediately preceding it.
 
+An RTX diagnostic (`03bdcc5f`) took the hardware-tested timestamp path.
+The head and tail shared the held CPU section, bank 3/index 1 selected
+the head, the timestamp recorded and the three-operation successor
+closed successfully. Serial 17's original end completed; `PresentX(2)`
+returned `S_OK` and the display count reached 2. The 223 decoded frames
+showed only black/white or a cursor.
+
+After token 3 was issued, the queue received serial 14's ordered pair
+at `+24821e3`. All three recorded spans still matched the producer
+record, had zero holds and carried the book's target stamp of 5.
+The recycler fence had sampled 3; its submitted value and publisher
+high-water mark were 4. The graphics submission was refused. No new
+serial-14 batch end was observed. An earlier breakpoint on another
+thread was separate from the submission refusal. This run did not
+request the alternate timestamp address from ordinary RTX.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
