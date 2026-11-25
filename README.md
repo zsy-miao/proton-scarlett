@@ -8,9 +8,9 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
-| How far does it get? | The latest ordinary AMD and RTX runs displayed one blank frame and requested frame 2. Separate diagnostics on **both** GPUs completed the second presentation and counted it on the display. Neither showed game content. |
+| How far does it get? | Ordinary RTX completed two presentations and requested work for frame 3. AMD also completed two presentations in a diagnostic. Neither showed game content. |
 | Why is the image still blank? | On RTX, all 8,294,400 pixels of the second surface were RGB black **before** presentation. On AMD, the game selected the final composite pass before the host began creating its pipeline, and skipped the draw. |
-| What's blocking it? | Ordinary AMD now binds the returned render target, then stops while selecting shader inputs. Ordinary RTX selects those inputs but stops at a timestamp. On the tested timestamp path, RTX reaches a frame-3 submission that the recorder refuses. |
+| What's blocking it? | With the AMD target-bind fix, retail stops while selecting shader inputs. On the RTX queue build, frame 3 passed the fence and allocation checks, but its command lists did not execute. |
 | What did the latest test show? | The [AMD hardware test](scarlett/native/queue/README.md#replacement-vertex-buffer-on-the-amd-split-six-list) verified that the bind left the image black and an explicit clear changed exactly four pixels. The same bind then succeeded in retail. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 

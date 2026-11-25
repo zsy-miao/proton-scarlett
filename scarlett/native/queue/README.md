@@ -1907,6 +1907,19 @@ at 4 to validation at 5. The first refusal was the split-at-5 check (actual
 split: 6). No three-cell selection was committed, and the descriptor contents
 were not sampled. All 175 decoded frames were black; only token 1 returned.
 
+The queued-fence RTX fixture (`45c41e82`) passed on `4998adf0`: the original
+queue had signaled 4 while the CPU still saw 3. The new serial-14 end
+retired with the recycler at 4; a separate gate then allowed signal 5.
+In ordinary RTX the book high-water was 7, the target was 5, the three
+spans matched, and both allocator pins were held. The matching queue had
+signaled 4 and the recycler sampled 3. Submission stopped **after** those
+checks at `+24821e3`. The log does not identify the next failing check.
+There was no new serial-14 end. `PresentX(2)` returned success and the
+display count reached 2; the 235 decoded frames were blank or cursor-only.
+Ordinary AMD on the identical provider stopped at `+33317`, reached count 1
+and produced 118 black frames. This queue build predates the AMD target-bind
+fix in `47002876`. Neither run sampled the source-surface RGB count.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
