@@ -1693,6 +1693,23 @@ heap slot 135. The buffer-dimension check returned `E_NOTIMPL` at
 serial 14's closed producer and successor in order on the eligible queue.
 The diagnostic matched and stopped the offer before host execution. Exit 2.
 
+### Seven-level texture view
+
+RTX fixture `b9f9c92e` passed (exit 0). The `+230` write at `+4ecc821`
+installed the measured `R32_FLOAT` view in slot 135. The shader read all
+12,282 texels across seven mips with exact float bits, including a change
+to each mip after queue submission. Invalid descriptors, freed memory and
+same-address remaps left the slot and its neighbors unchanged.
+
+Identical ordinary provider `d1a9c79e`, Wine `084db04f`, backend `0045`
+and XMem `8f74d625` ran next on AMD and RTX. AMD stopped at `+120/+32206`
+from `+3346d` after fresh `+190`; its submitted end `0xf55cce0` had no
+completion sample. RTX committed the three-cell logical selection, with
+end `0x8e7950` sampled at 0, then stopped at `+490/+32113` from
+`+24847a8`. Both exited 2 after entering `PresentX(2)` without a logged
+return. The display counts stayed at 1. AMD showed black; RTX showed
+black and white. Neither established a retail seven-mip SRV write.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
