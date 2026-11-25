@@ -1061,6 +1061,16 @@ completion of the batch-end fence or a successful return from that present.
 The display count advanced only from 0 to 1. All six focused tests had passed before
 the ordinary runs.
 
+To check a saved log (including `.gz`), retain both the entry and the
+return, and compare the producer fence with the submitted end in that run:
+
+```sh
+rg -zn 'PAIR (submitted|guest Signal|end=)|captured-window PresentX|WSI (init|producer token|lease:|count)|private PresentX result' "$LOG"
+```
+
+Compare the same window's decoded client images separately. A blank client
+appearing or disappearing is not evidence of a second game frame.
+
 AMD's first stop was list `+240`, return `+2482b37` from `+a1c36c`.
 A separate diagnostic identified a fresh list with prefix value 2 and a
 timestamp at index 1 of bank 3, offset `0x419f258` in the original WB
