@@ -103,7 +103,7 @@ static bool on_device(ID3D12DeviceChild *child, IUnknown *owner)
 extern "C" __declspec(dllexport) HRESULT WINAPI ScarlettPlacedRaw32V1(const XsPlacedCapture *p,
         UINT64 offset,ID3D12DescriptorHeap *heap,UINT index)
 {
-    if (!p || !heap || offset!=0x3de20 || !on_device(heap,p->owner)) return E_INVALIDARG;
+    if (!p || !heap || (offset!=0x3de20 && offset!=0x5de20) || !on_device(heap,p->owner)) return E_INVALIDARG;
     auto hd=heap->GetDesc();
     if (hd.Type!=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV || hd.Flags || index>=hd.NumDescriptors) return E_INVALIDARG;
     ID3D12Device *d;

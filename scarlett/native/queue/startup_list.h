@@ -1155,6 +1155,26 @@ static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
     pair_op(sl(i),0x178);
     if (FAILED(unbind_index(sl(i),view))) xs_stop();
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+/* Both setters use the same returned frame, bank pair and unconsumed first VB. */
+static BOOL first_returned_setter(struct startup_list *s)
+{
+    ID3D12DescriptorHeap *banks[2];
+    if(!pending_colour_inputs(s))return FALSE;
+    ID3D12RootSignature *root=xs_retain_colour_root(s->pool_owner,s->graphics_identity);
+    if(!root)return FALSE;
+    IUnknown_Release(s->graphics_identity);
+    return root==s->graphics_root && returned_primary_wait(s) && s->post->threshold==1 && s->reuse_epoch==1 && !s->alloc_generation &&
+        !s->sr_reversed && !s->sr_view && !s->offscreen_sr && !s->output_heap && s->rt_roundtripped &&
+        !s->table_epoch && !s->table0.heap && !s->table0.cells &&
+        s->primary_cleared && s->primary_pin && s->primary_key==(UINT_PTR)s->primary_pin &&
+        s->om.heap[0] && s->om.heap[1] && s->om.cpu[0].ptr && s->om.cpu[1].ptr &&
+        SUCCEEDED(xs_initial_heap_banks(s->pool_owner,s->heaps,banks)) &&
+        xs_held_table_inputs(&s->source,&s->vb) &&
+        xs_check_returned_output(s->pool_owner,s->primary_pin,s->primary,s->clear_slot,s->clear_serial,s->reuse_epoch,
+            &s->sr,(D3D12_CPU_DESCRIPTOR_HANDLE){0});
+}
+#endif
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
 #ifdef SCARLETT_PAIR_SUBMIT
@@ -1187,7 +1207,9 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
         }
         BOOL fresh=s->rt_roundtripped;
         if(fresh){
-            if(s->split_at!=5 || s->nops!=29 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 ||
+            if((s->marker && s->marker->buffer ?
+                (s->split_at!=6 || !xs_is_adapter(s->device,0x1002,0x164e) || !first_returned_setter(s)) : s->split_at!=5) ||
+               s->nops!=29 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 ||
                !s->source.needs_publication || !s->vb.needs_publication || !s->om.heap[0] || !s->om.heap[1] ||
                s->first_om.heap[0] || s->first_om.heap[1] || !ds || !same_carried_views(s))return E_NOTIMPL;
         }else if(s->om.heap[0] || s->nops!=19 || s->ops[18]!=0x190/8)return E_NOTIMPL;
@@ -1201,6 +1223,8 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
             if(SUCCEEDED(hr)){
                 if(fresh)s->first_om=s->om; /* Earlier commands still reference these private heaps. */
                 s->om=next;replay_om(&s->om,s->host);recorded_direct_state(s);
+                if(fresh && s->split_at==6)fprintf(stderr,"scarlett: native fresh +190 recorded segment=%p end=%p epoch=%llu rt=%zx/%llu ds=%zx/%llu\n",
+                    s->host,s->sr.end,s->reuse_epoch,at,s->sr.rt.serial,depth,s->sr.ds.serial);
             }
             return hr;
         }
@@ -1435,11 +1459,19 @@ static void WINAPI pool_colour_vb(IUnknown *i,UINT slot,UINT count,const D3D12_V
 static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
 {
 #ifdef SCARLETT_PAIR_SUBMIT
+#ifdef TEST_FIRST_TABLE_ONLY
+    if((s->source.needs_publication || s->sr.end) && (!first_returned_setter(s) ||
+       s->nops!=31 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 || s->ops[30]!=0x120/8 ||
+       !s->first_om.heap[0] || !s->first_om.heap[1] || s->first_om.heap[0]==s->om.heap[0] ||
+       s->first_om.heap[1]==s->om.heap[1] || !s->first_om.cpu[0].ptr || !s->first_om.cpu[1].ptr ||
+       s->first_om.cpu[0].ptr==s->om.cpu[0].ptr || s->first_om.cpu[1].ptr==s->om.cpu[1].ptr))return E_NOTIMPL;
+#else
     if(s->source.needs_publication && (!s->sr.end || s->sr_reversed || s->reuse_epoch!=1 || s->split_at!=5 ||
        s->nops!=31 || s->ops[30]!=0x120/8 || s->previous_vb.buffer || s->table_epoch || s->table0.heap ||
        !s->om.heap[0] || !s->om.heap[1] || !s->first_om.heap[0] || !s->first_om.heap[1] ||
        s->first_om.heap[0]==s->om.heap[0] || s->first_om.heap[1]==s->om.heap[1] ||
        !xs_held_table_inputs(&s->source,&s->vb)))return E_NOTIMPL;
+#endif
 #endif
     if(index || !s->rt_roundtripped || !s->vb.buffer || s->vb.placed!=s->source.placed ||
        !s->heaps[0] || s->table_epoch==UINT64_MAX)return E_NOTIMPL;

@@ -41,7 +41,11 @@ constexpr UINT width=160,results=65;
 constexpr SIZE_T offset=0x1b80;
 #endif
 #ifdef TEST_RAW32
+#ifdef TEST_RETURNED_RAW32
+#include "test-returned-raw32.hpp"
+#else
 #include "test-raw32-setup.hpp"
+#endif
 #endif
 int main(){
 #ifdef TEST_RAW32
@@ -155,8 +159,14 @@ int main(){
     D3D12_HEAP_PROPERTIES hp={};hp.Type=D3D12_HEAP_TYPE_DEFAULT;hp.CreationNodeMask=hp.VisibleNodeMask=1;
     D3D12_RESOURCE_DESC rd={};rd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;rd.Width=results*4;rd.Height=rd.DepthOrArraySize=rd.MipLevels=rd.SampleDesc.Count=1;
     rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+#ifdef TEST_RETURNED_RAW32
+    rd.Width=512+results*4;
+#endif
     ComPtr<ID3D12Resource> out,read;HR(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,nullptr,IID_PPV_ARGS(&out)));
     hp.Type=D3D12_HEAP_TYPE_READBACK;rd.Width=results*4;
+#ifdef TEST_RETURNED_RAW32
+    rd.Width+=512;
+#endif
 #ifdef TEST_NATIVE_POOL
     rd.Width+=width+STRIDE+16; // Inspect all neighboring data for the first OOB element.
 #endif
@@ -180,8 +190,15 @@ int main(){
 #endif
     l->SetComputeRootSignature(root.Get());l->SetDescriptorHeaps(1,&bank);l->SetComputeRootDescriptorTable(0,gh);
     l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress());l->Dispatch(((results-2)+63)/64,1,1);
+#ifdef TEST_RETURNED_RAW32
+    gh.ptr+=d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    l->SetComputeRootDescriptorTable(0,gh);l->SetComputeRootUnorderedAccessView(1,out->GetGPUVirtualAddress()+512);l->Dispatch(1,1,1);
+#endif
     D3D12_RESOURCE_BARRIER br={};br.Transition={out.Get(),0,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE};
     l->ResourceBarrier(1,&br); l->CopyBufferRegion(read.Get(),0,out.Get(),0,results*4);
+#ifdef TEST_RETURNED_RAW32
+    l->CopyBufferRegion(read.Get(),512,out.Get(),512,results*4);
+#endif
 #ifdef TEST_NATIVE_POOL
     l->CopyBufferRegion(read.Get(),results*4,proof.Get(),offset-16,width+STRIDE+16);proof.Reset();
 #endif
@@ -221,6 +238,9 @@ int main(){
         UINT expected=i<width/4?0x11002347+i*73:i<results-2?0:i==results-2?ELEMENTS:STRIDE;
 #elif defined(TEST_RAW32)
         UINT expected=i==64 ? 128 : i<32 ? 0x11002347+i*73 : 0;
+#ifdef TEST_RETURNED_RAW32
+        CK(map[128+i]==(i==64?128:i<32?0x27940013+i*13:0));
+#endif
 #else
         UINT expected=i==64 ? 152 : i<38 ? 0x11002347+i*73 : 0;
 #endif
@@ -232,8 +252,15 @@ int main(){
 #endif
     read->Unmap(0,nullptr);
 #ifdef TEST_RAW32
+#ifdef TEST_RETURNED_RAW32
+    auto *retired=raw.fence_hold.Detach();CK(retired && retired->Release()==0);
+#endif
     HR(d->GetDeviceRemovedReason());CloseHandle(ev);
+#ifdef TEST_RETURNED_RAW32
+    puts("PASS placed RAW32: unique live owner, guarded 128-byte range, 32 late-written words, 32 OOB zeros, independent capture through retirement");
+#else
     puts("PASS placed RAW32: 32 late-written words, 32 out-of-view zeros, size 128, original backing after VA reuse");
+#endif
 #else
     for(UINT i=0;i<65536;i++) CK(reuse[i]==0xad);
     CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(second,0,MEM_RELEASE));CloseHandle(ev); HR(d->GetDeviceRemovedReason());

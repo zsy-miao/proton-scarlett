@@ -511,19 +511,46 @@ static HRESULT write_placed_raw32(struct xbox_device *d,const DWORD w[16],SIZE_T
     const DWORD expected[]={39,1,0x1688,w[3],0,0,32,0,1,w[9],w[10],w[11],0x16,0,w[14],0};
     if(memcmp(w,expected,sizeof expected))return E_NOTIMPL;
     UINT64 va;memcpy(&va,w+10,sizeof va);
+#ifdef SCARLETT_PAIR_SUBMIT
+    UINT offset;
+#else
     const UINT offset=0x3de20;
+#endif
     HRESULT hr=E_INVALIDARG;struct descriptor_record old={0};
     AcquireSRWLockExclusive(&d->descriptor_lock);
     struct placed_backing *p=NULL;
     for(struct placed_backing *it=d->placed;it;it=it->next){
+#ifdef SCARLETT_PAIR_SUBMIT
+        if(va<it->guest_va ? it->guest_va-va>=128 : va-it->guest_va>=PLACED_WIDTH)continue;
+        if(!it->matches(it->capture,(void*)it->guest_va))continue;
+#else
         if(va<it->guest_va || va-it->guest_va!=offset || !it->matches(it->capture,(void*)it->guest_va))continue;
+#endif
         if(p)goto done;
         p=it;
     }
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(!p || va<p->guest_va || va-p->guest_va>PLACED_WIDTH-128)goto done;
+    offset=(UINT)(va-p->guest_va);
+#else
     if(!p)goto done;
+#endif
     BOOL visible=FALSE;D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     struct descriptor_record *r=address_view_slot(d,dest,&visible,&cpu);
     if(!r || visible)goto done;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(offset!=0x3de20){
+        struct lease_span v;UINT64 tag[2];
+        if(offset!=0x5de20 || r->placed!=&p->title->iface || r->kind!=PLACED_RAW32_VIEW ||
+            !r->serial || r->offset!=0x3de20 || r->elements!=32 || r->stride ||
+            !copy_in(tag,(void*)dest,sizeof tag) || tag[0]!=r->serial || tag[1]!=(0x5853444553430000ull|r->kind) ||
+            !lease_span_read(p->guest_va,va,128,&v) || v.arena.count!=216 || v.arena.stride!=0x20000 ||
+            v.va-v.data!=0x1de20 || v.holds!=4 || v.stamp!=~1ull)goto done;
+        struct desc_heap *h=d->heaps;
+        while(h && (h->count!=3128 || h->stride!=32 || dest-h->start!=690*32 || !h->records || &h->records[690]!=r))h=h->next;
+        if(!h)goto done;
+    }
+#endif
     __typeof__(&ScarlettPlacedRaw32V1) raw=(void*)GetProcAddress(p->module,"ScarlettPlacedRaw32V1");
     if(!raw){hr=E_NOTIMPL;goto done;}
     D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,1,D3D12_DESCRIPTOR_HEAP_FLAG_NONE,1};
