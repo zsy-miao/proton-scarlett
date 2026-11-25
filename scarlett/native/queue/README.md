@@ -1637,6 +1637,17 @@ Neither run established a retail `+58` result. Both entered `PresentX(2)`
 without a logged return; the display count stayed at 1 and private
 captures showed no game content.
 
+One staged RTX diagnostic (`0abea5b4`, Wine `0020`) then ran the retail
+address query. Placement and `+58` at `+4ecc936` agreed on the same row
+wrapper, generation 1, offset `0x1c3eb000`, extent `0xd900`, and guest
+VA `0xd675eb000`. The next observed refusal was device `+230` (address
+SRV), return `+4ecc821` from `+501f703`. Its descriptor, destination and
+internal HRESULT were not captured. Serial 14's successor closed after
+recording release and timestamp intent; no serial-14 submit was observed.
+Serial 17's original end completed, but `PresentX(2)` had no logged return,
+the count stayed at 1, and all 217 decoded frames were blank apart from
+the cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
