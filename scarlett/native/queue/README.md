@@ -1553,6 +1553,18 @@ receipt. The serial-14 lookup therefore had zero matching offers and
 returned no eligible queue or token. `PresentX(2)` did not log a return;
 the 211 decoded client images contained only black or white.
 
+[`pair-publication-reuse.c`](../../tests/pair-publication-reuse.c) exercises
+the publication checks with two synthetic pairs that reuse a successor
+interface. At Close it snapshots each producer and successor. The later
+pair matches only after its node is released and stamped; the earlier
+pair, an earlier successor record with the same interface, a stale stamp
+and a recycled node generation all refuse. Run from the repository root:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror scarlett/tests/pair-publication-reuse.c -o /tmp/opencode/pair-publication-reuse
+/tmp/opencode/pair-publication-reuse
+```
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
