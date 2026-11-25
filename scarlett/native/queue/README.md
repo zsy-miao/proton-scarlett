@@ -1953,6 +1953,13 @@ cells. Its successor timestamp stopped at the alternate head-offset check
 (229 decoded frames). Only token 1 returned and counted on either GPU.
 The captures showed black, white or a cursor.
 
+On AMD the producer closed with a timestamp, but the receipt claimed by
+the successor did not retain it. In `bf6d6155` the missing
+`producer_stamp` is the first failed check, before the code reads the bank
+or indices for the successor's requested address. Zero section fields in
+that refusal describe the absent pin; they do not establish whether the
+requested address had live backing.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
