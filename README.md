@@ -9,7 +9,7 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | --- | --- |
 | Can I play it? | **Not yet.** The game can present a blank startup frame. No recognizable loading screen, menu or gameplay has appeared. |
 | How far does it get? | Both ordinary runs requested frame 2. AMD displayed one blank frame; RTX timed out on its first presentation. An earlier RTX diagnostic completed two presentations, both without recognizable game content. |
-| What's blocking it? | AMD selected the shader inputs and then stopped at the next vertex-buffer request. RTX stopped at a resource barrier before the surface release under test. |
+| What's blocking it? | AMD selected the shader inputs, then rejected a [4,080-byte replacement vertex buffer](scarlett/native/queue/README.md#replacement-vertex-buffer-on-the-amd-split-six-list). Ordinary RTX stopped at a resource barrier before the surface release under test. |
 | What did the latest test show? | The [RTX test](scarlett/tests/same-batch-release.md#serial-14-on-its-own-frame-token) released one surface using its own third-frame submission and verified the other surface stayed intact. AMD retail reproduced the [slot selection](scarlett/native/queue/README.md#first-split-six-shader-table-on-amd) that passed its fixture. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 

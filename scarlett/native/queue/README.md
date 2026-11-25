@@ -1742,11 +1742,27 @@ On identical ordinary build `a3124418`, AMD selected slot 372600 on the
 same segment and original end as `+190`. Next it stopped at vertex-buffer
 setter `+180/+32966` from `+bfd93`. The display count reached 1. RTX's
 `PresentX(1)` returned `DXGI_ERROR_WAS_STILL_DRAWING` after a 250,995 µs
-producer-fence wait. No display increment was logged. Its first unsupported
+producer-fence wait. The next fence report sampled that same token-1
+batch end at 1, after the failed return. No display increment was logged.
+Token 2 submitted with a different end. Its first unsupported
 call was `+490/+32113` from `+50a624f`, before any serial-14 barrier or
 timestamp row. Both runs submitted token 2 and entered `PresentX(2)`
 without a return or an end-completion sample. The private captures showed
 only black/white frames and, on RTX, a cursor.
+
+### Replacement vertex buffer on the AMD split-six list
+
+In the RADV diagnostic `9876779c`, the carried list bound its first
+4,080-byte VB at `0x1145ef30`, then selected slot 372600. On that same
+segment and original end, operation 33 (`+180/+32966` from `+bfd93`)
+supplied slot 0, count 1, VA `0x1145df10`, size 4,080, stride 24.
+The provider returned `E_NOTIMPL` at its split-six replacement guard.
+The diagnostic read the supplied view; the recorder refused before its
+normal view read or lookup. The clear and first VB still shared a live
+node and generation. The requested bytes overlap neither; registration
+of the replacement itself was not sampled. This was the pending-color
+path, with no explicit #42 bind. Only token 1 returned; all 91 decoded
+frames were blank black or white.
 
 ### Cross-build the guarded token-2 checkpoint
 
