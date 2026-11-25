@@ -1973,6 +1973,12 @@ reuse. Its second setup expected token 1 but received token 4, before
 testing the other layout. The fixture exited 1; the ordinary pair for
 `a694bc9d` was withheld.
 
+Corrected fixture `baeccf0b` passed on the same provider. Each layout ran
+in its own child process and issued tokens 1, 2, 3. Both timestamp pairs
+received ordered writes in their original allocation after address reuse.
+Each child retired one serial-14 batch on its own end and verified the
+green and red surfaces and their guards.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
