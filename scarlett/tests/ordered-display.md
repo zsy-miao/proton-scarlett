@@ -33,6 +33,13 @@ still confirmed token 1 from an exact observation on that same swapchain.
 It likewise confirmed token 2 after count 3. Both adapters passed. A later
 count alone cannot establish an earlier presentation.
 
+The private movies sample the desktop at a nominal 12 fps. The fixture's
+distinct colors identify their order, but a movie frame number does not
+identify a particular DXGI flip. To attribute a future client screenshot
+to a token, bracket its acquisition after the successful presentation and
+confirm the same window, generation and displayed count through capture.
+Cursor motion alone is not evidence of a changed game image.
+
 **Qualification:** Both adapters passed the fixture-only PE built on `e94ccab7` (SHA-256 `1a0fe844482178ec5a89b02e9ffe400ddaabce58681b5bd202637f48608be0db`). Both rejected the unrelated fence, advanced WSI 0→1→2 on one window generation and displayed red/blue followed by green/magenta. The earlier common PE (`b04e501f…`) also passed; its private recordings show the two patterns at samples 26→50 and 42→65 on RADV and RTX, respectively.
 
 **Attribution:** The ordered generation and two-list fixture derive from the project's scratch commit `86bb7701`. Presentation, window leasing, tail calibration and pixel decoding reuse the project bridge fixtures. Behavioral references were [XCL queue translation](https://github.com/ivall/xcl/blob/930e8b49c1c2ec683d22c724a398b39111cd0e56/crates/xcl/src/hle/d3d12x/real.rs#L5129-L5139) (GPL-2.0-only) and [VIctory submission](https://github.com/Marvisak/VIctory/blob/ffe310eb2098e52169f4c44db5ffdabf43a72622/crates/victory-gpu/src/queue.rs#L500-L546) (GPL-3.0-or-later); no source from either was incorporated.
