@@ -1,0 +1,291 @@
+--- a/scarlett/native/queue/deferred-release.h
++++ b/scarlett/native/queue/deferred-release.h
+@@ -17,6 +17,32 @@
+ };
+ static SRWLOCK receipt_lock=SRWLOCK_INIT;
+ static struct release_receipt *offers;
++#ifdef XS_AMD_S17_WB
++static BOOL s17_recording(struct startup_list *s,const struct system_timestamp *t,const struct release_receipt *r)
++{
++    return t && t->recording_allocator && t->recording_allocator==s->allocator &&
++        !s->alloc_generation && s->allocator->lpVtbl==&at.prefix &&
++        !InterlockedCompareExchange64(&CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface)->generation,0,0) &&
++        r->owner==s->pool_owner && r->serial==17 && r->token==2 && r->epoch==1 && r->table_epoch==2;
++}
++static BOOL s17_offer(struct startup_list *s,const struct release_receipt *r)
++{
++    struct system_timestamp *t=s->stamp;
++    UINT64 ix;UINT_PTR exe=(UINT_PTR)GetModuleHandleW(NULL);
++    if(!s17_recording(s,t,r) || !t->section || !t->retained || !t->dst || !t->query ||
++       !s->marker || !s->marker->buffer || !s->marker->control_section || s->marker->alias ||
++       s->marker->native_post!=0x29a5ee15 || s->split_at!=6 ||
++       !lease_read(exe+0x75dedb0,&ix,8) || ix!=1)return FALSE;
++    struct scarlett_section_info i;
++    if(FAILED(scarlett_query_section(0x5343000c,(void*)t->obs_va,8,&i)))return FALSE;
++    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
++    BOOL ok=i.base==t->obs_base && i.section && same && same(i.section,t->section) &&
++        live_wb_head(t->obs_va,&i,2,0x419acc8,0x3fb3050);
++    if(i.section)CloseHandle(i.section);
++    if(ok)fprintf(stderr,"S17 WB offer original=%p dst=%p head=%llx off=%zx heldHead=1 serial=17 gen=0\n",t->section,t->dst,t->obs_va,t->obs_off);
++    return ok;
++}
++#endif
+ static void drop_receipt(struct release_receipt *r)
+ {
+     if(!InterlockedDecrement(&r->refs)){
+@@ -52,7 +78,11 @@
+         .host=s->primary,.slot=s->output_slot,.serial=s->output_serial,.table_epoch=s->table_epoch,
+         .queue=q,.token=token,.epoch=epoch,.tid=GetCurrentThreadId()};
+     IUnknown_AddRef(r->key);
+-    if(s->stamp && (s->stamp->successor_bank
++    if(s->stamp &&
++#ifdef XS_AMD_S17_WB
++        (!s->stamp->recording_allocator || s17_offer(s,r)) &&
++#endif
++        (s->stamp->successor_bank
+ #ifdef SCARLETT_PAIR_SUBMIT
+         || (s->stamp->second_bank && s->stamp->cpu_section)
+ #endif
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -677,7 +677,14 @@
+             s->successor_query=TRUE;return S_OK;
+         }
+ #endif
++#ifdef XS_AMD_S17_WB
++        if(r->producer_stamp->recording_allocator && !s17_recording(s,r->producer_stamp,r))return E_ACCESSDENIED;
++#endif
+         HRESULT hr=successor_target(r->producer_stamp,addr,bank,indices,record);if(FAILED(hr))return hr;
++#ifdef XS_AMD_S17_WB
++        if(r->producer_stamp->recording_allocator)fprintf(stderr,"S17 WB decision original=%p dst=%p tail=%llx off=%zx heldTailOwner=1 bank=%u indices=%llx\n",
++            r->producer_stamp->section,r->producer_stamp->dst,addr,r->producer_stamp->tail_offset,bank,indices);
++#endif
+         s->stamp=r->producer_stamp;InterlockedIncrement(&s->stamp->refs);
+         s->successor_query=TRUE;
+ #ifdef SCARLETT_PAIR_SUBMIT
+@@ -693,6 +700,17 @@
+     }
+ #endif
+     if (s->stamp) return E_NOTIMPL;
++#ifdef XS_AMD_S17_WB
++    if(s->phase==B_REBOUND && s->nops==4 && !memcmp(s->ops,"\x20\x47\x20\x48",4) &&
++       !s->alloc_generation && s->allocator && s->marker && s->marker->value==1 && s->marker->control_section &&
++       s->marker->buffer && s->marker->heap && !s->marker->alias && xs_is_adapter(s->device,0x1002,0x164e)){
++        HRESULT hr=record_timestamp(s->device,s->host,addr,3,&s->stamp);
++        if(SUCCEEDED(hr) && s->stamp->successor_bank && s->stamp->tail_offset==0x419acc0){
++            s->stamp->recording_allocator=s->allocator;IUnknown_AddRef(s->allocator);
++        }
++        return hr;
++    }
++#endif
+     return record_timestamp(s->device,s->host,addr,s->marker && s->marker->value==1,&s->stamp);
+ }
+ static inline HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
+--- a/scarlett/native/queue/system_timestamp.h
++++ b/scarlett/native/queue/system_timestamp.h
+@@ -28,10 +28,16 @@
+     void *obs_base;
+     SIZE_T obs_off,obs_size;
+     BOOL obs_wb;
++#ifdef XS_AMD_S17_WB
++    IUnknown *recording_allocator;
++#endif
+ };
+ static void drop_timestamp(struct system_timestamp *t)
+ {
+     if (!t || InterlockedDecrement(&t->refs)) return;
++#ifdef XS_AMD_S17_WB
++    if(t->recording_allocator)IUnknown_Release(t->recording_allocator);
++#endif
+     if (t->query) ID3D12QueryHeap_Release(t->query);
+     if (t->dst) ID3D12Resource_Release(t->dst);
+     if (t->retained) ID3D12Heap_Release(t->retained);
+@@ -82,6 +88,9 @@
+     if(valid)memcpy(w,(BYTE*)alias.base+record_off,sizeof w);
+     if(!alias.base || !VirtualFree(alias.base,0,MEM_RELEASE) || !valid)return FALSE;
+     memcpy(&used,w+18,8);memcpy(&mirror,w+20,8);memcpy(&array,w+22,8);
++#ifdef XS_AMD_S17_WB
++    if(head-(UINT_PTR)dst->base==0x419acc8 && w[14]!=0x20001)return FALSE;
++#endif
+     return w[2]==2048 && w[3]==8 && (w[14]>>16)==2 && array==head-8 &&
+         mirror==array && used==array+0x4010;
+ }
+@@ -127,7 +136,11 @@
+     if (wb && FAILED(hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i))) return hr;
+     const UINT window=65536;
+     BOOL second=FALSE;
+-    if(prefix==1){
++    if(prefix==1
++#ifdef XS_AMD_S17_WB
++       || prefix==3
++#endif
++    ){
+         if(wb && i.offset==0x419aeb8)second=live_wb_head(addr,&i,2,0x419aeb8,0x3fb3050);
+         else second=i.offset==0x419aa38 || (i.section && i.view_size==0x49400000 && active_stamp(addr,&i));
+     }
+@@ -157,6 +170,11 @@
+     D3D12_QUERY_HEAP_DESC qd={D3D12_QUERY_HEAP_TYPE_TIMESTAMP,1,1};
+ #ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+     t->successor_bank=wb && second && (i.offset==0x419aa38 || i.offset==0x419aeb8);
++#ifdef XS_AMD_S17_WB
++    if(prefix==3 && wb && i.offset==0x419acc8){
++        t->successor_bank=t->second_bank=live_wb_head(addr,&i,2,0x419acc8,0x3fb3050);
++    }
++#endif
+     if (!t->third_wb && (t->successor_bank || i.offset==0x4196218
+ #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
+             || i.offset==0x41964a8 || i.offset==0x4196698
+@@ -243,7 +261,12 @@
+ {
+     if(!t || !t->successor_bank || !t->retained || !t->section || !t->dst || !t->query ||
+        t->tail_recorded || bank!=2 || indices!=1 || addr!=t->tail_addr ||
+-       (t->tail_offset!=0x419aa30 && t->tail_offset!=0x419aeb0))return E_INVALIDARG;
++       (t->tail_offset!=0x419aa30 && t->tail_offset!=0x419aeb0
++#ifdef XS_AMD_S17_WB
++        && !(t->tail_offset==0x419acc0 && t->recording_allocator && t->obs_wb && !t->mapping &&
++            !t->cpu_section && t->obs_va==addr+8 && t->obs_off==0x419acc8 && t->obs_size==0x49400000)
++#endif
++       ))return E_INVALIDARG;
+     struct scarlett_section_info i,owner;
+     HRESULT hr=scarlett_query_section(0x5343000c,(void*)addr,8,&i);
+     if(FAILED(hr))return hr;
+@@ -252,7 +275,14 @@
+     BOOL valid=base && addr>=base && record>=base && record-base==0x3fb3050 &&
+         addr-base==t->tail_offset && i.offset==t->tail_offset && i.view_size==0x49400000 &&
+         i.section && same && same(i.section,t->section);
+-    if(valid && t->tail_offset==0x419aeb0)valid=wb_record(addr+8,&i,record,0x3fb3050);
++#ifdef XS_AMD_S17_WB
++    if(t->tail_offset==0x419acc0 && i.base!=t->obs_base)valid=FALSE;
++#endif
++    if(valid && (t->tail_offset==0x419aeb0
++#ifdef XS_AMD_S17_WB
++        || t->tail_offset==0x419acc0
++#endif
++        ))valid=wb_record(addr+8,&i,record,0x3fb3050);
+     else if(valid){
+         hr=scarlett_query_section(0x5343000c,(void*)record,96,&owner);
+         valid=SUCCEEDED(hr) && owner.section && same(owner.section,t->section) &&
+--- a/scarlett/native/queue/test-sealed-pair.h
++++ b/scarlett/native/queue/test-sealed-pair.h
+@@ -34,11 +34,27 @@
+     REQUIRE(cpu);arr=(UINT_PTR)sys+0x419aa30;used=arr+0x4010;
+ #endif
+     DWORD *rec=(DWORD*)(sys+0x3fb3050);rec[2]=0x800;rec[3]=8;rec[14]=2<<16;
++#ifdef TEST_AMD_S17_WB
++    REQUIRE(!cpu);arr=(UINT_PTR)sys+0x419acc0;used=arr+0x4010;rec[14]=0x20001;
++    struct scarlett_section_info src,view;
++    REQUIRE(SUCCEEDED(scarlett_query_section(0x5343000c,(void*)arr,16,&src)) &&
++        SUCCEEDED(scarlett_query_section_handle(0x5343000b,NULL,src.view_size,&view,src.section)));
++    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
++    BYTE *original=(BYTE*)view.base+0x4190000;
++    REQUIRE(view.base!=sys && same);memset(original,0xad,65536);
++#endif
+     memcpy(rec+18,&used,8);memcpy(rec+20,&arr,8);memcpy(rec+22,&arr,8);
+     *(DWORD*)(exe+0xa943a0c)=2;*(UINT64*)(exe+0x75dedb0)=1;memcpy(exe+0xa943a18+16,&rec,8);
+     volatile UINT64 *ticks=(volatile UINT64*)(UINT_PTR)arr;ticks[0]=ticks[1]=0;
+     pool_vtbl.bind(l,2,inline_pair);pool_vtbl.marker(l,(SIZE_T)page+0x50,1,0,0);
+     pool_vtbl.bind(l,2,inline_pair);pool_vtbl.timestamp(l,arr+8,0,0,1);
++#ifdef TEST_AMD_S17_WB
++    struct system_timestamp *head=sl(l)->stamp;
++    REQUIRE(head && head->query && head->retained && head->dst);
++    ID3D12QueryHeap *orig_query=head->query;
++    ID3D12Heap *orig_heap=head->retained;
++    ID3D12Resource *orig_dst=head->dst;
++#endif
+     pool_vtbl.marker(l,(SIZE_T)page+0x54,0x29a5ee15,0,0);pool_vtbl.wait64(l,(SIZE_T)page,7,1,1);
+     pool_vtbl.sync418(l,0xc280,0x20000,0,0xffffffffff00ull);
+     D3D12_TEXTURE_BARRIER b[2]={{.SyncBefore=D3D12_BARRIER_SYNC_ALL_SHADING,.SyncAfter=D3D12_BARRIER_SYNC_RENDER_TARGET,
+@@ -48,6 +64,10 @@
+     D3D12_BARRIER_GROUP bg={.Type=D3D12_BARRIER_TYPE_TEXTURE,.NumBarriers=1,.pTextureBarriers=b};
+     SIZE_T output=slots[0]+32;
+     REQUIRE(xs_write_view(owner,0xa0,key,(DWORD[]){28,4,0,0},output)==S_OK);
++#ifdef TEST_AMD_S17_WB
++    for(UINT j=0;j<17 && *(UINT64*)output<17;j++)REQUIRE(xs_write_view(owner,0xa0,key,(DWORD[]){28,4,0,0},output)==S_OK);
++    REQUIRE(*(UINT64*)output==17);
++#endif
+     pool_vtbl.barrier(l,1,&bg);pool_vtbl.clear(l,output,(FLOAT[4]){0},0,NULL);
+     pool_vtbl.topology(l,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);pool_vtbl.rate(l,0,(D3D12_SHADING_RATE_COMBINER[2]){0});
+     pool_vtbl.pipeline(l,pso);pool_vtbl.root(l,root);pool_vtbl.depth_order(l,0);pool_vtbl.index(l,NULL);
+@@ -69,9 +89,46 @@
+     active[0]=array[0]=records[0].list=entries[0]=(UINT_PTR)l;active[1]=records[0].arg=array[512]=(UINT_PTR)entries;
+     records[0].pool=array[256]=(UINT_PTR)ctx;records[0].acq=kn;active[2]=(UINT_PTR)&records[0].next;
+     pool_vtbl.b27(l,0,va-0x1080-131*32);REQUIRE(close_at(l,(UINT_PTR)exe+0x72a1)==S_OK && sl(l)->seal);
++#ifdef TEST_AMD_S17_WB
++    struct release_receipt *offer=sl(l)->offered;struct system_timestamp *held=sl(l)->stamp;
++    REQUIRE(offer && offer->producer_stamp==held && held==head && held->recording_allocator==a &&
++        held->retained==orig_heap && held->dst==orig_dst && held->query==orig_query && !held->mapping && same(held->section,src.section));
++    sl(l)->alloc_generation++;REQUIRE(!s17_offer(sl(l),offer));sl(l)->alloc_generation--;
++    offer->serial--;REQUIRE(!s17_offer(sl(l),offer));offer->serial++;
++    *(UINT64*)(exe+0x75dedb0)=0x100000001ull;REQUIRE(!s17_offer(sl(l),offer));*(UINT64*)(exe+0x75dedb0)=1;
++    UINT_PTR *selected=(UINT_PTR*)(exe+0xa943a18+16);
++    *selected=(UINT_PTR)view.base+0x3fb3050;REQUIRE(!s17_offer(sl(l),offer));*selected=(UINT_PTR)rec;
++    REQUIRE(s17_offer(sl(l),offer));
++#endif
+     REQUIRE(xs_device_list(d,0,a,TRUE,owner,&next)==S_OK);pool_vtbl.bind(next,2,inline_pair);
+     b[0].pResource=(ID3D12Resource*)key;b[0].SyncAfter=0;b[0].AccessAfter=D3D12_BARRIER_ACCESS_NO_ACCESS;b[0].LayoutAfter=31;
+-    pool_vtbl.barrier(next,1,&bg);pool_vtbl.timestamp(next,arr,0,0,1);
++    pool_vtbl.barrier(next,1,&bg);
++#ifdef TEST_AMD_S17_WB
++    struct startup_list *ns=sl(next);
++    REQUIRE(ns->deferred==offer);
++    ns->alloc_generation++;REQUIRE(FAILED(pool_timestamp(ns,arr,0,0,1)));ns->alloc_generation--;
++    struct command_allocator *ca=CONTAINING_RECORD(a,struct command_allocator,a.iface);
++    InterlockedIncrement64(&ca->generation);
++    REQUIRE(!s17_offer(sl(l),offer) && FAILED(pool_timestamp(ns,arr,0,0,1)));
++    InterlockedDecrement64(&ca->generation);
++    IUnknown *wrong_alloc;REQUIRE(xs_allocator(d,0,&wrong_alloc)==S_OK);
++    ns->allocator=wrong_alloc;REQUIRE(FAILED(pool_timestamp(ns,arr,0,0,1)));ns->allocator=a;IUnknown_Release(wrong_alloc);
++    offer->owner=foreign;REQUIRE(!s17_offer(sl(l),offer) && FAILED(pool_timestamp(ns,arr,0,0,1)));offer->owner=owner;
++    *selected=(UINT_PTR)view.base+0x3fb3050;REQUIRE(FAILED(pool_timestamp(ns,arr,0,0,1)));*selected=(UINT_PTR)rec;
++    *(UINT64*)(exe+0x75dedb0)=0x100000001ull;REQUIRE(FAILED(pool_timestamp(ns,arr,0,0,1)));*(UINT64*)(exe+0x75dedb0)=1;
++    *(DWORD*)(exe+0xa943a0c)=1;REQUIRE(FAILED(pool_timestamp(ns,arr,0,0,1)));*(DWORD*)(exe+0xa943a0c)=2;
++    rec[14]^=1;REQUIRE(FAILED(pool_timestamp(ns,arr,0,0,1)));rec[14]^=1;
++    HANDLE foreignSection=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,65536,NULL);
++    REQUIRE(foreignSection && !same(src.section,foreignSection));HANDLE saved=held->section;held->section=foreignSection;
++    REQUIRE(!s17_offer(sl(l),offer) && FAILED(pool_timestamp(ns,arr,0,0,1)));held->section=saved;CloseHandle(foreignSection);
++    REQUIRE(!ns->successor_query && !ns->stamp && !held->tail_recorded);
++#endif
++    pool_vtbl.timestamp(next,arr,0,0,1);
++#ifdef TEST_AMD_S17_WB
++    REQUIRE(ns->successor_query && ns->stamp==head && held->dst==orig_dst && held->retained==orig_heap &&
++        held->query==orig_query && same(src.section,held->section));
++    puts("PASS S17 WB held at offer and decision; wrong allocator/generation/serial, section, owner, flags, bank and packed indices refused");
++#endif
+ #ifdef TEST_RTX_Q0_SECOND_PAIR
+     struct system_timestamp *h=sl(l)->stamp,*t=sl(next)->stamp;
+     REQUIRE(sl(next)->successor_query && h && t && h!=t && h->cpu_offset==0x419aa38 && t->cpu_offset==0x419aa30 &&
+@@ -97,6 +154,12 @@
+     book[2]=stack[1]=(UINT_PTR)mixed;REQUIRE(FAILED(checked_tagged_submit(q,2,ls,2,3)));
+     book[2]=stack[1]=(UINT_PTR)title;
+     REQUIRE(executions==before && checked_tagged_submit(q,2,ls,2,3)==S_OK && executions==before+3);
++#ifdef TEST_AMD_S17_WB
++    REQUIRE(VirtualFree(sys,0,MEM_RELEASE));BYTE *replacement=VirtualAlloc(sys+0x4190000,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
++    REQUIRE(replacement==sys+0x4190000);memset(replacement,0x49,65536);MemoryBarrier();
++    REQUIRE(FAILED(successor_target(held,arr,2,1,(UINT_PTR)rec)));
++    ticks=(volatile UINT64*)(original+0xacc0);
++#endif
+     REQUIRE(FAILED(checked_tagged_submit(q,2,ls,2,3)) && executions==before+3);
+     REQUIRE(queue_signal(foreign,title,3)==E_ACCESSDENIED && xs_cpu_signal(title,3)==E_ACCESSDENIED &&
+         fence_completed(title)==2 && queue_signal(q,title,3)==S_OK);
+@@ -106,6 +169,9 @@
+     DWORD start=GetTickCount();
+     while(*(volatile DWORD*)(page+0x54)!=0x29a5ee15 && GetTickCount()-start<10000)Sleep(1);
+     REQUIRE(*(volatile DWORD*)(page+0x50)==1 && *(volatile DWORD*)(page+0x54)==0x29a5ee15 && ticks[1] && !ticks[0]);
++#ifdef TEST_AMD_S17_WB
++    UINT64 original_q0=ticks[1];
++#endif
+     REQUIRE(xs_frame_submission_query(owner,2,as_queue(q),TRUE)==E_PENDING && fence_completed(title)==2);
+     UINT64 low,high,tick;REQUIRE(SUCCEEDED(ID3D12CommandQueue_GetClockCalibration(as_queue(q),&low,&tick)));
+     InterlockedExchange64((LONG64*)page,1);
+@@ -118,5 +184,11 @@
+     REQUIRE(ID3D12Fence_SetEventOnCompletion(as_fence(title),3,NULL)==S_OK && fence_completed(title)==3);
+     IUnknown_Release(title);IUnknown_Release(early);IUnknown_Release(mixed);IUnknown_Release(foreign);
+     printf("PASS sealed token2 pair: held gate, retired reset/released generations, post-release timestamp %llu/%llu\n",ticks[1],ticks[0]);
++#ifdef TEST_AMD_S17_WB
++    REQUIRE(ticks[1]==original_q0 && ticks[0]>original_q0);
++    for(UINT j=0;j<65536;j++)REQUIRE(replacement[j]==0x49 && (j>=0xacc0 && j<0xacd0 ? TRUE : original[j]==0xad));
++    CloseHandle(src.section);REQUIRE(VirtualFree(view.base,0,MEM_RELEASE) && VirtualFree(replacement,0,MEM_RELEASE));
++    puts("PASS S17 WB +419acc8/+419acc0: original Q0/Q1 ordered across release; exact VA replacement and original neighbors unchanged");
++#endif
+     REQUIRE(publish_late());return TRUE;
+ }
