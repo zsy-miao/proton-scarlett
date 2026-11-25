@@ -1592,6 +1592,22 @@ the 235 decoded frames showed game content. The earlier `+4ecc936` caller
 alone does not identify a wrapper or prove that a heap or section lookup
 failed. The provider's address checks remain unchanged.
 
+Aligned at the successful `PresentX(1)` return, both saved RTX logs have
+21 consecutive `rsaenh.dll` load/unload pairs (ignoring thread, address
+and timestamp). The first different event in `6e2a86b5` is “Got 3
+swapchain images” (line 127345); token 2 is issued at 127354. In
+`924b68d0` there is one extra DLL load/unload pair (127341–42), then
+the title breakpoint (127344). Its swapchain worker **also** reports
+three images, at 127465, after the exception. These are interleaved
+thread logs; the extra load and the worker's timing do not explain the trap.
+
+The title stack `+5707b8c ← +cc2673 ← +1d962f5 ← +1edbbcc` matches
+the previously traced 2560×1440 depth-resource constructor returning
+null. The 4K case shares the breakpoint but has a different ancestor.
+The failing log does not distinguish an arena allocation failure from
+a failed committed or placed resource creation; it contains no `+58`
+query for the later resource.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
