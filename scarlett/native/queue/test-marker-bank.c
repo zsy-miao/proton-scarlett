@@ -34,7 +34,12 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
 #else /* TEST_BANK3_WB */
     CK(s->marker && s->marker->value==2 && s->marker->control_section && s->marker->buffer && !s->marker->alias);
 
-    const SIZE_T span=0x49400000,win=0x4190000,off=0xf258;
+    const SIZE_T span=0x49400000,win=0x4190000;
+#ifdef TEST_RELOCATED_BANK3
+    const SIZE_T off=0xf6d8;
+#else
+    const SIZE_T off=0xf258;
+#endif
     BYTE *exe=(BYTE*)GetModuleHandleW(NULL),*bp=exe+0xa940000,*ip=exe+0x75d0000;
     CK(VirtualAlloc(bp,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==bp &&
        VirtualAlloc(ip,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==ip);
@@ -57,7 +62,18 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
     struct scarlett_section_info wrong=dst;
     wrong.section=s->marker->control_section;CK(!third_wb_target(target,&wrong));
     wrong=dst;wrong.offset-=8;CK(!third_wb_target(target,&wrong));
-    wrong=dst;wrong.view_size=wrong.offset+7;CK(!third_wb_target(target,&wrong));CloseHandle(dst.section);
+    wrong=dst;wrong.view_size=wrong.offset+7;CK(!third_wb_target(target,&wrong));
+#ifdef TEST_RELOCATED_BANK3
+    const SIZE_T offsets[]={0x419f258,0x41a0128,0x3fb30c0,span-8,win+off+1};
+    for(UINT j=0;j<ARRAYSIZE(offsets);j++){
+        wrong=dst;wrong.offset=offsets[j];
+        UINT64 head=(UINT_PTR)sys+wrong.offset,base=head-8,flags=base+0x4010;
+        memcpy(rec+18,&flags,8);memcpy(rec+20,&base,8);memcpy(rec+22,&base,8);
+        CK(!!third_wb_target(head,&wrong)==(j<2));
+    }
+    memcpy(rec+18,&used,8);memcpy(rec+20,&array,8);memcpy(rec+22,&array,8);
+#endif
+    CloseHandle(dst.section);
     pair_op(s,0x240);
     *index=2;CK(FAILED(pool_timestamp(s,target,0,0,1)));*index=1;
     *bank=2;CK(FAILED(pool_timestamp(s,target,0,0,1)));*bank=3;
@@ -72,23 +88,28 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
        FAILED(pool_timestamp(s,(UINT_PTR)(sys+span),0,0,1)) && !s->stamp);
     HR(pool_timestamp(s,target,0,0,1));
     CK(s->stamp && s->stamp->retained && s->stamp->query && s->stamp->dst &&
-       !s->stamp->second_bank && !s->stamp->successor_bank && FAILED(pool_timestamp(s,target,0,0,1)));
+       s->stamp->third_wb && !s->stamp->section && !s->stamp->second_bank && !s->stamp->successor_bank &&
+       FAILED(pool_timestamp(s,target,0,0,1)));
     batch_step(s,B_HEAD_STAMP);CK(s->phase==B_HEAD_STAMP);
-#ifdef TEST_NATIVE_THIRD_WAIT
+#if defined(TEST_NATIVE_THIRD_WAIT) || defined(TEST_RELOCATED_BANK3)
     pair_op(s,0x238);
     CK(FAILED(record_native_post(s,addr,0x29a5ee15,0,0)) && FAILED(record_native_post(s,addr+4,2,0,0)));
     CK(FAILED(record_native_post(s,addr+4,0x29a5ee15,1,0)) && !s->marker->native_post);
+#ifdef TEST_NATIVE_THIRD_WAIT
     const UINT64 ref=0x8000000100000000ull|(UINT)GetTickCount64(),below=ref-(1ull<<32);
     UINT64 cell=(UINT_PTR)page;
     CK(FAILED(record_counter_wait(s,cell,7,ref,1)) && !s->head && !s->post);
+#endif
     s->alloc_generation++;CK(FAILED(native_post_at(s,addr+4,0x29a5ee15,0,0,0x4ed46aa)));s->alloc_generation--;
     CK(FAILED(native_post_at(s,addr+4,0x29a5ee15,0,0,0x4ed46ab)) && !s->marker->native_post);
     BYTE *foreign=alloc(NULL,65536,0x20401000,0x283,0x42404);CK(foreign && foreign!=page);
     CK(FAILED(native_post_at(s,(UINT_PTR)foreign+0x9c,0x29a5ee15,0,0,0x4ed46aa)));
     HR(native_post_at(s,addr+4,0x29a5ee15,0,0,0x4ed46aa));
     CK(FAILED(record_native_post(s,addr+4,0x29a5ee15,0,0)));batch_step(s,B_POST);
+#endif
+#ifdef TEST_NATIVE_THIRD_WAIT
     pair_op(s,0x250);
-    CK(record_counter_wait(s,(UINT_PTR)foreign,7,ref,1)==E_INVALIDARG && VirtualFree(foreign,65536,MEM_RELEASE));
+    CK(record_counter_wait(s,(UINT_PTR)foreign,7,ref,1)==E_INVALIDARG);
     CK(FAILED(record_counter_wait(s,cell+8,7,ref,1)) && FAILED(record_counter_wait(s,cell+1,7,ref,1)) &&
         FAILED(record_counter_wait(s,cell,6,ref,1)) && FAILED(record_counter_wait(s,cell,7,ref,0)));
     s->ops[4]^=1;CK(FAILED(record_counter_wait(s,cell,7,ref,1)));s->ops[4]^=1;
@@ -104,6 +125,9 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
     post_alias=(volatile UINT*)alias+0x9c/4;
     __atomic_store_n(&release_sample,0,__ATOMIC_RELEASE);
     __atomic_store_n((UINT64*)alias,ready_before_submit?ref+1:below,__ATOMIC_RELEASE);
+#endif
+#if defined(TEST_NATIVE_THIRD_WAIT) || defined(TEST_RELOCATED_BANK3)
+    CK(VirtualFree(foreign,65536,MEM_RELEASE));
 #endif
 #endif /* TEST_BANK3_WB */
     HR(sl_close(list));HR(xs_queue_wait(q,gate,1));HR(checked_startup_submit(q,1,&list,0,0));HR(queue_signal(q,end,1));
@@ -148,6 +172,8 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
 #ifdef TEST_NATIVE_THIRD_WAIT
     CK(__atomic_load_n((UINT64*)alias,__ATOMIC_ACQUIRE)==ref+(UINT64)ready_before_submit);
     for(UINT j=0;j<65536/4;j++)CK((j<2 || ((volatile UINT*)alias)[j]==(j==0x98/4?2:j==0x9c/4?0x29a5ee15u:0xa7a7a7a7u)) && ((UINT*)page)[j]==0xbdbdbdbd);
+#elif defined(TEST_RELOCATED_BANK3)
+    for(UINT j=0;j<65536/4;j++)CK(((volatile UINT*)alias)[j]==(j==0x98/4?2:j==0x9c/4?0x29a5ee15u:0xa7a7a7a7u) && ((UINT*)page)[j]==0xbdbdbdbd);
 #else
     for(UINT j=0;j<65536/4;j++)CK(((volatile UINT*)alias)[j]==(j==0x98/4?2:0xa7a7a7a7) && ((UINT*)page)[j]==0xbdbdbdbd);
 #endif
@@ -155,6 +181,8 @@ static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,voi
     CK(VirtualFree(alias,65536,MEM_RELEASE) && VirtualFree(page,0,MEM_RELEASE));
 #ifndef TEST_BANK3_WB
     puts("PASS third native +98=2: exact original dword after gate; replacement and neighbors intact; wrong phase/gen/offset/value/control/flags and timestamp refused");
+#elif defined(TEST_RELOCATED_BANK3)
+    puts("PASS relocated bank3: original +419f6d8 qword in clock interval, replacement and neighbors intact");
 #elif !defined(TEST_NATIVE_THIRD_WAIT)
     puts("PASS third native +98=2 and bank3/index1 +419f258: original WB qword in queue clock interval, replacements and neighbors intact");
 #endif /* TEST_BANK3_WB */

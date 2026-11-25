@@ -98,7 +98,18 @@ static BOOL live_wb_head(UINT64 addr,const struct scarlett_section_info *dst,UIN
 }
 static BOOL third_wb_target(UINT64 addr,const struct scarlett_section_info *dst)
 {
-    return live_wb_head(addr,dst,3,0x419f258,0x3fb30c0);
+    /* The owner is fixed; its qword array and the following used flags move together. */
+    const SIZE_T extent=0x4010+2048,owner=0x3fb30c0;
+    if(dst->view_size!=0x49400000 || dst->offset<8 || (addr&7))return FALSE;
+    SIZE_T start=dst->offset-8;
+    if(start>dst->view_size-extent || (start<owner+96 && owner<start+extent))return FALSE;
+    struct scarlett_section_info all;
+    if(FAILED(scarlett_query_section(0x5343000c,(void*)(addr-8),extent,&all)))return FALSE;
+    BOOL (WINAPI *same)(HANDLE,HANDLE)=(void*)GetProcAddress(GetModuleHandleW(L"kernelbase.dll"),"CompareObjectHandles");
+    BOOL valid=all.base==dst->base && all.offset==start && all.view_size==dst->view_size &&
+        dst->section && all.section && same && same(all.section,dst->section);
+    if(all.section)CloseHandle(all.section);
+    return valid && live_wb_head(addr,dst,3,dst->offset,owner);
 }
 static HRESULT prepare_timestamp(ID3D12Device *d,UINT64 addr,UINT prefix,struct system_timestamp **out,SIZE_T *resolve)
 #else
@@ -150,14 +161,18 @@ static HRESULT record_timestamp(ID3D12Device *d,ID3D12GraphicsCommandList7 *list
 #ifdef SCARLETT_PAIR_SUBMIT
     t->successor_bank=wb && second && (i.offset==0x419aa38 || i.offset==0x419aeb8);
 #endif
-    if (i.offset==0x4196218
+    if (
+#ifdef SCARLETT_PAIR_SUBMIT
+            !t->third_wb &&
+#endif
+            (i.offset==0x4196218
 #ifdef SCARLETT_PAIR_SUBMIT
             || t->successor_bank
 #endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
             || i.offset==0x41964a8 || i.offset==0x4196698
 #endif
-    ) {
+    )) {
         t->section=i.section;
         t->tail_addr=addr-8;
         t->tail_offset=i.offset-8;

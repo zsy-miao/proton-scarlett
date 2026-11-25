@@ -226,6 +226,20 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
         FAILED(TRIP()) && barrier_total==before_trip+1 && seen[0].pResource==images[0] && seen[1].pResource==images[0]);
     REQUIRE(pass.source.needs_publication && pass.vb.needs_publication &&
         FAILED(record_om(&pass,1,slots,FALSE,slots+1)) && FAILED(record_colour_vb(&pass,0,1,&vb)) && FAILED(record_table0(&pass,0,0)));
+#ifdef TEST_FRESH190
+    pair_op(&pass,0x190);struct om_views old_om=pass.om;UINT before_om=om_calls;
+    SIZE_T wrong=slots[0]+32;
+    REQUIRE(FAILED(record_om(&pass,1,&wrong,FALSE,slots+1)) && FAILED(record_om(&pass,1,slots,FALSE,&wrong)) &&
+        FAILED(record_om(&pass,1,slots,TRUE,slots+1)) && FAILED(record_om(&pass,1,slots,FALSE,NULL)));
+    pass.sr.end=as_fence(gate);REQUIRE(FAILED(record_om(&pass,1,slots,FALSE,slots+1)));pass.sr.end=as_fence(end);
+    for(UINT k=0;k<2;k++){(*(UINT64*)slots[k])++;REQUIRE(FAILED(record_om(&pass,1,slots,FALSE,slots+1)));(*(UINT64*)slots[k])--;}
+    REQUIRE(om_calls==before_om && !pass.first_om.heap[0] && !memcmp(&old_om,&pass.om,sizeof old_om));
+    REQUIRE(record_om(&pass,1,slots,FALSE,slots+1)==S_OK && om_calls==before_om+1 &&
+        last_rt==pass.om.cpu[0].ptr && last_ds==pass.om.cpu[1].ptr && FAILED(record_om(&pass,1,slots,FALSE,slots+1)));
+    for(UINT k=0;k<2;k++)REQUIRE(pass.first_om.heap[k]==old_om.heap[k] && pass.om.heap[k]!=old_om.heap[k] &&
+        old_om.cpu[k].ptr==pass.first_om.cpu[k].ptr && pass.om.cpu[k].ptr!=old_om.cpu[k].ptr);
+    REQUIRE(pass.source.needs_publication && pass.vb.needs_publication);
+#endif
     REQUIRE(xs_write_view(owner,0xa0,siblings[0],(DWORD[]){28,4,0,0},slots[0])==S_OK &&
         xs_write_view(owner,0xa8,siblings[1],(DWORD[]){20,3,0,0,0,0},slots[1])==S_OK);
 #undef TRIP
@@ -239,8 +253,25 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
 #ifdef TEST_FIRST180
     rd.Width+=4096;
 #endif
+#ifdef TEST_FRESH190
+    rd.Width=5632;
+#endif
     REQUIRE(SUCCEEDED(ID3D12Device_CreateCommittedResource(d,&hp,0,&rd,D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void**)&rb)));
     BYTE *p;REQUIRE(SUCCEEDED(ID3D12Resource_Map(rb,0,NULL,(void**)&p)));memset(p,0xe7,rd.Width);ID3D12Resource_Unmap(rb,0,NULL);
+#ifdef TEST_FRESH190
+    D3D12_RECT region={10,8,12,10};
+    const FLOAT colors[][4]={{0,1,0,1},{1,0,0,1}};
+    for(UINT k=0;k<2;k++){
+        const struct om_views *om=k?&pass.om:&pass.first_om;
+        ID3D12GraphicsCommandList7_ClearRenderTargetView(pass.host,om->cpu[0],colors[k],1,&region);
+        ID3D12GraphicsCommandList7_ClearDepthStencilView(pass.host,om->cpu[1],D3D12_CLEAR_FLAG_STENCIL,0,k?0x69:0x24,1,&region);
+        sample_quad(pass.host,images[0],rb,9+k);
+    }
+    /* Exercise the same hold used by queue retirement, across guest slot rewrite and reset. */
+    struct heap_retirement views={0};
+    retain_recording(&views,&(struct startup_list){.sr=pass.sr,.first_om=pass.first_om,.om=pass.om});
+    drop_om(&pass.om);drop_om(&pass.first_om);
+#endif
     D3D12_RESOURCE_BARRIER bar={.Transition={dst,0,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE}};
     ID3D12GraphicsCommandList7_ResourceBarrier(s->host,1,&bar);ID3D12GraphicsCommandList7_CopyBufferRegion(s->host,rb,12,dst,0,100);
 #ifdef TEST_FIRST180
@@ -271,7 +302,17 @@ BOOL test_restored_clear(ID3D12Device *d,IUnknown *owner,IUnknown *pso,IUnknown 
     for(UINT i=0;i<4096;i++){UINT k=i-8;REQUIRE(p[128+i]==(k<4080?(BYTE)(7*k+(k>>5)):0xe7));}
     drop_source(&held_vb);IUnknown_Release(pass.graphics_identity);
 #ifdef TEST_RTX_TRIP
+#ifdef TEST_FRESH190
+    for(UINT k=0;k<2;k++)for(UINT y=0;y<2;y++)for(UINT x=0;x<2;x++){
+        UINT rgba;memcpy(&rgba,p+(9+k)*512+y*256+4*x,4);
+        REQUIRE(rgba==(k?0xff0000ffu:0xff00ff00u));
+    }
+    drop_om(&views.sr_first_om);drop_om(&views.sr_om);
+    ID3D12Fence_Release(views.sr.end);IUnknown_Release(views.sr.rt.identity);IUnknown_Release(views.sr.ds.identity);
+    puts("PASS fresh +190: both original-queue private RTV/DSV pairs survived rewrite and reset; green then red, source publication still denied");
+#else
     puts("PASS carried +490: two ordered edges on original RT after first VB; fresh OM and source publication still refused");
+#endif
     IUnknown_Release(end);ID3D12GraphicsCommandList7_Release(prior);ID3D12CommandAllocator_Release(pa);
 #endif
     puts("PASS measured first +180: original 4080 bytes after recycle/fence, guard bytes intact, later bindings and submits denied");

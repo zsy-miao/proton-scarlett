@@ -1135,15 +1135,24 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
 #ifdef SCARLETT_PAIR_SUBMIT
     if(s->sr.end){
         SIZE_T at,n,depth=0;
-        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || s->om.heap[0] || s->sr_reversed || count!=1 || range ||
-           s->nops!=19 || s->ops[18]!=0x190/8)return E_NOTIMPL;
+        if(!open_direct_state(s) || !s->pending_470 || s->sr_view || s->sr_reversed || count!=1 || range)return E_NOTIMPL;
+        BOOL fresh=s->rt_roundtripped;
+        if(fresh){
+            if(s->split_at!=5 || s->nops!=29 || s->ops[27]!=0x490/8 || s->ops[28]!=0x190/8 ||
+               !s->source.needs_publication || !s->vb.needs_publication || !s->om.heap[0] || !s->om.heap[1] ||
+               s->first_om.heap[0] || s->first_om.heap[1] || !ds || !same_carried_views(s))return E_NOTIMPL;
+        }else if(s->om.heap[0] || s->nops!=19 || s->ops[18]!=0x190/8)return E_NOTIMPL;
         if(!ReadProcessMemory(GetCurrentProcess(),rt,&at,sizeof at,&n) || n!=sizeof at ||
            (ds && (!ReadProcessMemory(GetCurrentProcess(),ds,&depth,sizeof depth,&n) || n!=sizeof depth)))return E_POINTER;
         if(at!=s->sr.rt.slot || depth!=s->sr.ds.slot)return E_INVALIDARG;
         if(depth){
             struct xs_attachment_pin pins[]={s->sr.rt,s->sr.ds};
-            HRESULT hr=xs_freeze_om(s->pool_owner,pins,(SIZE_T[]){at,depth},&s->om);
-            if(SUCCEEDED(hr)){replay_om(&s->om,s->host);recorded_direct_state(s);}
+            struct om_views next={0};
+            HRESULT hr=xs_freeze_om(s->pool_owner,pins,(SIZE_T[]){at,depth},&next);
+            if(SUCCEEDED(hr)){
+                if(fresh)s->first_om=s->om; /* Earlier commands still reference these private heaps. */
+                s->om=next;replay_om(&s->om,s->host);recorded_direct_state(s);
+            }
             return hr;
         }
         HRESULT hr=xs_sr_view(s->pool_owner,&s->sr,&s->sr_view,&s->sr_cpu);
@@ -1569,7 +1578,7 @@ struct heap_retirement { struct xs_clear_source previous_vb,vb,source; IUnknown 
     ID3D12DescriptorHeap *output_heap;IUnknown *output_key;
 #ifdef SCARLETT_PAIR_SUBMIT
     BOOL reuse_guard;
-    struct om_views sr_om;
+    struct om_views sr_om,sr_first_om;
     struct xs_sr_ticket sr;
     ID3D12DescriptorHeap *sr_view;
 #endif
@@ -1591,6 +1600,7 @@ static void CALLBACK retire_heaps(PTP_CALLBACK_INSTANCE instance,void *ctx,PTP_W
     if(r->sr.rt.identity)IUnknown_Release(r->sr.rt.identity);
     if(r->sr.ds.identity)IUnknown_Release(r->sr.ds.identity);
     drop_om(&r->sr_om);
+    drop_om(&r->sr_first_om);
     if(r->sr_view)ID3D12DescriptorHeap_Release(r->sr_view);
 #endif
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
@@ -1629,7 +1639,11 @@ static void retain_recording(struct heap_retirement *r,struct startup_list *s)
     if((r->sr=s->sr).end){ID3D12Fence_AddRef(r->sr.end);IUnknown_AddRef(r->sr.rt.identity);}
     if(r->sr.ds.identity){
         IUnknown_AddRef(r->sr.ds.identity);r->sr_om=s->om;
-        for(UINT i=0;i<2;i++)if(r->sr_om.heap[i])ID3D12DescriptorHeap_AddRef(r->sr_om.heap[i]);
+        r->sr_first_om=s->first_om;
+        for(UINT i=0;i<2;i++){
+            if(r->sr_om.heap[i])ID3D12DescriptorHeap_AddRef(r->sr_om.heap[i]);
+            if(r->sr_first_om.heap[i])ID3D12DescriptorHeap_AddRef(r->sr_first_om.heap[i]);
+        }
     }
     if((r->sr_view=s->sr_view))ID3D12DescriptorHeap_AddRef(r->sr_view);
 #endif
