@@ -1843,6 +1843,24 @@ serial-14 batch end was observed. An earlier breakpoint on another
 thread was separate from the submission refusal. This run did not
 request the alternate timestamp address from ordinary RTX.
 
+Two further diagnostic builds identified the checks that returned failure:
+
+* **AMD (`dc5581ee`):** op 33 accepted the 4,080-byte replacement VB; op 34
+  accepted the single transition on the original offscreen RT. Op 35 then
+  supplied one non-range RTV, no DSV. The unique live RTV matched returned
+  primary serial 14, its writer queue and COMMON epoch 1. The guard expected
+  a split at 5, but this recorder split at 6. Its original end sampled 0.
+  `PresentX(2)` entered without a logged return. The standalone AMD fixture
+  (`d3b3e2bb`) checked every pixel: binding the private RTV left the entire
+  3840×2160 target black; an explicit 2×2 clear changed exactly four pixels.
+* **RTX (`041095b6`):** the fixed timestamp path passed. The offered
+  successor matched its Close record and live allocator generation 0; the
+  allocator had zero pins at the sample. The token-3 pair (`count=2`,
+  `flags=3`) reached the singleton dispatch guard and returned `E_NOTIMPL`
+  at `count!=1`. This is not evidence that dispatching arbitrary pairs would
+  be correct. `PresentX(2)` returned success, count reached 2, and all
+  337 decoded frames showed only black/white or a cursor.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
