@@ -1693,6 +1693,19 @@ heap slot 135. The buffer-dimension check returned `E_NOTIMPL` at
 serial 14's closed producer and successor in order on the eligible queue.
 The diagnostic matched and stopped the offer before host execution. Exit 2.
 
+The display trace identifies which producer matters for frame 2: the
+window leased serial 17 on its own completed end. Its producer's 38
+recorded operations include one `+60` draw (op 25); the draw logged RTV
+119 and DSV 121. The last recorded RGB writer to serial 17 itself was
+the full clear at op 9 (`+1a0`). The provider accepts only bitwise zero
+RGBA there and records a transparent-black clear. This identifies the
+command; the trace did not read back the retail source texture.
+After the later output bind the final operation was a
+logical `+120` selection. The `PresentX(2)` return precedes both token
+3's issue and the serial-14 submission offer. Executing that later offer
+could advance subsequent work, but could not alter the pixels already
+presented for token 2 in this run.
+
 ### Seven-level texture view
 
 RTX fixture `b9f9c92e` passed (exit 0). The `+230` write at `+4ecc821`
