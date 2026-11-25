@@ -1124,6 +1124,16 @@ draw. Fenced readback found 64 textured pixels and 192 untouched guards.
 The retail composite worker reached the matching factory request, but the
 corresponding render list closed without a matching pipeline bind or draw.
 
+The next staged provider (`7085e073`) passed the AMD primary-reuse and RTX
+offscreen-target fixtures. Ordinary AMD stopped at the fresh-list timestamp;
+ordinary RTX hit the earlier title breakpoint `+5a92b11`. Only token 1
+presented on either GPU. Separate diagnostics on both adapters sampled the
+original token-2 end fence directly: its value was still 0 at the first
+refusal. This is a point-in-time sample, not evidence of a permanent stall.
+The furthest RTX diagnostic reached `+190` (return `+33317`): the game
+supplied the original offscreen RTV **and** DSV (serials 119 and 121).
+The color-only bind rejected the DSV.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
