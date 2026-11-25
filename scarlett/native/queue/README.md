@@ -1994,6 +1994,22 @@ The matching head, tail and owner at the successor do not establish the
 producer's state when that flag was set. The later submission checks
 were not reached.
 
+RTX diagnostic `633cbfcd` sampled the producer itself. Marker value 2
+selected prefix 0, so the generic prefix-1 classifier did not set the bank
+flag. An independent probe on that recording matched the bank-3 owner and
+index. The original-layout successor recorded and closed; `PresentX(2)`
+returned `S_OK` and the count reached 2. Token 3 then passed the fence and
+output checks. Under the descriptor lock, reuse expected epoch 1 but found
+the saved COMMON epoch at 0, while the writer epoch was still 1. The
+submission returned `E_ACCESSDENIED` there, before the attachment checks.
+No job executed. The 247 decoded frames showed only blank windows or a cursor.
+
+On RADV, fixture `bca11c16` on `f2d6373a` verified the serial-17 write-back
+timestamp fix. While gated, Q0 had been written and Q1 was zero. After the
+guest address was reused and the pair retired on its own end, Q0 was
+unchanged and Q1 fell in the calibrated interval. The original allocation
+changed only at the two timestamp cells and the replacement page was intact.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
