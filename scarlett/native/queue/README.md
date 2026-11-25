@@ -1583,6 +1583,15 @@ observed before the title stopped at `+4ecc936` from `+501f6b3`. The
 original serial-17 end read 1, but `PresentX(2)` did not log a return;
 the count stayed at 1. Private review found only blank frames and a cursor.
 
+The RTX follow-up (`924b68d0`) logged which resource wrapper refused a
+`+58` address query and its first failed check. In its single launch the
+title instead stopped at `+5707b8c` from `+cc2673` (`EXCEPTION_BREAKPOINT`,
+exit 3) after token 1 presented but before token 2 was issued. There
+were no `VA58` or serial-14 trace rows. The count stayed at 1; none of
+the 235 decoded frames showed game content. The earlier `+4ecc936` caller
+alone does not identify a wrapper or prove that a heap or section lookup
+failed. The provider's address checks remain unchanged.
+
 ### Cross-build the guarded token-2 checkpoint
 
 The paired build also recognizes the alternate bank-2 WB head/tail at
