@@ -14,6 +14,11 @@ IUnknown *inline_pair[2];
 }
 #endif
 extern "C" BOOL test_pair_record(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,ID3D12GraphicsCommandList7*,ID3D12Resource**,IUnknown**,UINT64,IUnknown*);
+#ifdef TEST_PAIR_FIXTURE
+extern "C" BOOL test_sealed_pair(ID3D12Device*,IUnknown*,IUnknown*,IUnknown*,IUnknown**,SIZE_T*,UINT64);
+#else /* Preserve the original fixture's embedded diagnostic IDs. */
+#line 16
+#endif
 extern "C" BOOL test_source_lifetime(ID3D12Device*,IUnknown*,IUnknown*,UINT64,IUnknown*,void(*)(void*),void*);
 extern "C" IUnknown *test_texture(IUnknown *,ID3D12Resource *,BOOL);
 extern "C" HRESULT xs_resolve_color_rtv(IUnknown*,SIZE_T,D3D12_CPU_DESCRIPTOR_HANDLE*,ID3D12Resource**);
@@ -68,6 +73,17 @@ static void test_pair(BYTE *base,ID3D12Device *d,IUnknown *owner,IUnknown *pso,I
     inline_pair[0]=banks[0].Get();inline_pair[1]=banks[1].Get();
 #endif
     control.write({.125f,.375f,.625f,.875f});memcpy((void*)va,control.record(),100);MemoryBarrier();
+#ifdef TEST_PAIR_FIXTURE
+    (void)images;(void)sid;
+    HR(l->Close());ID3D12CommandList *prep[]={l.Get()};q->ExecuteCommandLists(1,prep);
+    ComPtr<ID3D12Fence> prepared;HR(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&prepared)));
+    HR(q->Signal(prepared.Get(),1));HR(prepared->SetEventOnCompletion(1,nullptr));
+    duplicate.Reset();CK(test_sealed_pair(d,owner,pso,root,ids,slots,va));
+    placed.Reset();control.replace();
+    return;
+#else
+#line 70
+#endif
     CK(test_pair_record(d,owner,pso,root,ids,slots,l.Get(),images,sid,va,duplicate.Detach()));
     memset((void*)va,0x11,100);
     auto replace=[](void *arg){auto c=(ClearSourceControl*)arg;BYTE *src=c->at[2]+0x3ff80;

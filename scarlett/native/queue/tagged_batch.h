@@ -34,6 +34,9 @@ static HRESULT execute_tagged(void *ctx)
 static HRESULT checked_tagged_submit(IUnknown *iface,UINT count,IUnknown *const *lists,UINT64 token,UINT flags)
 {
     ID3D12CommandQueue *q=as_queue(iface);
+#ifdef XS_PAIR_DISPATCH
+    if(count==2 && flags==3 && token==2)return submit_pair(iface,lists);
+#endif
     if (!q || !token || count!=1 || (flags!=0 && flags!=3)) return E_NOTIMPL;
     IUnknown *list;const void *vt;SIZE_T n;
     if (!ReadProcessMemory(GetCurrentProcess(),lists,&list,sizeof list,&n) || n!=sizeof list ||

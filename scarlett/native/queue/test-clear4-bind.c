@@ -84,6 +84,9 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #undef ID3D12GraphicsCommandList7_SetGraphicsRootDescriptorTable
 #define ID3D12GraphicsCommandList7_SetGraphicsRootDescriptorTable probe_table
 #endif
+#ifdef TEST_PAIR_FIXTURE
+#define XS_TEST_OWNED_PAIR
+#endif
 #include "queue.c"
 #include "test-depth-slots.h"
 #define REQUIRE(e) do{if(!(e)){fprintf(stderr,"FAIL bind line %d: %s\n",__LINE__,#e);return FALSE;}}while(0)
@@ -91,6 +94,11 @@ static inline void probe_table(ID3D12GraphicsCommandList7 *l,UINT index,D3D12_GP
 #include "test-rt-roundtrip.h"
 #ifdef TEST_DEFER_RELEASE
 #include "test-deferred-release.h"
+#endif
+#ifdef TEST_PAIR_FIXTURE
+#include "test-sealed-pair.h"
+#else /* Preserve the original fixture's embedded diagnostic IDs. */
+#line 94
 #endif
 /* Takes the caller's last PSO reference. The submission waits behind a CPU gate. */
 BOOL test_clear4_bind(ID3D12Device *hd,IUnknown *owner,IUnknown *other,IUnknown *root,IUnknown *other_root,IUnknown *p,IUnknown *linear)

@@ -1071,3 +1071,103 @@ after the value-2 prefix at `+0x98` in the same control-page generation.
 All 84 AMD capture frames were black. The RTX client was briefly blank
 white; its log still showed only token 1 presented. Neither capture
 contains a recognizable retail screen.
+
+### Bank-3 timestamp and adjacent marker
+
+On stage `4da78f7b`, the AMD fixture wrote the bank-3 timestamp into its
+original allocation after address reuse; the RTX fixture did the same for
+the `+0x9c` marker. The AMD timestamp fell between the two GPU clock samples
+taken around execution. Both fixtures preserved neighboring data.
+
+The subsequent ordinary AMD run stopped earlier on the release-side
+timestamp (`+240`, caller `+a1c42c`), before the pair could submit. A
+diagnostic found that the release receipt lacked the producer's timestamp
+for the alternate bank-2 destination at `0x419aeb0`. On RTX the pair
+submitted, `Signal(3)` succeeded, and the next list stopped at `+250`,
+return `+2484b12`. Its diagnostic matched the original 64 KiB control
+allocation and measured an unsigned 64-bit wait for value 1 at offset 0.
+Neither ordinary run showed token-2 completion; both display counts
+stopped at 1.
+
+After fixing the missing AMD producer stamp and the RTX counter wait,
+both ordinary runs on `a7bdd2b5` submitted token 2 and queued `Signal(3)`.
+AMD stopped at the fresh-list timestamp (`+a1c36c`), RTX at a barrier
+(`+490`, return `+32113`). Neither original end fence was observed to
+complete. In a separate AMD run the timestamp succeeded and the game
+requested the adjacent `+0x9c` marker on the same control section.
+
+### Cross-build the guarded token-2 checkpoint
+
+The default bridge has no pair recorder or executor. `SCARLETT_PAIR_SUBMIT`
+enables recording, inventory and guest Signal-3 tracing. Ordinary two-list
+dispatch also requires `SCARLETT_GUARDED_PAIR_DISPATCH`; `PAIR_INVENTORY_ONLY`
+vetoes dispatch even with both flags. `TEST_PAIR_FIXTURE` enables dispatch
+inside the owned sealed fixture, not in a separately built provider.
+
+From the repository root, in Bash with x86-64 MinGW GCC/G++, set `XMEM` to
+the absolute path of the matched `xmem.dll` and `INPUTS` to the private
+clear/colour input directory (the seven files and hashes in
+`scarlett/tests/build-colour-recorder.sh`). The commands write a fresh scratch
+directory and do not launch or install anything:
+
+```bash
+set -eu
+n=$(realpath scarlett/native)
+out=$(mktemp -d); echo "Guarded build: $out"; cd "$out"
+mkdir obj bridge sealed alt clear bank bank3 rtx-post wb-query
+cc=x86_64-w64-mingw32-gcc
+f=(-Os -Wall -Wextra -Werror -DSCARLETT_DEVICE_BOOTSTRAP -DSCARLETT_STAGED_PLACED
+   -DSCARLETT_EXPERIMENTAL_TAGGED_BATCH -DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
+   -DSCARLETT_EXPERIMENTAL_DIRECT_WAIT -DSCARLETT_EXPERIMENTAL_BRIDGE
+   -DSCARLETT_PAIR_SUBMIT -DSCARLETT_GUARDED_PAIR_DISPATCH)
+for s in d3d12_device d3d12_vm queue/queue; do
+    "$cc" "${f[@]}" -c "$n/$s.c" -o "obj/${s##*/}.o"
+done
+"$cc" -shared -s -Wl,--no-insert-timestamp,--image-base,0x24d560000 \
+    obj/{d3d12_device,queue,d3d12_vm}.o "$n/d3d12_xs.def" -ld3d12 -ldxgi -o bridge/d3d12_xs.dll
+cp "$XMEM" bridge/xmem.dll
+for t in bank bank3 rtx-post; do
+    case $t in
+        bank) extra=(-DTEST_THIRD_PREFIX);;
+        bank3) extra=(-DTEST_THIRD_PREFIX -DTEST_BANK3_WB);;
+        rtx-post) extra=(-DTEST_RTX_THIRD_POST);;
+    esac
+    "$cc" "${f[@]}" "${extra[@]}" -static -Wl,--no-insert-timestamp \
+        "$n/queue/test-marker-bank.c" obj/{d3d12_device,d3d12_vm}.o \
+        -ld3d12 -ldxgi -ldxguid -o "$t/game_scarlett_master.exe"
+done
+"$cc" -Os -Wall -Wextra -Werror -DSCARLETT_EXPERIMENTAL_PRIMARY_RELEASE \
+    -static -Wl,--no-insert-timestamp "$n/queue/test-successor-query.c" \
+    -ld3d12 -ldxguid -o wb-query/game_scarlett_master.exe
+for t in bank bank3 rtx-post wb-query; do cp bridge/xmem.dll "$t/"; done
+f+=(-DTEST_DEFER_RELEASE -DTEST_DISTINCT_PRIMARY -DTEST_SECOND_VB -DTEST_LATE_COLOUR -DTEST_INLINE_B27)
+"$cc" "${f[@]}" -c "$n/test-clear-device.c" -o obj/test-device.o
+for t in clear sealed alt; do
+    extra=()
+    if [[ $t != clear ]]; then extra+=(-DTEST_PAIR_FIXTURE); fi
+    if [[ $t == alt ]]; then extra+=(-DTEST_RTX_Q0_SECOND_PAIR); fi
+    "$cc" "${f[@]}" "${extra[@]}" -c "$n/queue/test-clear4-bind.c" -o "obj/$t.o"
+    x86_64-w64-mingw32-g++ -std=c++17 -static -Wl,--no-insert-timestamp "${f[@]}" "${extra[@]}" \
+        "$n/test-clear-pipeline.cpp" "obj/$t.o" obj/{test-device,d3d12_vm}.o bridge/xmem.dll \
+        -lbcrypt -ld3d12 -ldxgi -ldxguid -o "$t/game_scarlett_master.exe"
+    cp "$INPUTS"/{stream,vs,ps,emitter,colour-stream,colour-VS,colour-PS}.bin bridge/xmem.dll "$t/"
+done
+```
+
+`sealed` checks the original pair through the batch-end fence; `clear` is the
+clear/DSV control on both adapters. `alt` checks the second measured RTX q0
+pair with independent mappings, queries and destinations. On RADV, `bank`
+checks the `+0x98=2` write across VA reuse and rejects a timestamp before
+the heaps are rebound. `bank3` then checks the exact bank-3/index-1 owner
+through a typed alias of the retained WB section. Only the original
+`+0x419f258` qword may change, within the queue calibration interval;
+`wb-query` separately checks the original pair's WB successor.
+On RTX, `rtx-post` checks the adjacent `+0x9c=0x29a5ee15` post in the
+original `+0x98=2` prefix generation; the later wait is still refused.
+
+The retail observations above belong to `cf68be0e`. The bank-3 and RTX
+post fixtures passed with combined staged provider `4da78f7b`. Those
+fixture results do not establish batch-end completion or a second flip,
+and do not qualify freshly cross-built binaries. On the reconciled source,
+the sealed-pair fixtures on both adapters completed at their original
+ends; the AMD bank-3 and RTX third-post fixtures also passed.

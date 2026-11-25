@@ -17,6 +17,15 @@ _Static_assert(offsetof(struct direct_prefix,put)==0x18 && offsetof(struct direc
         sizeof(struct direct_prefix)==0x38,"Direct inline capacity check");
 #include "../om-views.h"
 struct startup_list {
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct pair_gen *seal;
+    struct om_views first_om;
+    ID3D12GraphicsCommandList7 *pre_release;
+    ID3D12CommandAllocator *after_alloc;
+    UINT64 alloc_generation;
+    UINT nops,split_at;
+    BYTE ops[128]; /* Guest vtable slots; overflow is ineligible. */
+#endif
 #ifdef XS_TEST_ORDERED_QUEUE
     BOOL single_use,consumed;
     struct startup_list *ordered_next;
@@ -39,6 +48,9 @@ struct startup_list {
     enum batch_phase phase;
     IUnknown *sync_owner;
     struct release_receipt *offered,*deferred;
+#ifdef SCARLETT_PAIR_SUBMIT
+    BOOL successor_query;
+#endif
     D3D12_TEXTURE_BARRIER deferred_wire; /* Guest layout/key; no host command emitted. */
 #endif
     SIZE_T clear_slot;
@@ -82,6 +94,13 @@ struct startup_list {
 const IID xs_sync_list_id = {0xc3827890,0x4024,0x474c,{0x98,0xcf,0x64,0x5b,0x51,0xdc,0x48,0x74}};
 const IID xs_pool_list_id = {0x5b160d0f,0xac1b,0x4185,{0x8b,0xa8,0xb3,0xae,0x42,0xa5,0xa4,0x55}};
 
+#ifdef SCARLETT_PAIR_SUBMIT
+static void pair_seal(struct startup_list *,IUnknown *);
+static void pair_unseal(struct startup_list *);
+static void pair_op(struct startup_list *s,UINT slot){if(s->nops<sizeof s->ops)s->ops[s->nops++]=slot/8;else s->nops=sizeof s->ops+1;}
+#else
+#define pair_op(s,slot) ((void)0)
+#endif
 static void sl_free(struct startup_list *s)
 {
     if (s->reservation) VirtualFree(s->reservation, 0, MEM_RELEASE);
@@ -148,6 +167,12 @@ static ULONG WINAPI sl_release(IUnknown *i)
     }
 #endif
     if (!refs) {
+#ifdef SCARLETT_PAIR_SUBMIT
+        pair_unseal(s);
+        drop_om(&s->first_om);
+        if(s->pre_release)ID3D12GraphicsCommandList7_Release(s->pre_release);
+        if(s->after_alloc)ID3D12CommandAllocator_Release(s->after_alloc);
+#endif
         ID3D12GraphicsCommandList7_Release(s->host);
         forget_receipt(s);
         IUnknown_Release(s->allocator);
@@ -209,7 +234,11 @@ static void WINAPI sl_418(IUnknown *i, UINT mask, UINT control, UINT64 address, 
 /* +540 is pointer-aligned; only +544..563 is guest cache data. Padding is
  * inert, contains no native pointers, and must remain intact at bind/close. */
 static const BYTE cache_template[4096]={[0 ... 3]=0xa5,[36 ... 4095]=0xa5};
+#ifdef SCARLETT_PAIR_SUBMIT
+static HRESULT close_at(IUnknown *i,UINT_PTR caller)
+#else
 static HRESULT WINAPI sl_close(IUnknown *i)
+#endif
 {
     struct startup_list *s = sl(i);
     if (s->closed) return E_FAIL;
@@ -219,8 +248,14 @@ static HRESULT WINAPI sl_close(IUnknown *i)
     batch_step(s,B_CLOSED);
     if (FAILED(hr)) s->error = hr;
     if(SUCCEEDED(s->error))offer_release(s,i);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if((s->offered || s->deferred) && caller==(UINT_PTR)GetModuleHandleW(NULL)+0x72a1)pair_seal(s,i);
+#endif
     return s->error;
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+static HRESULT WINAPI sl_close(IUnknown *i){return close_at(i,(UINT_PTR)__builtin_return_address(0));}
+#endif
 
 static BOOL allocator_matches(ID3D12CommandAllocator *a, ID3D12Device *device)
 {
@@ -240,9 +275,28 @@ static HRESULT WINAPI sl_reset(IUnknown *i, IUnknown *alloc, IUnknown *pso, UINT
     if (!s->closed) return E_FAIL;
     ID3D12CommandAllocator *a = xs_allocator_host(alloc, s->type);
     if (!allocator_matches(a, s->device)) return E_INVALIDARG;
-    HRESULT hr = ID3D12GraphicsCommandList7_Reset(s->host, a, NULL);
+    HRESULT hr;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->seal){
+        ID3D12GraphicsCommandList7 *next=NULL;
+        hr=ID3D12Device_CreateCommandList(s->device,1,s->type,a,NULL,&IID_ID3D12GraphicsCommandList7,(void**)&next);
+        if(FAILED(hr))return hr;
+        pair_unseal(s);ID3D12GraphicsCommandList7_Release(s->host);s->host=next;
+    }else
+#endif
+    hr = ID3D12GraphicsCommandList7_Reset(s->host, a, NULL);
     if (FAILED(hr)) return hr;
+#ifdef SCARLETT_PAIR_SUBMIT
+    drop_om(&s->first_om);
+    if(s->pre_release){ID3D12GraphicsCommandList7_Release(s->pre_release);s->pre_release=NULL;}
+    if(s->after_alloc){ID3D12CommandAllocator_Release(s->after_alloc);s->after_alloc=NULL;}
+    s->nops=s->split_at=0;
+    s->alloc_generation=InterlockedCompareExchange64(&CONTAINING_RECORD(alloc,struct command_allocator,a.iface)->generation,0,0);
+#endif
     forget_receipt(s);s->output_slot=0;
+#ifdef SCARLETT_PAIR_SUBMIT
+    s->successor_query=FALSE;
+#endif
     IUnknown_AddRef(alloc);
     IUnknown_Release(s->allocator);
     s->allocator = alloc;
@@ -308,6 +362,7 @@ static HRESULT bind_initial_heaps(struct startup_list *s,UINT count,IUnknown *co
     if (FAILED(hr)) return hr;
     if(s->table0.heap && s->table0.heap!=pair[0])memset(&s->table0,0,sizeof s->table0);
     if (!s->heaps[0]) for (unsigned i=0;i<2;i++) { IUnknown_AddRef(pair[i]); s->heaps[i]=pair[i]; }
+    pair_op(s,0x100);
     ID3D12GraphicsCommandList7_SetDescriptorHeaps(s->host,2,banks);
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     if (s->phase==B_PREFIX) batch_step(s,B_REBOUND);
@@ -324,7 +379,12 @@ static void WINAPI sl_bind(IUnknown *i,UINT count,IUnknown *const *input)
 static HRESULT record_control_prefix(struct startup_list *s,struct prefix_marker *m,const struct scarlett_section_info *id,UINT value)
 {
     if (!s->heaps[0] || !s->heaps[1] || !id->section || id->view_size!=65536 ||
-        !((id->offset==8 && !value) || (id->offset==0x50 && value==1))) return E_NOTIMPL;
+        !((id->offset==8 && !value) || (id->offset==0x50 && value==1)
+#ifdef SCARLETT_PAIR_SUBMIT
+          || (id->offset==0x98 && value==2 && s->phase==B_BOUND && !s->alloc_generation &&
+              s->error==S_OK && !s->deferred && s->nops==2 && s->ops[0]==0x100/8 && s->ops[1]==0x238/8)
+#endif
+        )) return E_NOTIMPL;
     D3D12_FEATURE_DATA_D3D12_OPTIONS3 opts;
     HRESULT hr=ID3D12Device_CheckFeatureSupport(s->device,D3D12_FEATURE_D3D12_OPTIONS3,&opts,sizeof opts);
     if (FAILED(hr) || !(opts.WriteBufferImmediateSupportFlags&D3D12_COMMAND_LIST_SUPPORT_FLAG_DIRECT)) return E_NOTIMPL;
@@ -380,6 +440,9 @@ static HRESULT prefix_write(struct startup_list *s,UINT64 addr,UINT value,UINT64
 static HRESULT record_native_post(struct startup_list *s,UINT64 addr,UINT value,UINT64 control,UINT flags)
 {
     struct prefix_marker *m=s->marker;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if (m && m->value>1) return E_NOTIMPL;
+#endif
     if (!s->stamp || !s->stamp->retained || !m || !m->buffer || !m->control_section || m->native_post || s->closed ||
         s->host_exposed || control || flags || !value) return E_NOTIMPL;
     struct scarlett_section_info id;
@@ -434,15 +497,29 @@ static HRESULT split_native_list(struct startup_list *s,struct prefix_marker *po
         drop_marker(post);return hr;
     }
     s->post=post;s->head=s->host;s->host=tail;s->tail_allocator=a;
+#ifdef SCARLETT_PAIR_SUBMIT
+    s->split_at=s->nops;
+#endif
     s->post_boundary=!post->counter;
     return S_OK;
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+#include "rtx3070.h"
+#endif
 static HRESULT split_after_timestamp(struct startup_list *s,UINT64 addr,UINT value,UINT64 control,UINT flags)
 {
     if (!s->marker || !s->marker->alias || !s->stamp || s->closed ||
         s->host_exposed || s->post || control || flags) return E_NOTIMPL;
     SIZE_T prefix=s->marker->value==1 ? 0x50 : 8;
+#ifdef SCARLETT_PAIR_SUBMIT
+    /* Only the observed third-bank post; its next wait has not been measured. */
+    if (s->marker->value==2 && s->phase==B_HEAD_STAMP && !s->alloc_generation &&
+        s->error==S_OK && !s->deferred && !s->primary && s->nops==5 &&
+        !memcmp(s->ops,"\x20\x47\x20\x48\x47",5) && xs_is_rtx3070(s->device)) prefix=0x98;
+    if (s->marker->value && (prefix==8 || value!=0x29a5ee15)) return E_NOTIMPL;
+#else
     if (s->marker->value && (s->marker->value!=1 || value!=0x29a5ee15)) return E_NOTIMPL;
+#endif
     struct scarlett_section_info id;
     HRESULT hr=scarlett_query_section(0x53430015,(void *)addr,4,&id);
     if (FAILED(hr)) return hr;
@@ -455,6 +532,7 @@ static HRESULT split_after_timestamp(struct startup_list *s,UINT64 addr,UINT val
 }
 static void WINAPI sl_marker(IUnknown *i,UINT64 addr,UINT value,UINT64 control,UINT flags)
 {
+    pair_op(sl(i),0x238);
     struct startup_list *s=sl(i);
     HRESULT hr=!s->stamp ? prefix_write(s,addr,value,control,flags) : s->marker && s->marker->buffer ?
         record_native_post(s,addr,value,control,flags) : split_after_timestamp(s,addr,value,control,flags);
@@ -467,6 +545,39 @@ static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64
     if (!s->reservation || !s->pool_owner || s->closed || s->type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
         FAILED(s->error) || x || y || flags!=1) return E_NOTIMPL;
     if (!addr || (addr&7)) return E_INVALIDARG;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if (s->marker && s->marker->buffer && s->marker->value==2) {
+        if(s->phase!=B_REBOUND || s->stamp || s->head || s->post || s->deferred ||
+           s->primary_released || s->host_exposed)return E_NOTIMPL;
+        return record_timestamp(s->device,s->host,addr,2,&s->stamp);
+    }
+    if(s->deferred){
+        struct release_receipt *r=s->deferred;SIZE_T got;UINT bank;UINT64 indices;UINT_PTR record,exe=(UINT_PTR)GetModuleHandleW(NULL);
+        if(s->stamp || s->successor_query || !r->claimed || r->owner!=s->pool_owner || r->tid!=GetCurrentThreadId() ||
+           s->host_exposed || !r->producer_stamp || s->deferred_wire.pResource!=(ID3D12Resource*)r->key ||
+           s->deferred_wire.LayoutAfter!=(D3D12_BARRIER_LAYOUT)0x1f)return E_NOTIMPL;
+        if(!s->pre_release || !s->after_alloc || s->host==s->pre_release)return E_NOTIMPL;
+        if(!ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a0c),&bank,4,&got) || got!=4 || bank>=4 ||
+           !ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0x75dedb0),&indices,8,&got) || got!=8 ||
+           !ReadProcessMemory(GetCurrentProcess(),(void*)(exe+0xa943a18+bank*8),&record,8,&got) || got!=8)return E_INVALIDARG;
+        if(r->producer_stamp->cpu_section){
+            if(r->producer_stamp->cpu_addr!=addr+8)return E_INVALIDARG;
+            struct system_timestamp *tail=NULL;SIZE_T off;
+            HRESULT hr=prepare_timestamp(s->device,addr,FALSE,&tail,&off);
+            if(FAILED(hr))return hr;
+            if(!cpu_successor_target(r->producer_stamp,tail,bank,indices,record)){
+                drop_timestamp(tail);return E_INVALIDARG;
+            }
+            emit_q0(tail,s->host,off);s->stamp=tail;
+            s->successor_query=TRUE;return S_OK;
+        }
+        HRESULT hr=successor_target(r->producer_stamp,addr,bank,indices,record);if(FAILED(hr))return hr;
+        s->stamp=r->producer_stamp;InterlockedIncrement(&s->stamp->refs);
+        s->successor_query=TRUE;
+        emit_successor_timestamp(s->stamp,s->host);
+        return S_OK;
+    }
+#endif
 #ifdef SCARLETT_EXPERIMENTAL_PRIMARY_RELEASE
     if (s->primary_released) {
         if (!s->stamp || !s->head || !s->post || !s->post->counter || s->host_exposed) return E_NOTIMPL;
@@ -478,6 +589,7 @@ static HRESULT pool_timestamp(struct startup_list *s,UINT64 addr,UINT64 x,UINT64
 }
 static void WINAPI sl_timestamp(IUnknown *i,UINT64 addr,UINT64 x,UINT64 y,UINT flags)
 {
+    pair_op(sl(i),0x240);
     if (FAILED(pool_timestamp(sl(i),addr,x,y,flags))) xs_stop();
     batch_step(sl(i),(sl(i)->primary_released?B_TAIL_STAMP:B_HEAD_STAMP));
 }
@@ -527,6 +639,7 @@ static HRESULT record_counter_wait(struct startup_list *s,UINT64 addr,UINT op,UI
 }
 static void WINAPI sl_wait64(IUnknown *i,UINT64 addr,UINT op,UINT64 ref,UINT flags)
 {
+    pair_op(sl(i),0x250);
     if (SUCCEEDED(record_counter_wait(sl(i),addr,op,ref,flags))) {batch_step(sl(i),B_WAIT);return;}
     xs_stop();
 }
@@ -644,6 +757,7 @@ static HRESULT record_primary_barrier(struct startup_list *s,UINT count,const D3
 }
 static void WINAPI sl_primary_barrier(IUnknown *i,UINT count,const D3D12_BARRIER_GROUP *groups)
 {
+    pair_op(sl(i),0x490);
     if (FAILED(record_primary_barrier(sl(i),count,groups))) xs_stop();
     if(!sl(i)->offscreen_sr)batch_step(sl(i),(sl(i)->primary_released?B_RELEASED:B_ACQUIRED));
 }
@@ -663,6 +777,7 @@ static HRESULT record_primary_clear(struct startup_list *s,SIZE_T slot,const FLO
 }
 static void WINAPI sl_primary_clear(IUnknown *i,SIZE_T slot,const FLOAT *color,UINT count,const D3D12_RECT *rects)
 {
+    pair_op(sl(i),0x1a0);
     if (FAILED(record_primary_clear(sl(i),slot,color,count,rects))) xs_stop();
     batch_step(sl(i),B_CLEARED);
 }
@@ -676,6 +791,7 @@ static BOOL atlas_sync_valid(struct startup_list *s,UINT mask,UINT control,UINT6
 }
 static void WINAPI pool_sync418(IUnknown *i,UINT mask,UINT control,UINT64 address,UINT64 range)
 {
+    pair_op(sl(i),0x418);
     struct startup_list *s=sl(i);
     sl_barrier(s,atlas_sync_valid(s,mask,control,address,range));
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
@@ -702,6 +818,7 @@ static void recorded_direct_state(struct startup_list *s)
 }
 static void WINAPI pool_topology(IUnknown *i,UINT topology)
 {
+    pair_op(sl(i),0xa0);
     struct startup_list *s=sl(i);
     if (!can_set_topology(s,topology)) xs_stop();
     ID3D12GraphicsCommandList7_IASetPrimitiveTopology(s->host,D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -726,6 +843,7 @@ static HRESULT record_depth_order(struct startup_list *s,UINT value)
 }
 static void WINAPI pool_depth_order(IUnknown *i,UINT value)
 {
+    pair_op(sl(i),0x258);
     if (FAILED(record_depth_order(sl(i),value))) xs_stop();
 }
 static HRESULT record_pool_rate(struct startup_list *s,UINT rate,const D3D12_SHADING_RATE_COMBINER *input)
@@ -741,6 +859,7 @@ static HRESULT record_pool_rate(struct startup_list *s,UINT rate,const D3D12_SHA
 }
 static void WINAPI pool_rate(IUnknown *i,UINT rate,const D3D12_SHADING_RATE_COMBINER *pair)
 {
+    pair_op(sl(i),0x3f0);
     if (FAILED(record_pool_rate(sl(i),rate,pair))) xs_stop();
 }
 static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
@@ -772,6 +891,7 @@ static HRESULT record_graphics_root(struct startup_list *s,IUnknown *identity)
 }
 static void WINAPI pool_root(IUnknown *i,IUnknown *root)
 {
+    pair_op(sl(i),0x110);
     if(FAILED(record_graphics_root(sl(i),root)))xs_stop();
 }
 static HRESULT record_blend(struct startup_list *s,const FLOAT *input)
@@ -785,6 +905,7 @@ static HRESULT record_blend(struct startup_list *s,const FLOAT *input)
 }
 static void WINAPI pool_blend(IUnknown *i,const FLOAT *input)
 {
+    pair_op(sl(i),0xb8);
     if (FAILED(record_blend(sl(i),input))) xs_stop();
 }
 static HRESULT record_stencil(struct startup_list *s,UINT reference)
@@ -795,6 +916,7 @@ static HRESULT record_stencil(struct startup_list *s,UINT reference)
 }
 static void WINAPI pool_stencil(IUnknown *i,UINT reference)
 {
+    pair_op(sl(i),0xc0);
     if(FAILED(record_stencil(sl(i),reference)))xs_stop();
 }
 static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
@@ -819,6 +941,7 @@ static HRESULT record_clear4(struct startup_list *s,IUnknown *identity)
 }
 static void WINAPI pool_pipeline(IUnknown *i,IUnknown *pso)
 {
+    pair_op(sl(i),0xc8);
     if(FAILED(record_clear4(sl(i),pso)))xs_stop();
 }
 static HRESULT unbind_index(struct startup_list *s,const D3D12_INDEX_BUFFER_VIEW *view)
@@ -830,6 +953,7 @@ static HRESULT unbind_index(struct startup_list *s,const D3D12_INDEX_BUFFER_VIEW
 }
 static void WINAPI pool_index(IUnknown *i,const D3D12_INDEX_BUFFER_VIEW *view)
 {
+    pair_op(sl(i),0x178);
     if (FAILED(unbind_index(sl(i),view))) xs_stop();
 }
 static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
@@ -859,10 +983,17 @@ static HRESULT record_om(struct startup_list *s,UINT count,const SIZE_T *rt,BOOL
     if(!ReadProcessMemory(GetCurrentProcess(),rt,slots,sizeof *slots,&got) || got!=sizeof *slots ||
        !ReadProcessMemory(GetCurrentProcess(),ds,slots+1,sizeof *slots,&got) || got!=sizeof *slots)return E_POINTER;
     HRESULT hr=xs_freeze_om(s->pool_owner,s->attachments,slots,&s->om);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(SUCCEEDED(hr) && !s->first_om.heap[0]){
+        s->first_om=s->om;
+        for(UINT j=0;j<2;j++)ID3D12DescriptorHeap_AddRef(s->first_om.heap[j]);
+    }
+#endif
     if(SUCCEEDED(hr)){replay_om(&s->om,s->host);recorded_direct_state(s);}return hr;
 }
 static void WINAPI pool_om(IUnknown *i,UINT count,const SIZE_T *rt,BOOL range,const SIZE_T *ds)
 {
+    pair_op(sl(i),0x190);
     if(FAILED(record_om(sl(i),count,rt,range,ds)))xs_stop();
 }
 static HRESULT record_bounds(struct startup_list *s,FLOAT lo,FLOAT hi)
@@ -879,6 +1010,7 @@ static HRESULT record_bounds(struct startup_list *s,FLOAT lo,FLOAT hi)
 }
 static void WINAPI pool_bounds(IUnknown *i,FLOAT lo,FLOAT hi)
 {
+    pair_op(sl(i),0x230);
     if(FAILED(record_bounds(sl(i),lo,hi)))xs_stop();
 }
 /* shortcut: only the observed single full-target rectangle and viewport on the #4 path. */
@@ -892,8 +1024,10 @@ static HRESULT record_clear_raster(struct startup_list *s,UINT count,const void 
     else {ID3D12GraphicsCommandList7_RSSetScissorRects(s->host,1,&clear_rect);s->full_rect=TRUE;}
     recorded_direct_state(s);return S_OK;
 }
-static void WINAPI pool_rect(IUnknown *i,UINT n,const D3D12_RECT *r){if(FAILED(record_clear_raster(sl(i),n,r,FALSE)))xs_stop();}
-static void WINAPI pool_vp(IUnknown *i,UINT n,const D3D12_VIEWPORT *v){if(FAILED(record_clear_raster(sl(i),n,v,TRUE)))xs_stop();}
+static void WINAPI pool_rect(IUnknown *i,UINT n,const D3D12_RECT *r){
+    pair_op(sl(i),0xb0);if(FAILED(record_clear_raster(sl(i),n,r,FALSE)))xs_stop();}
+static void WINAPI pool_vp(IUnknown *i,UINT n,const D3D12_VIEWPORT *v){
+    pair_op(sl(i),0xa8);if(FAILED(record_clear_raster(sl(i),n,v,TRUE)))xs_stop();}
 static HRESULT record_source(struct startup_list *s,UINT index,UINT64 va)
 {
     if(!open_direct_state(s) || s->prior_pso || index || !s->full_vp || !s->pending_470 || !s->depth_zero_pending ||
@@ -903,6 +1037,7 @@ static HRESULT record_source(struct startup_list *s,UINT index,UINT64 va)
 }
 static void WINAPI pool_source(IUnknown *i,UINT index,UINT64 va)
 {
+    pair_op(sl(i),0x160);
     if(FAILED(record_source(sl(i),index,va)))xs_stop();
 }
 /* +258(0) remains logical state. Only this digest-qualified pair has disabled
@@ -928,6 +1063,7 @@ static HRESULT record_clear4_draw(struct startup_list *s,UINT n,UINT instances,U
 }
 static void WINAPI pool_clear4_draw(IUnknown *i,UINT n,UINT instances,UINT first,UINT base)
 {
+    pair_op(sl(i),0x60);
     if(FAILED(record_clear4_draw(sl(i),n,instances,first,base)))xs_stop();
 }
 /* Initial mode-15 inputs are flushed with the previous draw pinned, before explicit +c8. */
@@ -953,6 +1089,7 @@ static HRESULT record_colour_vb(struct startup_list *s,UINT slot,UINT count,cons
 }
 static void WINAPI pool_colour_vb(IUnknown *i,UINT slot,UINT count,const D3D12_VERTEX_BUFFER_VIEW *v)
 {
+    pair_op(sl(i),0x180);
     if(FAILED(record_colour_vb(sl(i),slot,count,v)))xs_stop();
 }
 static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
@@ -979,6 +1116,7 @@ static HRESULT record_table0(struct startup_list *s,UINT index,UINT64 handle)
 }
 static void WINAPI pool_b27(IUnknown *i,UINT index,UINT64 handle)
 {
+    pair_op(sl(i),0x120);
     if(FAILED(record_table0(sl(i),index,handle)))xs_stop();
 }
 /* Only these slots have been traced on the pool's returned pointer. */
@@ -1055,6 +1193,7 @@ static HRESULT record_470(IUnknown *i,UINT64 value)
 }
 static void WINAPI pool_470(IUnknown *i,UINT64 value)
 {
+    pair_op(sl(i),0x470);
     if (FAILED(record_470(i,value))) xs_stop();
 }
 
@@ -1113,6 +1252,9 @@ HRESULT xs_device_list(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, IUnkn
     if (pooled && (s->pool_owner=pool_owner)) IUnknown_AddRef(pool_owner);
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     if (!pooled && (s->sync_owner=pool_owner)) IUnknown_AddRef(pool_owner);
+#endif
+#ifdef SCARLETT_PAIR_SUBMIT
+    s->alloc_generation=InterlockedCompareExchange64(&CONTAINING_RECORD(alloc,struct command_allocator,a.iface)->generation,0,0);
 #endif
     s->refs = 1;
     s->device = device;
@@ -1223,7 +1365,7 @@ static void execute_recording(ID3D12CommandQueue *q,struct startup_list *s,struc
     }
     ID3D12CommandList *tail=(ID3D12CommandList *)s->host;
     ID3D12CommandQueue_ExecuteCommandLists(q,1,&tail);
-#ifdef TEST_PAIR_SPLIT
+#if defined(TEST_PAIR_SPLIT) || defined(SCARLETT_PAIR_SUBMIT)
     /* The ordered collector signals once, after its successor. */
     if (r && !r->fence) return;
 #endif
@@ -1238,6 +1380,9 @@ static void forget_release(struct adapter *a)
     if (a->display.released_end) ID3D12Fence_Release(a->display.released_end);
     a->display.released=NULL;a->display.released_end=NULL;a->display.released_token=0;
 }
+#endif
+#ifdef SCARLETT_PAIR_SUBMIT
+#include "pair-submit.h"
 #endif
 #include "tagged_batch.h"
 #endif
@@ -1294,5 +1439,8 @@ static HRESULT checked_startup_submit(IUnknown *iface, UINT count, IUnknown *con
 }
 static void WINAPI startup_submit(IUnknown *iface, UINT count, IUnknown *const *lists, UINT64 token, UINT flags)
 {
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(count==2 && token==2 && flags==3 && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x24821e3)xs_stop();
+#endif
     if (checked_startup_submit(iface,count,lists,token,flags)!=S_OK) xs_stop();
 }

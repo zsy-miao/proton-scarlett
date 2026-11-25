@@ -9,6 +9,9 @@
 #error "Tagged batch requires direct wait and primary release"
 #endif
 HRESULT xs_frame_submit(IUnknown *,UINT64,ID3D12CommandQueue *,BOOL,ID3D12Fence *,HRESULT (*)(void *),void *);
+#ifdef SCARLETT_PAIR_SUBMIT
+HRESULT xs_pair_frame_submit(IUnknown *,UINT64,ID3D12CommandQueue *,BOOL,ID3D12Fence *,HRESULT (*)(void *),void *,const UINT *);
+#endif
 HRESULT xs_frame_submission_query(IUnknown *,UINT64,ID3D12CommandQueue *,BOOL);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
 HRESULT xs_frame_present_release(IUnknown *,UINT64,IDXGISwapChain *,HRESULT (*)(void *),void *,ID3D12CommandQueue *,ID3D12Fence *);

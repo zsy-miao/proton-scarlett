@@ -71,13 +71,21 @@ static struct frame_record *frame_find(struct frame_clock *f, UINT64 token)
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
 /* Called with the queue and allocator locked. Reconfiguration/eviction cannot split
  * tag validation from submission. These fences never complete a frame event. */
+#ifdef SCARLETT_PAIR_SUBMIT
+HRESULT xs_pair_frame_submit(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL batch,ID3D12Fence *end,
+        HRESULT (*submit)(void *),void *context,const UINT *epoch)
+#else
 HRESULT xs_frame_submit(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL batch,ID3D12Fence *end,
         HRESULT (*submit)(void *),void *context)
+#endif
 {
     struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;
     AcquireSRWLockExclusive(&f->lock);
     struct frame_record *r=frame_find(f,token);
     HRESULT hr=DXGI_ERROR_INVALID_CALL;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if (epoch && *epoch!=f->epoch) {ReleaseSRWLockExclusive(&f->lock);return hr;}
+#endif
     if (r && r==&f->history[(f->cursor-1)%ARRAYSIZE(f->history)] && !r->presenting && r->status==S_FALSE &&
         (batch ? r->queue==q && r->sync_end && !r->batch_end && ID3D12Fence_GetCompletedValue(r->sync_end)!=UINT64_MAX : !r->queue)) {
         hr=submit(context);
@@ -92,6 +100,11 @@ HRESULT xs_frame_submit(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL 
     ReleaseSRWLockExclusive(&f->lock);
     return hr;
 }
+#ifdef SCARLETT_PAIR_SUBMIT
+HRESULT xs_frame_submit(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL batch,ID3D12Fence *end,
+        HRESULT (*submit)(void *),void *context)
+{return xs_pair_frame_submit(owner,token,q,batch,end,submit,context,NULL);}
+#endif
 HRESULT xs_frame_submission_query(IUnknown *owner,UINT64 token,ID3D12CommandQueue *q,BOOL batch)
 {
     struct frame_clock *f=&CONTAINING_RECORD(owner,struct xbox_device,iface)->clock;

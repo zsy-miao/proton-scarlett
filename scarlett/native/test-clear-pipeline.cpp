@@ -118,6 +118,15 @@ static void draw(ID3D12Device *d,ID3D12RootSignature *r,ID3D12PipelineState *pso
     }
 }
 int main(){
+#ifdef TEST_PAIR_FIXTURE
+    /* Reserve the synthetic operand pages before large pool allocations. */
+    for(SIZE_T off:{SIZE_T(0xa940000),SIZE_T(0x75d0000),SIZE_T(0x75e0000),SIZE_T(0x6890000)}){
+        BYTE *addr=(BYTE*)GetModuleHandleW(nullptr)+off;
+        CK(VirtualAlloc(addr,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==addr);
+    }
+#else /* Preserve the original fixture's embedded diagnostic IDs. */
+#line 120
+#endif
     BYTE *wc=pair_pool();
     auto d=device(),r=root(d.Get()),other=device(),foreign=root(other.Get());
     auto host=xs_bvh_root_host(d.Get(),r.Get());CK(host);ComPtr<ID3D12Device> hd;HR(host->GetDevice(IID_PPV_ARGS(&hd)));
@@ -153,6 +162,11 @@ int main(){
     late_owner=d.Get();late_root=colour_root(d.Get());late_wrong=colour_root(other.Get());gate=CreateEventW(nullptr,TRUE,FALSE,nullptr);CK(gate);worker=CreateThread(nullptr,0,make_late,nullptr,0,nullptr);CK(worker);
 #endif
     test_pair(wc,hd.Get(),d.Get(),ds4.Get(),r.Get(),other.Get(),control);}
+#ifdef TEST_PAIR_FIXTURE
+    return 0;
+#else
+#line 155
+#endif
 #ifdef TEST_LATE_COLOUR
     CloseHandle(worker);CloseHandle(gate);late_pso.Reset();late_root.Reset();late_wrong.Reset();
 #endif

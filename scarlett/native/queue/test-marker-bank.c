@@ -4,6 +4,104 @@
 #define CK(x) do { if (!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);return 1;} } while(0)
 #define HR(x) do { HRESULT h_=(x);if(FAILED(h_)){fprintf(stderr,"FAIL %d: %s hr=%lx\n",__LINE__,#x,h_);return 1;} } while(0)
 extern HRESULT WINAPI D3D12XboxCreateDevice(void*,const void*,REFIID,void**);
+#ifdef TEST_THIRD_PREFIX
+static int third(ID3D12Device *d,IUnknown *owner,IUnknown **heaps,BYTE *page,void *alias)
+{
+    IUnknown *a,*fresh,*list,*q,*gate,*end;
+    HR(xs_allocator(d,0,&a));HR(xs_allocator(d,0,&fresh));HR(xs_direct_queue(d,&q));
+    HR(xs_shared_fence(d,&gate));HR(xs_shared_fence(d,&end));HR(xs_device_list(d,0,a,TRUE,owner,&list));
+    struct startup_list *s=sl(list);UINT_PTR addr=(UINT_PTR)page+0x98;
+    HR(xs_bind_pool_heaps(list,2,heaps));pair_op(s,0x238);
+    CK(FAILED(prefix_write(s,addr,1,0,0)) && FAILED(prefix_write(s,addr+4,2,0,0)) &&
+        FAILED(prefix_write(s,addr,2,1,0)) && FAILED(prefix_write(s,addr,2,0,1)) && !s->marker);
+    s->alloc_generation++;CK(FAILED(prefix_write(s,addr,2,0,0)));s->alloc_generation--;
+    s->phase=B_REBOUND;CK(FAILED(prefix_write(s,addr,2,0,0)));s->phase=B_BOUND;
+    s->nops--;pool_vtbl.marker(list,addr,2,0,0);
+#ifndef TEST_BANK3_WB
+    CK(s->marker && s->marker->value==2 && s->marker->control_section && s->marker->buffer && !s->marker->alias &&
+        s->phase==B_PREFIX && FAILED(pool_timestamp(s,addr,0,0,1)) && !s->stamp);
+#else /* TEST_BANK3_WB */
+    CK(s->marker && s->marker->value==2 && s->marker->control_section && s->marker->buffer && !s->marker->alias);
+
+    const SIZE_T span=0x49400000,win=0x4190000,off=0xf258;
+    BYTE *exe=(BYTE*)GetModuleHandleW(NULL),*bp=exe+0xa940000,*ip=exe+0x75d0000;
+    CK(VirtualAlloc(bp,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==bp &&
+       VirtualAlloc(ip,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==ip);
+    void *(WINAPI *alloc)(void*,SIZE_T,DWORD,UINT64,DWORD)=(void*)GetProcAddress(GetModuleHandleW(L"xmem.dll"),"XMemVirtualAlloc");
+    CK(alloc);BYTE *sys=alloc(NULL,span,0x20003000,0x183,0x22004);CK(sys);
+    UINT64 target=(UINT_PTR)(sys+win+off),array=target-8,used=array+0x4010;
+    DWORD *rec=(DWORD*)(sys+0x3fb30c0),*bank=(DWORD*)(exe+0xa943a0c),*index=(DWORD*)(exe+0x75dedb0);
+    UINT_PTR *slots=(UINT_PTR*)(exe+0xa943a18);
+    slots[2]=slots[3]=(UINT_PTR)rec;*bank=3;*index=1;
+    rec[2]=2048;rec[3]=8;rec[14]=2<<16;
+    memcpy(rec+18,&used,8);memcpy(rec+20,&array,8);memcpy(rec+22,&array,8);
+    struct scarlett_section_info dst,view;
+    HR(scarlett_query_section(0x5343000c,(void*)target,8,&dst));
+    HR(scarlett_query_section_handle(0x5343000b,NULL,span,&view,dst.section));
+    CK(dst.base==sys && dst.offset==win+off && view.base!=sys && view.view_size==span);
+    BYTE *window=(BYTE*)view.base+win;memset(window,0xad,65536);
+    volatile UINT64 *tick=(volatile UINT64*)(window+off);
+    CK(s->phase==B_PREFIX && FAILED(pool_timestamp(s,target,0,0,1)) && !s->stamp);
+    HR(xs_bind_pool_heaps(list,2,heaps));CK(s->phase==B_REBOUND);
+    struct scarlett_section_info wrong=dst;
+    wrong.section=s->marker->control_section;CK(!third_wb_target(target,&wrong));
+    wrong=dst;wrong.offset-=8;CK(!third_wb_target(target,&wrong));
+    wrong=dst;wrong.view_size=wrong.offset+7;CK(!third_wb_target(target,&wrong));CloseHandle(dst.section);
+    pair_op(s,0x240);
+    *index=2;CK(FAILED(pool_timestamp(s,target,0,0,1)));*index=1;
+    *bank=2;CK(FAILED(pool_timestamp(s,target,0,0,1)));*bank=3;
+    /* A well-formed record at a different offset must not substitute for the measured owner. */
+    memcpy(rec+32,rec,96);slots[3]=(UINT_PTR)(rec+32);
+    CK(FAILED(pool_timestamp(s,target,0,0,1)));slots[3]=(UINT_PTR)rec;
+    for(UINT j=0;j<6;j++){
+        DWORD *field=rec+((UINT[]){2,3,14,18,20,22})[j];DWORD mask=j==2?1u<<16:1u;
+        *field^=mask;CK(FAILED(pool_timestamp(s,target,0,0,1)));*field^=mask;
+    }
+    CK(FAILED(pool_timestamp(s,target-8,0,0,1)) && FAILED(pool_timestamp(s,target+8,0,0,1)) &&
+       FAILED(pool_timestamp(s,(UINT_PTR)(sys+span),0,0,1)) && !s->stamp);
+    HR(pool_timestamp(s,target,0,0,1));
+    CK(s->stamp && s->stamp->retained && s->stamp->query && s->stamp->dst &&
+       !s->stamp->second_bank && !s->stamp->successor_bank && FAILED(pool_timestamp(s,target,0,0,1)));
+    batch_step(s,B_HEAD_STAMP);CK(s->phase==B_HEAD_STAMP);
+#endif /* TEST_BANK3_WB */
+    HR(sl_close(list));HR(xs_queue_wait(q,gate,1));HR(checked_startup_submit(q,1,&list,0,0));HR(queue_signal(q,end,1));
+    HR(sl_reset(list,fresh,NULL,0));IUnknown_Release(list);
+    HANDLE done=CreateEventW(NULL,FALSE,FALSE,NULL);CK(done);HR(xs_fence_event(end,1,done));
+    CK(VirtualFree(page,65536,MEM_RELEASE) && VirtualAlloc(page,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==page);
+    memset(page,0xbd,65536);MemoryBarrier();
+#ifndef TEST_BANK3_WB
+    CK(WaitForSingleObject(done,50)==WAIT_TIMEOUT && ((volatile UINT*)alias)[0x98/4]==0xa7a7a7a7);
+#else /* TEST_BANK3_WB */
+    CK(VirtualFree(sys,0,MEM_RELEASE));
+    BYTE *reuse=VirtualAlloc(sys+win,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);CK(reuse==sys+win);
+    memset(reuse,0x49,65536);MemoryBarrier();
+    CK(WaitForSingleObject(done,50)==WAIT_TIMEOUT && ((volatile UINT*)alias)[0x98/4]==0xa7a7a7a7 &&
+       *tick==0xadadadadadadadadull);
+    UINT64 low,high,cpu;HR(ID3D12CommandQueue_GetClockCalibration(as_queue(q),&low,&cpu));
+#endif /* TEST_BANK3_WB */
+    HR(xs_cpu_signal(gate,1));CK(WaitForSingleObject(done,10000)==WAIT_OBJECT_0);HR(ID3D12Device_GetDeviceRemovedReason(d));
+#ifdef TEST_BANK3_WB
+    HR(ID3D12CommandQueue_GetClockCalibration(as_queue(q),&high,&cpu));
+    CK(*tick && *tick!=0xadadadadadadadadull && *tick>=low && *tick<=high);
+    for(UINT j=0;j<65536;j++)CK(reuse[j]==0x49 && ((j>=off && j<off+8) || window[j]==0xad));
+    CK(VirtualFree(reuse,0,MEM_RELEASE) && VirtualFree(view.base,0,MEM_RELEASE) &&
+       VirtualFree(bp,0,MEM_RELEASE) && VirtualFree(ip,0,MEM_RELEASE));
+#endif /* TEST_BANK3_WB */
+    for(UINT j=0;j<65536/4;j++)CK(((volatile UINT*)alias)[j]==(j==0x98/4?2:0xa7a7a7a7) && ((UINT*)page)[j]==0xbdbdbdbd);
+    CloseHandle(done);IUnknown_Release(end);IUnknown_Release(gate);IUnknown_Release(q);IUnknown_Release(a);IUnknown_Release(fresh);
+    CK(VirtualFree(alias,65536,MEM_RELEASE) && VirtualFree(page,0,MEM_RELEASE));
+#ifndef TEST_BANK3_WB
+    puts("PASS third native +98=2: exact original dword after gate; replacement and neighbors intact; wrong phase/gen/offset/value/control/flags and timestamp refused");
+#else /* TEST_BANK3_WB */
+    puts("PASS third native +98=2 and bank3/index1 +419f258: original WB qword in queue clock interval, replacements and neighbors intact");
+#endif /* TEST_BANK3_WB */
+    return 0;
+}
+#elif defined(TEST_RTX_THIRD_POST)
+#include "test-rtx-third-post.h"
+#else /* Preserve the original fixture's embedded diagnostic IDs. */
+#line 6
+#endif
 static int check(UINT offset,UINT value,BOOL native)
 {
     const UINT bytes=65536,post=0x29a5ee15,span=0x49400000,head=value?0x419aa38:0x4196698;
@@ -21,6 +119,23 @@ static int check(UINT offset,UINT value,BOOL native)
     if(native){page=alloc(NULL,bytes,0x20401000,0x283,0x42404);CK(page);HR(scarlett_query_section(0x5343000a,page,4,&id));HR(scarlett_query_section_handle(0x53430008,NULL,bytes,&alias,id.section));CloseHandle(id.section);}
     else {HRESULT(WINAPI *cpu)(ID3D12Device*,SIZE_T,void**)=(void*)GetProcAddress(GetModuleHandleW(L"d3d12core.dll"),"ScarlettCpuControlViewV1");CK(cpu);HR(cpu(d,bytes,(void**)&page));HR(scarlett_query_section(0x53430120,page+offset,4,&alias));}
     CK(alias.base!=page && alias.view_size==bytes);memset(page,0xa7,bytes);
+#ifdef TEST_RTX_THIRD_POST
+    if(value==2){
+        CK(!native);
+        BYTE *sys=alloc(NULL,span,0x20003000,0x183,0x22004);CK(sys);
+        int rc=third_post(d,owner,pair,page,alias.base,sys+0x4196698);
+        CK(VirtualFree(sys,0,MEM_RELEASE));IUnknown_Release(pair[0]);IUnknown_Release(pair[1]);
+        IUnknown_Release(owner);ID3D12Device_Release(d);FreeLibrary(xm);return rc;
+    }
+#elif defined(TEST_THIRD_PREFIX)
+    if(value==2){
+        CK(native);
+        int rc=third(d,owner,pair,page,alias.base);
+        IUnknown_Release(pair[0]);IUnknown_Release(pair[1]);IUnknown_Release(owner);ID3D12Device_Release(d);FreeLibrary(xm);return rc;
+    }
+#else
+#line 23
+#endif
     BYTE *sys=alloc(NULL,span,0x20003000,0x183,0x22004);CK(sys);UINT64 addr=(UINT_PTR)(page+offset),ts=(UINT_PTR)(sys+head);
     if(value){
         /* Relocate the owner and its qword array inside a real pool; only slot 1 belongs to this caller. */
@@ -104,4 +219,12 @@ static int check(UINT offset,UINT value,BOOL native)
     IUnknown_Release(gate);IUnknown_Release(done);IUnknown_Release(q);IUnknown_Release(a);IUnknown_Release(b);IUnknown_Release(pair[0]);IUnknown_Release(pair[1]);IUnknown_Release(owner);ID3D12Device_Release(d);FreeLibrary(xm);
     printf("PASS %s control +%x=%x/+%x=%x timestamp +%x: original unsigned wait held suffix fence after reset/reuse, released at target+%u\n",native?"native":"alias",offset,value,offset+4,post,head,value);return 0;
 }
-int main(void){ID3D12Device *d;HR(D3D12CreateDevice(NULL,D3D_FEATURE_LEVEL_12_0,&IID_ID3D12Device,(void**)&d));BOOL native=!xs_is_rtx3070(d);ID3D12Device_Release(d);return check(8,0,native)||check(0x50,1,native);}
+int main(void){ID3D12Device *d;HR(D3D12CreateDevice(NULL,D3D_FEATURE_LEVEL_12_0,&IID_ID3D12Device,(void**)&d));BOOL native=!xs_is_rtx3070(d);ID3D12Device_Release(d);
+#ifdef TEST_RTX_THIRD_POST
+    CK(!native);return check(0x98,2,FALSE);
+#elif defined(TEST_THIRD_PREFIX)
+    CK(native);return check(0x98,2,TRUE);
+#else
+    return check(8,0,native)||check(0x50,1,native);
+#endif
+}

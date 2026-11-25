@@ -29,7 +29,15 @@ ID3D12RootSignature *xs_retain_graphics_root(IUnknown *owner,IUnknown *identity)
 HRESULT xs_initial_heap_banks(IUnknown *owner,IUnknown *const pair[2],ID3D12DescriptorHeap *banks[2]);
 struct xs_attachment_pin {IUnknown *identity; ID3D12Resource *host; SIZE_T slot; UINT64 serial;};
 /* The wrapper pins both its XMem module and the original generation. */
-struct xs_clear_source {IUnknown *placed;ID3D12Resource *buffer;};
+#ifdef SCARLETT_PAIR_SUBMIT
+#include "lease-range.h"
+#endif
+struct xs_clear_source {IUnknown *placed;ID3D12Resource *buffer;
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct lease_span span;
+    const void *capture;
+#endif
+};
 HRESULT xs_active_table_slot(IUnknown*,IUnknown*,UINT64,UINT,UINT*);
 HRESULT xs_copy_colour_vb(IUnknown*,ID3D12Device*,ID3D12GraphicsCommandList7*,UINT64,BOOL,IUnknown*,struct xs_clear_source*);
 HRESULT xs_copy_clear_source(IUnknown *,ID3D12Device *,ID3D12GraphicsCommandList7 *,UINT64,struct xs_clear_source *);
@@ -43,7 +51,7 @@ HRESULT xs_freeze_primary_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,U
 BOOL xs_live_output(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64);
 ID3D12CommandQueue *xs_release_clock(IUnknown *,UINT64 *,UINT *);
 #ifdef SCARLETT_EXPERIMENTAL_BRIDGE
-#ifdef TEST_SAME_BATCH_RELEASE
+#if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
 HRESULT xs_pair_writer(IUnknown *,IUnknown *,ID3D12Resource *,SIZE_T,UINT64,ID3D12CommandQueue *,UINT64 *,BOOL);
 #endif
 HRESULT xs_primary_writer(IUnknown *,ID3D12Resource *,ID3D12CommandQueue *);

@@ -1128,7 +1128,12 @@ static HRESULT copy_pass_span(IUnknown *owner,ID3D12Device *hd,ID3D12GraphicsCom
     p->drop(hold); /* out->placed owns the same capture through discard/retirement. */
     D3D12_RESOURCE_BARRIER b={.Transition={dst,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_COPY_DEST,after}};
     ID3D12GraphicsCommandList7_ResourceBarrier(list,1,&b);
-    *out=(struct xs_clear_source){&p->title->iface,dst};return S_OK;
+    *out=(struct xs_clear_source){.placed=&p->title->iface,.buffer=dst};
+#ifdef SCARLETT_PAIR_SUBMIT
+    out->capture=p->capture;
+    lease_span_read(p->guest_va,va,bytes,&out->span);
+#endif
+    return S_OK;
 #else
     (void)owner;(void)hd;(void)list;(void)va;(void)offset;(void)bytes;(void)after;(void)expected;(void)out;return E_NOTIMPL;
 #endif
@@ -1244,14 +1249,14 @@ HRESULT xs_primary_writer(IUnknown *owner,ID3D12Resource *src,ID3D12CommandQueue
         if(r->flipping){hr=DXGI_ERROR_WAS_STILL_DRAWING;break;}
         if(!r->writer){r->writer=q;ID3D12CommandQueue_AddRef(q);}
         else if(r->writer!=q){if(r->claimed)hr=E_ACCESSDENIED;else r->multi_writer=TRUE;}
-#ifdef TEST_SAME_BATCH_RELEASE
+#if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
         if(SUCCEEDED(hr))r->writer_epoch++;
 #endif
         break;
     }
     ReleaseSRWLockExclusive(&d->descriptor_lock);return hr;
 }
-#ifdef TEST_SAME_BATCH_RELEASE
+#if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
 /* Snapshot or atomically claim this exact view and writer generation. Called
  * with the submission lock held on commit. No mutation on failed checks. */
 HRESULT xs_pair_writer(IUnknown *owner,IUnknown *key,ID3D12Resource *src,SIZE_T slot,UINT64 serial,

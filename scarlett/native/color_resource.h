@@ -36,7 +36,7 @@ static const IUnknownVtbl lease_vtbl={lease_query,lease_addref,lease_release};
 /* Device-owned weak registry. Each wrapper owns one device and one offscreen
  * texture reference; descriptor records independently retain their texture. */
 struct color_resource {
-#ifdef TEST_SAME_BATCH_RELEASE
+#if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
     UINT64 writer_epoch;
 #endif
     IUnknown iface;

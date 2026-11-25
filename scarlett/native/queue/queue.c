@@ -14,12 +14,12 @@
 /* One exposed queue or recorder can reach other primaries. Fail closed across this provider. */
 static SRWLOCK escape_lock=SRWLOCK_INIT;
 static BOOL bridge_escaped;
-#ifdef TEST_SAME_BATCH_RELEASE
+#if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
 static LONG pair_inflight;
 #endif
 static BOOL escape_native(void) {
     if(!TryAcquireSRWLockExclusive(&escape_lock))return FALSE;
-#ifdef TEST_SAME_BATCH_RELEASE
+#if defined(TEST_SAME_BATCH_RELEASE) || defined(SCARLETT_PAIR_SUBMIT)
     if(pair_inflight){ReleaseSRWLockExclusive(&escape_lock);return FALSE;}
 #endif
     bridge_escaped=TRUE;ReleaseSRWLockExclusive(&escape_lock);return TRUE;
@@ -95,6 +95,12 @@ _Static_assert(offsetof(struct ftable, completed) == 0x40 &&
 
 struct monitored_fence {
     struct adapter a;
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct monitored_fence *next;
+    ID3D12CommandQueue *publisher;
+    UINT64 high;
+    BOOL mixed,protected_pair;
+#endif
     ID3D12Device *device; /* Kept alive by the host fence. */
     PTP_TIMER timer;
     SRWLOCK lock;
@@ -103,6 +109,10 @@ struct monitored_fence {
     volatile UINT64 value;
 };
 _Static_assert(offsetof(struct monitored_fence, value) % 8 == 0, "atomic x64 reader");
+#ifdef SCARLETT_PAIR_SUBMIT
+static SRWLOCK publisher_lock=SRWLOCK_INIT;
+static struct monitored_fence *live_fences;
+#endif
 static const struct qtable qt;
 static const struct ftable ft;
 _Static_assert(offsetof(struct qtable, execute) == 0x118, "x64 queue submit");
@@ -113,6 +123,9 @@ struct command_allocator {
     SRWLOCK lock;
 #ifdef SCARLETT_EXPERIMENTAL_TAGGED_BATCH
     UINT submission_pins;
+#ifdef SCARLETT_PAIR_SUBMIT
+    LONG64 generation;
+#endif
 #endif
     void *entry, *context; /* Borrowed title values, not COM interfaces. */
 };
@@ -144,13 +157,30 @@ static ULONG WINAPI addref(IUnknown *iface)
 static ULONG WINAPI release(IUnknown *iface)
 {
     struct adapter *a = CONTAINING_RECORD(iface, struct adapter, iface);
+#ifdef SCARLETT_PAIR_SUBMIT
+    BOOL fence=iface->lpVtbl==&fence_prefix;
+    if(fence)AcquireSRWLockExclusive(&publisher_lock);
+#endif
     ULONG refs = InterlockedDecrement(&a->refs);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(fence){
+        if(!refs){
+            struct monitored_fence **p=&live_fences;
+            while(*p!=CONTAINING_RECORD(a,struct monitored_fence,a))p=&(*p)->next;
+            *p=(*p)->next;
+        }
+        ReleaseSRWLockExclusive(&publisher_lock);
+    }
+#endif
     if (!refs) {
         if (iface->lpVtbl == &fence_prefix) {
             struct monitored_fence *f = CONTAINING_RECORD(a, struct monitored_fence, a);
             SetThreadpoolTimer(f->timer, NULL, 0, 0);
             WaitForThreadpoolTimerCallbacks(f->timer, TRUE);
             CloseThreadpoolTimer(f->timer);
+#ifdef SCARLETT_PAIR_SUBMIT
+            if(f->publisher)ID3D12CommandQueue_Release(f->publisher);
+#endif
             ID3D12Fence_Release(a->host.fence);
         }
 #ifdef SCARLETT_DEVICE_BOOTSTRAP
@@ -278,6 +308,9 @@ static HRESULT WINAPI allocator_reset(IUnknown *iface)
     struct command_allocator *a=CONTAINING_RECORD(iface,struct command_allocator,a.iface);
     AcquireSRWLockExclusive(&a->lock);
     HRESULT hr=a->submission_pins?DXGI_ERROR_WAS_STILL_DRAWING:ID3D12CommandAllocator_Reset(a->a.host.allocator);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(hr==S_OK)InterlockedIncrement64(&a->generation);
+#endif
     ReleaseSRWLockExclusive(&a->lock);
     return hr;
 #else
@@ -390,7 +423,20 @@ static HRESULT WINAPI queue_signal(IUnknown *queue, IUnknown *fence, UINT64 valu
     if (!q || !f) return E_INVALIDARG;
     SRWLOCK *lock=&CONTAINING_RECORD(queue,struct adapter,iface)->submit_lock;
     AcquireSRWLockExclusive(lock);
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct monitored_fence *m=CONTAINING_RECORD(fence,struct monitored_fence,a.iface);
+    AcquireSRWLockExclusive(&publisher_lock);
+    HRESULT hr=m->protected_pair && m->publisher!=q ? E_ACCESSDENIED : ID3D12CommandQueue_Signal(q,f,value);
+    if(SUCCEEDED(hr)){
+        if(!m->publisher){m->publisher=q;ID3D12CommandQueue_AddRef(q);}
+        if(m->publisher!=q || value!=m->high+1)m->mixed=TRUE;
+        if(value>m->high)m->high=value;
+    }else if(hr!=E_ACCESSDENIED)m->mixed=TRUE;
+    ReleaseSRWLockExclusive(&publisher_lock);
+    if(value==3)fprintf(stderr,"PAIR guest Signal queue=%p host=%p fence=%p value=3 hr=%08lx\n",queue,q,fence,hr);
+#else
     HRESULT hr=ID3D12CommandQueue_Signal(q,f,value);
+#endif
     ReleaseSRWLockExclusive(lock);
     return hr;
 }
@@ -444,7 +490,15 @@ HRESULT xs_cpu_signal(IUnknown *fence, UINT64 value)
     ID3D12Fence *f = as_fence(fence);
     if (!f) return E_INVALIDARG;
     struct monitored_fence *m = CONTAINING_RECORD(fence, struct monitored_fence, a.iface);
+#ifdef SCARLETT_PAIR_SUBMIT
+    AcquireSRWLockExclusive(&publisher_lock);
+    if(m->protected_pair){ReleaseSRWLockExclusive(&publisher_lock);return E_ACCESSDENIED;}
+    m->mixed=TRUE;
+#endif
     HRESULT hr = ID3D12Fence_Signal(f, value);
+#ifdef SCARLETT_PAIR_SUBMIT
+    ReleaseSRWLockExclusive(&publisher_lock);
+#endif
     AcquireSRWLockExclusive(&m->lock);
     if (m->active) sample_completed(m);
     ReleaseSRWLockExclusive(&m->lock);
@@ -485,6 +539,12 @@ static HRESULT create(ID3D12Device *host, const D3D12_COMMAND_QUEUE_DESC *desc, 
     }
     a->iface.lpVtbl = desc ? &queue_prefix.unknown : &fence_prefix;
     a->refs = 1;
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(!desc){
+        struct monitored_fence *m=CONTAINING_RECORD(a,struct monitored_fence,a);
+        AcquireSRWLockExclusive(&publisher_lock);m->next=live_fences;live_fences=m;ReleaseSRWLockExclusive(&publisher_lock);
+    }
+#endif
     *out = &a->iface;
     return S_OK;
 }

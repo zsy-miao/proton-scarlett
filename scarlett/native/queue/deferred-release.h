@@ -8,12 +8,21 @@ struct release_receipt {
     ID3D12CommandQueue *queue;
     SIZE_T slot;UINT64 serial,table_epoch,token;
     UINT epoch;DWORD tid;
+#ifdef SCARLETT_PAIR_SUBMIT
+    struct system_timestamp *producer_stamp;
+    UINT64 writer_epoch;
+    UINT_PTR node;
+    UINT node_gen;
+#endif
 };
 static SRWLOCK receipt_lock=SRWLOCK_INIT;
 static struct release_receipt *offers;
 static void drop_receipt(struct release_receipt *r)
 {
     if(!InterlockedDecrement(&r->refs)){
+#ifdef SCARLETT_PAIR_SUBMIT
+        drop_timestamp(r->producer_stamp);
+#endif
         ID3D12CommandQueue_Release(r->queue);IUnknown_Release(r->key);HeapFree(GetProcessHeap(),0,r);
     }
 }
@@ -45,6 +54,14 @@ static void offer_release(struct startup_list *s,IUnknown *id)
         .host=s->primary,.slot=s->output_slot,.serial=s->output_serial,.table_epoch=s->table_epoch,
         .queue=q,.token=token,.epoch=epoch,.tid=GetCurrentThreadId()};
     IUnknown_AddRef(r->key);
+#ifdef SCARLETT_PAIR_SUBMIT
+    if(s->stamp && (s->stamp->successor_bank || (s->stamp->second_bank && s->stamp->cpu_section))){
+        r->producer_stamp=s->stamp;InterlockedIncrement(&s->stamp->refs);
+    }
+    if(FAILED(xs_pair_writer(r->owner,r->key,r->host,r->slot,r->serial,r->queue,&r->writer_epoch,FALSE))){
+        drop_receipt(r);return;
+    }
+#endif
     AcquireSRWLockExclusive(&receipt_lock);
     r->next=offers;offers=s->offered=r;
     ReleaseSRWLockExclusive(&receipt_lock);
@@ -70,8 +87,31 @@ static HRESULT defer_release(struct startup_list *s,const D3D12_TEXTURE_BARRIER 
     }
     if(!s->host_exposed && !s->deferred && match && !match->claimed && match->key==(IUnknown*)b->pResource &&
        xs_live_output(match->owner,match->key,match->host,match->slot,match->serial)){
+#ifdef SCARLETT_PAIR_SUBMIT
+        /* Close exactly the bind-only prefix. Following commands are recorded
+         * normally on a separate native list; the release goes between them. */
+        ID3D12DescriptorHeap *banks[2];
+        ID3D12CommandAllocator *alloc=NULL;
+        ID3D12GraphicsCommandList7 *tail=NULL;
+        hr=xs_initial_heap_banks(s->pool_owner,s->heaps,banks);
+        if(SUCCEEDED(hr))hr=ID3D12Device_CreateCommandAllocator(s->device,s->type,&IID_ID3D12CommandAllocator,(void**)&alloc);
+        if(SUCCEEDED(hr))hr=ID3D12Device_CreateCommandList(s->device,1,s->type,alloc,NULL,&IID_ID3D12GraphicsCommandList7,(void**)&tail);
+        if(SUCCEEDED(hr)){
+            ID3D12GraphicsCommandList7_SetDescriptorHeaps(tail,2,banks);
+            hr=ID3D12GraphicsCommandList7_Close(s->host);
+            if(FAILED(hr))s->error=hr;
+        }
+        if(FAILED(hr)){
+            if(tail)ID3D12GraphicsCommandList7_Release(tail);
+            if(alloc)ID3D12CommandAllocator_Release(alloc);
+        }else{
+        s->pre_release=s->host;s->after_alloc=alloc;s->host=tail;
+#endif
         match->claimed=TRUE;InterlockedIncrement(&match->refs);s->deferred=match;
         s->deferred_wire=*b;s->phase=B_INELIGIBLE;hr=S_OK;
+#ifdef SCARLETT_PAIR_SUBMIT
+        }
+#endif
     }
     ReleaseSRWLockExclusive(&receipt_lock);
     ReleaseSRWLockExclusive(&s->borrow_lock);ID3D12CommandQueue_Release(q);return hr;
