@@ -8,8 +8,8 @@ Wine loads the original executable; project-owned DLLs supply console imports. [
 | Question | Where things stand |
 | --- | --- |
 | Can I play it? | **Not yet.** The game has presented one startup image in experimental runs. It hasn't reached the menu or gameplay. |
-| How far does it get? | Both GPUs display one startup image. Both have issued a second frame token in some runs, but neither has displayed a second frame. |
-| What's blocking it? | On the [latest paired build](scarlett/native/queue/README.md#guarded-submission-retail-test), AMD passed the vertex-data lifetime check but stopped at a graphics marker. RTX stopped while recording a timestamp. Neither displayed frame 2. |
+| How far does it get? | Both GPUs now accept the game's rendering commands for frame 2. Only the first frame has reached the display. |
+| What's blocking it? | After [submitting the second frame's work](scarlett/native/queue/README.md#token-2-submitted-on-both-gpus), AMD stops while recording a timestamp and RTX while recording a marker. |
 | Do the controls work? | The game recognized the virtual controller in an AMD diagnostic. Neither GPU has shown an in-game response to input. A separate [controller test](scarlett/tests/radv-gameinput.sh) verified button, movement, and camera inputs. |
 
 ## Technical progress

@@ -1050,3 +1050,23 @@ was logged. On RTX the producer closed; the successor stopped at list
 `+240` (timestamp, return `+2482b37`) before reaching the queue check.
 Both issued tokens 1 and 2. Only token 1 presented (display count 0→1);
 neither capture showed recognizable title content.
+
+### Token 2 submitted on both GPUs
+
+With staged provider `cf68be0e` and backend `c77099d1`, both ordinary
+runs submitted the two command lists for token 2. The game's subsequent
+signal of value 3 succeeded on its original fence. Neither log recorded
+completion of the batch-end fence or a token-2 `PresentX`. The display
+count advanced only from 0 to 1. All six focused tests had passed before
+the ordinary runs.
+
+AMD's first stop was list `+240`, return `+2482b37` from `+a1c36c`.
+A separate diagnostic identified a fresh list with prefix value 2 and a
+timestamp at index 1 of bank 3, offset `0x419f258` in the original WB
+section. RTX first stopped at list `+238`, return `+4ed46aa` from
+`+120d47`. Its diagnostic identified the post at `+0x9c` immediately
+after the value-2 prefix at `+0x98` in the same control-page generation.
+
+All 84 AMD capture frames were black. The RTX client was briefly blank
+white; its log still showed only token 1 presented. Neither capture
+contains a recognizable retail screen.
