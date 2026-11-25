@@ -1,0 +1,40 @@
+--- a/scarlett/native/queue/test-clear4-bind.c
++++ b/scarlett/native/queue/test-clear4-bind.c
+@@ -623,13 +623,34 @@
+         pass.table0.root==pass.graphics_identity && pass.table0.heap==pass.heaps[0] && FAILED(record_table0(&pass,0,texture)) &&
+         tables==prior_tables && om_calls==oc+1 && !pass.bound && !pass.pipeline && executions==ex);
+     REQUIRE(IUnknown_Release(raw_heap)==0);
++    UINT64 before_retire=ID3D12Fence_GetCompletedValue(pending_om.sr.end);
++    HRESULT stale_hr=record_om(&pending_om,1,&ps,FALSE,NULL);
++    fprintf(stderr,"A6 fixture stale OM liveHolds=%u tick=%llu hr=%08lx output=%p binds=%u/%u\n",
++        v->holds,before_retire,(DWORD)stale_hr,pending_om.output_heap,om_calls,oc+1);
++    REQUIRE(before_retire==0 && v->holds==5);
++    REQUIRE(FAILED(stale_hr) && !pending_om.output_heap && om_calls==oc+1);
++    /* Return the two fixture allocations before replaying the older three-hold OM snapshot. */
++    REQUIRE(v->holds==5 && CB_ALLOC+480==RAW_ALLOC && RAW_ALLOC+128==base+0x5dea0);
++    v->holds-=2;
++    REQUIRE(native_returned_om(&pending_om) && xs_held_table_inputs(&pending_om.source,&pending_om.previous_vb));
+ #undef NO_TABLE
+ #endif
+     REQUIRE(checked_startup_submit(q,1,&active,0,0)==E_ACCESSDENIED && checked_tagged_submit(q,1,&active,3,3)==E_ACCESSDENIED && executions==ex);
+     HANDLE retired=CreateEventW(NULL,FALSE,FALSE,NULL);
+-    REQUIRE(retired && xs_fence_event(end,1,retired)==S_OK && xs_cpu_signal(hold_end,1)==S_OK &&
+-        WaitForSingleObject(retired,10000)==WAIT_OBJECT_0 && record_om(&pending_om,1,&ps,FALSE,NULL)==E_ACCESSDENIED &&
+-        !pending_om.output_heap && om_calls==oc+1);
++    if(!retired){fprintf(stderr,"FAIL retire event err=%lu\n",GetLastError());return FALSE;}
++    HRESULT event_hr=xs_fence_event(end,1,retired);
++    if(event_hr!=S_OK){fprintf(stderr,"FAIL retire registration hr=%08lx\n",(DWORD)event_hr);return FALSE;}
++    HRESULT signal_hr=xs_cpu_signal(hold_end,1);
++    if(signal_hr!=S_OK){fprintf(stderr,"FAIL retire signal hr=%08lx\n",(DWORD)signal_hr);return FALSE;}
++    DWORD waited=WaitForSingleObject(retired,10000);
++    UINT64 tick=ID3D12Fence_GetCompletedValue(as_fence(end));
++    fprintf(stderr,"A6 fixture original end=%p wait=%08lx tick=%llu\n",pending_om.sr.end,waited,tick);
++    REQUIRE(waited==WAIT_OBJECT_0 && tick==1);
++    HRESULT retired_hr=record_om(&pending_om,1,&ps,FALSE,NULL);
++    fprintf(stderr,"A6 fixture retired OM liveHolds=%u tick=%llu hr=%08lx output=%p binds=%u/%u\n",
++        v->holds,tick,(DWORD)retired_hr,pending_om.output_heap,om_calls,oc+1);
++    REQUIRE(retired_hr==E_ACCESSDENIED);
++    REQUIRE(!pending_om.output_heap && om_calls==oc+1);
+     CloseHandle(retired);IUnknown_Release(hold_end);
+ #endif
+     REQUIRE(FAILED(record_table0(&pass,0,start+213*32)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) && tables==prior_tables);

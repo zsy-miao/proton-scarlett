@@ -1,0 +1,96 @@
+--- a/scarlett/native/queue/test-clear4-bind.c
++++ b/scarlett/native/queue/test-clear4-bind.c
+@@ -107,6 +107,9 @@
+ #include "test-rt-roundtrip.h"
+ #if defined(TEST_CARRIED_TARGET) || defined(TEST_NATIVE_TRIP)
+ #include "test-carried-target.h"
++#ifdef TEST_A6_FIVE
++#include "test-five-producers.h"
++#endif
+ #endif
+ #ifdef TEST_CARRIED_REPLACEMENT
+ IUnknown *test_duplicate_registration(IUnknown*,UINT_PTR);
+@@ -602,6 +605,26 @@
+         pass.output_slot==ps && pass.output_serial==pass.clear_serial && pass.output_serial==*(UINT64*)ps &&
+          FAILED(record_om(&pass,1,&ps,FALSE,NULL)));
+ #ifdef TEST_SPLIT6_TARGET
++#ifdef TEST_A6_FIVE
++    const UINT64 texture=start+372469ull*32;
++#define NO_TABLE(name) REQUIRE(FAILED(record_table0(&pass,0,texture)) && pass.table_epoch==1 && \
++        pass.table0.slot==372600 && pass.table0.cells==1 && tables==prior_tables && executions==ex)
++#include "test-a6-five.inc"
++    ++LEFT;NO_TABLE("allocator remaining");--LEFT;
++    ((BYTE*)CB_ALLOC)[479]^=1;NO_TABLE("CB bytes");((BYTE*)CB_ALLOC)[479]^=1;
++    ++pass.nops;NO_TABLE("count");--pass.nops;
++    pass.ops[35]^=1;NO_TABLE("bounds");pass.ops[35]^=1;
++    ++pass.output_serial;NO_TABLE("serial");--pass.output_serial;
++    FIELD(IUnknown*,0x127c8)=l;NO_TABLE("active face");FIELD(IUnknown*,0x127c8)=&face.iface;
++    REQUIRE(FAILED(record_table0(&pass,1,texture)) && FAILED(record_table0(&pass,0,texture+32)) &&
++        FAILED(record_table0(&pass,0,texture+1)) && !ID3D12Fence_GetCompletedValue(pass.sr.end));
++    REQUIRE(record_table0(&pass,0,texture)==S_OK && pass.table0.slot==372469 && pass.table0.cells==3 &&
++        pass.table_epoch==2 && pass.prior_b27_slot==372600 && !pass.five_cookie && !pass.five_face &&
++        pass.table0.root==pass.graphics_identity && pass.table0.heap==pass.heaps[0] && FAILED(record_table0(&pass,0,texture)) &&
++        tables==prior_tables && om_calls==oc+1 && !pass.bound && !pass.pipeline && executions==ex);
++    REQUIRE(IUnknown_Release(raw_heap)==0);
++#undef NO_TABLE
++#endif
+     REQUIRE(checked_startup_submit(q,1,&active,0,0)==E_ACCESSDENIED && checked_tagged_submit(q,1,&active,3,3)==E_ACCESSDENIED && executions==ex);
+     HANDLE retired=CreateEventW(NULL,FALSE,FALSE,NULL);
+     REQUIRE(retired && xs_fence_event(end,1,retired)==S_OK && xs_cpu_signal(hold_end,1)==S_OK &&
+@@ -609,8 +632,13 @@
+         !pending_om.output_heap && om_calls==oc+1);
+     CloseHandle(retired);IUnknown_Release(hold_end);
+ #endif
+-    REQUIRE(FAILED(record_table0(&pass,0,start+213*32)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) &&
+-        pass.table_epoch==1 && pass.table0.cells==1 && pass.table0.slot==372600 && tables==prior_tables);
++    REQUIRE(FAILED(record_table0(&pass,0,start+213*32)) && FAILED(record_clear4_draw(&pass,3,1,0,0)) && tables==prior_tables);
++#ifdef TEST_A6_FIVE
++    REQUIRE(pass.table_epoch==2 && pass.table0.cells==3 && pass.table0.slot==372469);
++    puts("PASS AMD op37 attributed five: logical 372469/3/2 only, unrelated fifth and consuming submits denied");
++#else
++    REQUIRE(pass.table_epoch==1 && pass.table0.cells==1 && pass.table0.slot==372600);
++#endif
+     REQUIRE(barrier_total==bc+1 && legacy_calls==lc && om_calls==oc+1 &&
+         !memcmp(frozen,&pass.first_om,sizeof pass.om) && !memcmp(frozen+1,&pass.om,sizeof pass.om) &&
+         !memcmp(sources,&pass.source,sizeof pass.source) && !memcmp(sources+1,&pass.previous_vb,sizeof pass.vb) &&
+--- /dev/null
++++ b/scarlett/native/queue/test-a6-five.inc
+@@ -0,0 +1,38 @@
++    BYTE *ctx=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,0x40000);REQUIRE(ctx);
++    BYTE raw_input[128],cb_input[480];for(UINT i=0;i<sizeof raw_input;i++)raw_input[i]=(BYTE)(i+71);
++    for(UINT i=0;i<sizeof cb_input;i++)cb_input[i]=(BYTE)(3*i+19);
++    face.iface.lpVtbl=&pool_vtbl.prefix;FIELD(IUnknown*,0x127c8)=&face.iface;
++    REQUIRE(register_callback(pass.allocator,fixture_callback,ctx));
++    RAW_DIRTY=sizeof raw_input;CB_DIRTY=sizeof cb_input;RAW_SRC=(UINT_PTR)raw_input;CB_SRC=(UINT_PTR)cb_input;
++    CURSOR=base+0x5dea0;LEFT=CURSOR-v->data;
++    SIZE_T cpu_start=0;IUnknown *raw_heap=test_raw_heap(owner,&cpu_start);REQUIRE(raw_heap);
++    const SIZE_T raw_slot=cpu_start+690*32,cb_slot=cpu_start+18*32;
++    BYTE *raw_view=ctx+0x321a0+32*RAW_SEL,*cb_view=ctx+0x7440+64*CB_SEL;
++    *(SIZE_T*)(raw_view+0x18)=raw_slot;*(SIZE_T*)(cb_view+0x38)=cb_slot;
++    REQUIRE(test_write_raw(owner,raw_slot,base+0x3de20));
++    UINT64 initial_raw=*(UINT64*)raw_slot;REQUIRE(test_raw_current(raw_heap,placed,cap,0x3de20,initial_raw));
++
++    pool_bounds(&face.iface,0,1);REQUIRE(pass.nops==36 && pass.five_cookie && pass.five_face==&face.iface);
++    pair_op(&pass,0x120);NO_TABLE("three without producers");
++    v->holds=5;NO_TABLE("count alone");v->holds=3;
++    RAW_DIRTY=0;RAW_ALLOC=take_counted(ctx,base,sizeof raw_input);
++    REQUIRE(RAW_ALLOC==base+0x5de20 && v->holds==4);memcpy((void*)RAW_ALLOC,(void*)RAW_SRC,sizeof raw_input);
++    REQUIRE(test_write_raw(owner,raw_slot,RAW_ALLOC));RAW_SRC=(UINT_PTR)raw_view;
++    const UINT64 serial=*(UINT64*)raw_slot;
++    REQUIRE(serial!=initial_raw && test_raw_current(raw_heap,placed,cap,0x5de20,serial));
++    NO_TABLE("RAW32 alone at four");
++    UINT_PTR cursor=CURSOR;UINT left=LEFT;
++    UINT_PTR foreign=take_counted(ctx,base,480);REQUIRE(foreign==base+0x5dc40 && v->holds==5);
++    memset((void*)foreign,0xee,480);NO_TABLE("unrelated fifth allocation with live RAW32");
++    --v->holds;CURSOR=cursor;LEFT=left;
++    CB_DIRTY=0;CB_ALLOC=take_counted(ctx,base,sizeof cb_input);
++    REQUIRE(CB_ALLOC+sizeof cb_input==RAW_ALLOC && v->holds==5);memcpy((void*)CB_ALLOC,(void*)CB_SRC,sizeof cb_input);
++    *(DWORD*)(cb_view+8)=sizeof cb_input/16;*(WORD*)(cb_view+0xc)=0x10;*(DWORD*)(cb_view+0x14)=CB_ALLOC-base;
++    ((UINT64*)cb_slot)[0]=0x0010000000000000ull+CB_ALLOC;((UINT64*)cb_slot)[1]=0x0002403c00000000ull+sizeof cb_input/16;
++    CB_SRC=(UINT_PTR)cb_view;
++    struct lease_span cb_span,raw_span;
++    REQUIRE(lease_span_read(base,CB_ALLOC,480,&cb_span) && lease_span_read(base,RAW_ALLOC,128,&raw_span) &&
++        cb_span.node==(UINT_PTR)v && raw_span.node==cb_span.node && cb_span.gen==pass.source.span.gen && raw_span.gen==cb_span.gen &&
++        cb_span.holds==5 && raw_span.holds==5 && CB_ALLOC+480==RAW_ALLOC && RAW_ALLOC+128<=second.BufferLocation &&
++        second.BufferLocation+4080<=vb.BufferLocation && vb.BufferLocation+4080<=va &&
++        !memcmp((void*)CB_ALLOC,cb_input,sizeof cb_input) && !memcmp((void*)RAW_ALLOC,raw_input,sizeof raw_input));

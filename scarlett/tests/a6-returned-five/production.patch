@@ -1,0 +1,132 @@
+--- a/scarlett/native/queue/queue.h
++++ b/scarlett/native/queue/queue.h
+@@ -80,6 +80,9 @@
+     SIZE_T slot;
+     UINT64 serial,epoch;
+     struct xs_sr_ticket sr;
++#ifdef XS_AMD_RETURNED_FIVE
++    UINT64 pending_end;
++#endif
+ };
+ UINT64 xs_five_inputs(IUnknown *,const struct xs_five_key *,ID3D12Resource *,
+         const struct xs_clear_source *const [3],UINT64,BOOL);
+--- a/scarlett/native/queue/startup_list.h
++++ b/scarlett/native/queue/startup_list.h
+@@ -1417,7 +1417,11 @@
+     struct command_allocator *a=CONTAINING_RECORD(s->allocator,struct command_allocator,a.iface);
+     AcquireSRWLockShared(&a->lock);
+     struct xs_five_key key={s,s->host,s->allocator,(UINT_PTR)a->context,(UINT_PTR)face,
+-        s->primary_pin,s->output_slot,s->output_serial,s->reuse_epoch,s->sr};
++        s->primary_pin,s->output_slot,s->output_serial,s->reuse_epoch,s->sr
++#ifdef XS_AMD_RETURNED_FIVE
++        ,s->split_at==6
++#endif
++    };
+     UINT64 ret=0;
+     if(a->a.allocator_type==D3D12_COMMAND_LIST_TYPE_DIRECT && (UINT_PTR)a->entry==(UINT_PTR)GetModuleHandleW(NULL)+0x555df10 &&
+        !a->generation && !s->alloc_generation)
+@@ -1432,8 +1436,19 @@
+     if(FAILED(record_bounds(sl(i),lo,hi)))xs_stop();
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+     struct startup_list *s=sl(i);
+-    if(s->output_heap && s->sr.end && s->sr_reversed && s->split_at==5 && s->nops==36 &&
+-       s->ops[34]==0x190/8 && s->reuse_epoch==1 && s->table_epoch==1 && xs_is_rtx3070(s->device)){
++    if(s->output_heap && s->sr.end && s->sr_reversed &&
++#ifdef XS_AMD_RETURNED_FIVE
++       (s->split_at==6 || s->split_at==5) &&
++#else
++       s->split_at==5 &&
++#endif
++       s->nops==36 && s->ops[34]==0x190/8 && s->reuse_epoch==1 && s->table_epoch==1 &&
++#ifdef XS_AMD_RETURNED_FIVE
++       (s->split_at==6 ? xs_is_adapter(s->device,0x1002,0x164e) && returned_primary_wait(s) : xs_is_rtx3070(s->device))
++#else
++       xs_is_rtx3070(s->device)
++#endif
++       ){
+         s->five_face=i;s->five_cookie=five_recording(s,i,TRUE);
+     }
+ #endif
+@@ -1606,8 +1621,19 @@
+     const struct xs_clear_source *a=&s->previous_vb,*b=&s->vb;
+     ID3D12DescriptorHeap *banks[2];
+     if(!open_direct_state(s) || s->nops!=sizeof ops-1 || memcmp(s->ops,ops,sizeof ops-1) ||
+-       s->split_at!=5 || !returned_primary_wait(s) || s->post->threshold!=1 || s->reuse_epoch!=1 ||
+-       s->alloc_generation || !xs_is_rtx3070(s->device) || s->offered || s->deferred ||
++#ifdef XS_AMD_RETURNED_FIVE
++       (s->split_at!=6 && s->split_at!=5) ||
++#else
++       s->split_at!=5 ||
++#endif
++       !returned_primary_wait(s) || s->post->threshold!=1 || s->reuse_epoch!=1 ||
++       s->alloc_generation ||
++#ifdef XS_AMD_RETURNED_FIVE
++       (s->split_at==6 ? !xs_is_adapter(s->device,0x1002,0x164e) : !xs_is_rtx3070(s->device)) ||
++#else
++       !xs_is_rtx3070(s->device) ||
++#endif
++       s->offered || s->deferred ||
+        !s->primary_cleared || !s->primary_pin || s->primary_key!=(UINT_PTR)s->primary_pin ||
+        !s->rt_roundtripped || !s->sr_reversed || s->sr_view || s->offscreen_sr ||
+        !s->output_heap || !s->output_cpu.ptr || s->output_slot!=s->clear_slot || s->output_serial!=s->clear_serial ||
+@@ -1632,7 +1658,11 @@
+     if(!root)return FALSE;
+     IUnknown_Release(s->graphics_identity);
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+-    if(!xs_held_table_inputs(&s->source,a))
++    if(
++#ifdef XS_AMD_RETURNED_FIVE
++       s->split_at==6 ||
++#endif
++       !xs_held_table_inputs(&s->source,a))
+         return (*five=root==s->graphics_root && s->five_cookie && five_recording(s,s->five_face,FALSE));
+ #endif
+     return root==s->graphics_root && xs_check_returned_output(s->pool_owner,s->primary_pin,s->primary,
+@@ -1699,7 +1729,11 @@
+     if(SUCCEEDED(hr)){
+ #if defined(SCARLETT_PAIR_SUBMIT) && !defined(TEST_FIRST_TABLE_ONLY)
+         /* shortcut: qualify only the measured one-cell range on the returned native tail. */
+-        if(native && (slot!=372600 || cells!=1))return E_NOTIMPL;
++        if(native &&
++#ifdef XS_AMD_RETURNED_FIVE
++           !(returned && five) &&
++#endif
++           (slot!=372600 || cells!=1))return E_NOTIMPL;
+ #endif
+ #if defined(SCARLETT_PAIR_SUBMIT) && defined(XS_RTX_RETURNED_TABLE)
+         if(returned && slot!=372469)return E_NOTIMPL;
+@@ -1709,7 +1743,11 @@
+         ++s->table_epoch;
+         recorded_direct_state(s);
+ #if defined(SCARLETT_PAIR_SUBMIT) && !defined(TEST_FIRST_TABLE_ONLY)
+-        if(native)fprintf(stderr,"scarlett: native first +120 logical segment=%p end=%p handle=%llx slot=%u cells=1 epoch=%llu\n",
++        if(native
++#ifdef XS_AMD_RETURNED_FIVE
++           && !returned
++#endif
++          )fprintf(stderr,"scarlett: native first +120 logical segment=%p end=%p handle=%llx slot=%u cells=1 epoch=%llu\n",
+             s->host,s->sr.end,handle,slot,s->table_epoch);
+ #endif
+ #ifdef XS_RTX_ATTRIBUTED_FIVE
+@@ -1730,6 +1768,9 @@
+ static void WINAPI pool_b27(IUnknown *i,UINT index,UINT64 handle)
+ {
+     pair_op(sl(i),0x120);
++#ifdef XS_AMD_RETURNED_FIVE
++    if(sl(i)->split_at==6 && sl(i)->sr.end && sl(i)->output_heap && sl(i)->five_face!=i)xs_stop();
++#endif
+ #ifdef SCARLETT_PAIR_SUBMIT
+     if(sl(i)->source.needs_publication && (UINT_PTR)__builtin_return_address(0)!=(UINT_PTR)GetModuleHandleW(NULL)+0x32206)xs_stop();
+ #endif
+--- a/scarlett/native/d3d12_device.c
++++ b/scarlett/native/d3d12_device.c
+@@ -1595,6 +1595,9 @@
+     UINT64 tick=ID3D12Fence_GetCompletedValue(k->sr.end);
+     /* The earlier pair's completion is not a dependency for recording a logical selection. */
+     if(tick>1)goto done;
++#ifdef XS_AMD_RETURNED_FIVE
++    if(k->pending_end && tick)goto done;
++#endif
+     struct placed_backing *p=NULL;
+     for(struct placed_backing *it=d->placed;it;it=it->next){
+         if(a->va<it->guest_va || a->va-it->guest_va>=PLACED_WIDTH ||
